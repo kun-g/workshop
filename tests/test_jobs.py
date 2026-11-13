@@ -117,10 +117,11 @@ def world(tmp_path, monkeypatch):
 def tick(world, engine, monkeypatch):
     """跑一拍：期间禁止等子进程和网络；返回墙钟毫秒和心跳。"""
     world["clock"].now += timedelta(seconds=1)
-    began = time.monotonic()
     with no_waiting_or_network(monkeypatch):
+        # 只计 Engine.tick()：测试拦截器的安装和恢复不属于一拍。
+        began = time.monotonic()
         engine.tick()
-    elapsed = (time.monotonic() - began) * 1000
+        elapsed = (time.monotonic() - began) * 1000
     beat = json.loads((world["path"] / "heartbeat.json").read_text())
     assert not engine.control("@tick").get("failures"), engine.log.facts()[-1]
     return elapsed, beat
@@ -138,9 +139,10 @@ def wait(world, engine, monkeypatch, done, seconds=40):
     raise AssertionError("等不到预期结果")
 
 
-def test_slow_check_source_and_channel_do_not_hold_the_tick(world, monkeypatch):
-    # 慢插件只要比一拍（100 毫秒）长得多，就足以看出一拍不被它挡住；3 秒够派出另一件活。
-    configure(world["path"], check_seconds=3, source_seconds=3, channel_seconds=3, checks=[["/bin/sleep", "5"]])
+def test_slow_external_calls_do_not_hold_the_tick(world, monkeypatch):
+    # 验收规定的四类外部调用各睡 10 秒；执行者覆盖启动、探测和停止。
+    slow_calls = {"check", "source", "channel", "executor_launch", "executor_poll", "executor_stop"}
+    configure(world["path"], **{f"{kind}_seconds": 10 for kind in slow_calls}, checks=[["/bin/sleep", "5"]])
     engine = world["engine"]()
     log = engine.log
     seen = {"label": False, "dispatched_during_check": False}
@@ -152,22 +154,29 @@ def test_slow_check_source_and_channel_do_not_hold_the_tick(world, monkeypatch):
         started = [r for r in rounds(log, "8") if r.get("started")]
         if checking and started:
             seen["dispatched_during_check"] = True
-        return any(r["stage"] == "证据" and r["status"] == "ended" for r in rounds(log, "7"))
+        settled = any(r["stage"] == "证据" and r["status"] == "ended" for r in rounds(log, "7"))
+        completed = {r[1] for r in job_plugins.calls("delay-end")}
+        return settled and slow_calls <= completed and log.get("cards", "alpha:7:hello")["sent"]
 
-    beats = wait(world, engine, monkeypatch, observe)
-    # 每一拍都在 100 毫秒内返回，心跳每拍都写、时间每拍都变。
-    assert all(b["tick_ms"] <= LIMIT_MS for _, b in beats), [b["tick_ms"] for _, b in beats]
-    assert all(elapsed <= LIMIT_MS for elapsed, _ in beats), [round(e) for e, _ in beats]
-    assert len({b["at"] for _, b in beats}) == len(beats)
-    # 慢检查跑着的时候，活 7 显示「等检查」，另一件空闲的活 8 照常被派出。
-    assert seen["label"] and seen["dispatched_during_check"]
-    # 检查跑完后的下一拍按结果结算：活 7 推进到审查；检查只跑了一次。
-    assert item(log, "7")["stage"] == "审查"
-    assert len(job_plugins.calls("assess-start")) == 1
-    # 慢通道、慢来源也都在后台跑完，没挡住一拍。
-    wait(world, engine, monkeypatch, lambda: log.get("cards", "alpha:7:hello")["sent"])
-    assert job_plugins.calls("source-start")
-    engine.log.close()
+    try:
+        beats = wait(world, engine, monkeypatch, observe)
+        # 一直量到所有慢调用跑完：每拍在 100 毫秒内返回，心跳每拍都写、时间每拍都变。
+        assert max(b["tick_ms"] for _, b in beats) <= LIMIT_MS
+        assert max(elapsed for elapsed, _ in beats) <= LIMIT_MS
+        assert len({b["at"] for _, b in beats}) == len(beats)
+        assert seen["label"] and seen["dispatched_during_check"]
+        assert item(log, "7")["stage"] == "审查"
+        assert len(job_plugins.calls("assess-start")) == 1
+        # 校验实际等待时长，防止替身配置未生效而空过。
+        durations = {kind: [float(r[2]) for r in job_plugins.calls("delay-end") if r[1] == kind]
+                     for kind in slow_calls}
+        assert all(values and min(values) >= 10 for values in durations.values()), durations
+        print(f"slow calls (seconds): {durations}; ticks={len(beats)}; "
+              f"max tick_ms={max(b['tick_ms'] for _, b in beats)}; "
+              f"max wall_ms={max(elapsed for elapsed, _ in beats):.2f}")
+    finally:
+        engine.jobs.launcher.shutdown(wait=True)
+        engine.log.close()
 
 
 @pytest.mark.parametrize("finished_before_restart", [False, True])
