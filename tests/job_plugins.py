@@ -1,6 +1,6 @@
 """作业测试用的插件替身：状态和开关都在文件里，守护进程和作业进程看到同一份。
 
-JOBTEST_DIR 指向测试目录，config.json 控制各个替身睡多久、交什么结果；
+JOBTEST_DIR 指向测试目录，config.json 控制各个替身的放行条件、延时和结果；
 调用记录逐行追加到 calls.log。JOBTEST_REAL_FLOW=1 时 flow 用真的 issue 交付流程，
 只把 GitHub 和克隆换成本地替身，检查照真的 verify 跑（含超时）。
 """
@@ -39,18 +39,26 @@ def calls(kind=None):
 
 
 def delay(kind):
-    seconds = config().get(f"{kind}_seconds", 0)
-    if seconds:
-        began = time.monotonic()
-        note("delay-start", kind)
-        time.sleep(seconds)
-        note("delay-end", kind, time.monotonic() - began)
-
+    settings = config()
+    if kind in settings.get("blocked", []):
+        # 真实作业一直阻塞到测试已观察完目标状态；不靠固定 sleep 猜时序。
+        deadline = time.monotonic() + 40
+        while not (home() / f"allow-{kind}").exists():
+            if time.monotonic() >= deadline:
+                raise TimeoutError(f"测试没有释放 {kind} 作业")
+            time.sleep(.001)
+    else:
+        seconds = settings.get(f"{kind}_seconds", 0)
+        if seconds:
+            began = time.monotonic()
+            note("delay-start", kind)
+            time.sleep(seconds)
+            note("delay-end", kind, time.monotonic() - began)
 
 class SlowFlow:
     def hold_workdir(self, item, target):
         note("hold-start", item["id"])
-        time.sleep(config().get("hold_seconds", 0))
+        delay("hold")
         note("hold-end", item["id"])
         return config().get("hold_reason", "")
 
@@ -113,7 +121,7 @@ class FakeExecutor:
 
     def release(self, item, target):
         note("release-start", item["id"])
-        time.sleep(config().get("release_seconds", 0))
+        delay("release")
         note("release-end", item["id"])
         reason = config().get("release_reason", "")
         return Release(not reason, reason)

@@ -3,6 +3,7 @@ import json
 import os
 from pathlib import Path
 import signal
+import shutil
 import subprocess
 import sys
 import time
@@ -72,12 +73,12 @@ def wait_for(predicate, timeout=5):
     while time.monotonic() < deadline:
         if predicate():
             return
-        time.sleep(.02)
+        time.sleep(.001)
     raise AssertionError('timed out')
 
 
 @pytest.fixture
-def setup(tmp_path, monkeypatch):
+def setup(tmp_path, monkeypatch, git_template):
     # Fake agent logs must contain only test credentials, never the developer's env secrets.
     for key in list(os.environ):
         if key not in ('PATH', 'LANG', 'HOME', 'TMPDIR', 'TERM'):
@@ -99,10 +100,8 @@ def setup(tmp_path, monkeypatch):
         path.chmod(0o755)
         commands[name] = str(path)
     repo = tmp_path / 'repo'
-    subprocess.run(['git', 'init', '-q', str(repo)], check=True)
-    (repo / 'hello.py').write_text('print(1)\n')
-    subprocess.run(['git', '-C', str(repo), 'add', '.'], check=True)
-    subprocess.run(['git', '-C', str(repo), '-c', 'user.name=test', '-c', 'user.email=test@example.invalid', 'commit', '-qm', 'initial'], check=True)
+    template, _ = git_template({'hello.py': 'print(1)\n'})
+    shutil.copytree(template, repo)
     item = {'id': 'test:1', 'target': 'test', 'object_key': '1', 'workdir': str(repo)}
     target = {'checkout': str(repo), 'runtime': {'state_dir': str(tmp_path/'core'),
         'command': [commands['workshop']], 'env': {'WORKSHOP_STATE_DIR': str(tmp_path/'core'), 'WORKSHOP_ROUND_TOKEN': 'one'}}}
