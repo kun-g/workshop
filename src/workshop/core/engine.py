@@ -1437,6 +1437,12 @@ class Engine:
             return
         if (item["pending_rework"] and item["depth"] <= self.rules.data["limits"]["chain_depth"]
                 and not any(r["item"] == item["id"] for r in self.active())):
+            if self.jobs and item.get("workdir") and not item.get("workdir_released"):
+                identity = [item["id"], item.get("pending_episode", 0), item["workdir"], item.get("release_at")]
+                if any(self.jobs.exists("executor", name, "release", identity)
+                       for name in item.get("sessions") or {}):
+                    # 正在收回的目录不能同时给新一轮用；本拍末尾先结算收回结果。
+                    return
             with self.log.transaction():
                 self.cancel_questions(item)
                 self.change(item, stage="执行" if item["checks"] else "说清楚", state="空闲",

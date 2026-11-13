@@ -318,3 +318,20 @@ def test_release_hold_is_rechecked_after_delay_and_new_completion(world, monkeyp
     assert len(job_plugins.calls("hold-start")) == 3
     assert len(job_plugins.calls("release-start")) == 2
     engine.log.close()
+
+
+def test_rework_waits_for_active_release_before_launching(world, monkeypatch):
+    configure(world["path"], release_seconds=0.5)
+    completed_item(world)
+    engine = world["engine"]()
+    wait(world, engine, monkeypatch, lambda: bool(job_plugins.calls("release-start")))
+    engine.change(item(engine.log, "9"), pending_rework=True)
+    tick(world, engine, monkeypatch)
+    assert not rounds(engine.log, "9")
+    wait(world, engine, monkeypatch, lambda: any(r.get("started") for r in rounds(engine.log, "9")))
+    calls = job_plugins.calls()
+    released = next(i for i, row in enumerate(calls) if row[0] == "release-end")
+    launched = next(i for i, row in enumerate(calls) if row[0] == "launch" and row[2] == "alpha:9")
+    assert released < launched
+    assert len(job_plugins.calls("release-start")) == 1
+    engine.log.close()
