@@ -228,6 +228,62 @@ def test_same_call_reuses_result_without_new_job(tmp_path, monkeypatch):
     assert len(list((tmp_path / "jobs").iterdir())) == 1 and len(job_plugins.calls("assess-start")) == 1
 
 
+@pytest.mark.parametrize("external", ["external:already-sent", "absent", None])
+def test_finished_reconcile_is_consumed_once_and_delivery_continues(world, monkeypatch, external):
+    """恢复 sending 卡片：后台对账的三种结果都要交给通道处理，不能立即过期。"""
+    configure(world["path"], reconcile_result=external)
+    engine = world["engine"]()
+    key = "alpha:7:hello"
+    engine.fact("card_changed", {"id": key, "sending": True}, "alpha:7")
+    path = engine.jobs.path("channel", "channel", "reconcile", [key])
+
+    def channels():
+        engine.jobs.reap()
+        with no_waiting_or_network(monkeypatch):
+            engine.channels()
+
+    def completed(path):
+        deadline = time.monotonic() + 10
+        while not (path / "result.json").exists():
+            assert time.monotonic() < deadline, "后台作业未写回结果"
+            time.sleep(.01)
+
+    try:
+        channels()
+        completed(path)
+        # 模拟下一拍甚至重启后才取结果，完成时间已经过去。
+        engine.jobs.clock = lambda: time.time() + 60
+        channels()
+        assert not path.exists(), "对账结果应消费一次后清除"
+        assert len(job_plugins.calls("reconcile")) == 1
+        card = engine.log.get("cards", key)
+        if external is None:
+            assert not card["sent"]
+            assert engine.control(f"reconcile:{key}")["count"] == 1
+            assert not job_plugins.calls("send-start")
+            # 不确定的结果不能被缓存；下一次要重新对账。
+            channels()
+            completed(path)
+            channels()
+            assert engine.control(f"reconcile:{key}")["count"] == 2
+            assert len(job_plugins.calls("reconcile")) == 2
+        else:
+            if external == "absent":
+                completed(engine.jobs.path("channel", "channel", "notify", [key]))
+                channels()
+                card = engine.log.get("cards", key)
+                assert len(job_plugins.calls("sent")) == 1
+                assert card["external"] == f"external:{key}"
+            else:
+                assert card["external"] == external
+                assert not job_plugins.calls("send-start")
+            assert card["sent"]
+            channels()
+            assert len(job_plugins.calls("reconcile")) == 1
+    finally:
+        engine.log.close()
+
+
 def test_job_that_dies_without_result_is_retryable_and_overdue_job_is_killed(tmp_path, monkeypatch):
     monkeypatch.setenv("JOBTEST_DIR", str(tmp_path))
     dying = Jobs(tmp_path / "jobs", [sys.executable, "-c", "pass"])

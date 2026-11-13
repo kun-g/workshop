@@ -175,7 +175,8 @@ class Jobs:
                 if kind:
                     raise kind(error.get("message", ""))
                 raise JobFailed(error.get("repr", "作业失败"), error.get("message", ""))
-            if fresh is not None and self.clock() - result.get("finished", 0) > fresh:
+            # 0 表示只消费一次，不是完成后立即过期。
+            if fresh is not None and fresh > 0 and self.clock() - result.get("finished", 0) > fresh:
                 shutil.rmtree(path, ignore_errors=True)
             else:
                 if fresh == 0:
