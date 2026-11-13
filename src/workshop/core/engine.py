@@ -20,6 +20,7 @@ from .models import After, FlowBrief, Classification, Evidence, Usage, RoundUsag
 class Engine:
     def __init__(self, log: Log, rules, plugins, clock=utcnow):
         self.log, self.rules, self.plugins, self.clock = log, rules, plugins, clock
+        self.restart_requested = False
         self.tick_failures = self.control("@tick").get("failures", 0)
         saved = self.log.get("controls", "@rules") or {}
         if saved.get("data") != rules.data or saved.get("path") != rules.path:
@@ -66,6 +67,13 @@ class Engine:
         if (type(result.pending) is not bool or type(result.rerun) is not bool or not isinstance(result.reason, str)
                 or not isinstance(result.next, str) or result.pending and (not result.reason or not result.next)):
             raise ValueError("仍留本阶段须有原因和下一步")
+        if type(result.restart) is not bool or not isinstance(result.notice, str):
+            raise ValueError("重启标记须是布尔值，通知须是字符串")
+        if result.notice.strip():
+            self.card(item, f"after-notice:{key}", "notice", notice(result.notice))
+        if result.restart:
+            # 只在内存里记；run 循环在这一拍结束后退出，外部守护拉起新代码。
+            self.restart_requested = True
         if result.pending and not result.rerun:
             due(result.recheck_after, self.clock())
         aliases = result.aliases

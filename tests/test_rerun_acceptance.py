@@ -1,0 +1,351 @@
+"""合并冲突不隔离插件、已合并的活重走验收、车间合并自己后自更新、执行守边界，以及 11-13 卡住的两件怎么恢复。"""
+import json
+from pathlib import Path
+import subprocess
+
+import pytest
+
+from workshop.core.cards import notice
+from workshop.core.models import Event, Receipt
+from workshop.core.ports import Retryable
+from workshop.plugins.issue_delivery.io import run
+from conftest import build, configuration, current, finish, item, reach
+from test_issue_delivery import world, edit, calls, result, snapshot  # noqa: F401  world 是夹具
+
+
+GIT = '/usr/bin/git'
+CLOSING = {'leave': {'kind': '送回', 'at': '+7d', 'about': '复看'},
+           'notice': [{'key': 'accepted', 'text': '验收通过；不对就在群里回一句「ws#7 不对」'}]}
+
+
+def git(repo, *args):
+    return subprocess.run([GIT, '-C', str(repo), *args], check=True, capture_output=True, text=True).stdout.strip()
+
+
+def commit(repo, name, text):
+    Path(repo, name).write_text(text)
+    git(repo, 'add', '.')
+    git(repo, '-c', 'user.name=Test', '-c', 'user.email=t@localhost', 'commit', '-qm', name)
+    return git(repo, 'rev-parse', 'HEAD')
+
+
+def remote(world):
+    return json.loads(world['store'].read_text())
+
+
+def engine_for(world, name, **target):
+    cfg = configuration()
+    cfg.pop('taskhome')
+    cfg['targets']['alpha'] = {**world['target'], 'plugin': 'issue_delivery', 'sources': [], **target}
+    engine = build(world['root'] / name, cfg)
+    engine.plugins.register('flow', 'issue_delivery', world['flow'])
+    engine.ingest(Event('github', 'start', 'alpha', '7', 'test', {}))
+    engine.tick()
+    return engine
+
+
+def walk(engine, world, stages, **payload):
+    for stage in stages:
+        finish(engine, stage, key='7', evidence=[result(world, checks=[['scripts/check.sh']], must_fix=[], suggestions=[], **payload)])
+
+
+def fail_acceptance(engine, world, head):
+    finish(engine, '收尾', key='7', evidence=[result(world, acceptance={'passed': False, 'output': '本地没有交付提交', 'head': head})])
+    assert current(engine, '7')['stage'] == '执行'
+
+
+def pass_acceptance_and_close(engine, world, head):
+    finish(engine, '收尾', key='7', evidence=[result(world, acceptance={'passed': True, 'output': 'acceptance raw output', 'head': head})])
+    assert current(engine, '7')['stage'] == '收尾'
+    finish(engine, None, key='7', evidence=[result(world)], **CLOSING)
+    assert item(engine, '7')['state'] == '完成'
+    assert remote(world)['issue']['state'] == 'closed'
+
+
+def brief(engine):
+    return current(engine, '7')['brief']['instructions']
+
+
+def rerun(engine, world, merge):
+    finish(engine, '验收', key='7', evidence=[result(world, rerun_acceptance={'merge': merge, 'reason': '验收环境拿不到合并提交'})])
+
+
+def merges(world):
+    return len([c for c in calls(world) if c[1:3] == ['pr', 'merge']])
+
+
+# 1. 合并冲突不是插件故障；io.run 的错误带 stderr 结尾
+
+def test_run_failure_message_carries_stderr_tail():
+    with pytest.raises(Retryable) as caught:
+        run(['/bin/sh', '-c', 'echo 标准输出; echo "X Pull request is not mergeable: 冲突" >&2; exit 3'])
+    assert '（exit 3）' in str(caught.value) and 'not mergeable: 冲突' in str(caught.value)
+    # 长输出只留结尾；head -c 截断了多字节字符，坏字节也不能把暂时故障变成插件崩溃。
+    with pytest.raises(Retryable) as caught:
+        run(['/bin/sh', '-c', 'yes 噪声 | head -c 9000 >&2; echo 最后一行 >&2; exit 1'])
+    message = str(caught.value)
+    assert message.endswith('最后一行') and len(message) < 500
+
+
+@pytest.mark.parametrize('merge_state,stderr,precheck', [
+    ('dirty', '', True),
+    ('blocked', 'X Pull request kun-g/workshop#11 is not mergeable: the base branch policy prohibits the merge.', False),
+])
+def test_merge_conflict_goes_back_to_execution_without_isolating_flow(world, merge_state, stderr, precheck):
+    engine = engine_for(world, 'conflict-' + merge_state)
+    walk(engine, world, ['说清楚', '执行', '证据', '审查', '交付'])
+    pr = remote(world)['pr']
+    pr.update(mergeable=merge_state != 'dirty', mergeable_state=merge_state)
+    edit(world, pr=pr, merge_error=stderr)
+    finish(engine, '验收', key='7', evidence=[result(world)])
+    row = current(engine, '7')
+    assert row['stage'] == '交付' and not engine.control('alpha').get('broken')
+    assert '退回执行' in brief(engine) and 'advance="执行"' in brief(engine)
+    if precheck:
+        assert '合并冲突' in item(engine, '7')['gate_reason'] and merges(world) == 0
+    else:
+        assert 'base branch policy prohibits the merge' in item(engine, '7')['gate_reason'] and merges(world) == 1
+    finish(engine, '执行', key='7', evidence=[result(world)])
+    assert current(engine, '7')['stage'] == '执行'
+    assert engine.log.all('cards') == [] and not engine.control('alpha').get('broken')
+    engine.log.close()
+
+
+def test_unexplained_merge_failure_stays_retryable_with_stderr(world):
+    data = snapshot(world, '交付')
+    world['io'].save(data, world['target'], {'effects': {}, 'issue': 7, 'reviewed_head': world['sha']})
+    pr = remote(world)['pr']
+    pr.update(mergeable=True, mergeable_state='clean')
+    edit(world, pr=pr, merge_error='HTTP 502: Bad Gateway (https://api.github.com/graphql)')
+    with pytest.raises(Retryable) as caught:
+        world['flow'].after(data, '交付', 'infra', world['target'])
+    assert 'Bad Gateway' in str(caught.value)
+    # GitHub 还没算出能否合并：等一会再查，不起执行者，也不算故障。
+    pr.update(mergeable=None, mergeable_state='unknown')
+    edit(world, pr=pr)
+    waiting = world['flow'].after(data, '交付', 'unknown', world['target'])
+    assert waiting.pending and not waiting.rerun and 'Bad Gateway' in waiting.reason
+
+
+# 2. 已合并的活重走验收：同一合并提交一次，再不过问 Kun
+
+def test_merged_item_reruns_acceptance_once_then_asks_kun(world):
+    engine = engine_for(world, 'rerun')
+    walk(engine, world, ['说清楚', '执行', '证据', '审查', '交付', '验收'])
+    sha = remote(world)['pr']['merge_commit_sha']
+    fail_acceptance(engine, world, sha)
+    assert f'合并提交 {sha}' in brief(engine) and 'rerun_acceptance' in brief(engine)
+    rerun(engine, world, sha)
+    assert current(engine, '7')['stage'] == '验收'
+    assert merges(world) == 1 and world['io'].read(item(engine, '7'), world['target'])['acceptance_reruns'] == [sha]
+    assert f'只验交付提交 {sha}' in brief(engine)
+    fail_acceptance(engine, world, sha)
+    assert '已重走过一次验收' in brief(engine) and 'outcome=nothing' in brief(engine)
+    for attempt in range(3):
+        rerun(engine, world, sha)
+        if attempt < 2:
+            assert current(engine, '7')['stage'] == '执行'
+            assert '已重走过一次验收' in item(engine, '7')['gate_reason']
+    assert item(engine, '7')['state'] == '等你'
+    asks = [c for c in engine.log.all('cards') if c['mode'] == 'ask']
+    assert len(asks) == 1 and '已重走过一次验收' in asks[0]['payload']['context']
+    engine.log.close()
+
+
+def test_core_returns_to_acceptance_only_for_items_that_reached_it(engine):
+    """核心只认阶段：没到过验收不能从执行跳过去；到过的，流程证据过了才回验收。"""
+    flow = engine.plugins.get('flow', 'flow')
+    reach(engine, '执行')
+    finish(engine, '验收')
+    assert current(engine)['stage'] == '执行' and item(engine)['gate_reason'] == '不能越过流程阶段和关口'
+    for stage in ('证据', '审查', '交付', '验收'):
+        finish(engine, stage)
+    flow.passed = False
+    finish(engine, '收尾')
+    assert current(engine)['stage'] == '执行'
+    finish(engine, '验收')
+    assert current(engine)['stage'] == '执行' and item(engine)['gate_reason'] == '本阶段证据未通过'
+    flow.passed = True
+    finish(engine, '验收')
+    assert current(engine)['stage'] == '验收'
+
+
+def test_rerun_refused_with_open_pr_wrong_commit_or_accepted_commit(world):
+    data = snapshot(world, '执行')
+    data['history'] = [{'stage': '验收', 'outcome': 'failed'}]
+    receipt = lambda merge: Receipt('done', '', advance='验收', evidence=[result(world, rerun_acceptance={'merge': merge})])
+    target = world['target']
+    world['io'].save(data, target, {'effects': {}, 'issue': 7})
+    assert '打开的 PR #11' in world['flow'].assess(data, receipt(world['sha']), target).reason
+    pr = remote(world)['pr']
+    pr.update(state='closed', merged=True, merge_commit_sha=world['sha'], merged_at='2026-11-13T08:00:00Z')
+    edit(world, pr=pr)
+    assert world['flow'].assess(data, receipt(world['sha']), target).passed
+    assert 'rerun_acceptance.merge' in world['flow'].assess(data, receipt('f' * 40), target).reason
+    world['io'].save(data, target, {'effects': {}, 'issue': 7, 'merge': world['sha'], 'accepted': True})
+    assert '已验收通过' in world['flow'].assess(data, receipt(world['sha']), target).reason
+
+
+# 3. 车间合并自己后自更新
+
+@pytest.fixture
+def main_checkout(world):
+    repo = world['target']['checkout']
+    git(repo, 'checkout', '-qB', 'main')
+    git(repo, 'checkout', '-qb', 'side')
+    merged = commit(repo, 'feature.txt', 'merged change\n')
+    git(repo, 'checkout', '-q', 'main')
+    edit(world, sha=merged)
+    return repo, merged
+
+
+def test_self_release_fast_forwards_clean_main_and_requests_restart(world, main_checkout):
+    repo, merged = main_checkout
+    marker = world['root'] / 'prepared'
+    target = {**world['target'], 'release': 'self', 'prepare': [{'argv': ['/bin/sh', '-c', f'pwd > {marker}']}]}
+    data = snapshot(world, '交付')
+    world['io'].save(data, target, {'effects': {}, 'issue': 7, 'reviewed_head': world['sha']})
+    done = world['flow'].after(data, '交付', 'deliver', target)
+    assert done.restart and not done.pending and not done.notice
+    assert git(repo, 'rev-parse', 'HEAD') == merged and git(repo, 'symbolic-ref', '--short', 'HEAD') == 'main'
+    assert Path(marker.read_text().strip()).resolve() == Path(repo).resolve()
+    assert world['flow'].after(data, '交付', 'deliver', target) == done
+
+
+def test_self_release_asks_core_to_restart_after_this_tick(world, main_checkout):
+    repo, merged = main_checkout
+    engine = engine_for(world, 'self-engine', release='self')
+    walk(engine, world, ['说清楚', '执行', '证据', '审查', '交付'])
+    assert not engine.restart_requested
+    finish(engine, '验收', key='7', evidence=[result(world)])
+    assert engine.restart_requested and current(engine, '7')['stage'] == '验收'
+    assert git(repo, 'rev-parse', 'HEAD') == merged
+    engine.log.close()
+
+
+@pytest.mark.parametrize('problem', ['dirty', 'untracked', 'branch'])
+def test_self_release_leaves_unclean_main_alone_and_notifies_once(world, main_checkout, problem):
+    repo, merged = main_checkout
+    if problem == 'dirty':
+        Path(repo, 'scripts/check.sh').write_text('#!/bin/sh\necho Kun 正在改\n')
+    elif problem == 'untracked':
+        Path(repo, 'notes.txt').write_text('scratch\n')
+    else:
+        git(repo, 'checkout', '-qb', 'kuns-work')
+    before = git(repo, 'rev-parse', 'HEAD')
+    engine = engine_for(world, 'self-' + problem, release='self')
+    walk(engine, world, ['说清楚', '执行', '证据', '审查', '交付'])
+    finish(engine, '验收', key='7', evidence=[result(world)])
+    assert current(engine, '7')['stage'] == '验收' and not engine.restart_requested
+    assert git(repo, 'rev-parse', 'HEAD') == before
+    if problem == 'dirty':
+        assert 'Kun 正在改' in Path(repo, 'scripts/check.sh').read_text()
+    notices = [c for c in engine.log.all('cards') if c['key'].startswith('after-notice:')]
+    assert len(notices) == 1
+    text = notices[0]['payload']['text']
+    assert merged in text and 'git merge --ff-only' in text and 'kickstart' in text
+    assert ('不在 main' if problem == 'branch' else '未提交的改动或未跟踪的文件') in text
+    engine.tick()
+    assert len([c for c in engine.log.all('cards') if c['key'].startswith('after-notice:')]) == 1
+    engine.log.close()
+
+
+def test_run_loop_exits_after_the_tick_that_requested_restart(tmp_path, monkeypatch):
+    import workshop.cli as cli
+    ticks = []
+
+    class Restarting:
+        def __init__(self, *args, **kwargs):
+            self.restart_requested = False
+
+        def tick(self):
+            ticks.append(True)
+            self.restart_requested = True
+
+    monkeypatch.setattr(cli, 'Engine', Restarting)
+    monkeypatch.setattr(cli.time, 'sleep', lambda seconds: pytest.fail('重启请求后不再等下一拍'))
+    assert cli.main(['--state-dir', str(tmp_path), 'run', '--interval', '60']) == 0
+    assert ticks == [True]
+
+
+# 4. 执行者守边界
+
+def test_execution_brief_states_boundaries(world):
+    text = world['flow'].brief(snapshot(world, '执行'), '执行', world['target'])
+    for phrase in ('只改本 issue 要的东西', '车间流程或环境的问题', 'outcome=nothing', 'leave={kind:等你',
+                   '不改车间自己的流程代码', f"不动主检出 {world['target']['checkout']}", '不重启车间'):
+        assert phrase in text
+    # 没到过验收的活不提重走验收，也不为此查 GitHub。
+    assert 'rerun_acceptance' not in text
+    assert not any(c[0] == 'gh' and any('/pulls?' in a for a in c) for c in calls(world))
+    assert '不要动主检出、不要重启' in world['flow'].brief(snapshot(world, '交付'), '交付', world['target'])
+
+
+# 5. 恢复 11-13 卡住的两件
+
+def quarantine(engine):
+    engine.broken('alpha', 'flow', 'issue_delivery', Retryable('命令失败：gh（exit 1）'))
+    assert item(engine, '7')['state'] == '卡住'
+
+
+@pytest.mark.parametrize('release', ['ready', 'rework'])
+def test_recover_ws5_waiting_after_nothing(world, release):
+    """ws#5：已合并、验收两次没过，执行交 nothing 等你，又被插件隔离。重打标签或「不对」都能重走验收收尾。"""
+    engine = engine_for(world, 'ws5-' + release)
+    walk(engine, world, ['说清楚', '执行', '证据', '审查', '交付', '验收'])
+    sha = remote(world)['pr']['merge_commit_sha']
+    fail_acceptance(engine, world, sha)
+    card = {**notice('ws#7 验收要重走，需你定路径'), 'key': 'rerun-acceptance'}
+    engine.submit(current(engine, '7')['token'], {'outcome': 'nothing', 'summary': '没有要改的代码', 'notice': [card],
+                                                  'leave': {'kind': '等你', 'about': '等 Kun 定怎么重走验收'}})
+    engine.tick()
+    assert item(engine, '7')['state'] == '等你' and item(engine, '7')['wait_for_ready']
+    quarantine(engine)
+    engine.resume('alpha', [])
+    assert item(engine, '7')['state'] == '等你' and not engine.active()
+    engine.ingest(Event('github', 'kun-again', 'alpha', '7', 'label', {}, action=release))
+    engine.tick()
+    assert current(engine, '7')['stage'] == '执行' and 'rerun_acceptance' in brief(engine)
+    rerun(engine, world, sha)
+    assert current(engine, '7')['stage'] == '验收'
+    pass_acceptance_and_close(engine, world, sha)
+    assert merges(world) == 1
+    engine.log.close()
+
+
+@pytest.mark.parametrize('release', ['resume', 'rework'])
+def test_recover_ws18_delivery_stuck_on_closed_duplicate_pr(world, release):
+    """ws#18：#11 已合并，验收没过后执行者又开了重复的 #23；合并 #23 失败隔离了插件，Kun 已关 #23。"""
+    engine = engine_for(world, 'ws18-' + release)
+    walk(engine, world, ['说清楚', '执行', '证据', '审查', '交付', '验收'])
+    first = remote(world)['pr']
+    sha = first['merge_commit_sha']
+    fail_acceptance(engine, world, sha)
+    repo = world['target']['checkout']
+    git(repo, 'checkout', '-qb', 'duplicate')
+    duplicate = commit(repo, 'duplicate.txt', '重复的修正\n')
+    edit(world, prs=[first], pr={'number': 23, 'body': '<!-- workshop-item: alpha:7 -->', 'head': {'sha': duplicate},
+                                 'state': 'open', 'merged': False, 'mergeable': False, 'mergeable_state': 'dirty'})
+    walk(engine, world, ['证据', '审查', '交付'], head=duplicate)
+    token = current(engine, '7')['token']
+    engine.submit(token, {'outcome': 'done', 'summary': '交付', 'advance': '验收', 'evidence': [result(world, head=duplicate)]})
+    engine.fact('effect', {'id': f'after:{token}', 'done': False})
+    quarantine(engine)
+    engine.tick()
+    assert item(engine, '7')['state'] == '卡住'
+    edit(world, pr={**remote(world)['pr'], 'state': 'closed'})
+    engine.resume('alpha', [])
+    if release == 'rework':
+        engine.ingest(Event('github', 'kun-says-wrong', 'alpha', '7', '不对', {}, action='rework'))
+    engine.tick()
+    assert not engine.control('alpha').get('broken')
+    if release == 'resume':
+        assert current(engine, '7')['stage'] == '交付' and '已关闭且没合并' in item(engine, '7')['gate_reason']
+        finish(engine, '执行', key='7', evidence=[result(world, head=duplicate)])
+    assert current(engine, '7')['stage'] == '执行'
+    assert f'PR #11，合并提交 {sha}' in brief(engine)
+    rerun(engine, world, sha)
+    assert current(engine, '7')['stage'] == '验收' and f'只验交付提交 {sha}' in brief(engine)
+    pass_acceptance_and_close(engine, world, sha)
+    assert merges(world) == 1
+    engine.log.close()

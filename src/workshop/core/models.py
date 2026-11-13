@@ -79,6 +79,10 @@ class After:
     next: str = ""
     rerun: bool = False
     recheck_after: str = "+5m"
+    # 交付改了车间自己正在跑的代码：这一拍结束后守护进程正常退出，由外部守护拉起。
+    restart: bool = False
+    # 给 Kun 一条不用回的通知；同一个完成钩子 key 只发一次。
+    notice: str = ""
 
 
 @dataclass(frozen=True)

@@ -52,7 +52,8 @@ targets:
     skill: issue-delivery
     permissions: repository
     label: Ready for Agent
-    release: none
+    # 交付对象就是车间自己：合并后快进 checkout（主检出）并让守护进程这一拍后退出，由 launchd 拉起。
+    release: self
 executors:
   writer: {use: orca-claude, family: claude, billing: subscription, model: claude-opus-5-5, effort: high}
   reviewer:

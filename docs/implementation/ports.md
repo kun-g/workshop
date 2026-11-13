@@ -65,11 +65,13 @@ limits: {concurrent: 2, chain_depth: 8, round_timeout_seconds: 7200}
 
 `assess(item, receipt, target) -> Evidence` 必须短时只读，不靠回执 done 自证完成。
 
-Evidence 字段：checks（检查 argv 列表）、passed（布尔）、actions（拟交付动作类别）、reason（判定解释）、paths（本次改动路径列表）、reviewers（1 或 2）。actions 中任何类别不在 `ask_first ∪ skip_ask`，都是插件错误，记事实、卡住这一类并通知，不放行。所有往前推进（含收尾完成）都要求 passed；不通过留在当前阶段走 gate_retry，同一关口连续三次才问 Kun。显式退回执行不受此前进条件阻拦。执行前必须有能跑的检查；交付前处理授权；验收证据不过无论 done/nothing/failed 都退回执行。
+Evidence 字段：checks（检查 argv 列表）、passed（布尔）、actions（拟交付动作类别）、reason（判定解释）、paths（本次改动路径列表）、reviewers（1 或 2）。actions 中任何类别不在 `ask_first ∪ skip_ask`，都是插件错误，记事实、卡住这一类并通知，不放行。所有往前推进（含收尾完成）都要求 passed；不通过留在当前阶段走 gate_retry，同一关口连续三次才问 Kun。显式退回执行不受此前进条件阻拦。到过验收（history 里有验收轮）又回到执行的活，执行可以提议直接回验收（advance=验收），表示已交付的结果不用改、重走验收；核心只认「到过验收」这一个阶段事实，流程证据过了才放行，结果没变、能走几次由流程判。没到过验收的活照旧不能越过阶段；执行紧接验收的流程不走这条，照常处理交付授权。执行前必须有能跑的检查；交付前处理授权；验收证据不过无论 done/nothing/failed 都退回执行。
 
 交付对象的 `two_reviewers` 路径前缀命中 paths，或 Evidence.reviewers=2 时，核心在审查阶段依次找两家不同家族，两家都过才能交付。已通过家族记入活的 reviews；写代码那家仍排除。第一次审查带 ask 时不计作通过，答完接回同一审查会话。返工清空本次审查记录。
 
 `after(item, completed_stage, key, target)` 在停止本轮且核心准许推进后调用，必须持久 key 幂等。传入 item 额外含 `result`（当前已核验回执 JSON）；history 仍是此前轮次。返回 `After(aliases=[], pending=False, reason="", next="", rerun=False, recheck_after="+5m")`；兼容 None 或别名字符串列表。
+
+`restart=True` 表示交付改了车间自己正在跑的代码：核心在内存里记下重启请求，这一拍照常结算、推进、派下一轮，`workshop run` 在这一拍结束后正常退出（exit 0），由外部守护（launchd KeepAlive）拉起新代码；不写状态，崩溃重放同一 key 时最多多重启一次。`notice` 非空时核心经通道给 Kun 发一条不用回的通知，卡片 key 为 `after-notice:<after key>`，同一个完成钩子只发一次（重查沿用同一 key）。两个字段只能是布尔值和字符串，否则按插件错误隔离。
 
 pending=true 表示尚未完成这个阶段，须带非空 reason 和 next，不算执行失败。rerun=true 才在同一阶段接回执行者；rerun=false 登记工序，到 recheck_after（相对时间或 ISO 时间）只重调 after，沿用同一 key 与 item.result，不再 assess 或启动执行者。核心取插件建议时间和 5/10/20/40/60 分钟退避中较晚者。连续 pending 达交付对象的 pending_limit（默认 5）标卡住，只通知一次，此后不再轮询或起执行者；离开阶段或可信返工重置计数。完成钩子的副作用按 key 幂等，但 pending 业务状态须允许重查，不能永久缓存 pending。等待授权的会话应交 later 退出。授权问题保存 receipt、Evidence、原阶段、下一阶段；明确批准后直接用这些证据过关口并调用同一个 after key，不再多起一轮审查。拒绝则回执行，清空本次批准/审查记录，追加“Kun 没批准”和所选项的 key/label 为核心关口反馈资料，再按意见修改。after 不得越权推进或提前做交付动作。
 

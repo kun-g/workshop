@@ -21,13 +21,25 @@ def executable(name):
     return str(Path(path).resolve())
 
 
+def tail(text, limit=400):
+    """命令输出的结尾，放进错误信息和通知，够判断原因又不刷屏。"""
+    text = (text or "").strip()
+    return text if len(text) <= limit else "…" + text[-limit:]
+
+
+def failure(argv, result):
+    detail = tail(result.stderr) or tail(result.stdout)
+    return f"命令失败：{argv[0]}（exit {result.returncode}）" + (f"：{detail}" if detail else "")
+
+
 def run(argv, *, cwd=None, env=None, timeout=20, check=True):
     try:
-        result = subprocess.run(argv, cwd=cwd, env=env, text=True, capture_output=True, timeout=timeout)
+        # 输出解不了码也不能变成插件故障：坏字节换成替代字符。
+        result = subprocess.run(argv, cwd=cwd, env=env, text=True, errors="replace", capture_output=True, timeout=timeout)
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise Retryable(f"命令未确认完成：{argv[0]}") from exc
     if check and result.returncode:
-        raise Retryable(f"命令失败：{argv[0]}（exit {result.returncode}）")
+        raise Retryable(failure(argv, result))
     return result
 
 
@@ -85,17 +97,21 @@ class IO:
         result = subprocess.run(argv + ["--method", "POST", "--input", "-"],
                                 input=json.dumps(data), text=True, capture_output=True, timeout=20)
         if result.returncode:
-            raise Retryable("GitHub 写入结果未确认；重试前回查")
+            detail = tail(result.stderr)
+            raise Retryable("GitHub 写入结果未确认；重试前回查" + (f"：{detail}" if detail else ""))
         return json.loads(result.stdout)
 
     def pages(self, endpoint):
         pages = json.loads(run([self.gh, "api", "--paginate", "--slurp", endpoint]).stdout)
         return [entry for page in pages for entry in page]
 
-    def pr(self, item, target):
+    def item_prs(self, item, target):
         marker = f'<!-- workshop-item: {item["id"]} -->'
         rows = self.pages(f'repos/{target["repo"]}/pulls?state=all&per_page=100')
-        matches = [row for row in rows if marker in (row.get("body") or "")]
+        return [row for row in rows if marker in (row.get("body") or "")]
+
+    def pr(self, item, target):
+        matches = self.item_prs(item, target)
         opened = [row for row in matches if row["state"] == "open"]
         if len(opened) > 1:
             raise ValueError("同一件活有多个打开的 PR")
