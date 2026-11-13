@@ -6,4 +6,29 @@
 - 用词：[GLOSSARY.md](GLOSSARY.md)
 - 给 agent 的规矩：[AGENTS.md](AGENTS.md)
 
-还在建：代码还没写。
+核心与命令行已实现；真实来源、执行者、通道、工单和流程适配器由下一波接入。
+
+```sh
+uv sync
+scripts/check.sh
+uv run workshop status
+uv run workshop --rules /absolute/path/to/rules/workshop.yaml run --once
+```
+
+运行需要规则引用的插件入口点已安装；当前仓库只有端口和测试假插件，直接 run 会将缺少插件的交付对象登记为故障。查看状态、历史和用量不要求插件存在。
+
+- [插件接入契约](docs/implementation/ports.md)：五类端口、回执、幂等、恢复和看门读取方式。
+- 状态目录：默认 `~/.local/state/workshop/`，用 `WORKSHOP_STATE_DIR` 改。
+- `event`、`receipt <token>` 支持 `--json`、`--file` 或标准输入。
+- `pause <target>` 暂停交付对象；`resume <target>` 列遗漏，带 `--select all|none|事实号,事实号` 才恢复。
+
+本地离线演示（目录须为空）：
+
+```sh
+uv run python tests/demo.py .local/demo
+WORKSHOP_STATE_DIR="$PWD/.local/demo" uv run workshop status
+WORKSHOP_STATE_DIR="$PWD/.local/demo" uv run workshop why alpha:one
+WORKSHOP_STATE_DIR="$PWD/.local/demo" uv run workshop usage
+```
+
+演示只用假插件，八轮从接单走到收尾，不调用网络、Orca 或飞书。

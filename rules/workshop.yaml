@@ -1,0 +1,41 @@
+# 唯一规则入口；插件通过 workshop.<port> 入口点按名字加载。
+targets:
+  grant-console:
+    plugin: issue_delivery
+    sources: [github]
+    repo: kun-g/grant-console
+    checkout: ~/workspace/runtime/repos/grant-console
+    skill: issue-delivery
+    permissions: repository
+    label: Ready for Agent
+    feishu_group: grant-console 开发
+    release: tag
+    two_reviewers: ['.github/', 'deploy/', 'grant_console/']
+  workshop:
+    plugin: issue_delivery
+    sources: [github]
+    repo: kun-g/workshop
+    checkout: ~/workspace/runtime/repos/workshop
+    skill: issue-delivery
+    permissions: repository
+    label: Ready for Agent
+    release: none
+executors:
+  writer: {use: orca-claude, family: claude, model: claude-opus-5-5, effort: high}
+  reviewer:
+    - {use: cursor-grok, family: grok}
+    - {use: codex, family: codex}
+    - {use: claude, family: claude}
+  acceptor:
+    - {use: codex, family: codex}
+    - {use: claude, family: claude}
+limits: {concurrent: 2, chain_depth: 8}
+channel: ask_kun
+taskhome: sb_task
+ask_first:
+  - 对外发消息
+  - 删别处的东西
+  - 花订阅以外的钱
+  - 有别人在用的交付对象上线
+skip_ask:
+  - 只有你在用的交付对象上线
