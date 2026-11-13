@@ -4,6 +4,10 @@ from .cards import Question, Notice
 from .models import Answer, Brief, Evidence, Event, Poll, Receipt, Started, RoundUsage, Selection
 
 
+class ChannelRejected(Exception):
+    """确定没有发送：本地校验、命令不可执行或上游明确拒收；不得待对账。"""
+
+
 class Unavailable(Exception):
     """现有订阅不可用，且没有启动副作用，可换下一候选。"""
 

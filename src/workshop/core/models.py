@@ -152,6 +152,7 @@ class Answer:
     card_id: str
     value: str
     approved: bool = False
+    cancelled: bool = False  # 上游作废或已清理，不是 Kun 的回答。
 
 
 @dataclass(frozen=True)

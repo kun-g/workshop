@@ -12,7 +12,7 @@ import hashlib
 from .gates import decide, validate_stages
 from .log import Log
 from .models import Brief, Event, Receipt, Started, due, stamp, utcnow
-from .ports import Unavailable, Retryable
+from .ports import Unavailable, Retryable, ChannelRejected
 from .cards import question, notice, validate_question, validate_notice
 from .models import Evidence, Usage, RoundUsage
 
@@ -210,7 +210,7 @@ class Engine:
                         self.block(item, f"{port}/{name}: {exc}", plugin=True)
 
     def waiting(self, item):
-        return any(c["item"] == item["id"] and c["mode"] == "ask" and not c["answered"] and not c.get("cancelled")
+        return any(c["item"] == item["id"] and c["mode"] == "ask" and not c["answered"] and not c.get("cancelled") and not c.get("rejected")
                    for c in self.log.all("cards"))
 
     def sources(self):
@@ -270,12 +270,41 @@ class Engine:
         if card.get("reconcile_failed"):
             self.fact("card_changed", {"id": card["id"], "reconcile_failed": False}, card["item"])
 
+    def undeliverable(self, card, reason, *, cancelled=False):
+        """已知终态单独落事实；不冒充回答，不再发送或对账。"""
+        with self.log.transaction():
+            current = self.log.get("cards", card["id"])
+            if current.get("rejected") or current.get("cancelled"):
+                return
+            self.fact("card_cancelled_external" if cancelled else "card_rejected",
+                      {"id": card["id"], "reason": reason}, card["item"])
+            self.fact("card_changed", {"id": card["id"], "sending": False,
+                      "rejected": not cancelled, "cancelled": cancelled,
+                      "cancel_done": cancelled, "reconcile_failed": False}, card["item"])
+            self.reconcile_clear(card)
+            self.delivery_ok(card["id"])
+            item = self.log.get("items", card["item"])
+            if item:
+                pending = item.get("pending_advance")
+                # 作废或拒收不是拒绝；修复放行后重新走原阶段，不拿旧卡结算授权。
+                if pending and pending.get("card") == card["id"]:
+                    pending = None
+                self.change(item, state="等你", wait_for_ready=True, blocked_by="Kun",
+                            pending_advance=pending, next="卡片无法继续，需要检查后放行",
+                            leave={"kind": "等你", "about": "卡片无法继续，需要检查后放行"})
+            if not card.get("rejection_alert"):
+                self.card({"id": card["item"]}, f"undeliverable:{card['id']}", "notice",
+                          notice(f"车间有一张卡发不出去，原因已记录，请看 workshop why {card['item']}"),
+                          rejection_alert=True)
+
     def channels(self):
         name = self.rules.data["channel"]
         try:
             channel = self.plugins.get("channel", name)
             for card in self.log.all("cards"):
                 try:
+                    if card.get("rejected"):
+                        continue
                     if card.get("cancelled"):
                         if not card.get("cancel_done"):
                             channel.cancel(card["id"], card.get("external"))
@@ -296,6 +325,8 @@ class Engine:
                             raise ValueError("通道没有返回外部编号")
                         self.fact("card_changed", {"id": card["id"], "external": external, "sent": True, "reconcile_failed": False}, card["item"])
                     self.delivery_ok(card["id"])
+                except ChannelRejected as exc:
+                    self.undeliverable(card, str(exc))
                 except Exception as exc:
                     self.delivery_error(card["id"], exc, card["item"])
             cards = [c for c in self.log.all("cards") if c["mode"] == "ask" and c["sent"]
@@ -304,6 +335,9 @@ class Engine:
                 with self.log.transaction():
                     card = self.log.get("cards", answer.card_id)
                     if not card or card["mode"] != "ask" or not card["sent"] or card["answered"] or card.get("cancelled"):
+                        continue
+                    if answer.cancelled:
+                        self.undeliverable(card, "上游卡片已作废或已清理", cancelled=True)
                         continue
                     if card["payload"]["kind"] == "approval" and answer.value not in [c["key"] for c in card["payload"]["choices"]]:
                         self.delivery_error(f"answer:{card['id']}", ValueError("审批回答不是选项 key"), card["item"])
@@ -320,7 +354,7 @@ class Engine:
                     if card.get("billing_configs") and not approved:
                         self.change(item, state="等你", wait_for_ready=True, next="按量计费未获批准，等待放行", blocked_by="Kun",
                                     leave={"kind": "等你", "about": "调整执行者或授权后放行"})
-                    elif item["state"] == "等你" and not self.waiting(item):
+                    elif item["state"] == "等你" and not item.get("wait_for_ready") and not self.waiting(item):
                         self.change(item, state="空闲", next="按回答继续", blocked_by="")
             self.delivery_ok(f"channel:{name}")
         except Exception as exc:
@@ -328,7 +362,7 @@ class Engine:
 
     def cancel_questions(self, item):
         for card in self.log.all("cards"):
-            if card["item"] == item["id"] and card["mode"] == "ask" and not card["answered"] and not card.get("cancelled"):
+            if card["item"] == item["id"] and card["mode"] == "ask" and not card["answered"] and not card.get("cancelled") and not card.get("rejected"):
                 self.fact("card_changed", {"id": card["id"], "cancelled": True}, item["id"])
 
     def timers(self):

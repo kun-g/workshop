@@ -150,6 +150,14 @@ ask-kun ask 没有 request-id，适配器不能声称直接幂等。可先持久
 
 `poll(cards) -> list[Answer(card_id, value, approved=False)]`，card_id 是核心卡号，value 必须是用户所选的 key。核心动作/计费审批只认 value="yes"，不信 approved；其他插件问题的明确批准才给 approved=True。kind=approval 的卡收到不在 choices.key 中的 value，记一次投递故障并继续等原卡，不当作批准或拒绝；有效回答到达后清故障。`cancel(key, external)` 按核心 key 幂等作废，外部编号不明时先对账。返工时核心先把旧问题标 cancelled，再通知通道作废；晚到答案忽略，取消失败会保留待处理记录。每张卡每次故障只记一条 delivery_failed，恢复后再坏会再记；通道整体查询失败也按事件段去重。通道故障不阻塞其他活。
 
+### 通道拒收与上游作废（W2-C 修改轮 1）
+
+`ChannelRejected` 是端口异常，表示确定没有发送：本地校验失败、命令不存在/不可执行、上游参数校验明确拒收。保留上游 stderr；禁止把超时、断线或丢回包归成拒收，这些仍按 sending 对账。核心记录 `card_rejected`（why 可见），把卡置 rejected、sending=false，不再投递或对账；活置等你、wait_for_ready=true。同一张卡只创建一条固定通知「车间有一张卡发不出去，原因已记录，请看 workshop why <活>」，通知自身拒收不递归通知。修复后由明确放行事件接回原阶段。
+
+`Answer` 新增默认 false 的 `cancelled` 字段。通道对明确作废、确认已经清理的旧卡返回 `Answer(card_id, "", cancelled=True)`；不是选项回答，不得推断批准/拒绝。核心记录 `card_cancelled_external`、标 cancelled/cancel_done，保留等你并通知一次；如果该卡承载待处理的授权，清除旧授权续接记录，修复放行后重走原阶段，不能把没有回答说成 Kun 拒绝。其他正常答案不能清除此处的 wait_for_ready。
+
+通道逐卡隔离轮询失败，stderr 记录卡号和错误；其余答案照常返回，只有全部待查卡均失败才抛通道查询异常。退出码 3 是正常待答，不算失败。`ask-kun wait` 的状态文件缺号提示还要通过 `list --all` 核对缺失，因为该提示也可能表示原卡尚无消息号；上游查询不可用或非完整 JSON 时保留故障，不猜作废。
+
 ## 可选工单 TaskHome
 
 第一版规则不配置，核心不发单也不卡活；以后配置才调用 `open(key, item, target) -> ticket`、`update(key, ticket, item, target)`。两者须持久幂等，不能冒充负责会话领单/收单。

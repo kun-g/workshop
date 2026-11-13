@@ -7,7 +7,7 @@ import plistlib
 import sys
 
 SPECS = {"com.kun.workshop": {"keep_alive": True},
-         "com.kun.workshop-watch": {"interval_seconds": 300, "run_at_load": True}}
+         "com.kun.workshop-watch": {"interval_seconds": 60, "run_at_load": True}}
 
 
 def payload(label, spec, *, home=None, repository=None, state_dir=None):
@@ -20,14 +20,14 @@ def payload(label, spec, *, home=None, repository=None, state_dir=None):
     daemon = label == "com.kun.workshop"
     args = ([str(python), "-m", "workshop.cli", "--state-dir", str(state),
              "--rules", str(repository / "rules/workshop.yaml"), "run"] if daemon else
-            [str(python), "-m", "workshop.watch", "--state-dir", str(state)])
+            ["/usr/bin/python3", "-I", str(repository / "src/workshop/watch/__init__.py"), "--state-dir", str(state)])
     # launchd 在 exec 前打开日志文件，安装器须先 mkdir 状态目录。
     config = {"Label": label, "ProgramArguments": args, "WorkingDirectory": str(repository),
               "RunAtLoad": True, "StandardOutPath": str(state / (label + ".stdout.log")),
               "StandardErrorPath": str(state / (label + ".stderr.log")),
               "EnvironmentVariables": {"HOME": str(home), "WORKSHOP_STATE_DIR": str(state),
                   "PATH": "/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin", "PYTHONUNBUFFERED": "1"}}
-    config.update({"KeepAlive": True, "ThrottleInterval": 10} if daemon else {"StartInterval": 300})
+    config.update({"KeepAlive": True, "ThrottleInterval": 10} if daemon else {"StartInterval": 60})
     return plistlib.dumps(config)
 
 

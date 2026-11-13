@@ -1,6 +1,6 @@
 --- a/runtime/tools/workspace_setup/install.py
 +++ b/runtime/tools/workspace_setup/install.py
-@@ -401,7 +401,23 @@
+@@ -401,7 +401,25 @@
      for label, spec in manifest.get("launch_agents", {}).items():
          if not re.fullmatch(r"com\.kun\.[a-z0-9-]+", label):
              raise ValueError(f"invalid launch agent label: {label}")
@@ -8,10 +8,12 @@
 +        if label in ("com.kun.workshop", "com.kun.workshop-watch"):
 +            repository = os.path.join(CANON, "runtime/repos/workshop")
 +            generator = os.path.join(repository, "scripts/launch_agents.py")
-+            if not all(os.path.isfile(p) for p in (
-+                    generator, os.path.join(repository, ".venv/bin/python"),
-+                    os.path.join(repository, "rules/workshop.yaml"))):
-+                plan.skipped.append(f"{label}（先在车间主检出 uv sync --frozen）")
++            required = [generator, os.path.join(repository, "src/workshop/watch/__init__.py")]
++            if label == "com.kun.workshop":
++                required += [os.path.join(repository, ".venv/bin/python"),
++                             os.path.join(repository, "rules/workshop.yaml")]
++            if not all(os.path.isfile(p) for p in required):
++                plan.skipped.append(f"{label}（车间文件不齐；守护进程还须先 uv sync --frozen）")
 +                continue
 +            payload = subprocess.run(
 +                ["/usr/bin/python3", generator, label, "--spec", json.dumps(spec),

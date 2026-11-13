@@ -3,6 +3,8 @@ import argparse
 import json
 from pathlib import Path
 import sys
+import re
+from datetime import datetime, timedelta, timezone
 
 root = Path(sys.argv[0]).parent
 config = json.loads((root / "config.json").read_text())
@@ -19,13 +21,39 @@ def value(flag):
 
 
 if args[0] == "ask":
+    technical = re.compile(r"(?:[a-z][a-z0-9+.-]*://|www\.)|(?<![a-z0-9])(?:MR|PR|CI|Q)\s*[#!！＃]?\d+|"
+                           r"(?<![a-z0-9])(?=[a-f0-9]{7,40}(?![a-z0-9]))(?=[a-f0-9]*[a-f])[a-f0-9]{7,40}|"
+                           r"(?:~[/\\]|[a-z]:\\)|(?<![a-z0-9])/[a-z_~.]|[a-z_.~-][a-z0-9_.~-]*/[\w./~-]+|"
+                           r"[\w.-]+\.(?:py|md|json|ya?ml|toml|sh|js|ts|tsx|html|txt|csv|log)\b|"
+                           r"\b(?:worktree|commit|merge|rebase|cherry-pick|diff|pipeline|deploy|rollback|repo|"
+                           r"pull request|merge request|CI|CD|SHA|CLI|SDK|stdout|stderr)\b", re.I)
+    def readable(text, maximum):
+        if not text.strip() or len(text) > maximum or any(c in text for c in "\r\n\t") or technical.search(text):
+            raise ValueError("请写人话；尚未发送。技术依据移到 --details-file")
+    try:
+        for flag, maximum in (("--subject", 30), ("--decision", 42), ("--context", 100), ("--reason", 60)):
+            readable(value(flag), maximum)
+        choices = [args[i+1].split("=", 1) for i, arg in enumerate(args) if arg == "--choice"]
+        effects = dict(args[i+1].split("=", 1) for i, arg in enumerate(args) if arg == "--effect")
+        labels = set()
+        for key, label in choices:
+            readable(label, 18)
+            readable(effects[key], 60)
+            if label in labels or label in {"确定", "同意", "确认", "是", "否", "处理"} or effects[key].rstrip("。.!！") == label.rstrip("。.!！"):
+                raise ValueError("按钮或选后结果不合规；尚未发送")
+            labels.add(label)
+        if config.get("ask_exit") == 2:
+            raise ValueError("上游新增校验；尚未发送")
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        raise SystemExit(2)
     assert value("--answer-format") == "key"
     assert "--no-wait" in args
     qid = "Q" + str(len(questions) + 1)
     details = Path(value("--details-file")).read_text()
     assert len(details) <= 6000 and len(value("--context")) <= 100
     questions.append({"id": qid, "from": value("--from"), "subject": value("--subject"),
-                      "answer_format": "key", "status": "waiting", "details": details})
+                      "answer_format": "key", "status": "waiting", "details": details, "sent_at": datetime.now(timezone.utc).isoformat()})
     path.write_text(json.dumps(questions))
     if config.get("drop_ask_reply"):
         raise SystemExit(1)
@@ -38,6 +66,12 @@ elif args[0] == "wait":
     p.add_argument("--timeout")
     parsed = p.parse_args(args)
     assert parsed.timeout == "0"
+    expired = [q["id"] for q in questions if "sent_at" in q and datetime.fromisoformat(q["sent_at"]) < datetime.now(timezone.utc) - timedelta(days=30)]
+    questions = [q for q in questions if q["id"] not in expired]
+    path.write_text(json.dumps(questions))
+    if parsed.id in expired or config.get("check_presence") and not any(q["id"] == parsed.id for q in questions):
+        print(f"状态文件里没有 {parsed.id}（asks.json）", file=sys.stderr)
+        raise SystemExit(2)
     code, answer = config.get("answers", {}).get(parsed.id, [3, ""])
     print(answer)
     raise SystemExit(code)
