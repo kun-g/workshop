@@ -370,6 +370,20 @@ class Engine:
         if self.control(f"delivery:{key}").get("failed"):
             self.fact("control", {"id": f"delivery:{key}", "failed": False})
 
+    def invalid_answer(self, card, value):
+        """审批卡收到非选项回答：通道没坏，记事实并通知 Kun 一次，活继续等原卡。"""
+        if card.get("invalid_answer") != value:
+            self.fact("invalid_answer", {"card": card["id"], "value": value, "title": card["payload"]["decision"]}, card["item"])
+            self.fact("card_changed", {"id": card["id"], "invalid_answer": value}, card["item"])
+        if card.get("invalid_answer_noticed"):
+            return
+        item = self.log.get("items", card["item"])
+        name = (item or {}).get("title") or card["item"]
+        text = (f"「{name}」的卡片「{card['payload']['decision']}」收到「{value}」，不是卡上的选项，活还在等这张卡。"
+                "请在卡片上点按钮重新回答；这条不用回。")
+        self.card({"id": card["item"]}, f"invalid-answer:{card['key']}", "notice", notice(text))
+        self.fact("card_changed", {"id": card["id"], "invalid_answer_noticed": True}, card["item"])
+
     def reconcile_uncertain(self, card):
         key = f"reconcile:{card['id']}"
         count = self.control(key).get("count", 0)
@@ -473,10 +487,11 @@ class Engine:
                     if answer.cancelled:
                         self.undeliverable(card, "上游卡片已作废或已清理", cancelled=True)
                         continue
-                    if card["payload"]["kind"] == "approval" and answer.value not in [c["key"] for c in card["payload"]["choices"]]:
-                        self.delivery_error(f"answer:{card['id']}", ValueError("审批回答不是选项 key"), card["item"])
-                        continue
+                    # 旧版本把非选项回答记成投递失败；收到任何回答都先清掉那条，免得看门程序误报通道故障。
                     self.delivery_ok(f"answer:{card['id']}")
+                    if card["payload"]["kind"] == "approval" and answer.value not in [c["key"] for c in card["payload"]["choices"]]:
+                        self.invalid_answer(card, answer.value)
+                        continue
                     approved = answer.value == "yes" if card.get("core_approval") else answer.approved
                     choice_label = next((c["label"] for c in card["payload"]["choices"] if c["key"] == answer.value), answer.value)
                     # 回答单独追加，由 evolve 在最新资料上追加，不回写旧资料快照。
