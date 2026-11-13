@@ -35,7 +35,7 @@ def delay(kind):
         while not (home() / f"allow-{kind}").exists():
             if time.monotonic() >= deadline:
                 raise TimeoutError(f"测试没有释放 {kind} 作业")
-            time.sleep(.01)
+            time.sleep(.001)
     else:
         time.sleep(settings.get(f"{kind}_seconds", 0))
 

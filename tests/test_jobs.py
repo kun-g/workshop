@@ -143,7 +143,7 @@ def wait(world, engine, monkeypatch, done, seconds=40):
         beats.append((elapsed, beat))
         if done():
             return beats
-        time.sleep(0.1)
+        time.sleep(0.01)
     raise AssertionError("等不到预期结果")
 
 
@@ -196,7 +196,7 @@ def test_restart_recovers_running_or_finished_check_without_rerun(world, monkeyp
         allow(world, "check")
         deadline = time.monotonic() + 20
         while not job_plugins.calls("assess-end") and time.monotonic() < deadline:
-            time.sleep(0.1)
+            time.sleep(0.01)
         assert job_plugins.calls("assess-end")
     revived = world["engine"]()
     if not finished_before_restart:
@@ -243,7 +243,7 @@ def test_same_call_reuses_result_without_new_job(tmp_path, monkeypatch):
             break
         except Pending:
             assert time.monotonic() < deadline
-            time.sleep(0.1)
+            time.sleep(0.01)
     assert first.passed and len(job_plugins.calls("assess-start")) == 1
     assert jobs.call("flow", "flow", "assess", args, identity=["alpha:7", "证据", "t1"]) == first
     assert len(list((tmp_path / "jobs").iterdir())) == 1 and len(job_plugins.calls("assess-start")) == 1
@@ -412,7 +412,7 @@ def test_job_that_dies_without_result_is_retryable_and_overdue_job_is_killed(tmp
             try:
                 dying.call("source", "source", "poll", ({"name": "alpha"}, None))
             except Pending:
-                time.sleep(0.1)
+                time.sleep(0.01)
     slow = Jobs(tmp_path / "slow", [sys.executable, "-c", "import time; time.sleep(60)"], deadline=0.5)
     with pytest.raises(Pending):
         slow.call("source", "source", "poll", ({"name": "alpha"}, None))
@@ -436,7 +436,7 @@ def test_workshop_job_command_runs_entry_point_plugin(tmp_path):
             break
         except Pending:
             assert time.monotonic() < deadline
-            time.sleep(0.1)
+            time.sleep(0.01)
     assert isinstance(choice, Selection) and choice.config == config
 
 

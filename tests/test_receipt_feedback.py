@@ -68,7 +68,7 @@ def wait_for(predicate, timeout=20):
     while time.monotonic() < deadline:
         if predicate():
             return
-        time.sleep(.02)
+        time.sleep(.001)
     raise AssertionError('timed out')
 
 
