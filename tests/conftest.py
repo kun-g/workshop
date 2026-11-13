@@ -33,6 +33,36 @@ def pytest_xdist_make_scheduler(config, log):
     return JobScheduling(config, log)
 
 
+@pytest.fixture(scope="session")
+def git_template(tmp_path_factory):
+    """每个 worker 只造一次相同的起始提交；调用方复制全部文件后独立使用。
+
+    只复用测试准备，不替代被测的 git 命令；副本的对象、索引和 refs 不共享。
+    """
+    templates = {}
+
+    def prepare(files):
+        key = tuple(sorted(files.items()))
+        if key not in templates:
+            repo = tmp_path_factory.mktemp("git-template")
+            for name, text in files.items():
+                path = repo / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(text)
+                if name.endswith(".sh"):
+                    path.chmod(0o755)
+            def git(*args):
+                return subprocess.run(["/usr/bin/git", "-C", str(repo), *args],
+                                      check=True, capture_output=True, text=True).stdout.strip()
+            git("init", "-q")
+            git("add", ".")
+            git("-c", "user.name=Test", "-c", "user.email=t@localhost", "commit", "-qm", "fixture")
+            templates[key] = repo, git("rev-parse", "HEAD")
+        return templates[key]
+
+    return prepare
+
+
 class Clock:
     def __init__(self):
         self.now = datetime(2026, 11, 13, 8, tzinfo=timezone.utc)
