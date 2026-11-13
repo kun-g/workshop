@@ -56,6 +56,8 @@ class Classification:
     action: str = "update"
     object_key: str | None = None
     discard: bool = False
+    # 流程核实上游后给的一句话（谁说的、原话摘要），只供 why 显示，不参与判定比较。
+    summary: str | None = field(default=None, compare=False)
 
 
 @dataclass(frozen=True)
