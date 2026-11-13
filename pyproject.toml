@@ -15,6 +15,12 @@ workshop = "workshop.cli:main"
 [project.entry-points."workshop.selector"]
 ordered = "workshop.plugins.selectors.ordered:make_selector"
 
+[project.entry-points."workshop.executor"]
+orca-claude = "workshop.plugins.executors.local:make_orca_claude"
+codex = "workshop.plugins.executors.local:make_codex"
+cursor-grok = "workshop.plugins.executors.local:make_cursor_grok"
+claude = "workshop.plugins.executors.local:make_claude"
+
 [dependency-groups]
 dev = ["pytest>=8.3,<10", "import-linter>=2.1,<3"]
 
