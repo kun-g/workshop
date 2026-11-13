@@ -642,3 +642,31 @@ def test_model_change_starts_fresh_session_instead_of_resume(setup, kind):
     assert read(executor.directory('three')/'spec.json')['fresh_session'] is True
     assert third.session == first.session  # 车间这边还是同一件活的会话，只是厂商会话换了新的
     make(kind).stop('three', third)
+
+
+def test_claude_fresh_session_usage_uses_vendor_session(setup, monkeypatch):
+    """ws#30（PR #47 审查）：claude 无头换了新会话，用量按实际启动的会话号查，之后接回的轮也一样。"""
+    from workshop.plugins.executors.local import usage as usage_module
+    root, make, item, target = setup
+    asked = []
+    monkeypatch.setattr(usage_module, 'collect', lambda kind, home, session, *rest: asked.append(session))
+    (root/'finish').touch()  # 不交回执：同一轮重交一次仍没有，下一轮换新会话
+    executor = make('claude')
+    first = executor.launch('one', BRIEF, item, CONFIG, target)
+    wait_for(lambda: (executor.directory('one')/'exited.json').exists())
+    executor.stop('one', first)
+    (root/'finish').unlink()
+    target['runtime']['env']['WORKSHOP_ROUND_TOKEN'] = 'two'
+    second = make('claude').resume('two', first.session, BRIEF, item, CONFIG, target)
+    spec = read(executor.directory('two')/'spec.json')
+    assert spec['fresh_session'] and spec['vendor_id'] != first.session
+    wait_for(lambda: (executor.directory('two')/'child.json').exists())
+    make('claude').stop('two', second)
+    target['runtime']['env']['WORKSHOP_ROUND_TOKEN'] = 'three'
+    third = make('claude').resume('three', first.session, BRIEF, item, CONFIG, target)
+    assert read(executor.directory('three')/'spec.json')['vendor_id'] == spec['vendor_id']
+    wait_for(lambda: (executor.directory('three')/'child.json').exists())
+    make('claude').stop('three', third)
+    for token, started in (('one', first), ('two', second), ('three', third)):
+        executor.usage(token, started, '2026-11-13T00:00:00+00:00')
+    assert asked == [first.session, spec['vendor_id'], spec['vendor_id']]

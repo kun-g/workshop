@@ -265,7 +265,8 @@ class Executor:
         spec = read(directory / 'spec.json')
         if self.kind == 'cursor-grok':
             return RoundUsage(main=Usage(billing=spec['billing']))
-        session = spec['session']
+        # claude 换过新会话时，厂商会话号和车间会话号不同；transcript 按厂商会话号存。
+        session = spec.get('vendor_id') or spec['session']
         if self.kind == 'codex':
             session = vendor_session(directory / 'output.log', self.kind)
             if not session and Path(spec['session_file']).exists():
