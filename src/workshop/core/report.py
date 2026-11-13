@@ -1,6 +1,9 @@
 """只读的状态、起因与用量查询。"""
+from dataclasses import fields
 from datetime import datetime, timedelta
-from .models import utcnow
+import json
+import re
+from .models import Event, utcnow
 
 
 def status(log):
@@ -22,17 +25,62 @@ def status(log):
     return "\n".join(lines)
 
 
-def why(log, item_id):
-    if not log.get("items", item_id):
-        raise ValueError(f"找不到活：{item_id}")
+def resolve(log, targets, text):
+    """`<短名>#<对象键>` 或 `<交付对象>:<对象键>` 找到活 id；对象键先查别名。"""
+    short = {t["short_name"]: name for name, t in targets.items() if isinstance(t, dict) and t.get("short_name")}
+    named = re.fullmatch(r"([^\s:#]+)#(\S+)", text)
+    target, key = (short.get(named[1]), named[2]) if named else text.split(":", 1) if ":" in text else (None, None)
+    if target and key:
+        alias = log.get("aliases", f"{target}:{key}")
+        item_id = f'{target}:{alias["object_key"] if alias else key}'
+        if log.get("items", item_id):
+            return item_id
+    raise ValueError(f'找不到活：{text}；可用短名：{"、".join(sorted(short)) or "无"}')
+
+
+def one_line(text):
+    return " ".join(str(text).split())
+
+
+def event_line(body, target, flow, raw):
+    """一条事件一行：来源、动作和流程给的一句说明；流程没有说明时退回事件种类。"""
+    content = body["body"]
+    kind = content.get("kind") if isinstance(content, dict) and isinstance(content.get("kind"), str) else "资料"
+    describe = getattr(flow, "describe", None)
+    summary = None
+    if describe and target:
+        try:
+            summary = describe(Event(**{f.name: body[f.name] for f in fields(Event) if f.name in body}), target)
+        except Exception:  # 摘要只读且可选；插件出错不影响查看起因（R20）。
+            summary = None
+    summary = one_line(summary)[:200] if isinstance(summary, str) and summary.strip() else kind
+    entry = "CLI 入口 " if body["source"].startswith("cli:") else ""
+    line = f'{entry}事件 {body["source"]} {body.get("action", "update")}：{summary}'
+    if raw:
+        line += "\n    原始资料：" + json.dumps(content, ensure_ascii=False, sort_keys=True)
+    return line
+
+
+def why(log, item_id, rules=None, plugins=None, raw=False):
+    """rules 是规则数据（含 targets）；plugins 可选，用来取流程的事件摘要。"""
+    targets = (rules or {}).get("targets") or {}
+    item_id = resolve(log, targets, item_id)
+    item = log.get("items", item_id)
+    target = {"name": item["target"], **targets[item["target"]]} if item["target"] in targets else None
+    flow = None
+    if plugins and target:
+        try:
+            flow = plugins.get("flow", target["plugin"])
+        except Exception:  # 装不上流程时退回事件种类，查看起因不依赖插件。
+            flow = None
     lines = [f"活 {item_id}"]
     for fact in log.facts(item_id):
         body = fact["body"]
         kind = fact["kind"]
         if kind == "event":
-            entry = "CLI 入口 " if body["source"].startswith("cli:") else ""
-            detail = f'{entry}事件 {body["source"]} {body["body"]}'
-        elif kind == "round_reserved":
+            lines.append(f'{fact["at"]} {event_line(body, target, flow, raw)}')
+            continue
+        if kind == "round_reserved":
             detail = (f'{body["stage"]} {body["executor"]} 一轮 {body["token"]} 起因：事实 {body["cause"]} '
                       f'规则模型={display(body.get("requested", {}).get("model"))} 强度={display(body.get("requested", {}).get("effort"))} '
                       f'选择理由：{body.get("selection_reason", "未知")}')
@@ -65,7 +113,7 @@ def why(log, item_id):
             detail = f'卡住 {body["blocked_by"]}'
         else:
             continue
-        lines.append(f'{fact["at"]} {detail}')
+        lines.append(f'{fact["at"]} {one_line(detail)}')
     return "\n".join(lines)
 
 

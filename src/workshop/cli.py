@@ -29,7 +29,9 @@ def parser():
     commands.add_parser("abort").add_argument("token")
     commands.add_parser("status")
     commands.add_parser("usage")
-    commands.add_parser("why").add_argument("item")
+    why_command = commands.add_parser("why", help="列出一件活每一轮的起因和结果；活写成 <短名>#<编号> 或 <交付对象>:<对象键>")
+    why_command.add_argument("item")
+    why_command.add_argument("--raw", action="store_true", help="每条事件后原样打印原始资料")
     commands.add_parser("pause").add_argument("target")
     resume = commands.add_parser("resume")
     resume.add_argument("target")
@@ -41,6 +43,16 @@ def parser():
     return result
 
 
+def current_rules(args, saved):
+    if args.rules:
+        return Rules.load(args.rules)
+    if saved and args.command == "run" and saved.get("path"):
+        return Rules.load(Path(saved["path"]))
+    if saved:
+        return Rules(Rules.validate(saved["data"]).data, saved.get("path"))
+    return Rules.load(Path(__file__).resolve().parents[2] / "rules/workshop.yaml")
+
+
 def main(argv=None):
     args = parser().parse_args(argv)
     log = Log(args.state_dir / "workshop.db")
@@ -48,7 +60,11 @@ def main(argv=None):
         if args.command == "status":
             print(status(log))
         elif args.command == "why":
-            print(why(log, args.item))
+            try:
+                rules = current_rules(args, log.get("controls", "@rules")).data
+            except (ValueError, OSError):
+                rules = None  # 规则读不到时只认 <交付对象>:<对象键>，不挡查看。
+            print(why(log, args.item, rules, Registry(), raw=args.raw))
         elif args.command == "usage":
             print(usage(log))
         else:
@@ -57,15 +73,8 @@ def main(argv=None):
                 if not saved:
                     raise ValueError("状态库没有规则快照")
                 rules = Rules(Rules.validate(saved["data"]).data, saved.get("path"))
-            elif args.rules:
-                rules = Rules.load(args.rules)
-            elif saved and args.command == "run" and saved.get("path"):
-                rules = Rules.load(Path(saved["path"]))
-            elif saved:
-                rules = Rules.validate(saved["data"])
-                rules = Rules(rules.data, saved.get("path"))
             else:
-                rules = Rules.load(Path(__file__).resolve().parents[2] / "rules/workshop.yaml")
+                rules = current_rules(args, saved)
             engine = Engine(log, rules, Registry())
             if args.command in ("event", "receipt"):
                 data = json.loads(args.json if args.json is not None else args.file.read_text() if args.file else sys.stdin.read())
