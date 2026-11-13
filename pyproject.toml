@@ -31,7 +31,11 @@ cursor-grok = "workshop.plugins.executors.local:make_cursor_grok"
 claude = "workshop.plugins.executors.local:make_claude"
 
 [dependency-groups]
-dev = ["pytest>=8.3,<10", "import-linter>=2.1,<3"]
+dev = [
+    "pytest>=8.3,<10",
+    "import-linter>=2.1,<3",
+    "pytest-xdist>=3.6,<4",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
