@@ -38,6 +38,15 @@ def calls(kind=None):
     return [r for r in rows if kind is None or r[0] == kind]
 
 
+def delay(kind):
+    seconds = config().get(f"{kind}_seconds", 0)
+    if seconds:
+        began = time.monotonic()
+        note("delay-start", kind)
+        time.sleep(seconds)
+        note("delay-end", kind, time.monotonic() - began)
+
+
 class SlowFlow:
     def hold_workdir(self, item, target):
         note("hold-start", item["id"])
@@ -57,7 +66,7 @@ class SlowFlow:
     def assess(self, item, receipt, target):
         if item["stage"] == "证据":
             note("assess-start", item["id"])
-            time.sleep(config().get("check_seconds", 0))
+            delay("check")
             note("assess-end", item["id"])
         return Evidence(config().get("checks", [["true"]]), config().get("passed", True))
 
@@ -68,7 +77,7 @@ class SlowFlow:
 class SlowSource:
     def poll(self, target, cursor):
         note("source-start")
-        time.sleep(config().get("source_seconds", 0))
+        delay("source")
         return Poll([], "after-batch")
 
 
@@ -78,11 +87,14 @@ class SlowChannel:
 
     def notify(self, key, card):
         note("send-start", key)
-        time.sleep(config().get("channel_seconds", 0))
+        delay("channel")
         note("sent", key)
         return f"external:{key}"
 
     def reconcile(self, key, card):
+        note("reconcile", key)
+        if "reconcile_result" in config():
+            return config()["reconcile_result"]
         return f"external:{key}" if any(r[1] == key for r in calls("sent")) else "absent"
 
     def cancel(self, key, external):
@@ -92,7 +104,7 @@ class SlowChannel:
         return []
 
 
-class QuickExecutor:
+class FakeExecutor:
     def __init__(self, name):
         self.name = name
 
@@ -107,17 +119,21 @@ class QuickExecutor:
         return Release(not reason, reason)
 
     def launch(self, token, brief, item, config, target):
+        delay("executor_launch")
         note("launch", self.name, item["id"], token)
         return Started(f"session:{self.name}:{item['id']}", f"handle:{token}", "/fake/workdir")
 
     def resume(self, token, session, brief, item, config, target):
+        delay("executor_launch")
         note("launch", self.name, item["id"], token)
         return Started(session, f"handle:{token}", "/fake/workdir")
 
     def poll(self, token, started):
+        delay("executor_poll")
         return "running"
 
     def stop(self, token, started):
+        delay("executor_stop")
         note("stop", token)
 
     def usage(self, token, started, since):
@@ -154,7 +170,7 @@ def registry():
     plugins.register("selector", "ordered", OrderedSelector())
     plugins.register("flow", "flow", IssueDelivery(LocalIO()) if os.environ.get("JOBTEST_REAL_FLOW") else SlowFlow())
     for name in ("writer", "reviewer", "acceptor"):
-        plugins.register("executor", name, QuickExecutor(name))
+        plugins.register("executor", name, FakeExecutor(name))
     plugins.register("channel", "channel", SlowChannel())
     plugins.register("source", "source", SlowSource())
     return plugins

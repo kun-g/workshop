@@ -12,11 +12,13 @@ lock 由作业进程从启动起一直持有（父进程先锁好再交给它）
 - 出错的结果取一次就清掉，下次重跑；错误类型照原样抛回，由核心照原来的退避和隔离规则处理。
 """
 from dataclasses import fields, is_dataclass
+from concurrent.futures import ThreadPoolExecutor
 import fcntl
 import hashlib
 import json
 import os
 from pathlib import Path
+from queue import SimpleQueue, Empty
 import shutil
 import signal
 import sys
@@ -70,7 +72,7 @@ TYPES = {cls.__name__: cls for cls in (After, Answer, Brief, Classification, Eve
                                         Receipt, Release, RoundUsage, Selection, Started, Usage)}
 KEEP_SECONDS = 86400
 SWEEP_SECONDS = 600
-# 一拍最多新起几个作业；其余照样记成没出结果，下一拍再起。启动虽不等子进程，也有系统调用的开销。
+# 一拍最多登记几个新作业；进程创建交给后台，避免系统调用拖住一拍。
 SPAWNS_PER_TICK = 4
 
 
@@ -154,6 +156,10 @@ class Jobs:
         self.children = set()
         self.spawned = 0
         self.swept = 0.0
+        self.launcher = ThreadPoolExecutor(max_workers=1, thread_name_prefix="workshop-start")
+        # Jobs 在进入主循环前构造；先起好线程，一拍内只入队，不等线程启动。
+        self.launcher.submit(lambda: None).result()
+        self.launched = SimpleQueue()
 
     def path(self, port, name, method, identity):
         return self.directory / digest(port, name, method, identity)
@@ -165,7 +171,9 @@ class Jobs:
         identity = list(args) if identity is None else identity
         path = self.path(port, name, method, identity)
         label = LABELS.get((port, method))
-        result = read(path / "result.json")
+        # 极快的子进程可能在启动线程公布 pid 前写完结果；此时不能消费并删目录。
+        starting = read(path / "pid") == -1 and held(path)
+        result = None if starting else read(path / "result.json")
         if result is not None:
             fresh = FRESH.get((port, method))
             if "error" in result:
@@ -175,7 +183,8 @@ class Jobs:
                 if kind:
                     raise kind(error.get("message", ""))
                 raise JobFailed(error.get("repr", "作业失败"), error.get("message", ""))
-            if fresh is not None and self.clock() - result.get("finished", 0) > fresh:
+            # 0 表示只消费一次，不是完成后立即过期。
+            if fresh is not None and fresh > 0 and self.clock() - result.get("finished", 0) > fresh:
                 shutil.rmtree(path, ignore_errors=True)
             else:
                 if fresh == 0:
@@ -210,23 +219,60 @@ class Jobs:
         output = os.open(path / "output.log", os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
         try:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            # -1 表示已登记但尚未创建进程。锁从入队到作业退出一直持有，
+            # 重启时也能区分仍在启动与启动者已退出，不能把未写 pid 当成未登记。
+            write(path / "pid", -1)
+            self.launcher.submit(self.spawn, path, lock, output)
+        except BaseException:
+            os.close(lock)
+            os.close(output)
+            raise
+        self.spawned += 1
+
+    def spawn(self, path, lock, output):
+        """只在启动线程里创建独立进程；插件本身不在线程里运行。"""
+        pid = None
+        try:
+            if (path / "cancelled").exists():
+                return
             # 锁随文件描述交给作业进程，作业进程活着锁就一直被持有。
             os.set_inheritable(lock, True)
-            # posix_spawn 建好进程就返回，不像 Popen 那样等子进程 exec 完；独立会话里，守护进程退出或重启作业照跑。
+            # posix_spawn 在系统繁忙时也可能耗时上百毫秒，所以不在一拍里调用。
             pid = os.posix_spawnp(self.command[0], [*self.command, str(path)], os.environ,
                                   file_actions=[(os.POSIX_SPAWN_OPEN, 0, os.devnull, os.O_RDONLY, 0),
                                                 (os.POSIX_SPAWN_DUP2, output, 1), (os.POSIX_SPAWN_DUP2, output, 2)],
                                   setsid=True)
+            self.launched.put(pid)
+            write(path / "pid", pid)
+            if (path / "cancelled").exists():
+                try:
+                    os.killpg(pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+        except Exception as exc:
+            if pid is not None:
+                try:
+                    os.killpg(pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+            write(path / "result.json", {"error": {"kind": "Retryable", "message": f"作业启动失败：{exc!r}"},
+                                         "finished": self.clock()})
         finally:
             os.close(lock)
             os.close(output)
-        self.spawned += 1
-        (path / "pid").write_text(str(pid))
-        self.children.add(pid)
+            if (path / "cancelled").exists():
+                shutil.rmtree(path, ignore_errors=True)
 
     def kill(self, path):
         try:
-            os.killpg(int((path / "pid").read_text()), signal.SIGKILL)
+            # 先标取消，再读 pid，避免启动线程刚写完 pid 并退出时漏掉取消。
+            (path / "cancelled").touch()
+            pid = int((path / "pid").read_text())
+            if pid <= 0:
+                # 不能给占位值发进程组信号。启动线程看到后取消排队，
+                # 或在正在进行的进程创建返回后立即结束它，再清理目录。
+                return
+            os.killpg(pid, signal.SIGKILL)
         except (OSError, ValueError):
             pass
         shutil.rmtree(path, ignore_errors=True)
@@ -235,6 +281,11 @@ class Jobs:
         """每拍开头调用：收掉已退出的作业进程（WNOHANG，不等），重置这一拍的启动数，
         定期清掉一天没人取的结果和没启动成的目录。"""
         self.spawned = 0
+        while True:
+            try:
+                self.children.add(self.launched.get_nowait())
+            except Empty:
+                break
         for pid in list(self.children):
             try:
                 done, _ = os.waitpid(pid, os.WNOHANG)
