@@ -456,7 +456,8 @@ def test_release_jobs_do_not_block_and_survive_restart(world, monkeypatch, resta
         allow(world, "hold")
     completed_item(world)
     engine = world["engine"]()
-    beats = wait(world, engine, monkeypatch, lambda: bool(job_plugins.calls(restart_at)))
+    beats = wait(world, engine, monkeypatch,
+                 lambda: bool(job_plugins.calls(restart_at)) and bool(rounds(engine.log, "8")))
     assert item(engine.log, "9")["workdir"] == "/fake/completed"
     engine.log.close()
     revived = world["engine"]()

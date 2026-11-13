@@ -38,6 +38,8 @@ Orca 插话钩子去掉轮次令牌后以 `cli:orca` 进入：流程用核心已
 
 **依赖缓存**：检查仍在每轮新建的空 HOME、无凭据环境里跑，但副本里有 `uv.lock` 时，环境多一个 `UV_CACHE_DIR=issue_delivery_state_dir/uv-cache/<uv.lock 内容哈希前 16 位>`。选按锁文件分、不选只读共享缓存，是因为只读缓存要另有人负责预热；按锁文件分时，改了依赖的 PR 只写自己那一份，不会动到别的锁文件在用的缓存。同一锁文件的检查共用一份，第二次 `uv sync --locked` 不再下载（11-13 本机：冷缓存 2.7 秒，热缓存 0.14 秒）。每次取缓存时只留最近用过的 5 份，其余超过一天没用的删掉；要整个清，停掉车间后删 `uv-cache/` 即可，下次检查重新下载。没有 `uv.lock` 的仓库不设缓存，沿用空 HOME。
 
+**Python 版本**：车间仓库自身提交 `.python-version`，固定 3.13。不能依赖工作区上层目录的版本文件：空 HOME 的检查副本位于状态目录，读不到 `/Users/kun/workspace/.python-version`，此前 `uv sync` 实际选到了 PATH 上的 3.14。复测耗时时应走 `IO.verify` 的同一套副本、空 HOME、缓存和 prepare；单看开发 worktree 的虚拟环境不足以证明流程里的耗时。
+
 **执行者 worktree**：活收尾完成后，核心先问流程 `hold_workdir`：这件活还有打开的 PR 就留着，约一小时后再问。流程不留时，核心请为这件活开过会话的执行者 `release`。orca-claude 和 orca-codex 只认自己按活 id 开的 `ws-<哈希>` 目录：worktree 有未提交改动（不算被忽略的文件），或本地分支上有任何远端分支都没有的提交，就留着，核心给 Kun 发一条通知，不再重试；否则 `orca worktree rm` 删 worktree，再 `git branch -D` 删本地分支，活上的 workdir 清空。返工开新一轮时按同一个名字重新开 worktree。守护进程照常每一拍检查一遍，已收尾但没收过的老活（升级前收尾的）也按同一判断收。不是车间按活 id 开的 worktree（比如别的流程或人手开的）不碰。
 
 上面的 `hold_workdir` 和 `release` 在守护进程中都由后台作业执行，一拍只提交调用或读取结果；同一次收回重启后认回，一小时后的复查和返工后的再次收尾用新的调用身份。见 [作业.md](作业.md)。
