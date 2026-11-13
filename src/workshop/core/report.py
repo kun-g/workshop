@@ -3,6 +3,7 @@ from dataclasses import fields
 from datetime import datetime, timedelta
 import json
 import re
+from .jobs import running as running_jobs
 from .models import Event, utcnow
 
 
@@ -14,11 +15,13 @@ def status(log):
     queued = sum(i["state"] == "排队" for i in items)
     lines = [f"活 {len(items)} 件 · 跑着 {running} · 等你 {waiting} · 卡住 {blocked}" + (f" · 排队 {queued}" if queued else ""),
              "活\t阶段\t状态\t谁在推\t下一步\t卡在谁手里"]
+    # 守护进程在后台作业里替这件活跑东西（例如流程跑检查）时，状态显示作业的字样；每拍回查，跑完按结果结算。
+    jobs = running_jobs(log.path.parent / "jobs")
     for item in items:
         row = log.get("rounds", item.get("round", ""))
         who = row["executor"] if row else "车间"
         control = log.get("controls", item["target"]) or {}
-        state = "暂停" if control.get("paused") else item["state"]
+        state = "暂停" if control.get("paused") else jobs.get(item["id"], item["state"])
         lines.append("\t".join((item["id"], item["stage"], state, who, item["next"], item["blocked_by"] or "—")))
     uncertain = [c for c in log.all("cards") if c.get("reconcile_failed") and not c["sent"] and not c.get("cancel_done")]
     for card in uncertain:

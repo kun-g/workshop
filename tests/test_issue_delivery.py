@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import time
 
 import pytest
 
@@ -576,6 +577,11 @@ def test_review_cleanup_preserves_active_and_removes_finished(world):
     path = Path(world['flow'].brief(data, '审查', world['target']).workdir)
     world['flow'].cleanup(world['target'], [str(path)])
     assert path.exists()
+    # 刚建的副本可能还没登进在用名单（派活说明和预订在不同的拍，清理作业并行跑），先不清。
+    world['flow'].cleanup(world['target'], [])
+    assert path.exists()
+    old = time.time() - 2 * 3600
+    os.utime(path, (old, old))
     world['flow'].cleanup(world['target'], [])
     assert not path.exists()
 

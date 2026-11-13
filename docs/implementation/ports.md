@@ -6,6 +6,8 @@
 
 插件通过入口点 `workshop.<port>` 注册无参数工厂，名字对应唯一规则 `rules/workshop.yaml`。端口名为 `source`、`flow`、`executor`、`channel`、`taskhome`、`selector`。例如：
 
+守护进程里每次插件调用都在独立的作业进程里跑（见 [作业.md](作业.md)）：插件不能靠实例里的内存在两次调用之间传东西，状态放文件；参数和返回值只用 `models.py` 的值类型、字典、列表和标量。
+
 ```toml
 [project.entry-points."workshop.selector"]
 ordered = "workshop.plugins.selectors.ordered:make_selector"
@@ -194,12 +196,12 @@ poll 每批先调用一次 `list --all`，列表中 waiting/sending 的卡不再
 
 默认 `~/.local/state/workshop/workshop.db`，`WORKSHOP_STATE_DIR` 或 `--state-dir` 改目录。WAL + synchronous FULL；事实追加和视图更新同事务。facts trigger 禁止 UPDATE/DELETE；只有 evolve 写各视图，`Log.rebuild()` 重放验证一致。视图为 `(id, body JSON)`，表包括 items、rounds、cards、timers、controls、cursors、deferred、effects。
 
-`run` 每 20 秒 tick，`--once` 一次。tick 用旁边的文件锁串行；pause/resume 只做短 SQLite 事务，不拿 tick 锁，插件挂起时仍可暂停。`resume <target>` 只列清单并输出已看事实号；必须同时带 `--select all|none|编号列表 --seen 上次已看编号列表` 才恢复，空清单写 none。清单变化拒绝并重新列出，不能用当前新清单代替人看过的清单。
+`run` 每 2 秒一拍，插件调用都放到后台作业（见 [作业.md](作业.md)），一拍毫秒级；`--once` 只跑一拍，插件调用就地进行，供手工排查。tick 用旁边的文件锁串行；pause/resume 只做短 SQLite 事务，不拿 tick 锁，插件挂起时仍可暂停。`resume <target>` 只列清单并输出已看事实号；必须同时带 `--select all|none|编号列表 --seen 上次已看编号列表` 才恢复，空清单写 none。清单变化拒绝并重新列出，不能用当前新清单代替人看过的清单。
 
 插件故障卡住前保存 state/next/blocked_by/leave，恢复只还原因该故障叠加的卡住；原来的等你、定时和失败耗尽不被一律改为空闲。故障期间到期定时保留，恢复后再处理；已回答/已放行的事实也保留。每次新的插件故障用新事实号发一次通知，不是终身只发一次。已被该插件故障卡住的活不重复追加 work_blocked，故障期间仅推迟该类流程结算，执行者侧继续安全停轮并释放已停止轮的并发位。
 
 ### 看门接入
 
-只有成功走完 tick 才原子替换 `heartbeat.json`，含 UTC at、last_ok_at（两者相同）、active，以及 delivery_failed_count（当前未恢复投递失败信号数）和 delivery_failed_since（其中最早开始时刻，无故障为 null）。成功恢复清除对应失败信号；拒收通知自身失败也在此计数。看门在投递故障持续超过 180 秒时告警/兜底。失败 tick 不改心跳；首次 tick 即失败时文件不存在，看门应按缺失/last_ok_at 陈旧判断失联，不能只看守护进程还活着。普通 tick 异常记 tick_failed，同一错误在恢复前只记一次；controls 的 @tick 仅在连续失败达到 1/3/10 次阈值时更新 failures（10 表示至少 10 次），成功恢复时归零；相同故障持续 30 次也仅三条阈值 control。阈值间计数在进程内，重启从最近持久阈值接续，不作为精确失败次数报表；同一错误事实去重可跨重启，再坏会重新记事实。下一 tick 继续；若暂时写不进数据库则输出 stderr 并继续尝试，初始化打不开数据库才无法启动。独立看门下一波实现，可查 rounds JSON 的 at、status、deadline、stopped；starting/running/finishing 是未结算轮，stopped=true 不占执行者位。
+只有成功走完 tick 才原子替换 `heartbeat.json`，含 UTC at、last_ok_at（两者相同）、tick_ms（这一拍耗时，毫秒）、active，以及 delivery_failed_count（当前未恢复投递失败信号数）和 delivery_failed_since（其中最早开始时刻，无故障为 null）。成功恢复清除对应失败信号；拒收通知自身失败也在此计数。看门在投递故障持续超过 180 秒时告警/兜底。失败 tick 不改心跳；首次 tick 即失败时文件不存在，看门应按缺失/last_ok_at 陈旧判断失联，不能只看守护进程还活着。普通 tick 异常记 tick_failed，同一错误在恢复前只记一次；controls 的 @tick 仅在连续失败达到 1/3/10 次阈值时更新 failures（10 表示至少 10 次），成功恢复时归零；相同故障持续 30 次也仅三条阈值 control。阈值间计数在进程内，重启从最近持久阈值接续，不作为精确失败次数报表；同一错误事实去重可跨重启，再坏会重新记事实。下一 tick 继续；若暂时写不进数据库则输出 stderr 并继续尝试，初始化打不开数据库才无法启动。独立看门下一波实现，可查 rounds JSON 的 at、status、deadline、stopped；starting/running/finishing 是未结算轮，stopped=true 不占执行者位。
 
 `extension_metrics(log, repository, base, head, target, started)` 保留观察阶段的核心改动行数、第一件活用时固定检查，流程负责调用并登记结果。
