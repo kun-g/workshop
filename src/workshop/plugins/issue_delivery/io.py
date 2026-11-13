@@ -315,6 +315,13 @@ class IO:
             if not cwd.resolve().is_relative_to(copy.resolve()):
                 raise ValueError("准备命令目录须在干净副本内")
             command = list(argv)
+            if "/" not in command[0] and not shutil.which(command[0]):
+                # 登记的检查要的工具本机没有：记成这条检查没过（退出码 127，同 shell），退回执行去处理；
+                # 不能抛出去当插件故障，否则一件活缺工具会把同一插件下所有活一起停掉（11-13 gc#93 缺 promtool）。
+                output.append({"argv": argv, "exit_code": 127, "stdout": "",
+                               "stderr": f"找不到 {command[0]}：车间启动 PATH 里没有这个命令。要么改用仓库里能跑的检查，要么请 Kun 装好它。",
+                               "kind": kind, "missing_tool": command[0]})
+                break
             if "/" not in command[0]:
                 command[0] = executable(command[0])
             try:
