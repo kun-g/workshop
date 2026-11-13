@@ -183,10 +183,12 @@ class Engine:
                     self.block(item, "流程插件等待修复", plugin=True)
             return added
 
-    def classification_intent(self, event):
+    def classification_intent(self, event, received_seq=None):
+        """received_seq：原来收到时的事实序号；暂停后补放的事件带原序号，放弃前收到的旧返工照样作废。"""
         seq = self.log.db.execute("SELECT max(seq) FROM facts").fetchone()[0]
         self.fact("effect", {"id": f"classify:{seq}", "kind": "classify", "done": False,
-                             "event": asdict(event), "item": event.item_id, "event_seq": seq, "defer_creation": True}, event.item_id)
+                             "event": asdict(event), "item": event.item_id, "event_seq": seq,
+                             "received_seq": received_seq or seq, "defer_creation": True}, event.item_id)
 
     def classify_events(self):
         for entry in self.log.all("effects"):
@@ -225,7 +227,7 @@ class Engine:
                     event = replace(event, object_key=self.resolve_key(event.target, event.object_key))
                 if action not in ("update", "ready", "rework"):
                     raise ValueError("流程返回了未知事件动作")
-                action = self.after_abandon(event.item_id, entry["event_seq"], action)
+                action = self.after_abandon(event.item_id, entry.get("received_seq", entry["event_seq"]), action)
                 with self.log.transaction():
                     self.fact("event_classified", {"id": entry["id"], "action": action,
                               "event_seq": entry["event_seq"], **note,
@@ -311,7 +313,7 @@ class Engine:
                     self.fact("event", {**asdict(event), "ingress": ingress, "pending_classification": ingress == "external",
                                         **gate(ingress)}, event.item_id, source="resume", ext_id=entry["id"])
                     if ingress == "external":
-                        self.classification_intent(event)
+                        self.classification_intent(event, int(entry["id"]))
                         continue
                     replayed = self.log.get("items", event.item_id)
                     if replayed is None:

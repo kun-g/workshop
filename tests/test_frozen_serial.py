@@ -427,3 +427,25 @@ def test_paused_rework_replayed_after_abandon_does_not_revive(make):
     engine.resume("alpha", missed, expected=missed)
     engine.tick()
     assert item(engine, "one")["state"] == "放弃" and not engine.active()
+
+
+def test_paused_external_rework_replayed_after_abandon_does_not_revive(make):
+    engine = make()
+    stopped(engine)
+    engine.pause("alpha")
+    kun_says(engine, "held")  # 暂停期间从外部入口进来，先记成漏掉的事件。
+    engine.abandon("alpha:one", "不做了")
+    missed = [e["id"] for e in engine.missed("alpha")]
+    assert missed
+    engine.resume("alpha", missed, expected=missed)
+    engine.tick()
+    engine.tick()
+    gone = item(engine, "one")
+    assert gone["state"] == "放弃" and not gone["pending_rework"] and not engine.active()
+    entry = next(e for e in engine.log.all("effects") if e.get("kind") == "classify" and e["event"]["ext_id"] == "held")
+    assert entry["received_seq"] == int(missed[0]) and entry["action"] == "update"
+
+    kun_says(engine, "fresh")  # 放弃之后的新返工照常生效。
+    engine.tick()
+    engine.tick()
+    assert item(engine, "one")["state"] == "跑着"
