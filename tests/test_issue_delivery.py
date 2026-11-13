@@ -222,6 +222,26 @@ def test_after_merge_close_tag_are_idempotent_and_merge_keeps_issue(world):
     assert merge[merge.index('--match-head-commit') + 1] == world['sha']
 
 
+def test_acceptance_gets_readonly_merge_copy_and_merge_check_output(world):
+    data = snapshot(world, '交付')
+    world['io'].save(data, world['target'], {'effects': {}, 'issue': 7, 'reviewed_head': world['sha']})
+    assert not world['flow'].after(data, '交付', 'deliver', world['target']).pending
+    # 合并由旧版本完成、状态里没有检查结果时，验收说明当场补跑。
+    assert 'merge_runs' not in world['io'].read(data, world['target'])
+    brief = world['flow'].brief(snapshot(world, '验收'), '验收', world['target'])
+    assert isinstance(brief, FlowBrief) and brief.readonly
+    assert Path(brief.workdir).stat().st_mode & 0o222 == 0
+    assert subprocess.check_output(['/usr/bin/git', '-C', brief.workdir, 'rev-parse', 'HEAD'], text=True).strip() == world['sha']
+    assert f"只验交付提交 {world['sha']}" in brief.instructions and 'raw check output' in brief.instructions
+    state = world['io'].read(data, world['target'])
+    assert state['merge_runs']['head'] == world['sha'] and state['merge_runs']['runs'][-1]['stdout'] == 'raw check output\n'
+    # 同一交付提交再生成说明不重跑检查。
+    clones = len([c for c in calls(world) if c[0] == 'git' and 'clone' in c])
+    world['flow'].brief(snapshot(world, '验收'), '验收', world['target'])
+    assert len([c for c in calls(world) if c[0] == 'git' and 'clone' in c]) == clones
+    assert world['io'].read(data, world['target'])['merge_runs'] == state['merge_runs']
+
+
 def test_engine_eight_stages_with_real_flow_and_fake_executor(world):
     cfg = configuration()
     cfg.pop('taskhome')

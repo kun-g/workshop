@@ -239,7 +239,26 @@ class IssueDelivery:
             pr = self.io.pr(item, target)
             directory = self.io.review_copy(item, target, pr["head"]["sha"])
             return FlowBrief(common + instructions + f'\n只审提交 {pr["head"]["sha"]}。', directory, True)
+        if stage == "验收" and state.get("merge"):
+            # 验收者是只读会话：给交付提交的只读副本，并附流程在干净副本跑的检查结果，免得它对着 PR 头或跑不了命令。
+            merge = state["merge"]
+            directory = self.io.review_copy(item, target, merge)
+            runs = self._merge_runs(item, target, merge)
+            extra = (f"\n只验交付提交 {merge}；工作目录是该提交的只读副本。"
+                     "\n流程已在干净副本对交付提交重跑登记检查，以下是原样结果（可信，acceptance.output 照抄相关部分）：\n"
+                     + json.dumps(runs, ensure_ascii=False))
+            return FlowBrief(common + instructions + extra, directory, True)
         return common + instructions
+
+    def _merge_runs(self, item, target, merge):
+        """交付提交上的登记检查只跑一次，按提交号缓存在插件状态里。"""
+        with self.io.locked(item, target) as state:
+            cached = state.get("merge_runs") or {}
+            if cached.get("head") != merge:
+                cached = {"head": merge, "runs": self.io.verify(target, merge, item.get("checks", []))}
+                state["merge_runs"] = cached
+                self.io.save(item, target, state)
+            return cached["runs"]
 
     def _ci(self, pr, target):
         required = target["ci"]
@@ -446,6 +465,7 @@ class IssueDelivery:
                     state.pop("reviewed_head", None)
                     state.pop("evidence_head", None)
                     state.pop("merge", None)
+                    state.pop("merge_runs", None)
                     state.pop("tag", None)
                     state.pop("release_submitted", None)
                 if completed_stage == "证据":
