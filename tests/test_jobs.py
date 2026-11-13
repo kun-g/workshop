@@ -286,7 +286,8 @@ def test_release_jobs_do_not_block_and_survive_restart(world, monkeypatch, resta
     engine.log.close()
     revived = world["engine"]()
     beats += wait(world, revived, monkeypatch, lambda: bool(item(revived.log, "9").get("workdir_released")))
-    assert all(elapsed <= LIMIT_MS and beat["tick_ms"] <= LIMIT_MS for elapsed, beat in beats)
+    assert all(elapsed <= LIMIT_MS and beat["tick_ms"] <= LIMIT_MS for elapsed, beat in beats), [
+        {"wall_ms": round(elapsed, 2), "tick_ms": beat["tick_ms"]} for elapsed, beat in beats]
     assert len(job_plugins.calls("hold-start")) == len(job_plugins.calls("release-start")) == 1
     assert rounds(revived.log, "8")  # 其他活仍能派出。
     row = item(revived.log, "9")

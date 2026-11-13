@@ -16,6 +16,23 @@ from workshop.registry import Registry
 from workshop.plugins.selectors.ordered import OrderedSelector
 
 
+@pytest.hookimpl(optionalhook=True)
+def pytest_xdist_make_scheduler(config, log):
+    """真实作业测试共用一个 worker；其余测试仍逐条并行分配。
+
+    pytest 9.2 的 nodeid 改读 _id，xdist 3.8 的 loadgroup 仍写 _nodeid，
+    分组标记不生效。按收集到的公开 nodeid 分组，不改 pytest 的内部字段。
+    """
+    from xdist.scheduler import LoadScopeScheduling
+
+    class JobScheduling(LoadScopeScheduling):
+        def _split_scope(self, nodeid):
+            path = nodeid.split("::", 1)[0]
+            return path if path == "tests/test_jobs.py" else nodeid
+
+    return JobScheduling(config, log)
+
+
 class Clock:
     def __init__(self):
         self.now = datetime(2026, 11, 13, 8, tzinfo=timezone.utc)
