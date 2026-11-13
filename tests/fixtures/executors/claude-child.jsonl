@@ -1,0 +1,1 @@
+{"type":"assistant","timestamp":"2026-11-13T01:00:01Z","isSidechain":true,"agentId":"child","message":{"id":"child-msg","model":"claude-sonnet-4-6","usage":{"input_tokens":20,"cache_read_input_tokens":30,"cache_creation_input_tokens":0,"output_tokens":10}}}
