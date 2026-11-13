@@ -83,6 +83,8 @@ pending=true 表示尚未完成这个阶段，须带非空 reason 和 next，不
 
 可选 `cleanup(target, keep)` 只清流程管理的临时副本；守护进程启动时和轮停止后调用，keep 包含所有未停止轮的 brief.workdir，必须保留。其他流程可不实现。
 
+可选 `hold_workdir(item, target) -> str`：活收尾完成后，执行者开过的工作目录还要不要留。返回留着的原因（核心记在活的 release_hold，约一小时后再问），空串表示可以收回。短时只读；Retryable 稍后再问，其他异常按流程故障处理。不实现等于不留。
+
 可选 `describe(event, target) -> str | None` 给 `workshop why` 每条事件一句话说明（例如谁对哪个对象做了什么）。只读事件本身，不回查上游、不写状态；返回 None、空串或抛异常时核心退回「来源 + 事件种类」（body.kind，没有则为「资料」）。核心把说明压成一行、截到 200 字；原始资料只在 `why --raw` 时打印。
 
 外部入口事件判定后：归到某件活（含因此新建的活），那件活的 why 有一行「归件 来源 动作（更新/返工/放行）：摘要（原事件 号）」，摘要先用判定时流程给的 summary，没有（旧事实）再用 describe。判为丢弃的、还没判定完的、归到的活已被清掉的，列在 `workshop why --unfiled`（未归件）里，带丢弃原因和事件号，不静默消失。
@@ -98,6 +100,9 @@ pending=true 表示尚未完成这个阶段，须带非空 reason 和 next，不
 `poll(token, started) -> "running" | "exited"` 提供明确的存活状态，不把静默当退出。`stop(token, started)` 幂等关闭，确认退出后才返回。启动后未拿到 Started 的崩溃窗口里 started 可为 null，适配器必须按 token 对账、查询/关闭；不得制造一个假 handle。退出未交回执、超时、`workshop abort <token>` 都生成失败结果并退避。abort 先登记请求，下一 tick 停止；不会为结束一个未确认的启动再重开一轮。无法确认退出时仍保留占位。核心探测前重读轮；已有回执就不再 poll，poll 期间收到回执也不会被自动失败覆盖。执行者停止与流程结算分开：交付对象故障期间仍处理 poll、超时、abort、stop 和用量采集；确认停止即记 stopped 并释放并发位，但轮保持 finishing、活保留卡住与 before_plugin_failure，恢复后才 assess/decide/after。已确认停止和采过的用量不重复调用。stop 与流程结算各有独立退避，Retryable 第 3 次隔离；stop 在故障期间仍按 5/10/20/40/60 分钟退避继续尝试，普通 stop 异常立即隔离并同样退避，绝不能在确认停止前释放位。故障对象不启动新轮，也不再调用流程判定/完成钩子；恢复后接上原回执。
 
 `usage(token, started, since) -> RoundUsage | None` 从本轮开始时刻 since 读取增量，不能返回整个接回会话累计值。started 在上述崩溃窗口也可为 null，无法取得则返回 None。RoundUsage 含 main（一条 Usage）、children（子 agent 按实际模型合计，各模型一条 Usage）、children_reported（是否已完整核对子 agent，默认 false）。Usage 每项均可 null：
+
+
+可选 `release(item, target) -> Release | None`：活收尾完成、流程 `hold_workdir` 不留、这件活没有在跑的轮次时，核心对活的 sessions 里的执行者逐个调用，收回该执行者为这件活开的工作目录。不是自己开的或已经不在，返回 None，核心问下一家；收回了返回 `Release(True)`，核心清空活的 workdir（返工时执行者重新开）；有没交出去的改动等原因不能收，返回 `Release(False, 原因)`，核心通知 Kun 一次，不再重试。暂时故障抛 Retryable，约一小时后再试；其他异常按执行者故障隔离。所有执行者都不认领时只记一笔，不再问。
 
 ```json
 {

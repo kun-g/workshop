@@ -11,7 +11,7 @@ import sys
 import time
 import uuid
 
-from workshop.core.models import Started, RoundUsage, Usage
+from workshop.core.models import Release, Started, RoundUsage, Usage
 from workshop.core.ports import Retryable, Unavailable
 from .storage import alive, identity, lock, read, write
 from .runner import vendor_session
@@ -92,8 +92,9 @@ class Executor:
                 workdir = assigned or item.get('workdir') or previous['workdir']
             else:
                 workdir = assigned or item.get('workdir')
-            if not workdir and self.kind == 'orca-claude' and not readonly:
-                slug = 'ws-' + hashlib.sha256(item['id'].encode()).hexdigest()[:16]
+            if (not workdir or not assigned and not Path(workdir).exists()) and self.kind == 'orca-claude' and not readonly:
+                # 收尾时收回过的工作区，返工时按同一个名字重新开。
+                slug = self.slug(item)
                 intent = directory / 'worktree-intent.json'
                 if intent.exists():
                     raise RuntimeError('工作区创建结果不确定，需要对账: ' + str(intent))
@@ -196,6 +197,61 @@ class Executor:
         if (directory / 'claimed.json').exists():
             return read(directory / 'claimed.json').get('terminal')
         return None
+
+    def slug(self, item):
+        return 'ws-' + hashlib.sha256(item['id'].encode()).hexdigest()[:16]
+
+    def _git(self, *args, check=True):
+        try:
+            result = subprocess.run([self.commands['git'], *args], capture_output=True, text=True, timeout=60)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise Retryable('git 结果不确定: ' + ' '.join(args[:3])) from exc
+        if check and result.returncode:
+            raise Retryable('git 失败: ' + ' '.join(args[:3]) + ': ' + result.stderr.strip()[-300:])
+        return result
+
+    def release(self, item, target, dry_run=False):
+        """活收尾后收回本执行者为它开的 Orca worktree 和本地分支。
+
+        只认 _start 按活 id 开的那个目录；有未提交改动、或分支上有远端没有的提交时留着并说明原因。
+        dry_run 只给判断，不删。
+        """
+        if self.kind != 'orca-claude' or not item.get('workdir') or not target.get('checkout'):
+            return None
+        workdir = Path(item['workdir'])
+        if workdir.name != self.slug(item):
+            return None
+        checkout = str(Path(target['checkout']).expanduser().resolve())
+        resolved = str(workdir.resolve()) if workdir.exists() else str(workdir)
+        entries, entry = self._git('-C', checkout, 'worktree', 'list', '--porcelain').stdout.split('\n\n'), None
+        for block in entries:
+            fields = dict(line.split(' ', 1) if ' ' in line else (line, '') for line in block.splitlines())
+            if fields.get('worktree') and str(Path(fields['worktree']).resolve()) == resolved:
+                entry = fields
+        if workdir.exists() and entry is None:
+            return None  # 目录在，但不是这个主检出上的 worktree：不是自己开的，不碰。
+        branch = (entry or {}).get('branch', 'refs/heads/ws/' + self.slug(item))
+        if entry is not None:
+            changes = self._git('-C', str(workdir), 'status', '--porcelain').stdout.splitlines()
+            if changes:
+                return Release(False, f'{workdir} 有 {len(changes)} 处未提交改动，没删')
+        exists = self._git('-C', checkout, 'rev-parse', '--verify', '-q', branch, check=False).returncode == 0
+        if exists:
+            ahead = int(self._git('-C', checkout, 'rev-list', '--count', branch, '--not', '--remotes').stdout.strip() or 0)
+            if ahead:
+                return Release(False, f'{workdir} 的分支 {branch.removeprefix("refs/heads/")} 有 {ahead} 个提交不在远端，没删')
+        if dry_run:
+            return Release(True, f'删 {workdir if entry is not None else "（目录已不在）"}' + (f'，删分支 {branch.removeprefix("refs/heads/")}' if exists else ''))
+        if entry is not None:
+            try:
+                self._orca('worktree', 'rm', '--worktree', 'path:' + resolved)
+            except (RuntimeError, OSError, subprocess.TimeoutExpired, ValueError) as exc:
+                raise Retryable('Orca 删除工作区结果不确定') from exc
+            if Path(resolved).exists():
+                raise Retryable('Orca 返回成功但工作区还在')
+        if exists:
+            self._git('-C', checkout, 'branch', '-D', branch.removeprefix('refs/heads/'))
+        return Release(True)
 
     def poll(self, token, started):
         directory = self.directory(token)

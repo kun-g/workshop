@@ -1,4 +1,7 @@
 from copy import deepcopy
+import importlib.util
+from pathlib import Path
+import subprocess
 from datetime import datetime, timezone
 from dataclasses import asdict
 
@@ -227,3 +230,44 @@ def reach(engine, stage):
     path = engine.plugins.get("flow", "flow").path
     for next_stage in path[1:path.index(stage) + 1]:
         finish(engine, next_stage)
+
+
+FAKE_COMMAND = Path(__file__).parent / "fixtures/issue_delivery/fake_command.py"
+
+
+def in_process_commands(monkeypatch, directory):
+    """directory 里内容等于 fake_command.py 的可执行文件，改在本进程里调 handle()。
+
+    行为与当可执行文件跑相同（同一份代码、同样读写状态 JSON 和调用记录），只省掉每次起解释器的约 30 毫秒；
+    其他命令（真 git、检查脚本、测试自己写的替身）照常起子进程。
+    """
+    spec = importlib.util.spec_from_file_location("fake_command", FAKE_COMMAND)
+    fake = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(fake)
+    source = FAKE_COMMAND.read_bytes()
+    directory = Path(directory).resolve()
+    real = subprocess.run
+
+    def git(args, cwd, env):
+        result = real([fake.GIT, *args], cwd=cwd, env=env, capture_output=True, text=True, errors="replace")
+        return result.returncode, result.stdout, result.stderr
+
+    def run(argv, *args, **kwargs):
+        program = Path(argv[0]) if isinstance(argv, (list, tuple)) and argv else None
+        if (args or program is None or program.parent.resolve() != directory
+                or not program.is_file() or program.read_bytes() != source):
+            return real(argv, *args, **kwargs)
+        code, out, err = fake.handle(program.name, [str(a) for a in argv[1:]], stdin=kwargs.get("input") or "",
+                                     env=kwargs.get("env"), cwd=kwargs.get("cwd"), git=git)
+        text = kwargs.get("text") or kwargs.get("universal_newlines") or kwargs.get("errors") or kwargs.get("encoding")
+        if not text:
+            out, err = out.encode(), err.encode()
+        if not kwargs.get("capture_output") and kwargs.get("stdout") is None:
+            out = None
+        if not kwargs.get("capture_output") and kwargs.get("stderr") is None:
+            err = None
+        if kwargs.get("check") and code:
+            raise subprocess.CalledProcessError(code, argv, out, err)
+        return subprocess.CompletedProcess(argv, code, out, err)
+
+    monkeypatch.setattr(subprocess, "run", run)

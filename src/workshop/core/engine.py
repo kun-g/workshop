@@ -14,7 +14,7 @@ from .log import Log
 from .models import Brief, Event, Receipt, STAGES, Started, due, stamp, utcnow
 from .ports import Unavailable, Retryable, ChannelRejected
 from .cards import frozen_question, question, notice, validate_question, validate_notice
-from .models import After, FlowBrief, Classification, Evidence, Usage, RoundUsage
+from .models import After, FlowBrief, Classification, Evidence, Release, Usage, RoundUsage
 
 
 def gate(ingress):
@@ -147,6 +147,67 @@ class Engine:
                     cleanup(target, keep)
             except Exception as exc:
                 self.broken(name, "flow", target["plugin"], exc)
+
+    def release_workdirs(self):
+        """收尾完成的活：流程说不用留了，就请为它开过工作目录的执行者收回；返工时执行者重新开。
+
+        流程说还要留（例如还有没关的提交请求），约一小时后再问；执行者说不能收（有没交出去的改动），
+        通知 Kun 一次，不再重试。没有任何执行者认领的目录不动。
+        """
+        running = {r["item"] for r in self.active()}
+        now = stamp(self.clock())
+        for item in self.log.all("items"):
+            if (item["state"] != "完成" or not item.get("workdir") or item.get("workdir_released")
+                    or item["id"] in running or (item.get("release_at") or "") > now):
+                continue
+            control = self.control(item["target"])
+            if control.get("paused") or control.get("broken") or item["target"] not in self.rules.data["targets"]:
+                continue
+            target = self.rules.target(item["target"])
+            later = stamp(self.clock() + timedelta(hours=1))
+            try:
+                hold = getattr(self.plugins.get("flow", target["plugin"]), "hold_workdir", None)
+                reason = hold(item, target) if hold else ""
+                if not isinstance(reason, str):
+                    raise ValueError("流程留工作目录的原因必须是字符串")
+            except Retryable:
+                self.change(item, release_at=later)
+                continue
+            except Exception as exc:
+                self.broken(item["target"], "flow", target["plugin"], exc)
+                continue
+            if reason:
+                self.change(item, release_at=later, release_hold=reason)
+                continue
+            outcome = "无执行者认领"
+            for name in sorted(item.get("sessions") or {}):
+                try:
+                    release = getattr(self.plugins.get("executor", name), "release", None)
+                    result = release(item, target) if release else None
+                    if result is not None and (not isinstance(result, Release) or not result.released and not result.reason):
+                        raise ValueError("执行者收回结果无效；留着时必须写原因")
+                except Retryable:
+                    outcome = None
+                    self.change(item, release_at=later)
+                    break
+                except Exception as exc:
+                    outcome = None
+                    self.broken(item["target"], "executor", name, exc)
+                    break
+                if result is None:
+                    continue
+                if result.released:
+                    outcome = "已收回"
+                    self.change(item, workdir=None, workdir_released=outcome, release_hold="", release_at=None)
+                else:
+                    outcome = "留着：" + result.reason
+                    with self.log.transaction():
+                        self.card(item, f'workdir-kept:{item.get("pending_episode", 0)}', "notice",
+                                  notice(f'{item["id"]}（{item.get("title", "")}）已收尾，工作目录没收回：{result.reason}'))
+                        self.change(item, workdir_released=outcome, release_hold="", release_at=None)
+                break
+            if outcome == "无执行者认领":
+                self.change(item, workdir_released=outcome, release_hold="", release_at=None)
 
     def ingest(self, event: Event, round_token: str | None = None, *, ingress: str = "source") -> bool:
         if ingress == "external":
@@ -665,7 +726,9 @@ class Engine:
             item = self.log.get("items", item["id"])
             sessions = dict(item["sessions"])
             sessions[row["executor"]] = started.session
-            changes = dict(session=started.session, sessions=sessions, workdir=started.workdir)
+            # 新一轮可能重新开了工作目录；收尾后要重新判断收不收。
+            changes = dict(session=started.session, sessions=sessions, workdir=started.workdir,
+                           workdir_released=None, release_at=None, release_hold="")
             if row["stage"] == "执行":
                 changes["writer"] = row["config"]["family"]
             self.change(item, **changes)
@@ -1195,5 +1258,6 @@ class Engine:
                     item = self.serial_queue(item)
                 if item["state"] == "空闲" and not item.get("after_wait") and self.occupied() < self.rules.data["limits"]["concurrent"]:
                     self.reserve(item)
+            self.release_workdirs()
             self.channels()
             self.heartbeat()
