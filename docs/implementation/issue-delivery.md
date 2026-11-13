@@ -24,19 +24,44 @@ Orca 插话钩子去掉轮次令牌后以 `cli:orca` 进入：流程用核心已
 
 审查副本独立 clone，不共享对象/配置；去掉 hooks、凭据助手，origin 改不可达地址，文件与目录去写位。`FlowBrief.workdir/readonly` 交给执行者，执行者负责启动环境去凭据。审查只读，必须改与建议分开；核心按改动路径和规则要求两家不同家族。审查轮结束并停止执行者后清理副本；daemon 启动清残留时保留未停止轮的目录。头提交变了，证据、审查、合并守卫均拒绝推进。验收由核心排除写代码家族，插件核对原样输出与实际交付提交。验收轮的 `FlowBrief` 给合并提交的只读副本；生成说明时在干净副本对合并提交重跑登记检查（按提交号缓存为 merge_runs，只跑一次），原样附进说明，因为验收者是只读会话，跑不了命令，也不能落在停在 PR 头的活 worktree 里。写了亲眼看才要求 `visual-acceptance` 卡的 yes 答案。
 
+## 重走验收
+
+已合并的活验收没过、回到执行后，执行者判断问题不在代码（例如验收者拿不到合并提交、只读环境跑不了检查），可以不开 PR 直接回验收，同一合并提交只给一次。
+
+- 什么时候给这条路：活到过验收（`item.history` 里有验收轮），本活没有打开的 PR，最近一次合并的带活标记 PR 存在，而且这个合并提交交付完成过。合并提交取 GitHub 上该 PR 的 `merge_commit_sha`，不只靠插件状态：执行阶段开新 PR 时会清掉状态里的 `merge`，新 PR 后来被关掉时（11-13 的 ws#18 和 #23）仍能找回上一次交付。
+- 执行说明：满足上面的条件时写出 PR 号、合并提交，以及两条路：要改代码照常开新 PR；不用改就交下面的回执。这个合并提交已经重走过时，改写成「不能再走，交 nothing、notice、leave 等你」。
+- 回执：`outcome=done`、`advance="验收"`，evidence 里 issue-delivery/v1 的 JSON 加 `rerun_acceptance={"merge": "<合并提交>", "reason": "为什么不用改"}`。
+- 交付完成按提交号记：after(交付) 返回不 pending 的结果时，把合并提交加进插件状态 `delivered`。release=none/self 合并后就算；release=tag 要线上核对通过（`_deployed`）才走到这一步，合并了没上线不算。旧版本写的状态没有 `delivered`：none/self 按合并算，tag 当场核对线上是否包含该提交（ws#5、ws#18 是 release=none 时合并的，按合并算）。
+- assess(执行)：回执没写 `merge`、有打开的 PR、没有合并过、`merge` 不是最近的合并提交、最近的合并提交没交付完成、这个提交已验收通过、或已在 `acceptance_reruns` 里，都判不过，理由写清原因和下一步。审查 PR #25 时复现过的反例：A 上线后验收没过，执行者改出 B 合并了但还没上线，交付轮退回执行后请求重走 B——现在判「还没交付完成」，请求 A 判「不是最近的合并提交」，都进不了验收。
+- assess(验收)：除了验收输出和交付提交一致，还要求这个提交交付完成过，防止别的路把没上线的提交送进验收。
+- 核心关口：执行提议直接到验收，只有活到过验收、且流程证据过了才放行（核心改动，见 [ports.md](ports.md)）；没到过验收照旧「不能越过流程阶段和关口」。
+- after(执行)：结算时按回执请求的提交再查一遍（不改选别的提交），把它记进 `acceptance_reruns`，`merge`/`pr` 改成该 PR，`acceptance_after` 移到当前最新资料，清掉 `accepted` 和 `merge_runs`（流程在交付提交上的检查也重跑一次，环境问题可能就出在那一步）。返回空的 `After()`，核心把活推到验收。
+- 第二次再不过：说明里已写明交 nothing + notice + leave 等你，由 Kun 重打标签放行，或在 issue 下评论「不对」（workshop 规则还没配 feishu_chat_id 和 kun_feishu_open_id，群里的「ws#X 不对」认不出来，配上之前只能走 GitHub）；执行者若还提议回验收，assess 每次判不过，同一理由连拦 3 次核心发问卡。都不会无限循环。
+
 ## 交付和崩溃恢复
 
-插件自己在 `issue_delivery_state_dir`（默认 `~/.local/state/workshop/issue_delivery`）保存每件活的 side-effect key、issue、证据提交、审过的提交、合并提交、tag 和验收记录。文件锁加原子替换；不读写核心数据库。每个 after key 已成功结果重放返回原结果；pending 允许重查条件，远端动作还要回查实际状态，防止“远端成功，本地没记成功”的重复。
+插件自己在 `issue_delivery_state_dir`（默认 `~/.local/state/workshop/issue_delivery`）保存每件活的 side-effect key、issue、证据提交、审过的提交、合并提交、tag、验收记录、重走过验收的合并提交（acceptance_reruns）和自更新结果（self_update）。文件锁加原子替换；不读写核心数据库。每个 after key 已成功结果重放返回原结果；pending 允许重查条件，远端动作还要回查实际状态，防止“远端成功，本地没记成功”的重复。
 
-派活说明带上上一轮 gate_reason；检查失败或头提交变化时明确让执行者交 advance="执行"，不发问卡、不问 Kun。交付 assess 失败会写实际审过的 SHA 和当前 SHA；检查输出保留在 reason，供重派时定位。核心仍只处理通用关口，不新增业务退回规则。
+派活说明带上上一轮 gate_reason；检查失败、头提交变化、合并冲突或 PR 已关闭没合并时（理由里都写「退回执行」），明确让执行者交 advance="执行"，不发问卡、不问 Kun。交付 assess 失败会写实际审过的 SHA 和当前 SHA；检查输出保留在 reason，供重派时定位。核心仍只处理通用关口，不新增业务退回规则。
+
+执行说明写明边界：只改本 issue 要的东西；遇到车间流程或环境的问题（验收拿不到提交、检查在车间里跑不起来、关口不认等），交 `outcome=nothing`，summary 写清原因，notice 发 Kun 一条 fyi，leave 等你；不改车间自己的流程代码（本 issue 要改的除外），不动主检出和车间正在跑的代码，不重启车间。leave 等你是为了不落进 nothing 的五分钟复看循环。11-13 ws#5 的执行者自己快进主检出、kickstart 守护进程，ws#18 的执行者在自己的活里重写了别的活的修正，这两件都由这段说明拦。
 
 after 遇到缺 PR、头提交变化、未验收等业务不满足时返回 pending，而不是把所有同流程交付对象隔离。核心所有前进都要求 Evidence.passed；显式退回执行、验收失败仍能往回走。
 
-合并前回查同一 PR、审过的 head、规则 CI；`gh pr merge --match-head-commit` 保证提交不偷换。PR 标题和正文均拒绝自动关 issue 的语句（包括 `Closes: #7`），squash 正文固定 Related to。每个目标配置 `ci: none` 或 required check 名单；名单的所有项须 success/skipped/neutral 且至少一项 success，空结果、失败、取消或进行中均等待。等待 CI 用 rerun=false，不起执行者。
+`io.run` 失败时错误信息带 stderr 结尾（没有 stderr 用 stdout，最多 400 字），解不了码的字节换成替代字符，不让坏输出变成插件崩溃。这些信息进 plugin_retry/plugin_failed 事实和故障通知，Kun 不用翻日志就能判断。
+
+合并前回查同一 PR、审过的 head、规则 CI；`gh pr merge --match-head-commit` 保证提交不偷换。合并失败分三类，只有说不清原因的才算插件故障：
+
+- 合并前就看得出要执行者动手的：PR 已关闭没合并、还是草稿、`mergeable=false` 或 `mergeable_state=dirty`（冲突）。不调 `gh pr merge`，pending + rerun，理由写「退回执行」，交付轮执行者照说明交 advance="执行"，到执行阶段合 main、解冲突。
+- `gh pr merge` 失败后回查 PR：已合并按成功走；头提交变了、或回查到上面几种、或 `mergeable_state` 是 dirty/behind/blocked/unstable（冲突、落后 main、检查没过、分支保护），同样退回执行，理由附 gh 的 stderr 结尾；`mergeable` 还是 null/unknown（GitHub 没算完）时 pending、rerun=false，稍后回查。
+- 回查看着能合并却合并失败（网络、GitHub 5xx 这类）：抛 Retryable，错误信息带 stderr；连续三次才由核心隔离。
+
+11-13 ws#18 的 #23 和 main 冲突，`gh pr merge` exit 1 被当成 Retryable，重试三次后核心隔离了 issue_delivery，grant-console 和 workshop 一起停（事实 511–522）；按上面的分类，这次只会把 ws#18 退回执行。PR 标题和正文均拒绝自动关 issue 的语句（包括 `Closes: #7`），squash 正文固定 Related to。每个目标配置 `ci: none` 或 required check 名单；名单的所有项须 success/skipped/neutral 且至少一项 success，空结果、失败、取消或进行中均等待。等待 CI 用 rerun=false，不起执行者。
 
 需要 bot 批准的目标配置 bot_review.login/signer。after(审查) 回查同一 head 的该 bot APPROVED review，已存在不再发；否则调用规则中的 agent_gh_token.py 签发，只在内存中用 token POST commit_id 绑定的 APPROVE，不落 token、不记录响应中的凭据。grant-console 配置 lambdatheory-agent[bot]，供主分支规则集的一票批准使用。
 
 - `release: none`：合并后进入验收。
+- `release: self`：交付对象就是车间自己（规则里 workshop 用这个，不按仓库名判断）。合并后在规则 `checkout`（主检出）里：`git status --porcelain` 为空（含未跟踪文件）且当前分支是 main 时，从 `https://github.com/<repo>.git` 取 main 到 `origin/main`，`git merge --ff-only <合并提交>`（已包含就跳过），再在主检出跑规则 `prepare`（workshop 是 `uv sync --locked`，依赖或入口点变了不装好，拉起后起不来）。都成功才返回 `After(restart=True)`：核心记下重启请求，这一拍照常结算并推进到验收，`workshop run` 在这一拍结束后正常退出，launchd 的 KeepAlive 拉起新代码。执行者会话是独立进程组（`start_new_session`），守护进程退出不影响它们，重启后按 token 接回。主检出不干净、不在 main 或快进不了（例如主检出 main 上有本地提交、和合并提交分叉）时不动它、不重启；准备命令失败或没跑成时，主检出已经快进到新代码、环境可能只装了一半，同样不重启。两种都返回 `After(notice=…)`：核心经通道给 Kun 发一条不用回的通知（同一个完成钩子只发一次），写明合并提交、原因和要跑的命令；准备命令失败的那条会说主检出已是新代码、要重跑准备命令再重启，而且在那之前车间因别的原因重启会用新代码起来。活照常进验收（验收在合并提交的只读副本上做，不依赖守护进程跑的版本），合并提交也记为交付完成。取 main 失败是网络故障，抛 Retryable。结果记在插件状态 `self_update`。
 - `release: tag`：在插件状态目录 `issue_delivery_state_dir/releases/<目标及仓库的哈希>` 建普通专用 clone，沿用 Kun 的 git 凭据；fetch 后 detached 到合并 SHA，运行该提交里的 tag_command（grant-console 的 scripts/tag-release.sh）并传合并 SHA。checkout 规则仍只供读取主检出，发布操作不在该目录做。专用检出按目标加锁，避免两件活同时切 HEAD；首次 clone 在临时目录完成后原子就位。先查远端已有 tag，恢复不重复打 tag；不从去凭据的副本推送。tag 推完后 rerun=true，执行者照目标仓库 docs/runbooks/release.md 完成发布。
 
 grant-console 的 ECR/render/push-production/sync 仍由执行者申请集群授权后做；只用仓库 scripts/request_grant.py，requested-by 带活 id，保存申请号，不复用过期授权、不换身份。真正 sync 完且确认上线后才给 release_submitted=true；还在等授权卡的回执只给 later，不带 advance 或 release_submitted，之后转 rerun=false，只定时核对线上状态。

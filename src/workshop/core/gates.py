@@ -31,6 +31,13 @@ def decide(item: dict, receipt: Receipt, evidence: Evidence, stages, rules: Rule
         return Decision("执行", True, "验收不过，退回执行")
     if requested == "执行" and current in ("证据", "审查", "交付", "验收"):
         return Decision("执行", True, "退回执行")
+    if (current == "执行" and requested == "验收" and stages.index("验收") > stages.index("执行") + 1
+            and any(entry.get("stage") == "验收" for entry in item.get("history", []))):
+        # 到过验收又退回执行，执行确认已交付的结果不用改：直接回验收重走。
+        # 中间几道关口这份结果都过过；结果没变、能走几次由流程证据判。
+        if not evidence.passed:
+            return Decision(current, False, evidence.reason or "本阶段证据未通过")
+        return Decision("验收", True, "执行确认已交付的结果不用改，回到验收重走")
     if not requested:
         complete = current == stages[-1] and receipt.outcome == "done" and evidence.passed
         return Decision(current, complete, "完成" if complete else "未提议下一阶段", complete=complete)

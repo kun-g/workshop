@@ -106,6 +106,10 @@ def main(argv=None):
                     raise ValueError("interval 必须为正数")
                 while True:
                     engine.tick()
+                    if engine.restart_requested:
+                        # 交付改了车间自己的代码；正常退出，由 launchd KeepAlive 拉起新代码。
+                        print("车间代码已更新，这一拍结束，退出等守护拉起", flush=True)
+                        break
                     if args.once:
                         break
                     time.sleep(args.interval)

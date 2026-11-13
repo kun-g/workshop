@@ -51,9 +51,14 @@ elif name == 'git':
         completed = subprocess.run(['/usr/bin/git', *args])
         sys.exit(completed.returncode)
 elif args[:2] == ['pr', 'merge']:
+    if state.get('merge_error'):
+        # 合并被拒：stderr 原样回放，PR 状态由测试另行设定。
+        print(state['merge_error'], file=sys.stderr)
+        sys.exit(1)
     state['pr']['merged'] = True
     state['pr']['state'] = 'closed'
     state['pr']['merge_commit_sha'] = state['sha']
+    state['pr']['merged_at'] = state.get('merged_at', '2026-11-13T08:00:00Z')
     save()
 elif args[:2] == ['issue', 'close']:
     state['issue']['state'] = 'closed'
@@ -83,14 +88,17 @@ elif args and args[0] == 'api':
             print('\n' + json.dumps(value))
         sys.exit(0)
     path = endpoint.split('?')[0]
+    # prs 是本活更早的 PR（已合并或已关），pr 是当前这个。
+    pulls = state.get('prs', []) + ([state['pr']] if state.get('pr') else [])
     if path.endswith('/pulls'):
-        value = [state['pr']] if state.get('pr') else []
+        value = pulls
     elif '/pulls/' in path and path.endswith('/files'):
         value = state.get('files', [{'filename': 'src/example.py'}])
     elif '/pulls/' in path and path.endswith('/reviews'):
         value = state.get('reviews', [])
     elif '/pulls/' in path:
-        value = state['pr']
+        number = int(path.rsplit('/', 1)[1])
+        value = next((p for p in pulls if p['number'] == number), state['pr'])
     elif path.endswith('/issues'):
         value = [state['issue']] if state.get('issue') else []
     elif '/issues/' in path:
