@@ -4,10 +4,10 @@ from dataclasses import replace
 import pytest
 
 from workshop.cli import main
-from workshop.core.models import Event
-from workshop.core.report import why
+from workshop.core.models import Classification, Event
+from workshop.core.report import unfiled, why
 from workshop.plugins.issue_delivery import IssueDelivery
-from conftest import build, configuration, finish
+from conftest import FakeFlow, build, configuration, finish
 
 USER = {"login": "kun-g", "id": 1042091, "avatar_url": "https://avatars.githubusercontent.com/u/1042091?v=4",
         "html_url": "https://github.com/kun-g", "type": "User", "site_admin": False}
@@ -121,3 +121,89 @@ def test_describe_github_kinds():
                  "checks": {"check_runs": [{"status": "completed", "conclusion": "success"}, {"status": "queued"}]}}})
     assert flow.describe(ci, target) == "PR #5 CI aaaaaaaaaaaa：pending 1，success 1；提交状态 success"
     assert flow.describe(Event("input", "1", "workshop", "5", "t", "正文"), target) is None
+
+
+# ws#37：外部入口事件经流程判定后，归到的活的 why 有一行；丢弃的、没判定的进「未归件」。
+class Judge(FakeFlow):
+    """按消息号给判定；摘要是流程核实上游后的一句话。"""
+    verdicts = {
+        "om_rework": Classification("rework", "5", summary="飞书 Kun：「ws#5 不对，测试绑定」"),
+        "om_drop": Classification(discard=True, summary="发送者不是 Kun"),
+        "om_new": Classification(summary="飞书 Kun：「加一个新功能」"),
+        "om_plain": Classification("update", "5"),
+    }
+
+    def classify(self, event, item, target, find_external=None):
+        if event.ext_id == "om_stuck":
+            raise RuntimeError("流程判定出错")
+        return self.verdicts[event.ext_id]
+
+    def describe(self, event, target):
+        return f'自报原话「{event.body["text"]}」'
+
+
+def external(ext_id, text):
+    return Event("feishu", ext_id, "workshop", ext_id, text, {"text": text})
+
+
+@pytest.fixture
+def judged(engine):
+    engine.plugins.register("flow", "flow", Judge())
+    for ext_id, text in (("om_rework", "ws#5 不对，测试绑定"), ("om_drop", "冒名"), ("om_new", "加一个新功能"), ("om_plain", "补一句")):
+        assert engine.ingest(external(ext_id, text), ingress="external")
+    engine.tick()
+    return engine
+
+
+def seq_of(engine, ext_id):
+    return next(f["seq"] for f in engine.log.facts() if f["kind"] == "event" and f["ext_id"] == ext_id)
+
+
+def test_classified_event_shows_in_why_of_its_item(judged):
+    text = why(judged.log, "ws#5", rules(), judged.plugins)
+    filed = [line for line in text.splitlines() if " 归件 " in line]
+    assert len(filed) == 2
+    at, rest = filed[0].split(" ", 1)
+    assert at.startswith("2026-11-13T")  # 时刻
+    # 来源、动作、原话摘要和谁说的；指回原事件号。
+    assert rest == f'归件 CLI 入口 cli:feishu 返工：飞书 Kun：「ws#5 不对，测试绑定」（原事件 {seq_of(judged, "om_rework")}）'
+    # 流程没给摘要（例如旧事实）时，退回流程对事件本身的说明。
+    assert filed[1].endswith(f'归件 CLI 入口 cli:feishu 更新：自报原话「补一句」（原事件 {seq_of(judged, "om_plain")}）')
+    assert "冒名" not in text and "加一个新功能" not in text
+
+
+def test_event_that_created_new_item_shows_in_its_why(judged):
+    text = why(judged.log, "workshop:om_new", rules(), judged.plugins)
+    assert f'归件 CLI 入口 cli:feishu 更新：飞书 Kun：「加一个新功能」（原事件 {seq_of(judged, "om_new")}）' in text
+
+
+def test_discarded_and_unjudged_events_are_listed_as_unfiled(judged):
+    judged.ingest(external("om_stuck", "判不了"), ingress="external")
+    judged.tick()
+    lines = unfiled(judged.log, rules(), judged.plugins).splitlines()
+    assert lines[0] == "未归件"
+    assert len(lines) == 3  # 已归到活（含新建的活）的不在这里重复。
+    assert lines[1].endswith(f'丢弃 workshop CLI 入口 cli:feishu：自报原话「冒名」；判定：发送者不是 Kun（事件 {seq_of(judged, "om_drop")}）')
+    assert lines[2].endswith(f'还没判定 workshop CLI 入口 cli:feishu：自报原话「判不了」（事件 {seq_of(judged, "om_stuck")}）')
+
+
+def test_unfiled_lists_item_dropped_after_classification(engine):
+    engine.plugins.register("flow", "flow", Judge())
+    engine.ingest(external("om_new", "加一个新功能"), ingress="external")
+    engine.classify_events()  # 只判定不起轮，活还能清掉。
+    engine.drop("workshop:om_new")
+    assert "归到 workshop:om_new，活已清掉" in unfiled(engine.log, rules(), engine.plugins)
+
+
+def test_unfiled_empty(engine):
+    assert unfiled(engine.log, rules()) == "未归件\n没有"
+
+
+def test_cli_unfiled_and_argument_check(judged, tmp_path, capsys):
+    state = ["--state-dir", str(tmp_path)]
+    assert main([*state, "why", "--unfiled"]) == 0
+    out = capsys.readouterr().out
+    assert out.startswith("未归件\n") and "丢弃 workshop" in out
+    assert main([*state, "why"]) == 2
+    assert main([*state, "why", "ws#5", "--unfiled"]) == 2
+    assert "要么给一件活，要么用 --unfiled" in capsys.readouterr().err

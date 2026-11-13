@@ -80,13 +80,14 @@ executors:
   writer: {use: orca-claude, family: claude, billing: subscription, model: claude-opus-5-5, effort: high}
   reviewer:
     # 11-13：cursor-grok 11 轮里 7 轮进程正常退出却没交回执，先让 codex 打头，查清后再换回。
-    - {use: codex, family: codex, billing: subscription}
+    # 11-13 实测 24 轮（Sol/Astra × medium/high/xhigh × 4 份材料）：high 回执格式全对、埋的缺陷都抓到；不写强度时默认档会交错格式。
+    - {use: codex, family: codex, billing: subscription, model: gpt-6-astra, effort: high}
     - {use: cursor-grok, family: grok, billing: subscription}
     - {use: claude, family: claude, billing: subscription}
   acceptor:
-    - {use: codex, family: codex, billing: subscription}
+    - {use: codex, family: codex, billing: subscription, model: gpt-6-astra, effort: high}
     - {use: claude, family: claude, billing: subscription}
-limits: {concurrent: 2, chain_depth: 8, round_timeout_seconds: 7200}
+limits: {concurrent: 5, chain_depth: 8, round_timeout_seconds: 7200}
 selector: ordered
 stage_selectors: {执行: ordered}
 channel: ask_kun

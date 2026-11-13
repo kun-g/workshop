@@ -9,7 +9,7 @@ import time
 from .core.engine import Engine
 from .core.log import Log
 from .core.models import Event
-from .core.report import resolve, status, usage, why
+from .core.report import resolve, status, unfiled, usage, why
 from .core.rules import Rules
 from .registry import Registry
 
@@ -30,8 +30,9 @@ def parser():
     commands.add_parser("status")
     commands.add_parser("usage")
     why_command = commands.add_parser("why", help="列出一件活每一轮的起因和结果；活写成 <短名>#<编号> 或 <交付对象>:<对象键>")
-    why_command.add_argument("item")
+    why_command.add_argument("item", nargs="?")
     why_command.add_argument("--raw", action="store_true", help="每条事件后原样打印原始资料")
+    why_command.add_argument("--unfiled", action="store_true", help="列出未归件：外部入口事件里判为丢弃的和还没判定的")
     commands.add_parser("drop", help="清掉一件还没跑过轮次的活（例如没放行就被误建的）；活写成 <短名>#<编号> 或 <交付对象>:<对象键>").add_argument("item")
     abandon = commands.add_parser("abandon", help="放弃一件活：停在当前阶段、让出串行路径，要再做就返工；活写成 <短名>#<编号> 或 <交付对象>:<对象键>")
     abandon.add_argument("item")
@@ -68,7 +69,9 @@ def main(argv=None):
                 rules = current_rules(args, log.get("controls", "@rules")).data
             except (ValueError, OSError):
                 rules = None  # 规则读不到时只认 <交付对象>:<对象键>，不挡查看。
-            print(why(log, args.item, rules, Registry(), raw=args.raw))
+            if args.unfiled == (args.item is not None):
+                raise ValueError("why 要么给一件活，要么用 --unfiled 看未归件")
+            print(unfiled(log, rules, Registry()) if args.unfiled else why(log, args.item, rules, Registry(), raw=args.raw))
         elif args.command == "usage":
             print(usage(log))
         else:

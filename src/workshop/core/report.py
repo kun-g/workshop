@@ -43,8 +43,23 @@ def one_line(text):
     return " ".join(str(text).split())
 
 
-def event_line(body, target, flow, raw):
-    """一条事件一行：来源、动作和流程给的一句说明；流程没有说明时退回事件种类。"""
+ACTIONS = {"update": "更新", "rework": "返工", "ready": "放行"}
+
+
+def flow_for(targets, name, plugins):
+    """规则里的交付对象和它的流程；装不上流程时只回交付对象，查看起因不依赖插件。"""
+    target = {"name": name, **targets[name]} if name in targets else None
+    flow = None
+    if plugins and target:
+        try:
+            flow = plugins.get("flow", target["plugin"])
+        except Exception:
+            flow = None
+    return target, flow
+
+
+def summarize(body, target, flow):
+    """流程给的一句话说明；流程没有说明或出错时退回事件种类。"""
     content = body["body"]
     kind = content.get("kind") if isinstance(content, dict) and isinstance(content.get("kind"), str) else "资料"
     describe = getattr(flow, "describe", None)
@@ -54,12 +69,39 @@ def event_line(body, target, flow, raw):
             summary = describe(Event(**{f.name: body[f.name] for f in fields(Event) if f.name in body}), target)
         except Exception:  # 摘要只读且可选；插件出错不影响查看起因（R20）。
             summary = None
-    summary = one_line(summary)[:200] if isinstance(summary, str) and summary.strip() else kind
-    entry = "CLI 入口 " if body["source"].startswith("cli:") else ""
-    line = f'{entry}事件 {body["source"]} {body.get("action", "update")}：{summary}'
+    return one_line(summary)[:200] if isinstance(summary, str) and summary.strip() else kind
+
+
+def entry_label(source):
+    return "CLI 入口 " if source.startswith("cli:") else ""
+
+
+def event_line(body, target, flow, raw):
+    """一条事件一行：来源、动作和流程给的一句说明；流程没有说明时退回事件种类。"""
+    line = f'{entry_label(body["source"])}事件 {body["source"]} {body.get("action", "update")}：{summarize(body, target, flow)}'
     if raw:
-        line += "\n    原始资料：" + json.dumps(content, ensure_ascii=False, sort_keys=True)
+        line += "\n    原始资料：" + json.dumps(body["body"], ensure_ascii=False, sort_keys=True)
     return line
+
+
+def original_event(log, seq):
+    row = log.db.execute("SELECT body FROM facts WHERE seq=? AND kind='event'", (seq,)).fetchone()
+    return json.loads(row[0]) if row else None
+
+
+def classified_line(log, body, target, flow):
+    """外部入口事件经流程判定归到这件活：动作、来源，以及流程核实后的谁说的和原话摘要。"""
+    event = body.get("event") or original_event(log, body.get("event_seq")) or {}
+    source = event.get("source", "未知来源")
+    summary = body.get("summary")
+    if isinstance(summary, str) and summary.strip():
+        summary = one_line(summary)[:200]
+    elif "body" in event:
+        summary = summarize(event, target, flow)
+    else:
+        summary = "原事件不在事实库"
+    action = ACTIONS.get(body.get("action"), body.get("action"))
+    return f'归件 {entry_label(source)}{source} {action}：{summary}（原事件 {body.get("event_seq")}）'
 
 
 def why(log, item_id, rules=None, plugins=None, raw=False):
@@ -67,19 +109,16 @@ def why(log, item_id, rules=None, plugins=None, raw=False):
     targets = (rules or {}).get("targets") or {}
     item_id = resolve(log, targets, item_id)
     item = log.get("items", item_id)
-    target = {"name": item["target"], **targets[item["target"]]} if item["target"] in targets else None
-    flow = None
-    if plugins and target:
-        try:
-            flow = plugins.get("flow", target["plugin"])
-        except Exception:  # 装不上流程时退回事件种类，查看起因不依赖插件。
-            flow = None
+    target, flow = flow_for(targets, item["target"], plugins)
     lines = [f"活 {item_id}"]
     for fact in log.facts(item_id):
         body = fact["body"]
         kind = fact["kind"]
         if kind == "event":
             lines.append(f'{fact["at"]} {event_line(body, target, flow, raw)}')
+            continue
+        if kind == "event_classified":
+            lines.append(f'{fact["at"]} {classified_line(log, body, target, flow)}')
             continue
         if kind == "round_reserved":
             detail = (f'{body["stage"]} {body["executor"]} 一轮 {body["token"]} 起因：事实 {body["cause"]} '
@@ -117,6 +156,37 @@ def why(log, item_id, rules=None, plugins=None, raw=False):
         else:
             continue
         lines.append(f'{fact["at"]} {one_line(detail)}')
+    return "\n".join(lines)
+
+
+def unfiled(log, rules=None, plugins=None):
+    """未归件：外部入口事件里判为丢弃的，和还没判定完的；归到活（含新建的活）的在那件活的 why 里。"""
+    targets = (rules or {}).get("targets") or {}
+    outcomes = {}
+    for fact in log.facts():
+        if fact["kind"] in ("event_classified", "event_discarded"):
+            outcomes[fact["body"].get("event_seq")] = fact
+    lines = ["未归件"]
+    for fact in log.facts():
+        body = fact["body"]
+        if fact["kind"] != "event" or body.get("ingress") != "external":
+            continue
+        target, flow = flow_for(targets, body["target"], plugins)
+        outcome = outcomes.get(fact["seq"])
+        if outcome and outcome["kind"] == "event_classified":
+            if log.get("items", outcome["item"]):
+                continue
+            state = f'归到 {outcome["item"]}，活已清掉'
+        elif outcome:
+            state = "丢弃"
+        else:
+            state = "还没判定"
+        note = (outcome or {}).get("body", {}).get("summary")
+        reason = f'；判定：{one_line(note)[:200]}' if isinstance(note, str) and note.strip() else ""
+        lines.append(f'{fact["at"]} {state} {body["target"]} {entry_label(body["source"])}{body["source"]}：'
+                     f'{summarize(body, target, flow)}{reason}（事件 {fact["seq"]}）')
+    if len(lines) == 1:
+        lines.append("没有")
     return "\n".join(lines)
 
 

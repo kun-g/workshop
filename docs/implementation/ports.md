@@ -57,7 +57,7 @@ limits: {concurrent: 2, chain_depth: 8, round_timeout_seconds: 7200}
 
 `classify(event, item, target, find_external) -> Classification | str` 只判无轮次令牌的 CLI 事件。event 是已归一 action/depth 的原资料，item 是按当前对象键找到的既有活快照，没有则为 null；尚未加入本事件，target 是交付规则；核对可信上游身份和语义后决定动作，默认 `Classification("update")`。兼容只返回 action 字符串；返回 Classification(discard=True) 记 event_discarded 事实并结束判定，不建活、不追加资料；None 是协议错误。来源 poll 已有可信动作，不走此方法；带令牌事件和回执子事件不走此方法。不带令牌的 CLI 事件仍可能来自 agent，classify 必须回到源头核实身份和原文（例如飞书按消息号回查发送者；GitHub 放行优先走来源 poll），不认 body 中 from_kun 等自称身份。测试 FakeFlow 回查独立的假上游登记，不把 CLI 正文当身份凭据。该方法短时只读，可能因重启重放；返回动作和判定意图完成同事务落事实，evolve 更新活。Retryable 退避、连续 3 次故障，非法返回值或普通异常隔离流程；修复恢复后继续未完成判定。W2-A 可在这里识别可信的 Kun 返工意见、再次放行。
 
-`Classification(action="update", object_key=None, discard=False)` 的可选 object_key 只能指向同一交付对象的已有活（先解析别名），不能跨目标或凭空指定新活。没有指定则用输入对象键；归件、资料追加和完成判定同事务。`find_external(external)` 是只读函数，按通道外部编号查 `{card, item}` 快照；跨交付对象、重复编号或未找到都返回 null。`find_external(object_key=...)` 按同目标已有对象键查 `{item}`，先解析别名，找不到返回 null。流程仍须回源核对引用关系，不能把 CLI 自报外部编号当凭据。
+`Classification(action="update", object_key=None, discard=False, summary=None)` 的可选 summary 是流程核实上游后给的一句话（谁说的、原话摘要，例如「飞书 Kun：「gc#109 不对」」），丢弃时写丢弃原因；核心照存进 event_classified / event_discarded 事实，只供 why 显示，不参与判定和相等比较。可选 object_key 只能指向同一交付对象的已有活（先解析别名），不能跨目标或凭空指定新活。没有指定则用输入对象键；归件、资料追加和完成判定同事务。`find_external(external)` 是只读函数，按通道外部编号查 `{card, item}` 快照；跨交付对象、重复编号或未找到都返回 null。`find_external(object_key=...)` 按同目标已有对象键查 `{item}`，先解析别名，找不到返回 null。流程仍须回源核对引用关系，不能把 CLI 自报外部编号当凭据。
 
 `after` 返回的 aliases 把目标下的另一个 object_key 绑定到当前活。核心追加 alias_bound 事实；重复 key 幂等，别名已指向其他活或已有同名活则隔离流程，不覆盖。来源、agent、外部事件和暂停补回都先查别名。已开始但尚未结算的完成钩子会暂缓该目标来源轮询，恢复别名后再收新事件；避免远端对象创建成功、核心绑定前崩溃造成重复活。
 
@@ -84,6 +84,8 @@ pending=true 表示尚未完成这个阶段，须带非空 reason 和 next，不
 可选 `cleanup(target, keep)` 只清流程管理的临时副本；守护进程启动时和轮停止后调用，keep 包含所有未停止轮的 brief.workdir，必须保留。其他流程可不实现。
 
 可选 `describe(event, target) -> str | None` 给 `workshop why` 每条事件一句话说明（例如谁对哪个对象做了什么）。只读事件本身，不回查上游、不写状态；返回 None、空串或抛异常时核心退回「来源 + 事件种类」（body.kind，没有则为「资料」）。核心把说明压成一行、截到 200 字；原始资料只在 `why --raw` 时打印。
+
+外部入口事件判定后：归到某件活（含因此新建的活），那件活的 why 有一行「归件 来源 动作（更新/返工/放行）：摘要（原事件 号）」，摘要先用判定时流程给的 summary，没有（旧事实）再用 describe。判为丢弃的、还没判定完的、归到的活已被清掉的，列在 `workshop why --unfiled`（未归件）里，带丢弃原因和事件号，不静默消失。
 
 普通关口未过先同阶段接回同一个执行者，带 gate_reason；同一关口连续拦 3 次才问 Kun。最终完成必须登记工序、送回或等你。其他人负责的工序到点仅发一次通知；只有 owner="车间" 才唤醒活。
 
