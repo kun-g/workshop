@@ -47,6 +47,8 @@ if (root/'spawn-descendant').exists():
     (root/'descendant-pid').write_text(str(descendant.pid))
 with (root/'agents').open('a') as f:
     f.write(json.dumps({'name':name,'args':args,'prompt':prompt,'env':dict(os.environ),'cwd':os.getcwd(),'pid':os.getpid()})+'\n')
+if (root/'crash').exists():
+    sys.exit(1)  # 起不来：会话号还没输出就退出
 if name == 'codex':
     print(json.dumps({'type':'thread.started','thread_id':'real-codex-session'}),flush=True)
 if name == 'cursor-agent':
@@ -188,10 +190,16 @@ def test_exit_without_receipt_submits_failed_with_tail(setup, kind):
     executor = make(kind)
     started = executor.launch('one', BRIEF, item, CONFIG, target)
     wait_for(lambda: (executor.directory('one')/'exited.json').exists())
-    receipt = read(executor.directory('one')/'fallback-receipt.json')
+    receipt = read(executor.directory('one')/'failed-receipt.json')
     assert receipt['outcome'] == 'failed'
-    assert 'last output from fake' in receipt['summary']
+    # 原因在 summary（下一轮说明会带上），输出末尾放 evidence。
+    assert '没有回执 JSON 对象' in receipt['summary']
+    assert 'last output from fake' in receipt['evidence'][0]
     assert json.loads((root/'receipts').read_text().splitlines()[0])[:2] == ['receipt','one']
+    # 同一轮里接回会话要过一次回执，仍没有才代交 failed。
+    calls = [json.loads(row) for row in (root/'agents').read_text().splitlines()]
+    assert len(calls) == 2 and '车间没收下这一轮的回执' in calls[1]['prompt']
+    assert (executor.directory('one')/'receipt-rejected.json').exists()
     executor.stop('one', started)
 
 
@@ -496,7 +504,8 @@ def test_hook_and_fallback_receipt_use_real_cli_without_depth_growth(setup):
         assert read(directory/'receipt-result.json')['code'] == 0
         receipt = engine.log.get('rounds', token)['receipt']
         assert receipt['outcome'] == 'failed'
-        assert 'last output from fake codex' in receipt['summary']
+        assert '没有回执 JSON 对象' in receipt['summary']
+        assert 'last output from fake codex' in receipt['evidence'][0]
         # Leave the active round pending while a human steers it more than chain_depth times.
         env = dict(os.environ, WORKSHOP_ITEM=item['id'], WORKSHOP_EXECUTOR_ROUND=str(directory),
                    WORKSHOP_ROUND_TOKEN=token)
@@ -612,6 +621,59 @@ def test_headless_does_not_write_folder_trust(setup, kind):
     executor.stop('one', started)
 
 
+@pytest.mark.parametrize('kind', ['codex', 'cursor-grok', 'claude'])
+def test_model_change_starts_fresh_session_instead_of_resume(setup, kind):
+    """ws#30：规则换了模型，codex 拒绝用新模型接回旧会话（exit 0、无回执）；换新会话。模型没变照常接回。"""
+    root, make, item, target = setup
+    executor = make(kind)
+    old = {**CONFIG, 'model': 'gpt-6.1-sol'}
+    first = executor.launch('one', BRIEF, item, old, target)
+    wait_for(lambda: (root/'agents').exists() and (root/'agents').read_text().endswith('\n'))
+    executor.stop('one', first)
+    target['runtime']['env']['WORKSHOP_ROUND_TOKEN'] = 'two'
+    second = make(kind).resume('two', first.session, BRIEF, item, old, target)
+    wait_for(lambda: len((root/'agents').read_text().splitlines()) == 2)
+    make(kind).stop('two', second)
+    target['runtime']['env']['WORKSHOP_ROUND_TOKEN'] = 'three'
+    third = make(kind).resume('three', first.session, BRIEF, item, {**CONFIG, 'model': 'gpt-6-astra'}, target)
+    wait_for(lambda: len((root/'agents').read_text().splitlines()) == 3)
+    calls = [json.loads(row)['args'] for row in (root/'agents').read_text().splitlines()]
+    resumed = lambda args: any(flag in args for flag in ('resume', '--resume'))
+    assert [resumed(args) for args in calls] == [False, True, False]
+    assert calls[2][calls[2].index('--model') + 1] == 'gpt-6-astra'
+    assert read(executor.directory('three')/'spec.json')['fresh_session'] is True
+    assert third.session == first.session  # 车间这边还是同一件活的会话，只是厂商会话换了新的
+    make(kind).stop('three', third)
+
+
+def test_claude_fresh_session_usage_uses_vendor_session(setup, monkeypatch):
+    """ws#30（PR #47 审查）：claude 无头换了新会话，用量按实际启动的会话号查，之后接回的轮也一样。"""
+    from workshop.plugins.executors.local import usage as usage_module
+    root, make, item, target = setup
+    asked = []
+    monkeypatch.setattr(usage_module, 'collect', lambda kind, home, session, *rest: asked.append(session))
+    (root/'finish').touch()  # 不交回执：同一轮重交一次仍没有，下一轮换新会话
+    executor = make('claude')
+    first = executor.launch('one', BRIEF, item, CONFIG, target)
+    wait_for(lambda: (executor.directory('one')/'exited.json').exists())
+    executor.stop('one', first)
+    (root/'finish').unlink()
+    target['runtime']['env']['WORKSHOP_ROUND_TOKEN'] = 'two'
+    second = make('claude').resume('two', first.session, BRIEF, item, CONFIG, target)
+    spec = read(executor.directory('two')/'spec.json')
+    assert spec['fresh_session'] and spec['vendor_id'] != first.session
+    wait_for(lambda: (executor.directory('two')/'child.json').exists())
+    make('claude').stop('two', second)
+    target['runtime']['env']['WORKSHOP_ROUND_TOKEN'] = 'three'
+    third = make('claude').resume('three', first.session, BRIEF, item, CONFIG, target)
+    assert read(executor.directory('three')/'spec.json')['vendor_id'] == spec['vendor_id']
+    wait_for(lambda: (executor.directory('three')/'child.json').exists())
+    make('claude').stop('three', third)
+    for token, started in (('one', first), ('two', second), ('three', third)):
+        executor.usage(token, started, '2026-11-13T00:00:00+00:00')
+    assert asked == [first.session, spec['vendor_id'], spec['vendor_id']]
+
+
 def test_codex_starts_fresh_session_when_rule_model_changes(setup):
     root, make, item, target = setup
     executor = make('codex')
@@ -632,3 +694,29 @@ def test_codex_starts_fresh_session_when_rule_model_changes(setup):
     calls = [json.loads(row)['args'] for row in (root/'agents').read_text().splitlines()]
     assert 'resume' in calls[1] and 'real-codex-session' in calls[1]
     assert 'resume' not in calls[2] and '--sandbox' in calls[2]
+
+
+@pytest.mark.parametrize('kind', ['codex', 'cursor-grok'])
+def test_failed_fresh_launch_after_model_change_never_resumes_old_session(setup, kind):
+    """ws#30 复审：换模型开的新会话没起来（会话号没输出就退出），下一轮仍开新会话，不拿新模型接回旧会话。"""
+    root, make, item, target = setup
+    executor = make(kind)
+    first = executor.launch('one', BRIEF, item, {**CONFIG, 'model': 'old-model'}, target)
+    wait_for(lambda: (root/'agents').exists() and (root/'agents').read_text().endswith('\n'))
+    executor.stop('one', first)
+    new = {**CONFIG, 'model': 'new-model'}
+    (root/'crash').touch()
+    target['runtime']['env']['WORKSHOP_ROUND_TOKEN'] = 'two'
+    second = make(kind).resume('two', first.session, BRIEF, item, new, target)
+    wait_for(lambda: (executor.directory('two')/'exited.json').exists())
+    make(kind).stop('two', second)
+    (root/'crash').unlink()
+    target['runtime']['env']['WORKSHOP_ROUND_TOKEN'] = 'three'
+    third = make(kind).resume('three', first.session, BRIEF, item, new, target)
+    wait_for(lambda: len((root/'agents').read_text().splitlines()) >= 3 and
+             json.loads((root/'agents').read_text().splitlines()[-1])['args'][-1] != 'never')
+    calls = [json.loads(row)['args'] for row in (root/'agents').read_text().splitlines()]
+    last = calls[-1]
+    assert not any(flag in last for flag in ('resume', '--resume')), last
+    assert last[last.index('--model') + 1] == 'new-model'
+    make(kind).stop('three', third)
