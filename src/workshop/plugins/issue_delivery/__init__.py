@@ -275,7 +275,12 @@ class IssueDelivery:
             try:
                 self.io.api(endpoint)
                 return f'照交付对象 {path}（{ref or "默认分支"}上的版本）'
-            except (Retryable, ValueError):
+            except ValueError as exc:
+                raise Retryable(f"回查发版手册 {path} 的结果读不懂，稍后重查") from exc
+            except Retryable as exc:
+                # 只有 GitHub 明确答 404 才算手册不存在；503、超时等不能证明不存在，留给核心退避重试。
+                if "HTTP 404" not in str(exc):
+                    raise
                 if not fallback:
                     return f"先问 Kun 照什么发（规则的 {path} 回查时没找到），再"
         return fallback or "先问 Kun 照什么发（规则没配 release_runbook），再"

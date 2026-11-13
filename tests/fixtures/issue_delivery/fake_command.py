@@ -114,6 +114,9 @@ elif args and args[0] == 'api':
         value = {'statuses': state.get('statuses', [])}
     elif '/contents/' in path and not path.endswith('/contents/release.json'):
         name = path.split('/contents/', 1)[1]
+        if state.get('contents_error'):
+            print(state['contents_error'], file=sys.stderr)
+            sys.exit(1)
         if name not in state.get('contents', []):
             print('gh: Not Found (HTTP 404)', file=sys.stderr)
             sys.exit(1)

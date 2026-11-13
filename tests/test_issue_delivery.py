@@ -10,6 +10,7 @@ import pytest
 from workshop.core.models import After, Classification, Event, FlowBrief, Receipt
 from workshop.plugins.issue_delivery import IssueDelivery, action_for
 from workshop.plugins.issue_delivery.io import IO, clean_env
+from workshop.core.ports import Retryable
 from workshop.plugins.sources.github import GitHubSource
 from conftest import build, configuration, current, finish, item
 
@@ -760,6 +761,20 @@ def test_delivery_instructions_point_to_rule_runbook_or_fallback(world):
     assert 'docs/runbooks/sync-production.md' not in brief and 'docs/runbooks/release.md' not in brief
     for text in ('两张卡，都要 Kun 批', '有延迟，要轮询', '不删 Pod，只靠 rollout'):
         assert text in brief
+
+
+@pytest.mark.parametrize('error', ['gh: Service Unavailable (HTTP 503)', 'error connecting to api.github.com'])
+def test_runbook_lookup_failure_retries_instead_of_falling_back(world, error):
+    target = {**world['target'], 'release': 'tag', 'release_runbook': 'docs/runbooks/sync-production.md',
+              'release_runbook_fallback': '照 issue kun-g/grant-console#143 正文的步骤'}
+    data = snapshot(world, '交付')
+    world['io'].save(data, target, {'effects': {}, 'issue': 7, 'merge': world['sha']})
+    edit(world, contents_error=error)
+    # 查不到不等于不存在：不能给出回退步骤，交给核心退避重试。
+    with pytest.raises(Retryable):
+        world['flow'].brief(data, '交付', target)
+    edit(world, contents_error=None, contents=['docs/runbooks/sync-production.md'])
+    assert 'docs/runbooks/sync-production.md' in world['flow'].brief(data, '交付', target)
 
 
 def test_delivery_instructions_wait_for_sync_and_do_not_advance_authorization(world):
