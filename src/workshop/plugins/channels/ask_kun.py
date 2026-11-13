@@ -11,6 +11,7 @@ import subprocess
 import tempfile
 import sys
 from copy import deepcopy
+from datetime import datetime, timedelta, timezone
 
 from workshop.core.cards import validate_notice, validate_question
 from workshop.core.models import Answer
@@ -39,12 +40,13 @@ class CommandNotStarted(RuntimeError):
 
 
 class AskKun:
-    def __init__(self, command=None, state_dir=None, timeout=30):
+    def __init__(self, command=None, state_dir=None, timeout=30, clock=None):
         command = str(command or os.environ.get("WORKSHOP_ASK_KUN", DEFAULT_COMMAND))
         self.command = str(Path(shutil.which(command) or command).expanduser().absolute())
         self.directory = Path(state_dir or os.environ.get("WORKSHOP_STATE_DIR", "~/.local/state/workshop")).expanduser().resolve() / "ask-kun-channel"
         self.directory.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.timeout = timeout
+        self.clock = clock or (lambda: datetime.now(timezone.utc))
         root = self.directory.parent
         database = root / "workshop.db"
         identity = "no-database"
@@ -155,6 +157,8 @@ class AskKun:
             return None
         # 已登记但仍 sending/queued 也已有唯一编号，继续轮询原问题。
         record["external"] = row["id"]
+        if row.get("sent_at"):
+            record["sent_at"] = row["sent_at"]
         self._save(key, record)
         return row["id"]
 
@@ -180,9 +184,9 @@ class AskKun:
         try:
             validate_question(wire)
         except (ValueError, TypeError, KeyError) as exc:
-            raise CommandNotStarted(str(exc)) from exc
+            raise ChannelRejected(str(exc)) from exc
         if any(not re.fullmatch(r"[a-zA-Z0-9_-]{1,18}", c["key"]) for c in wire["choices"]):
-            raise CommandNotStarted("选项 key 只支持字母、数字、下划线、连字符")
+            raise ChannelRejected("选项 key 只支持字母、数字、下划线、连字符")
         # 工程标识的完整含义保留在详情；无法用短字段表达时显式指向详情。
         technical = TECHNICAL
         defaults = {"subject": "车间方案待确认", "decision": "是否按详情中的方案继续", "reason": "完整依据与影响已列在详情中"}
@@ -210,11 +214,11 @@ class AskKun:
     def ask(self, key, card):
         try:
             wire = self._prepare(card)
-        except (ValueError, TypeError, KeyError, CommandNotStarted) as exc:
+        except (ValueError, TypeError, KeyError, ChannelRejected) as exc:
             with self._locked():
                 if not self._read(key):
-                    self._save(key, {"mode": "ask", "payload": card, "not_started": str(exc)})
-            raise CommandNotStarted(str(exc)) from exc
+                    self._save(key, {"mode": "ask", "payload": card, "rejected": str(exc)})
+            raise ChannelRejected(str(exc)) from exc
         with self._locked():
             record = self._read(key)
             if record:
@@ -246,6 +250,7 @@ class AskKun:
             if not re.fullmatch(r"Q\d+", external):
                 raise RuntimeError("ask-kun 没有返回唯一 Q 号，等待对账")
             record["external"] = external
+            record["sent_at"] = self.clock().isoformat()
             self._save(key, record)
             return external
 
@@ -266,8 +271,11 @@ class AskKun:
     def notify(self, key, card):
         try:
             validate_notice(card)
-        except ValueError as exc:
-            raise CommandNotStarted(str(exc)) from exc
+        except (ValueError, TypeError, KeyError) as exc:
+            with self._locked():
+                if not self._read(key):
+                    self._save(key, {"mode": "notice", "payload": card, "rejected": str(exc)})
+            raise ChannelRejected(str(exc)) from exc
         with self._locked():
             record = self._read(key)
             if record and (record["payload"] != card or record["mode"] != "notice"):
@@ -277,6 +285,19 @@ class AskKun:
                 return record["external"]
             self._save(key, record)
             return self._notify(key, record)
+
+    def _missing_answer(self, card):
+        # list 在接线台按调用者会话过滤，缺号本身不能证明卡已被清理。
+        record = self._read(card["id"])
+        try:
+            if not record or record.get("external") != card["external"]:
+                raise ValueError("缺发送记录")
+            sent = datetime.fromisoformat(record["sent_at"])
+            if sent.tzinfo is None or self.clock() - sent <= timedelta(days=29):
+                raise ValueError("发送未满 29 天或缺时区")
+        except (KeyError, TypeError, ValueError) as exc:
+            raise RuntimeError(f"列表缺号但不能确认清理：{exc}") from exc
+        return Answer(card["id"], "", cancelled=True)
 
     def poll(self, cards):
         cards = [card for card in cards if not card.get("answered") and not card.get("cancelled")]
@@ -291,7 +312,7 @@ class AskKun:
             try:
                 row = indexed.get(card["external"])
                 if row is None:
-                    answers.append(Answer(card["id"], "", cancelled=True))
+                    answers.append(self._missing_answer(card))
                     continue
                 if row.get("status") not in ("answered", "cancelled", "defaulted"):
                     continue  # 待答无需 wait，省去每卡启动外部程序。
@@ -304,8 +325,11 @@ class AskKun:
                         or result.returncode == 4 and "HTTP 403" in result.stderr):
                     latest = self._questions()
                     missing = latest is not None and not any(row.get("id") == card["external"] for row in latest)
-                if result.returncode == 6 or missing:
+                if result.returncode == 6:
                     answers.append(Answer(card["id"], "", cancelled=True))
+                    continue
+                if missing:
+                    answers.append(self._missing_answer(card))
                     continue
                 self._check(result)  # 查询错误永不产生 ChannelRejected。
                 value = result.stdout.strip()

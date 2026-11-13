@@ -290,7 +290,7 @@ def test_readability_repairs_and_true_upstream_validator(fake, tmp_path):
         assert fields["choices"][0]["key"] == "yes"
 
 
-@pytest.mark.parametrize("mode", ["usage"])
+@pytest.mark.parametrize("mode", ["usage", "local"])
 def test_definite_rejection_is_not_reconciliation(fake, tmp_path, mode):
     from workshop.core.ports import ChannelRejected
     c = channel(fake, tmp_path)
@@ -306,9 +306,9 @@ def test_definite_rejection_is_not_reconciliation(fake, tmp_path, mode):
     with pytest.raises(ChannelRejected) as raised:
         c.ask("bad", q)
     assert str(raised.value)
-    if mode != "local":
-        with pytest.raises(ChannelRejected):
-            c.reconcile("bad", {"mode": "ask"})
+    with pytest.raises(ChannelRejected):
+        c.reconcile("bad", {"mode": "ask"})
+    assert c._read("bad").get("rejected") and not c._read("bad").get("not_started")
     assert calls(fake, "list") == []
 
 
@@ -327,7 +327,10 @@ def test_thirty_day_cleanup_returns_cancelled(fake, tmp_path):
     rows[0]["sent_at"] = "2000-01-01T00:00:00+00:00"
     rows[0]["status"] = "answered"
     path.write_text(json.dumps(rows))
-    answer, = c.poll([card()])
+    local = c._read("old")
+    local["sent_at"] = rows[0]["sent_at"]
+    c._save("old", local)
+    answer, = c.poll([card(id="old")])
     assert answer.cancelled and not answer.approved and answer.value == ""
     assert len(calls(fake, "ask")) == 1
 
@@ -507,6 +510,10 @@ def test_list_environment_failure_does_not_reject_core_sent_card(fake, engine):
 
 def test_http_403_requires_complete_absent_list(fake, tmp_path):
     c = channel(fake, tmp_path)
+    c.ask("core-card", question("旧方案"))
+    record = c._read("core-card")
+    record["sent_at"] = "2000-01-01T00:00:00+00:00"
+    c._save("core-card", record)
     configure(fake, answers={"Q1": [4, ""]})
     with pytest.raises(RuntimeError):
         c.poll([card()])  # 编号还在，不得把权限/读取故障当成作废。
@@ -578,3 +585,68 @@ def test_watch_detects_stop_within_four_minute_check_bound(fake, tmp_path, phase
             detected = seconds
             break
     assert 180 < detected <= 240
+
+
+
+@pytest.mark.parametrize("lookup", ["list", "http403"])
+@pytest.mark.parametrize("age", [None, 0, 28, 29, 30])
+def test_missing_card_only_expires_after_known_twenty_nine_days(fake, tmp_path, lookup, age, capsys):
+    c = AskKun(fake, tmp_path / "state", clock=lambda: NOW)
+    c.ask("tracked", question("审批方案", approval=True))
+    record = c._read("tracked")
+    assert record["sent_at"] == NOW.isoformat()
+    if age is None:
+        record.pop("sent_at")
+    else:
+        record["sent_at"] = (NOW - timedelta(days=age)).isoformat()
+    c._save("tracked", record)
+    if lookup == "list":
+        configure(fake, empty_list=True)
+    else:
+        configure(fake, answers={"Q1": [4, ""]}, remove_on_wait=True)
+    if age == 30:
+        answer, = c.poll([card(id="tracked")])
+        assert answer.cancelled and not answer.approved
+    else:
+        with pytest.raises(RuntimeError, match="不能确认清理"):
+            c.poll([card(id="tracked")])
+        assert "Q1" in capsys.readouterr().err
+        assert not c._read("tracked").get("cancelled")
+    assert len(calls(fake, "ask")) == 1
+
+
+def test_new_hidden_card_does_not_drop_visible_answer(fake, tmp_path, capsys):
+    c = channel(fake, tmp_path)
+    c.ask("hidden", question("审批方案", approval=True))
+    configure(fake, missing_ids=["Q1"], answers={"Q2": [0, "yes"]})
+    answers = c.poll([card(id="hidden"), card("Q2", id="visible")])
+    assert len(answers) == 1 and answers[0].card_id == "visible" and answers[0].approved
+    assert "Q1" in capsys.readouterr().err
+
+
+def test_local_invalid_key_is_rejected_once_in_core_and_explained(fake, engine):
+    from conftest import event, item
+    from workshop.core.report import why
+    engine.ingest(event())
+    c = AskKun(fake, engine.log.path.parent)
+    engine.plugins.register("channel", "channel", c)
+    q = question("选择方案")
+    q["choices"][0]["key"] = q["recommend"] = "bad key"
+    cid = engine.card(item(engine), "bad-key", "ask", q)
+    for _ in range(3):
+        engine.channels()
+    assert engine.log.get("cards", cid)["rejected"]
+    assert "选项 key" in why(engine.log, item(engine)["id"])
+    assert not calls(fake, "ask")
+    assert len(calls(fake, "notify")) == 1
+    assert c._read(cid).get("rejected") and not c._read(cid).get("not_started")
+
+
+def test_recovered_send_keeps_upstream_send_time(fake, tmp_path):
+    configure(fake, drop_ask_reply=True)
+    c = channel(fake, tmp_path)
+    with pytest.raises(RuntimeError):
+        c.ask("lost", question("选择方案"))
+    assert c.reconcile("lost", {"mode": "ask"}) == "Q1"
+    upstream = json.loads((fake.parent / "questions.json").read_text())[0]
+    assert c._read("lost")["sent_at"] == upstream["sent_at"]
