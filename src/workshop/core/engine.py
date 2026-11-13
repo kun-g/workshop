@@ -10,6 +10,7 @@ import sys
 import hashlib
 
 from .gates import decide, overlaps, validate_stages
+from .models import STAGES as ALL_STAGES
 from .log import Log
 from .models import Brief, Event, Receipt, STAGES, Started, due, stamp, utcnow
 from .ports import Unavailable, Retryable, ChannelRejected
@@ -681,6 +682,12 @@ class Engine:
             flow = self.plugins.get(port, name)
             stages = flow.stages(target)
             validate_stages(stages)
+            if item["stage"] not in stages:
+                following = next(s for s in stages if ALL_STAGES.index(s) > ALL_STAGES.index(item["stage"]))
+                self.change(item, stage=following, state="空闲", next=following, failures=0, retry_at=None,
+                            retry_executor=None, review_required=1, reviews=[],
+                            gate_reason=f'规则已去掉「{item["stage"]}」阶段，直接进{following}')
+                return
             content = flow.brief(item, item["stage"], target)
             content = FlowBrief(content) if isinstance(content, str) else content
             if (not isinstance(content, FlowBrief) or not isinstance(content.instructions, str)
