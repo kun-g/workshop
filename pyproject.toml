@@ -21,6 +21,15 @@ issue_delivery = "workshop.plugins.issue_delivery:make_flow"
 [project.entry-points."workshop.source"]
 github = "workshop.plugins.sources.github:make_source"
 
+[project.entry-points."workshop.channel"]
+ask_kun = "workshop.plugins.channels.ask_kun:make_channel"
+
+[project.entry-points."workshop.executor"]
+orca-claude = "workshop.plugins.executors.local:make_orca_claude"
+codex = "workshop.plugins.executors.local:make_codex"
+cursor-grok = "workshop.plugins.executors.local:make_cursor_grok"
+claude = "workshop.plugins.executors.local:make_claude"
+
 [dependency-groups]
 dev = ["pytest>=8.3,<10", "import-linter>=2.1,<3"]
 
@@ -34,4 +43,10 @@ root_package = "workshop"
 name = "核心不引用插件"
 type = "forbidden"
 source_modules = ["workshop.core"]
+forbidden_modules = ["workshop.plugins"]
+
+[[tool.importlinter.contracts]]
+name = "看门不引用插件"
+type = "forbidden"
+source_modules = ["workshop.watch"]
 forbidden_modules = ["workshop.plugins"]

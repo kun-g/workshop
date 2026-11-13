@@ -160,6 +160,20 @@ ask-kun ask 没有 request-id，适配器不能声称直接幂等。可先持久
 
 `poll(cards) -> list[Answer(card_id, value, approved=False)]`，card_id 是核心卡号，value 必须是用户所选的 key。核心动作/计费审批只认 value="yes"，不信 approved；其他插件问题的明确批准才给 approved=True。kind=approval 的卡收到不在 choices.key 中的 value，记一次投递故障并继续等原卡，不当作批准或拒绝；有效回答到达后清故障。`cancel(key, external)` 按核心 key 幂等作废，外部编号不明时先对账。返工时核心先把旧问题标 cancelled，再通知通道作废；晚到答案忽略，取消失败会保留待处理记录。每张卡每次故障只记一条 delivery_failed，恢复后再坏会再记；通道整体查询失败也按事件段去重。通道故障不阻塞其他活。
 
+### 通道拒收与上游作废（W2-C 修改轮 3）
+
+`ChannelRejected` 表示适配器的内容预检无法改写成合规卡片，或发送命令明确拒收卡片。ask-kun 适配器仅在 ask/notify 退出码为 2 且 stderr 含「尚未发送」或 `usage: ask-kun` 时抛出，保留 stderr。启动失败（命令缺失、无执行权限、可识别的 uv 启动错误）记 not_started，对账返回 absent 可重试；内容预检失败（例如选项 key 不合法）记本地拒收，不重试；运行环境未启动仍与拒收分开。超时、断线和丢回包继续按 sending 对账。list/wait/cancel 错误一律不抛拒收。
+
+核心记录 `card_rejected`（why 可见），停止对该卡投递/对账。同一张卡只创建一条固定通知「车间有一张卡发不出去，原因已记录，请看 workshop why <活>」，通知自身拒收不递归，但记 delivery_failed，心跳带给看门；固定通知成功则清除原拒收卡的投递失败信号。
+
+通知拒收只记事实/告警，不动活。问题拒收保留 awaiting_release，waiting() 仍算待答：跑着时不改状态，轮结束自然等你；卡住时不覆盖状态，只更新可恢复的等你快照；完成的活不重开。明确 ready 事件消费 awaiting_release 和 wait_for_ready（跑着/卡住时也消费），不伪造其他待答卡的答案，返工也解除旧拒收卡等待。
+
+`Answer.cancelled` 默认 false，明确作废或确认已清理的卡返回 `Answer(card_id, "", cancelled=True)`。核心记 `card_cancelled_external`、标 cancelled/cancel_done，按上述问题终态规则保留等待；如果该卡承载授权，清除旧续接记录，修复放行后重走原阶段，不把没有回答说成 Kun 拒绝。
+
+poll 每批先调用一次 `list --all`，列表中 waiting/sending 的卡不再调用 wait；已答/作废卡才 wait。ask 成功时记录 sent_at，丢回包后找回原卡时保留上游发送时间。list 可能按调用者会话过滤，缺号只有本地发送时间早于 29 天才按已清理作废；未满 29 天、恰好 29 天、发送时间缺失或无效都记逐卡查询失败，不作废。逐卡错误记 stderr，其余答案照常返回，全部失败才抛查询异常。接线台 wait 返回 4 且 stderr 含 HTTP 403，须重查完整列表，确认编号缺失且已知发送时间早于 29 天才作废；同样处理旧版缺号提示，不能把权限或未确认发送当作废。列表格式不完整或分页/截断时保留所有卡。
+
+通知的 external 保存实际传给 ask-kun `--request-id` 的稳定键（含状态目录及数据库文件身份哈希），不再只存核心 key；通知回复归件在后续工作接入，本轮不处理。
+
 ## 可选工单 TaskHome
 
 第一版规则不配置，核心不发单也不卡活；以后配置才调用 `open(key, item, target) -> ticket`、`update(key, ticket, item, target)`。两者须持久幂等，不能冒充负责会话领单/收单。
@@ -174,6 +188,6 @@ ask-kun ask 没有 request-id，适配器不能声称直接幂等。可先持久
 
 ### 看门接入
 
-只有成功走完 tick 才原子替换 `heartbeat.json`，含 UTC at、last_ok_at（两者相同）和 active。失败 tick 不改心跳；首次 tick 即失败时文件不存在，看门应按缺失/last_ok_at 陈旧判断失联，不能只看守护进程还活着。普通 tick 异常记 tick_failed，同一错误在恢复前只记一次；controls 的 @tick 仅在连续失败达到 1/3/10 次阈值时更新 failures（10 表示至少 10 次），成功恢复时归零；相同故障持续 30 次也仅三条阈值 control。阈值间计数在进程内，重启从最近持久阈值接续，不作为精确失败次数报表；同一错误事实去重可跨重启，再坏会重新记事实。下一 tick 继续；若暂时写不进数据库则输出 stderr 并继续尝试，初始化打不开数据库才无法启动。独立看门下一波实现，可查 rounds JSON 的 at、status、deadline、stopped；starting/running/finishing 是未结算轮，stopped=true 不占执行者位。
+只有成功走完 tick 才原子替换 `heartbeat.json`，含 UTC at、last_ok_at（两者相同）、active，以及 delivery_failed_count（当前未恢复投递失败信号数）和 delivery_failed_since（其中最早开始时刻，无故障为 null）。成功恢复清除对应失败信号；拒收通知自身失败也在此计数。看门在投递故障持续超过 180 秒时告警/兜底。失败 tick 不改心跳；首次 tick 即失败时文件不存在，看门应按缺失/last_ok_at 陈旧判断失联，不能只看守护进程还活着。普通 tick 异常记 tick_failed，同一错误在恢复前只记一次；controls 的 @tick 仅在连续失败达到 1/3/10 次阈值时更新 failures（10 表示至少 10 次），成功恢复时归零；相同故障持续 30 次也仅三条阈值 control。阈值间计数在进程内，重启从最近持久阈值接续，不作为精确失败次数报表；同一错误事实去重可跨重启，再坏会重新记事实。下一 tick 继续；若暂时写不进数据库则输出 stderr 并继续尝试，初始化打不开数据库才无法启动。独立看门下一波实现，可查 rounds JSON 的 at、status、deadline、stopped；starting/running/finishing 是未结算轮，stopped=true 不占执行者位。
 
 `extension_metrics(log, repository, base, head, target, started)` 保留观察阶段的核心改动行数、第一件活用时固定检查，流程负责调用并登记结果。
