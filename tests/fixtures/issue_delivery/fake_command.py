@@ -27,7 +27,12 @@ def emit(value):
 if name == 'lark-cli':
     emit(state.get('message', {'ok': False}))
 elif name == 'kubectl':
-    emit(state.get('app', {}))
+    if 'deployment' in args:
+        # 默认是换版已完成的 Deployment；测试改 rollout 模拟没完成。
+        emit(state.get('rollout', {'metadata': {'generation': 2}, 'spec': {'replicas': 1},
+                                   'status': {'observedGeneration': 2, 'replicas': 1, 'updatedReplicas': 1, 'availableReplicas': 1}}))
+    else:
+        emit(state.get('app', {}))
 elif name == 'tag-release.sh':
     state.setdefault('tags', {})['v1.2.3'] = args[-1]
     save()
@@ -107,6 +112,15 @@ elif args and args[0] == 'api':
         value = {'check_runs': state.get('checks', [{'name': 'check', 'status': 'completed', 'conclusion': 'success'}])}
     elif path.endswith('/status'):
         value = {'statuses': state.get('statuses', [])}
+    elif '/contents/' in path and not path.endswith('/contents/release.json'):
+        name = path.split('/contents/', 1)[1]
+        if state.get('contents_error'):
+            print(state['contents_error'], file=sys.stderr)
+            sys.exit(1)
+        if name not in state.get('contents', []):
+            print('gh: Not Found (HTTP 404)', file=sys.stderr)
+            sys.exit(1)
+        value = {'path': name, 'content': ''}
     elif path.endswith('/contents/release.json'):
         value = {'content': base64.b64encode(json.dumps({'source_commit': state.get('deployed_sha')}).encode()).decode()}
     else:

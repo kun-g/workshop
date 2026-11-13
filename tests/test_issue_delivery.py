@@ -10,6 +10,7 @@ import pytest
 from workshop.core.models import After, Classification, Event, FlowBrief, Receipt
 from workshop.plugins.issue_delivery import IssueDelivery, action_for
 from workshop.plugins.issue_delivery.io import IO, clean_env
+from workshop.core.ports import Retryable
 from workshop.plugins.sources.github import GitHubSource
 from conftest import build, configuration, current, finish, item
 
@@ -60,7 +61,8 @@ def world(tmp_path, monkeypatch):
     target = {'name': 'alpha', 'repo': 'kun-g/workshop', 'checkout': str(repo), 'release': 'none',
               'ci': ['check'], 'short_name': 'ws', 'github_cache_dir': str(tmp_path / 'cache'),
               'tag_command': ['scripts/tag-release.sh'], 'delivery_action': '自己的交付', 'feishu_chat_id': 'oc_group', 'kun_feishu_open_id': 'ou_kun',
-              'ask_kun_state': str(tmp_path / 'asks.json'), 'deployment': {'app': 'test', 'context': 'readonly', 'namespace': 'argocd', 'revision_field': 'status.sync.revision', 'branch': 'production', 'release_file': 'release.json', 'source_field': 'source_commit'}}
+              'ask_kun_state': str(tmp_path / 'asks.json'), 'deployment': {'app': 'test', 'context': 'readonly', 'namespace': 'argocd', 'revision_field': 'status.sync.revision', 'branch': 'production', 'release_file': 'release.json', 'source_field': 'source_commit',
+              'rollout': {'namespace': 'apps', 'name': 'web'}}}
     io = IO(str(commands / 'gh'), str(commands / 'git'), tmp_path / 'flow', str(commands / 'lark-cli'))
     return dict(store=store, commands=commands, target=target, io=io, flow=IssueDelivery(io), sha=sha, root=tmp_path)
 
@@ -623,8 +625,36 @@ def test_deployed_matches_production_and_contains_merged_commit(world):
     assert world['flow']._deployed(world['target'], world['sha'])
     call = next(c for c in calls(world) if c[0] == 'kubectl')
     assert call == ['kubectl', '--request-timeout=20s', '--context', 'readonly', '-n', 'argocd', 'get', 'application', 'test', '-o', 'json']
+    rollout = next(c for c in calls(world) if c[0] == 'kubectl' and 'deployment' in c)
+    assert rollout == ['kubectl', '--request-timeout=20s', '--context', 'readonly', '-n', 'apps', 'get', 'deployment', 'web', '-o', 'json']
     edit(world, production_sha='f' * 40)
     assert not world['flow']._deployed(world['target'], world['sha'])
+
+
+ROLLED_OUT = {'metadata': {'generation': 5}, 'spec': {'replicas': 2},
+              'status': {'observedGeneration': 5, 'replicas': 2, 'updatedReplicas': 2, 'availableReplicas': 2}}
+
+
+@pytest.mark.parametrize('change', [
+    {'metadata': {'generation': 6}},                                       # 控制器还没看到新一代
+    {'status': {**ROLLED_OUT['status'], 'updatedReplicas': 1}},            # 新副本数不够
+    {'status': {**ROLLED_OUT['status'], 'replicas': 3}},                   # 旧副本还没走完
+    {'status': {**ROLLED_OUT['status'], 'availableReplicas': 1}},          # 新副本没全部可用
+    {'status': {**ROLLED_OUT['status'], 'conditions': [{'type': 'Progressing', 'reason': 'ProgressDeadlineExceeded'}]}},
+])
+def test_deployed_requires_rollout_complete(world, change):
+    app = {'status': {'sync': {'status': 'Synced', 'revision': 'e' * 40}, 'health': {'status': 'Healthy'}}}
+    edit(world, app=app, deployed_sha=world['sha'], rollout=ROLLED_OUT)
+    assert world['flow']._deployed(world['target'], world['sha'])
+    edit(world, rollout={**ROLLED_OUT, **change})
+    assert not world['flow']._deployed(world['target'], world['sha'])
+
+
+def test_deployed_fails_without_rollout_rule(world):
+    app = {'status': {'sync': {'status': 'Synced', 'revision': 'e' * 40}, 'health': {'status': 'Healthy'}}}
+    edit(world, app=app, deployed_sha=world['sha'])
+    deployment = {k: v for k, v in world['target']['deployment'].items() if k != 'rollout'}
+    assert not world['flow']._deployed({**world['target'], 'deployment': deployment}, world['sha'])
 
 
 def test_release_submission_switches_to_no_executor_wait(world):
@@ -712,6 +742,39 @@ def test_release_uses_merged_script_in_owned_checkout_without_changing_main(worl
     fetches = [c for c in calls(world) if c[0] == 'git' and 'fetch' in c]
     assert fetches and all(c[c.index('-C') + 1] == str(checkout) for c in fetches)
     assert len([c for c in calls(world) if c[0] == 'git' and 'clone' in c]) == 1
+
+
+def test_delivery_instructions_point_to_rule_runbook_or_fallback(world):
+    target = {**world['target'], 'release': 'tag', 'release_runbook': 'docs/runbooks/sync-production.md',
+              'release_runbook_fallback': '照 issue kun-g/grant-console#143 正文的步骤'}
+    data = snapshot(world, '交付')
+    world['io'].save(data, target, {'effects': {}, 'issue': 7, 'merge': world['sha']})
+    edit(world, contents=['docs/runbooks/sync-production.md'])
+    brief = world['flow'].brief(data, '交付', target)
+    assert '照交付对象 docs/runbooks/sync-production.md' in brief and world['sha'] in brief
+    assert 'docs/runbooks/release.md' not in brief and 'kun-g/grant-console#143' not in brief
+    lookup = [c for c in calls(world) if c[0] == 'gh' and any('/contents/' in a for a in c)][-1]
+    assert 'repos/kun-g/workshop/contents/docs/runbooks/sync-production.md?ref=' + world['sha'] in lookup
+    edit(world, contents=[])
+    brief = world['flow'].brief(data, '交付', target)
+    assert '若已合并且 release=tag，照 issue kun-g/grant-console#143 正文的步骤完成发布' in brief
+    assert 'docs/runbooks/sync-production.md' not in brief and 'docs/runbooks/release.md' not in brief
+    for text in ('两张卡，都要 Kun 批', '有延迟，要轮询', '不删 Pod，只靠 rollout'):
+        assert text in brief
+
+
+@pytest.mark.parametrize('error', ['gh: Service Unavailable (HTTP 503)', 'error connecting to api.github.com'])
+def test_runbook_lookup_failure_retries_instead_of_falling_back(world, error):
+    target = {**world['target'], 'release': 'tag', 'release_runbook': 'docs/runbooks/sync-production.md',
+              'release_runbook_fallback': '照 issue kun-g/grant-console#143 正文的步骤'}
+    data = snapshot(world, '交付')
+    world['io'].save(data, target, {'effects': {}, 'issue': 7, 'merge': world['sha']})
+    edit(world, contents_error=error)
+    # 查不到不等于不存在：不能给出回退步骤，交给核心退避重试。
+    with pytest.raises(Retryable):
+        world['flow'].brief(data, '交付', target)
+    edit(world, contents_error=None, contents=['docs/runbooks/sync-production.md'])
+    assert 'docs/runbooks/sync-production.md' in world['flow'].brief(data, '交付', target)
 
 
 def test_delivery_instructions_wait_for_sync_and_do_not_advance_authorization(world):

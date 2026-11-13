@@ -224,9 +224,12 @@ class IssueDelivery:
                 "合并和打 tag 只由流程 after 做，本轮不要做。给回执 pr/head 并推进验收。"
                 "合并冲突或 PR 已关闭没合并时，本轮只交 advance=\"执行\"，到执行阶段再合 main、解冲突。"
                 "release=self（交付对象是车间自己）时，合并后由流程快进主检出并重启车间，本轮不要动主检出、不要重启。"
-                "若已合并且 release=tag，照交付对象 docs/runbooks/release.md 完成发布；集群授权只用 "
+                f"若已合并且 release=tag，{self._runbook(target, state) if stage == '交付' else '照规则 release_runbook 指向的发版手册'}完成发布；集群授权只用 "
                 "~/workspace/runtime/repos/grant-console/scripts/request_grant.py，--requested-by 带本活 id。"
+                "上线批准卡和集群授权卡是两张卡，都要 Kun 批，一张都不能代批或跳过。"
                 "还在等授权卡时交 later 退出，回执不带 advance，也不带 release_submitted；不换身份、不复用过期授权、不绕过授权卡；留住申请号并用 status 回查，不重复申请。"
+                "卡批了到权限或同步真正生效有延迟，要轮询到生效再做下一步（授权看 request_grant 的 status/wait 和 kubectl auth can-i）。"
+                "换版不删 Pod，只靠 rollout，等 rollout 完成。"
                 "真正 sync 完并确认上线后，回执 JSON 才给 release_submitted=true；流程只定时核对线上版本包含合并提交，不重复叫执行者。"
             ),
             "验收": (
@@ -259,6 +262,28 @@ class IssueDelivery:
         if stage == "执行":
             return common + instructions + self._rerun_hint(item, target, state)
         return common + instructions
+
+    def _runbook(self, target, state):
+        """交付说明里的发版手册：规则 release_runbook 在交付提交（没合并时默认分支）里存在就指向它，否则用规则给的回退文本。"""
+        if target.get("release", "none") != "tag":
+            return "照规则 release_runbook 指向的发版手册"
+        path = target.get("release_runbook")
+        fallback = target.get("release_runbook_fallback")
+        if path:
+            ref = state.get("merge")
+            endpoint = f'repos/{target["repo"]}/contents/{quote(path)}' + (f"?ref={quote(ref)}" if ref else "")
+            try:
+                self.io.api(endpoint)
+                return f'照交付对象 {path}（{ref or "默认分支"}上的版本）'
+            except ValueError as exc:
+                raise Retryable(f"回查发版手册 {path} 的结果读不懂，稍后重查") from exc
+            except Retryable as exc:
+                # 只有 GitHub 明确答 404 才算手册不存在；503、超时等不能证明不存在，留给核心退避重试。
+                if "HTTP 404" not in str(exc):
+                    raise
+                if not fallback:
+                    return f"先问 Kun 照什么发（规则的 {path} 回查时没找到），再"
+        return fallback or "先问 Kun 照什么发（规则没配 release_runbook），再"
 
     @staticmethod
     def _reached_acceptance(item):
@@ -503,10 +528,32 @@ class IssueDelivery:
             source = self._field(json.loads(base64.b64decode(record["content"])), config["source_field"])
             if not isinstance(source, str) or not re.fullmatch(r"[0-9a-f]{40}", source):
                 return False
+            if not self._rolled_out(config):
+                return False
             with self.io.release_checkout(target, sha, extra_refs=[source]) as checkout:
                 return run([self.io.git, "-C", str(checkout), "merge-base", "--is-ancestor", sha, source], check=False).returncode == 0
         except (ValueError, KeyError, Retryable):
             return False
+
+    def _rolled_out(self, config):
+        """规则 deployment.rollout 指定的 Deployment 换版完成，判定同 kubectl rollout status：
+        控制器看过最新一代、没有卡住、新副本数够、旧副本走完、新副本全部可用。"""
+        rollout = config["rollout"]
+        result = run([executable("kubectl"), "--request-timeout=20s", "--context", config["context"],
+            "-n", rollout["namespace"], "get", "deployment", rollout["name"], "-o", "json"], check=False)
+        if result.returncode:
+            return False
+        deployment = json.loads(result.stdout)
+        status = deployment.get("status", {})
+        if deployment.get("metadata", {}).get("generation", 0) > status.get("observedGeneration", 0):
+            return False
+        if any(c.get("type") == "Progressing" and c.get("reason") == "ProgressDeadlineExceeded"
+               for c in status.get("conditions", [])):
+            return False
+        wanted = deployment.get("spec", {}).get("replicas", 1)
+        updated = status.get("updatedReplicas", 0)
+        return (updated >= wanted and status.get("replicas", 0) == updated
+                and status.get("availableReplicas", 0) >= updated)
 
     @staticmethod
     def _unmergeable(pr):

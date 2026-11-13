@@ -35,7 +35,12 @@ targets:
       branch: production
       release_file: release.json
       source_field: source_commit
+      # 回查要求这个 Deployment 换版完成（同 kubectl rollout status 的判定）；只读 get，不删 Pod。
+      rollout: {namespace: agent-ops, name: grant-console}
     release: tag
+    # 交付说明里的发版手册：交付提交里有这个文件就照它发；没有（grant-console#143 合并前）就用回退文本。
+    release_runbook: docs/runbooks/sync-production.md
+    release_runbook_fallback: 照 issue kun-g/grant-console#143 正文的步骤
     # 前缀匹配仓库根起的相对路径。名单由 grant-console 负责会话 11-13 给出。
     two_reviewers: ['.github/', 'deploy/', 'scripts/', 'services/devops-console/grant_console/',
                     'services/devops-console/k8s/', 'docs/ci.md', 'docs/runbooks/release.md']
