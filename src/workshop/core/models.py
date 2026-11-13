@@ -197,7 +197,7 @@ class Receipt:
         if not isinstance(receipt.events, list):
             raise ValueError("events 必须是列表")
         for event in receipt.events:
-            Event(**event).validate()
+            Event(**{**event, "action": "update", "depth": 0}).validate()
         if receipt.leave is not None:
             if not isinstance(receipt.leave, dict):
                 raise ValueError("leave 必须是 JSON 对象")

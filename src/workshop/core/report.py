@@ -16,6 +16,9 @@ def status(log):
         control = log.get("controls", item["target"]) or {}
         state = "暂停" if control.get("paused") else item["state"]
         lines.append("\t".join((item["id"], item["stage"], state, who, item["next"], item["blocked_by"] or "—")))
+    uncertain = [c for c in log.all("cards") if c.get("reconcile_failed") and not c["sent"] and not c.get("cancel_done")]
+    for card in uncertain:
+        lines.append(f'通道待对账\t{card["item"]}\t{card["id"]}\t连续 3 次不能确定是否已发送，需检查通道')
     return "\n".join(lines)
 
 
@@ -88,7 +91,7 @@ def incomplete(value):
 
 
 def model_metrics(log):
-    rows = log.all("rounds")
+    rows = [r for r in log.all("rounds") if r["status"] == "ended"]
     first = {}
     for row in rows:
         if row["stage"] in ("审查", "验收"):
@@ -128,7 +131,7 @@ def model_metrics(log):
 def usage(log, now=None):
     now = (now or utcnow()).astimezone()
     today = now.replace(hour=0, minute=0, second=0, microsecond=0)
-    rows = log.all("rounds")
+    rows = [r for r in log.all("rounds") if r["status"] == "ended"]
 
     def summarize(label, selected):
         tokens = " / ".join(display(total(selected, k)) for k in TOKEN_FIELDS)

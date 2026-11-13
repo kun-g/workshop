@@ -44,7 +44,7 @@ def test_unknown_is_null_and_separate_model_group(engine):
     rows = engine.log.all("rounds")
     assert rows[0]["usage"] == asdict(Usage())
     stats = model_metrics(engine.log)[None]
-    assert stats["unreported"] == 2
+    assert stats["unreported"] == 1
     assert stats["cost_usd"] is None and all(v is None for v in stats["tokens"].values())
     assert stats["cache_hit_rate"] is None
     assert "未知" in usage(engine.log, engine.clock())
@@ -64,7 +64,7 @@ def test_cache_rate_excludes_partial_input_and_keeps_known_zero(engine):
     assert stats["tokens"]["cache_read"] == 300
     assert stats["cost_usd"] == 1.0
     assert stats["average_seconds"] == 5
-    assert None in model_metrics(engine.log)  # 正在跑的一轮尚未有实际模型。
+    assert None not in model_metrics(engine.log)  # 在跑的轮不进入模型汇总。
 
 
 def test_first_pass_ratio_does_not_treat_successful_retry_as_first_pass(engine):
@@ -229,7 +229,7 @@ def test_metered_executor_requires_approval_before_selection(engine):
     assert item(engine)["state"] == "等你" and not engine.active()
     card = engine.log.all("cards")[0]
     assert card["billing_configs"] and card["payload"]["kind"] == "approval"
-    engine.plugins.get("channel", "channel").answers = [Answer(card["id"], "批准", True)]
+    engine.plugins.get("channel", "channel").answers = [Answer(card["id"], "yes", True)]
     engine.tick()
     assert current(engine)["config"]["billing"] == "metered"
     assert item(engine)["billing_approved"]
@@ -255,7 +255,7 @@ def test_metered_refusal_does_not_repeat_question_or_select(engine):
     engine.ingest(event())
     engine.tick()
     card = engine.log.all("cards")[0]
-    engine.plugins.get("channel", "channel").answers = [Answer(card["id"], "不批准", False)]
+    engine.plugins.get("channel", "channel").answers = [Answer(card["id"], "no", False)]
     engine.tick()
     engine.tick()
     assert not engine.active() and item(engine)["wait_for_ready"]

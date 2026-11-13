@@ -1,7 +1,7 @@
 """同步短时端口；不等待人或一轮结束。字段和恢复时序见接入文档。"""
 from typing import Literal, Protocol
 from .cards import Question, Notice
-from .models import Answer, Brief, Evidence, Poll, Receipt, Started, RoundUsage, Selection
+from .models import Answer, Brief, Evidence, Event, Poll, Receipt, Started, RoundUsage, Selection
 
 
 class Unavailable(Exception):
@@ -19,6 +19,13 @@ class Source(Protocol):
 
 
 class Flow(Protocol):
+    def classify(self, event: Event, item: dict, target: dict) -> Literal["update", "ready", "rework"]:
+        """只对非 agent 的 CLI 入口判定可信来源动作；输入 action 已归 update、depth 已归零。
+
+        查来源身份和正文语义，默认 update；异常由核心按流程故障处理。
+        来源 poll 自己的动作已可信，不调用此方法；agent 事件永不调用此方法。
+        """
+        ...
     def stages(self, target: dict) -> tuple[str, ...]: ...
     def brief(self, item: dict, stage: str, target: dict) -> str:
         """可信说明；item.history 含每轮结论，gate_reason 含需要修正的关口理由。"""
@@ -61,7 +68,7 @@ class Channel(Protocol):
         """返回已发外部编号；absent 表示确定未发，可重试；None 表示不确定，禁止重发。"""
         ...
     def poll(self, cards: list[dict]) -> list[Answer]:
-        """只查未作废卡；明确批准才给 approved=True。"""
+        """只查未作废卡；value 返回所选 key。核心自己的审批只认 yes，approved 仅供插件问题使用。"""
         ...
     def cancel(self, key: str, external: str | None) -> None:
         """按核心 key 幂等作废旧问题；external 不明时先对账，失败后重试。"""

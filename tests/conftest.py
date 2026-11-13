@@ -30,6 +30,11 @@ class FakeFlow:
         self.crash = False
         self.path = STAGES[:-1]
 
+    def classify(self, event, item, target):
+        if isinstance(event.body, dict) and event.body.get("from_kun"):
+            return event.body.get("requested_action", "update")
+        return "update"
+
     def stages(self, target):
         return self.path
 

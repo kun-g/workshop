@@ -88,7 +88,7 @@ def test_approval_gate_and_explicit_answer(engine):
     assert len(flow.after_keys) == before
     card = next(c for c in engine.log.all("cards") if c.get("actions"))
     channel = engine.plugins.get("channel", "channel")
-    channel.answers = [Answer(card["id"], "批准", True)]
+    channel.answers = [Answer(card["id"], "yes", True)]
     engine.tick()
     assert item(engine)["stage"] == "交付"
     assert "对外发消息" in item(engine)["approved"]
@@ -356,7 +356,7 @@ def test_unknown_usage_is_separate(engine):
     engine.plugins.get("executor", "writer").usage_value = None
     reach(engine, "说清楚")
     text = usage(engine.log, engine.clock())
-    assert "未上报 2 轮" in text
+    assert "未上报 1 轮" in text
 
 
 def test_direct_rework_event_reopens_completed_item(engine):
@@ -456,10 +456,10 @@ def test_rejected_approval_does_not_authorize_delivery(engine):
     reach(engine, "审查")
     finish(engine, "交付")
     card = engine.log.all("cards")[0]
-    engine.plugins.get("channel", "channel").answers = [Answer(card["id"], "不批准", False)]
+    engine.plugins.get("channel", "channel").answers = [Answer(card["id"], "no", False)]
     engine.tick()
-    finish(engine, "交付")
-    assert item(engine)["stage"] == "审查" and item(engine)["state"] == "等你"
+    assert current(engine)["stage"] == "执行"
+    assert "Kun 没批准" in item(engine)["gate_reason"]
     assert not item(engine)["approved"]
 
 

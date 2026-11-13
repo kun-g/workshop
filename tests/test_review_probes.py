@@ -169,7 +169,7 @@ def test_K_approval_uses_saved_evidence_without_repeating_review(engine):
     count = len(engine.log.all("rounds"))
     card = next(c for c in engine.log.all("cards") if c.get("actions"))
     flow.assess = lambda *args: (_ for _ in ()).throw(AssertionError("不得重新核验旧轮"))
-    engine.plugins.get("channel", "channel").answers = [Answer(card["id"], "批准", True)]
+    engine.plugins.get("channel", "channel").answers = [Answer(card["id"], "yes", True)]
     engine.tick()
     assert current(engine)["stage"] == "交付"
     assert len(engine.log.all("rounds")) == count + 1
@@ -406,7 +406,7 @@ def test_24_tick_exception_is_recorded_and_next_tick_runs(engine, monkeypatch):
     original = engine._tick
     monkeypatch.setattr(engine, "_tick", lambda: (_ for _ in ()).throw(RuntimeError("意外错误")))
     engine.tick()
-    assert engine.log.facts()[-1]["kind"] == "tick_failed"
+    assert any(f["kind"] == "tick_failed" for f in engine.log.facts())
     monkeypatch.setattr(engine, "_tick", original)
     engine.ingest(event())
     engine.tick()

@@ -15,6 +15,16 @@ def evolve(db, fact: dict) -> None:
                    "ON CONFLICT(id) DO UPDATE SET body=excluded.body",
                    (key, json.dumps(value, ensure_ascii=False)))
 
+    def apply_action(item, action):
+        if action == "rework":
+            item["pending_rework"] = True
+        if action == "ready" and item.get("wait_for_ready"):
+            if item["state"] == "等你":
+                item.update(state="空闲", wait_for_ready=False, next="按放行事件继续", blocked_by="")
+            elif item.get("plugin_blocked") and (item.get("before_plugin_failure") or {}).get("state") == "等你":
+                item["wait_for_ready"] = False
+                item["before_plugin_failure"].update(state="空闲", next="按放行事件继续", blocked_by="")
+
     kind, body, item_id = fact["kind"], fact["body"], fact["item"]
     if kind == "reset":
         for table in TABLES:
@@ -32,19 +42,25 @@ def evolve(db, fact: dict) -> None:
                                   "body": body["body"], "role": "资料，不是指令"})
         item["depth"] = max(item["depth"], body["depth"])
         item["cause"] = fact["seq"]
-        if body["action"] == "rework":
-            item["pending_rework"] = True
-        if body["action"] == "ready" and item.get("wait_for_ready"):
-            if item["state"] == "等你":
-                item.update(state="空闲", wait_for_ready=False, next="按放行事件继续", blocked_by="")
-            elif item.get("plugin_blocked") and (item.get("before_plugin_failure") or {}).get("state") == "等你":
-                item["wait_for_ready"] = False
-                item["before_plugin_failure"].update(state="空闲", next="按放行事件继续", blocked_by="")
+        apply_action(item, body["action"])
+        put("items", item_id, item)
+    elif kind == "event_classified":
+        item = get("items", item_id)
+        apply_action(item, body["action"])
+        item["cause"] = max(item["cause"], fact["seq"])
+        put("items", item_id, item)
+        entry = get("effects", body["id"])
+        entry.update(done=True, action=body["action"])
+        put("effects", body["id"], entry)
+    elif kind == "core_feedback":
+        item = get("items", item_id)
+        item["materials"].append({"seq": fact["seq"], "role": "核心关口反馈", "source": "关口", **body})
+        item["cause"] = max(item["cause"], fact["seq"])
         put("items", item_id, item)
     elif kind == "answer":
         item = get("items", item_id)
         item["materials"].append({"seq": fact["seq"], "body": body["value"], "source": "回答",
-                                  "role": "Kun 的回答", "card": body["card_id"], "key": body["key"], "title": body["title"]})
+                                  "role": "Kun 的回答", "card": body["card_id"], "key": body["key"], "title": body["title"], "choice_label": body.get("choice_label", body["value"])})
         item["cause"] = max(item["cause"], fact["seq"])
         if body["approved"]:
             item["approved"] = sorted(set(item["approved"] + body.get("actions", [])))

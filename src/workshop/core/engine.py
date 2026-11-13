@@ -42,27 +42,62 @@ class Engine:
     def control(self, target):
         return self.log.get("controls", target) or {}
 
-    def ingest(self, event: Event, round_token: str | None = None) -> bool:
+    def ingest(self, event: Event, round_token: str | None = None, *, ingress: str = "source") -> bool:
         if round_token:
             row = self.log.get("rounds", round_token)
             if not row:
                 raise ValueError("未知事件来源轮次令牌")
-            origin = self.log.get("items", row["item"])
-            event = replace(event, depth=origin["depth"] + 1)
+            parent = self.log.get("items", row["item"])
+            event = replace(event, depth=parent["depth"] + 1, action="update")
+            ingress = "agent"
+        elif ingress == "external":
+            event = replace(event, depth=0, action="update")
+        elif ingress != "source":
+            raise ValueError("事件入口必须是可信来源、外部入口或带轮次令牌的 agent")
         event.validate()
         self.rules.target(event.target)
         with self.log.transaction():
             paused = self.control(event.target).get("paused", False)
             kind = "deferred_event" if paused else "event"
-            added = self.fact(kind, asdict(event), event.item_id,
+            added = self.fact(kind, {**asdict(event), "ingress": ingress}, event.item_id,
                               source=event.source, ext_id=event.ext_id)
             if added and not paused:
+                if ingress == "external":
+                    self.classification_intent(event)
                 item = self.log.get("items", event.item_id)
                 if event.depth > self.rules.data["limits"]["chain_depth"]:
                     self.block(item, "事件连锁超过上限")
                 elif self.control(event.target).get("broken"):
                     self.block(item, "流程插件等待修复", plugin=True)
             return added
+
+    def classification_intent(self, event):
+        seq = self.log.db.execute("SELECT max(seq) FROM facts").fetchone()[0]
+        self.fact("effect", {"id": f"classify:{seq}", "kind": "classify", "done": False,
+                             "event": asdict(event), "item": event.item_id, "event_seq": seq}, event.item_id)
+
+    def classify_events(self):
+        for entry in self.log.all("effects"):
+            if entry.get("kind") != "classify" or entry["done"]:
+                continue
+            event = Event(**entry["event"])
+            control = self.control(event.target)
+            if control.get("paused") or control.get("broken") or not self.retry_due(entry["id"]):
+                continue
+            target = self.rules.target(event.target)
+            try:
+                item = self.log.get("items", event.item_id)
+                action = self.plugins.get("flow", target["plugin"]).classify(event, item, target)
+                if action not in ("update", "ready", "rework"):
+                    raise ValueError("流程返回了未知事件动作")
+                with self.log.transaction():
+                    self.fact("event_classified", {"id": entry["id"], "action": action,
+                              "event_seq": entry["event_seq"]}, event.item_id)
+                self.retry_clear(entry["id"])
+            except Retryable as exc:
+                self.retry_failure(event.target, "flow", target["plugin"], entry["id"], exc)
+            except Exception as exc:
+                self.broken(event.target, "flow", target["plugin"], exc)
 
     def pause(self, target):
         self.rules.target(target)
@@ -84,9 +119,13 @@ class Engine:
                 replay = entry["id"] in selected
                 self.fact("deferred_resolved", {"id": entry["id"], "replayed": replay})
                 if replay:
-                    event = Event(**entry["event"])
-                    self.fact("event", asdict(event), event.item_id,
+                    body = dict(entry["event"])
+                    ingress = body.pop("ingress", "source")
+                    event = Event(**body)
+                    self.fact("event", {**asdict(event), "ingress": ingress}, event.item_id,
                               source="resume", ext_id=entry["id"])
+                    if ingress == "external":
+                        self.classification_intent(event)
                     replayed = self.log.get("items", event.item_id)
                     if event.depth > self.rules.data["limits"]["chain_depth"]:
                         self.block(replayed, "事件连锁超过上限")
@@ -139,6 +178,8 @@ class Engine:
     def block(self, item, reason, plugin=False):
         with self.log.transaction():
             item = self.log.get("items", item["id"])
+            if plugin and item.get("plugin_blocked"):
+                return
             saved = item.get("before_plugin_failure")
             if plugin and not item.get("plugin_blocked"):
                 saved = {k: item.get(k) for k in ("state", "next", "blocked_by", "leave")}
@@ -160,7 +201,7 @@ class Engine:
                     pseudo = {"id": f"@{affected}"}
                     self.card(pseudo, f"plugin:{port}:{name}:{incident}", "notice", notice(f"{affected} 插件故障：{exc}"))
                 for item in self.log.all("items"):
-                    if item["target"] == affected and item["state"] != "完成":
+                    if item["target"] == affected and item["state"] != "完成" and not item.get("plugin_blocked"):
                         self.block(item, f"{port}/{name}: {exc}", plugin=True)
 
     def waiting(self, item):
@@ -201,6 +242,29 @@ class Engine:
         if self.control(f"delivery:{key}").get("failed"):
             self.fact("control", {"id": f"delivery:{key}", "failed": False})
 
+    def reconcile_uncertain(self, card):
+        key = f"reconcile:{card['id']}"
+        count = self.control(key).get("count", 0)
+        if count >= 3:
+            return
+        with self.log.transaction():
+            self.fact("control", {"id": key, "count": count + 1})
+            if count + 1 == 3:
+                self.fact("reconcile_failed", {"card": card["id"], "reason": "连续 3 次无法确定是否已发送"}, card["item"])
+                incident = self.log.db.execute("SELECT max(seq) FROM facts").fetchone()[0]
+                self.fact("card_changed", {"id": card["id"], "reconcile_failed": True}, card["item"])
+                # 告警自身若也无法对账，保留状态，不递归制造更多告警。
+                if not card.get("reconciliation_alert"):
+                    self.card({"id": card["item"]}, f"reconcile:{incident}", "notice",
+                              notice(f"卡片 {card['id']} 连续 3 次对账不确定，需要检查通道"), reconciliation_alert=True)
+
+    def reconcile_clear(self, card):
+        key = f"reconcile:{card['id']}"
+        if self.control(key).get("count"):
+            self.fact("control", {"id": key, "count": 0})
+        if card.get("reconcile_failed"):
+            self.fact("card_changed", {"id": card["id"], "reconcile_failed": False}, card["item"])
+
     def channels(self):
         name = self.rules.data["channel"]
         try:
@@ -216,14 +280,16 @@ class Engine:
                         if card.get("sending"):
                             external = channel.reconcile(card["id"], card)
                             if external is None:
+                                self.reconcile_uncertain(card)
                                 continue
+                            self.reconcile_clear(card)
                         if external in (None, "absent"):
                             self.fact("card_changed", {"id": card["id"], "sending": True}, card["item"])
                             external = getattr(channel, "ask" if card["mode"] == "ask" else "notify")(
                                 card["id"], card["payload"])
                         if not isinstance(external, str) or not external:
                             raise ValueError("通道没有返回外部编号")
-                        self.fact("card_changed", {"id": card["id"], "external": external, "sent": True}, card["item"])
+                        self.fact("card_changed", {"id": card["id"], "external": external, "sent": True, "reconcile_failed": False}, card["item"])
                     self.delivery_ok(card["id"])
                 except Exception as exc:
                     self.delivery_error(card["id"], exc, card["item"])
@@ -234,13 +300,15 @@ class Engine:
                     card = self.log.get("cards", answer.card_id)
                     if not card or card["mode"] != "ask" or not card["sent"] or card["answered"] or card.get("cancelled"):
                         continue
+                    approved = answer.value == "yes" if card.get("core_approval") else answer.approved
+                    choice_label = next((c["label"] for c in card["payload"]["choices"] if c["key"] == answer.value), answer.value)
                     # 回答单独追加，由 evolve 在最新资料上追加，不回写旧资料快照。
-                    self.fact("answer", {**asdict(answer), "key": card["payload"].get("key", card["key"]),
+                    self.fact("answer", {**asdict(answer), "approved": approved, "choice_label": choice_label, "key": card["payload"].get("key", card["key"]),
                               "title": card["payload"]["decision"], "actions": card.get("actions", []), "billing_configs": card.get("billing_configs", [])},
                               card["item"], source="answer", ext_id=card["id"])
-                    self.fact("card_changed", {"id": card["id"], "answered": True, "answer": answer.value}, card["item"])
+                    self.fact("card_changed", {"id": card["id"], "answered": True, "answer": answer.value, "choice_label": choice_label, "approved": approved}, card["item"])
                     item = self.log.get("items", card["item"])
-                    if card.get("billing_configs") and not answer.approved:
+                    if card.get("billing_configs") and not approved:
                         self.change(item, state="等你", wait_for_ready=True, next="按量计费未获批准，等待放行", blocked_by="Kun",
                                     leave={"kind": "等你", "about": "调整执行者或授权后放行"})
                     elif item["state"] == "等你" and not self.waiting(item):
@@ -371,7 +439,7 @@ class Engine:
                 context = "没有可用的订阅候选；是否授权本件活使用这些按量计费候选：" + json.dumps([c for _, c in metered], ensure_ascii=False)
                 payload = question("是否批准本件活使用按量计费执行者", approval=True)
                 payload["context"] = context
-                self.card(item, f'billing:{item["revision"]}', "ask", payload, billing_configs=[k for k, _ in metered])
+                self.card(item, f'billing:{item["revision"]}', "ask", payload, billing_configs=[k for k, _ in metered], core_approval=True)
                 self.change(item, state="等你", next="按量计费先授权", blocked_by="Kun", leave={"kind": "等你", "about": "按量计费授权"})
                 return
             history = [r for r in self.log.all("rounds") if r["item"] == item["id"]]
@@ -430,9 +498,6 @@ class Engine:
         state_dir = str(self.log.path.parent.resolve())
         command = [sys.executable, "-m", "workshop.cli", "--state-dir", state_dir]
         environment = {"WORKSHOP_STATE_DIR": state_dir, "WORKSHOP_ROUND_TOKEN": token}
-        if self.rules.path:
-            command += ["--rules", self.rules.path]
-            environment["WORKSHOP_RULES"] = self.rules.path
         return {"state_dir": state_dir, "rules_path": self.rules.path, "command": command, "env": environment}
 
     def retry_due(self, key):
@@ -473,9 +538,19 @@ class Engine:
                 raise ValueError("没有可结束的轮")
             self.fact("round_changed", {"token": token, "abort_requested": reason}, row["item"])
 
+    def automatic_failure(self, token, reason):
+        with self.log.transaction():
+            latest = self.log.get("rounds", token)
+            if not latest or latest.get("receipt") is not None or latest["status"] not in ("starting", "running"):
+                return
+            if self.submit(token, {"outcome": "failed", "summary": reason}):
+                self.fact("round_changed", {"token": token, "automatic_failure": True}, latest["item"])
+
     def check_round(self, row):
-        if row["status"] == "finishing":
-            return
+        with self.log.transaction():
+            row = self.log.get("rounds", row["token"])
+            if not row or row.get("receipt") is not None or row["status"] != "running":
+                return
         reason = row.get("abort_requested")
         if not reason and row.get("deadline", "9999") <= stamp(self.clock()):
             reason = "这一轮超过规则期限"
@@ -490,8 +565,8 @@ class Engine:
                 self.delivery_error(f"poll:{row['token']}", exc, row["item"])
                 return
         if reason:
-            self.submit(row["token"], {"outcome": "failed", "summary": reason})
-            self.fact("round_changed", {"token": row["token"], "automatic_failure": True}, row["item"])
+            # poll 期间可能刚交回执；自动失败与真实回执由同一个写事务仲裁。
+            self.automatic_failure(row["token"], reason)
 
     def required_reviews(self, item, evidence, target):
         matched = any(path.startswith(prefix) for path in evidence.paths for prefix in target.get("two_reviewers", []))
@@ -527,6 +602,8 @@ class Engine:
         return changes
 
     def finish(self, row):
+        if not self.retry_due(f"finish:{row['token']}"):
+            return
         item = self.log.get("items", row["item"])
         token = row["token"]
         port, name = "executor", row["executor"]
@@ -611,9 +688,9 @@ class Engine:
                         changes.update(approved=[], reviews=[], review_required=1)
                     self.fact("gate_passed", {"gate_reason": decision.reason}, item["id"])
                 elif decision.needs_approval and receipt.outcome == "done" and not receipt.ask:
-                    self.card(item, f"approval:{token}", "ask", question(decision.reason, approval=True), actions=list(decision.needs_approval))
+                    self.card(item, f"approval:{token}", "ask", question(decision.reason, approval=True), actions=list(decision.needs_approval), core_approval=True)
                     changes.update(state="等你", next=decision.reason, blocked_by="Kun", leave={"kind": "等你", "about": decision.reason},
-                                   pending_advance={"token": token, "from": item["stage"], "to": receipt.advance,
+                                   pending_advance={"token": token, "card": f'{item["id"]}:approval:{token}', "from": item["stage"], "to": receipt.advance,
                                                     "evidence": asdict(evidence), "receipt": row["receipt"], "stages": list(stages)})
                     self.fact("gate_blocked", {"gate_reason": decision.reason}, item["id"])
                 elif receipt.ask or receipt.later or receipt.leave:
@@ -641,9 +718,10 @@ class Engine:
                     changes.update(state="卡住", next="修复插件后继续", blocked_by=item["blocked_by"])
                 self.change(item, "round_finished", **changes)
                 for index, data in enumerate(receipt.events):
-                    self.ingest(Event(**{**data, "source": f"round:{token}", "ext_id": str(index), "depth": item["depth"] + 1}))
+                    self.ingest(Event(**{**data, "source": f"round:{token}", "ext_id": str(index)}), round_token=token)
+            self.retry_clear(f"finish:{token}")
         except Retryable as exc:
-            self.delivery_error(f"finish:{token}", exc, item["id"])
+            self.retry_failure(item["target"], port, name, f"finish:{token}", exc)
         except Exception as exc:
             self.broken(item["target"], port, name, exc)
 
@@ -655,7 +733,14 @@ class Engine:
         evidence = Evidence(**pending["evidence"])
         decision = decide(item, receipt, evidence, pending["stages"], self.rules)
         if not decision.allowed:
-            self.change(item, pending_advance=None, reviews=[], gate_reason="授权未获批准，按回答调整")
+            with self.log.transaction():
+                card = self.log.get("cards", pending["card"])
+                label = card.get("choice_label", card.get("answer", "未批准"))
+                reason = f"Kun 没批准，选择了：{label}（{card.get('answer', '未知')}）"
+                self.fact("core_feedback", {"body": reason, "card": card["id"], "choice": card.get("answer")}, item["id"])
+                self.change(item, stage="执行", state="空闲", next=reason, pending_advance=None, reviews=[],
+                            review_required=1, approved=[], retry_executor=None, gate_count=0, gate_reason=reason,
+                            leave={"kind": "工序", "owner": "车间", "at": stamp(self.clock()), "about": "按拒绝意见修改"})
             return
         target = self.rules.target(item["target"])
         try:
@@ -682,21 +767,35 @@ class Engine:
             self._tick()
         except Exception as exc:
             try:
-                self.fact("tick_failed", {"error": repr(exc)})
+                with self.log.transaction():
+                    state = self.control("@tick")
+                    errors = state.get("errors", [])
+                    if repr(exc) not in errors:
+                        self.fact("tick_failed", {"error": repr(exc)})
+                        errors = [*errors, repr(exc)]
+                    self.fact("control", {"id": "@tick", "errors": errors, "failures": state.get("failures", 0) + 1})
             except Exception as recording_error:
                 print(f"车间 tick 失败且暂时无法记录：{exc!r}; {recording_error!r}", file=sys.stderr)
 
+    def heartbeat(self):
+        if self.control("@tick").get("failures"):
+            self.fact("control", {"id": "@tick", "errors": [], "failures": 0})
+        now = stamp(self.clock())
+        heartbeat = self.log.path.parent / "heartbeat.json"
+        temporary = heartbeat.with_suffix(".tmp")
+        temporary.write_text(json.dumps({"at": now, "last_ok_at": now, "active": self.occupied()}))
+        temporary.replace(heartbeat)
+
     def _tick(self):
         with self.exclusive():
-            heartbeat = self.log.path.parent / "heartbeat.json"
-            temporary = heartbeat.with_suffix(".tmp")
-            temporary.write_text(json.dumps({"at": stamp(self.clock()), "active": self.occupied()}))
-            temporary.replace(heartbeat)
             self.sources()
+            self.classify_events()
             self.channels()
             self.timers()
             for row in self.active():
                 item = self.log.get("items", row["item"])
+                if self.control(item["target"]).get("broken"):
+                    continue
                 try:
                     expired = row.get("deadline", "9999") <= stamp(self.clock())
                     if not row.get("started") and not row.get("abort_requested") and not expired:
@@ -704,7 +803,10 @@ class Engine:
                             continue
                         self.launch(row)
                         row = self.log.get("rounds", row["token"])
-                    self.check_round(row)
+                    if row["status"] == "starting" and (row.get("abort_requested") or expired):
+                        self.automatic_failure(row["token"], row.get("abort_requested") or "这一轮超过规则期限")
+                    else:
+                        self.check_round(row)
                     row = self.log.get("rounds", row["token"])
                     if row["status"] == "finishing":
                         self.finish(row)
@@ -732,3 +834,4 @@ class Engine:
                 if item["state"] == "空闲" and self.occupied() < self.rules.data["limits"]["concurrent"]:
                     self.reserve(item)
             self.channels()
+            self.heartbeat()

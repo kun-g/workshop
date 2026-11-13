@@ -53,7 +53,11 @@ def main(argv=None):
             print(usage(log))
         else:
             saved = log.get("controls", "@rules")
-            if args.rules:
+            if args.command == "receipt":
+                if not saved:
+                    raise ValueError("状态库没有规则快照")
+                rules = Rules(Rules.validate(saved["data"]).data, saved.get("path"))
+            elif args.rules:
                 rules = Rules.load(args.rules)
             elif saved and args.command == "run" and saved.get("path"):
                 rules = Rules.load(Path(saved["path"]))
@@ -65,7 +69,7 @@ def main(argv=None):
             engine = Engine(log, rules, Registry())
             if args.command in ("event", "receipt"):
                 data = json.loads(args.json if args.json is not None else args.file.read_text() if args.file else sys.stdin.read())
-                added = engine.ingest(Event(**data), round_token=os.environ.get("WORKSHOP_ROUND_TOKEN")) if args.command == "event" else engine.submit(args.token, data)
+                added = engine.ingest(Event(**data), round_token=os.environ.get("WORKSHOP_ROUND_TOKEN"), ingress="external") if args.command == "event" else engine.submit(args.token, data)
                 print("已收到并提交" if added else "已收到过，未重复记录")
             elif args.command == "abort":
                 engine.abort(args.token)
