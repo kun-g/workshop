@@ -42,8 +42,8 @@ def decide(item: dict, receipt: Receipt, evidence: Evidence, stages, rules: Rule
             isinstance(argv, list) and argv and all(isinstance(v, str) and v.strip() for v in argv)
             for argv in checks)):
         return Decision(current, False, "说清楚阶段尚未写出能跑的检查")
-    if current in ("证据", "审查", "验收") and not evidence.passed:
-        return Decision("执行", True, "证据未通过，退回执行")
+    if not evidence.passed:
+        return Decision(current, False, evidence.reason or "本阶段证据未通过")
     if requested == "交付" or ("交付" not in stages and requested == "验收"):
         pending = tuple(sorted(set(evidence.actions) & set(rules.data["ask_first"])
                                - set(rules.data["skip_ask"]) - set(item.get("approved", []))))

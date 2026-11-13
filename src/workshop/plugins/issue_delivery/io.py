@@ -8,6 +8,8 @@ from pathlib import Path
 import shutil
 import subprocess
 import tempfile
+import urllib.request
+import urllib.error
 
 from workshop.core.ports import Retryable
 
@@ -135,6 +137,45 @@ class IO:
         destination.parent.rmdir()
         return str(final)
 
+    def cleanup_reviews(self, target, keep):
+        root = self.root(target) / "reviews"
+        if not root.exists():
+            return
+        keep = {str(Path(p).resolve()) for p in keep if p}
+        for directory in root.iterdir():
+            if str(directory.resolve()) in keep or not directory.is_dir() or directory.is_symlink():
+                continue
+            # 只清理由本插件管理的目录；先解开只读位，不追随文件链接。
+            for path in [directory, *directory.rglob("*")]:
+                if not path.is_symlink():
+                    path.chmod(path.stat().st_mode | 0o700)
+            shutil.rmtree(directory)
+
+    def bot_review(self, item, target, pr):
+        config = target.get("bot_review")
+        if not config:
+            return
+        endpoint = f'repos/{target["repo"]}/pulls/{pr["number"]}/reviews'
+        reviews = self.pages(endpoint + "?per_page=100")
+        if any(r.get("user", {}).get("login") == config["login"] and r.get("state") == "APPROVED"
+               and r.get("commit_id") == pr["head"]["sha"] for r in reviews):
+            return
+        env = {**os.environ, "AGENT_KIND": "workshop", "AGENT_SESSION_ID": item["id"]}
+        signer = [str(Path(p).expanduser()) for p in config["signer"]]
+        signed = run(signer + ["token", "--repo", target["repo"]], env=env)
+        token = signed.stdout.strip()
+        if not token:
+            raise Retryable("bot 签发结果为空")
+        request = urllib.request.Request("https://api.github.com/" + endpoint,
+            data=json.dumps({"event": "APPROVE", "commit_id": pr["head"]["sha"],
+                             "body": f'<!-- workshop-comment: {item["id"]} --> 已按此提交审查'}).encode(),
+            headers={"Authorization": "Bearer " + token, "Accept": "application/vnd.github+json"}, method="POST")
+        try:
+            with urllib.request.urlopen(request, timeout=20) as response:
+                json.load(response)
+        except (OSError, ValueError) as exc:
+            raise Retryable("bot 批准结果未确认，重试前回查提交号") from None
+
     def verify(self, target, sha, checks):
         with tempfile.TemporaryDirectory(prefix="workshop-check-") as directory:
             root = Path(directory)
@@ -142,11 +183,24 @@ class IO:
             home = root / "home"
             home.mkdir()
             output = []
-            for argv in checks:
+            steps = [(p["argv"], copy / p.get("cwd", "."), "prepare") for p in target.get("prepare", [])]
+            steps += [(argv, copy, "check") for argv in checks]
+            for argv, cwd, kind in steps:
+                if not cwd.resolve().is_relative_to(copy.resolve()):
+                    raise ValueError("准备命令目录须在干净副本内")
                 command = list(argv)
                 if "/" not in command[0]:
                     command[0] = executable(command[0])
-                result = run(command, cwd=copy, env=clean_env(home), timeout=target.get("check_timeout", 60), check=False)
-                output.append({"argv": argv, "exit_code": result.returncode,
-                               "stdout": result.stdout, "stderr": result.stderr})
+                try:
+                    result = subprocess.run(command, cwd=cwd, env=clean_env(home),
+                        timeout=target.get("check_timeout", 60), text=True, capture_output=True)
+                    entry = {"argv": argv, "exit_code": result.returncode, "stdout": result.stdout, "stderr": result.stderr, "kind": kind}
+                except subprocess.TimeoutExpired as exc:
+                    def decoded(value):
+                        return value.decode(errors="replace") if isinstance(value, bytes) else value or ""
+                    entry = {"argv": argv, "exit_code": 124, "stdout": decoded(exc.stdout),
+                             "stderr": decoded(exc.stderr), "kind": kind, "timed_out": True}
+                output.append(entry)
+                if entry["exit_code"]:
+                    break
             return output

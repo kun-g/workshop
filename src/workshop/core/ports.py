@@ -20,11 +20,12 @@ class Source(Protocol):
 
 class Flow(Protocol):
     def classify(self, event: Event, item: dict | None, target: dict,
-                 find_external: Callable[[str], dict | None]) -> Classification | Literal["update", "ready", "rework"] | None:
+                 find_external: Callable[..., dict | None]) -> Classification | Literal["update", "ready", "rework"]:
         """只对无轮次令牌的 CLI 入口判定动作和归件；尚未创建活，输入 action=update。
 
         回查上游身份与原始内容，不能信正文自称身份；find_external 只读返回同目标的卡和活。
-        None 暂不判定、下拍再试；Classification 可指定既有对象键。异常按流程故障处理。
+        Classification 可指定既有对象键，discard=True 记事实后丢弃；返回 None 是协议错误。
+        find_external(object_key=...) 可查同目标既有活（先解析别名）。异常按流程故障处理。
         来源 poll、带令牌事件和回执子事件不调用此方法；无令牌输入仍可能来自 agent。
         """
         ...

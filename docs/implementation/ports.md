@@ -49,15 +49,15 @@ limits: {concurrent: 2, chain_depth: 8, round_timeout_seconds: 7200}
 
 ## 来源 Source
 
-`poll(target, cursor) -> Poll(events, cursor)`，短时只读。整批事件与 cursor 同事务，失败整批不确认；来源不得返回另一交付对象的事件。暂停期间继续记遗漏，不派新轮。
+`poll(target, cursor) -> Poll(events, cursor)`，短时只读。整批事件与 cursor 同事务，失败整批不确认；cursor 仅变化时写事实；来源不得返回另一交付对象的事件。暂停期间继续记遗漏，不派新轮。
 
 `Retryable` 表示暂时故障，5/10/20 分钟退避，连续第 3 次升级插件故障。成功清掉连续计数。普通异常立即记故障、隔离受影响交付对象；其他交付对象继续。
 
 ## 流程 Flow 和关口
 
-`classify(event, item, target, find_external) -> Classification | str | None` 只判无轮次令牌的 CLI 事件。event 是已归一 action/depth 的原资料，item 是按当前对象键找到的既有活快照，没有则为 null；尚未加入本事件，target 是交付规则；核对可信上游身份和语义后决定动作，默认 `Classification("update")`。兼容只返回 action 字符串；返回 None 表示尚不能判定、下一 tick 再试，不建活、不计失败。来源 poll 已有可信动作，不走此方法；带令牌事件和回执子事件不走此方法。不带令牌的 CLI 事件仍可能来自 agent，classify 必须回到源头核实身份和原文（例如飞书按消息号回查发送者；GitHub 放行优先走来源 poll），不认 body 中 from_kun 等自称身份。测试 FakeFlow 回查独立的假上游登记，不把 CLI 正文当身份凭据。该方法短时只读，可能因重启重放；返回动作和判定意图完成同事务落事实，evolve 更新活。Retryable 退避、连续 3 次故障，非法返回值或普通异常隔离流程；修复恢复后继续未完成判定。W2-A 可在这里识别可信的 Kun 返工意见、再次放行。
+`classify(event, item, target, find_external) -> Classification | str` 只判无轮次令牌的 CLI 事件。event 是已归一 action/depth 的原资料，item 是按当前对象键找到的既有活快照，没有则为 null；尚未加入本事件，target 是交付规则；核对可信上游身份和语义后决定动作，默认 `Classification("update")`。兼容只返回 action 字符串；返回 Classification(discard=True) 记 event_discarded 事实并结束判定，不建活、不追加资料；None 是协议错误。来源 poll 已有可信动作，不走此方法；带令牌事件和回执子事件不走此方法。不带令牌的 CLI 事件仍可能来自 agent，classify 必须回到源头核实身份和原文（例如飞书按消息号回查发送者；GitHub 放行优先走来源 poll），不认 body 中 from_kun 等自称身份。测试 FakeFlow 回查独立的假上游登记，不把 CLI 正文当身份凭据。该方法短时只读，可能因重启重放；返回动作和判定意图完成同事务落事实，evolve 更新活。Retryable 退避、连续 3 次故障，非法返回值或普通异常隔离流程；修复恢复后继续未完成判定。W2-A 可在这里识别可信的 Kun 返工意见、再次放行。
 
-`Classification(action="update", object_key=None)` 的可选 object_key 只能指向同一交付对象的已有活（先解析别名），不能跨目标或凭空指定新活。没有指定则用输入对象键；归件、资料追加和完成判定同事务。`find_external(external)` 是只读函数，按通道外部编号查 `{card, item}` 快照；跨交付对象、重复编号或未找到都返回 null。流程仍须回源核对引用关系，不能把 CLI 自报外部编号当凭据。
+`Classification(action="update", object_key=None, discard=False)` 的可选 object_key 只能指向同一交付对象的已有活（先解析别名），不能跨目标或凭空指定新活。没有指定则用输入对象键；归件、资料追加和完成判定同事务。`find_external(external)` 是只读函数，按通道外部编号查 `{card, item}` 快照；跨交付对象、重复编号或未找到都返回 null。`find_external(object_key=...)` 按同目标已有对象键查 `{item}`，先解析别名，找不到返回 null。流程仍须回源核对引用关系，不能把 CLI 自报外部编号当凭据。
 
 `after` 返回的 aliases 把目标下的另一个 object_key 绑定到当前活。核心追加 alias_bound 事实；重复 key 幂等，别名已指向其他活或已有同名活则隔离流程，不覆盖。来源、agent、外部事件和暂停补回都先查别名。已开始但尚未结算的完成钩子会暂缓该目标来源轮询，恢复别名后再收新事件；避免远端对象创建成功、核心绑定前崩溃造成重复活。
 
@@ -65,13 +65,15 @@ limits: {concurrent: 2, chain_depth: 8, round_timeout_seconds: 7200}
 
 `assess(item, receipt, target) -> Evidence` 必须短时只读，不靠回执 done 自证完成。
 
-Evidence 字段：checks（检查 argv 列表）、passed（布尔）、actions（拟交付动作类别）、reason（判定解释）、paths（本次改动路径列表）、reviewers（1 或 2）。actions 中任何类别不在 `ask_first ∪ skip_ask`，都是插件错误，记事实、卡住这一类并通知，不放行。执行前必须有能跑的检查；交付前处理授权；验收证据不过无论 done/nothing/failed 都退回执行。
+Evidence 字段：checks（检查 argv 列表）、passed（布尔）、actions（拟交付动作类别）、reason（判定解释）、paths（本次改动路径列表）、reviewers（1 或 2）。actions 中任何类别不在 `ask_first ∪ skip_ask`，都是插件错误，记事实、卡住这一类并通知，不放行。所有往前推进（含收尾完成）都要求 passed；不通过留在当前阶段走 gate_retry，同一关口连续三次才问 Kun。显式退回执行不受此前进条件阻拦。执行前必须有能跑的检查；交付前处理授权；验收证据不过无论 done/nothing/failed 都退回执行。
 
 交付对象的 `two_reviewers` 路径前缀命中 paths，或 Evidence.reviewers=2 时，核心在审查阶段依次找两家不同家族，两家都过才能交付。已通过家族记入活的 reviews；写代码那家仍排除。第一次审查带 ask 时不计作通过，答完接回同一审查会话。返工清空本次审查记录。
 
-`after(item, completed_stage, key, target)` 在停止本轮且核心准许推进后调用，必须持久 key 幂等。传入 item 额外含 `result`（当前已核验回执 JSON）；history 仍是此前轮次。返回 `After(aliases=[], pending=False, reason="", next="")`；兼容 None 或别名字符串列表。
+`after(item, completed_stage, key, target)` 在停止本轮且核心准许推进后调用，必须持久 key 幂等。传入 item 额外含 `result`（当前已核验回执 JSON）；history 仍是此前轮次。返回 `After(aliases=[], pending=False, reason="", next="", rerun=False, recheck_after="+5m")`；兼容 None 或别名字符串列表。
 
-pending=true 表示尚未完成这个阶段，须带非空 reason 和 next：核心保存该 key 的结果，留在原阶段、起下一轮，不算执行失败。连续 pending 达交付对象的 `pending_limit`（正整数，默认 5）仅通知一次；离开阶段后重置计数。等待授权的会话应交 later 退出，勿用 pending 高频轮询。授权问题保存 receipt、Evidence、原阶段、下一阶段；明确批准后直接用这些证据过关口并调用同一个 after key，不再多起一轮审查。拒绝则回执行，清空本次批准/审查记录，追加“Kun 没批准”和所选项的 key/label 为核心关口反馈资料，再按意见修改。after 不得越权推进或提前做交付动作。
+pending=true 表示尚未完成这个阶段，须带非空 reason 和 next，不算执行失败。rerun=true 才在同一阶段接回执行者；rerun=false 登记工序，到 recheck_after（相对时间或 ISO 时间）只重调 after，沿用同一 key 与 item.result，不再 assess 或启动执行者。核心取插件建议时间和 5/10/20/40/60 分钟退避中较晚者。连续 pending 达交付对象的 pending_limit（默认 5）标卡住，只通知一次，此后不再轮询或起执行者；离开阶段或可信返工重置计数。完成钩子的副作用按 key 幂等，但 pending 业务状态须允许重查，不能永久缓存 pending。等待授权的会话应交 later 退出。授权问题保存 receipt、Evidence、原阶段、下一阶段；明确批准后直接用这些证据过关口并调用同一个 after key，不再多起一轮审查。拒绝则回执行，清空本次批准/审查记录，追加“Kun 没批准”和所选项的 key/label 为核心关口反馈资料，再按意见修改。after 不得越权推进或提前做交付动作。
+
+可选 `cleanup(target, keep)` 只清流程管理的临时副本；守护进程启动时和轮停止后调用，keep 包含所有未停止轮的 brief.workdir，必须保留。其他流程可不实现。
 
 普通关口未过先同阶段接回同一个执行者，带 gate_reason；同一关口连续拦 3 次才问 Kun。最终完成必须登记工序、送回或等你。其他人负责的工序到点仅发一次通知；只有 owner="车间" 才唤醒活。
 

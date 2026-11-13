@@ -26,10 +26,15 @@ def emit(value):
 
 if name == 'lark-cli':
     emit(state.get('message', {'ok': False}))
-elif name == 'argocd':
+elif name == 'kubectl':
     emit(state.get('app', {}))
+elif name == 'tag-release.sh':
+    state.setdefault('tags', {})['v1.2.3'] = args[-1]
+    save()
 elif name == 'git':
     if 'ls-remote' in args:
+        if 'refs/heads/production' in args:
+            print(state.get('production_sha', 'e' * 40) + '\trefs/heads/production')
         for tag, sha in state.get('tags', {}).items():
             print(sha + '\trefs/tags/' + tag + '^{}')
     elif 'push' in args:
@@ -78,6 +83,8 @@ elif args and args[0] == 'api':
         value = [state['pr']] if state.get('pr') else []
     elif '/pulls/' in path and path.endswith('/files'):
         value = state.get('files', [{'filename': 'src/example.py'}])
+    elif '/pulls/' in path and path.endswith('/reviews'):
+        value = state.get('reviews', [])
     elif '/pulls/' in path:
         value = state['pr']
     elif path.endswith('/issues'):
@@ -85,7 +92,7 @@ elif args and args[0] == 'api':
     elif '/issues/' in path:
         value = state['issue']
     elif path.endswith('/check-runs'):
-        value = {'check_runs': state.get('checks', [{'status': 'completed', 'conclusion': 'success'}])}
+        value = {'check_runs': state.get('checks', [{'name': 'check', 'status': 'completed', 'conclusion': 'success'}])}
     elif path.endswith('/status'):
         value = {'statuses': state.get('statuses', [])}
     elif path.endswith('/contents/release.json'):

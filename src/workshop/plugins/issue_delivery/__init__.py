@@ -1,11 +1,9 @@
 """issue 交付：资料回源、提交号证据、合并与收尾的持久幂等。"""
 from dataclasses import asdict
-from datetime import datetime
 import base64
 import json
 from pathlib import Path
 import re
-import tempfile
 from urllib.parse import quote
 
 from workshop.core.models import After, Classification, Evidence, FlowBrief, STAGES
@@ -47,9 +45,17 @@ def action_for(text):
     return "update"
 
 
+class BusinessWait(Exception):
+    def __init__(self, reason, rerun=True):
+        self.reason, self.rerun = reason, rerun
+
+
 class IssueDelivery:
     def __init__(self, io=None):
         self.io = io or IO()
+
+    def cleanup(self, target, keep):
+        self.io.cleanup_reviews(target, keep)
 
     def stages(self, target):
         return STAGES[:-1]
@@ -69,8 +75,7 @@ class IssueDelivery:
             message = matches[0]
             sender = message.get("sender", {})
             if (sender.get("sender_type") != "user" or sender.get("id_type") != "open_id"
-                    or sender.get("id") != target.get("kun_feishu_open_id")
-                    or message.get("chat_id") != target.get("feishu_chat_id")):
+                    or sender.get("id") != target.get("kun_feishu_open_id")):
                 return None
             return message
         except (ValueError, OSError, RuntimeError, Retryable):
@@ -88,7 +93,7 @@ class IssueDelivery:
             return Classification()
         message = self._message(event.ext_id, target)
         if not message:
-            return Classification()
+            return Classification(discard=True)
         try:
             body = json.loads(message.get("body", {}).get("content", "{}"))
         except (ValueError, TypeError):
@@ -104,22 +109,32 @@ class IssueDelivery:
             try:
                 state = json.loads(path.read_text())
                 records = list(state.get("asks", {}).values()) + list(state.get("notices", {}).values())
-                matches = [r for r in records if r.get("message_id") == parent]
+                matches = [r for r in records if r.get("message_id") == parent and r.get("chat_id") == message.get("chat_id")]
             except (OSError, ValueError, AttributeError, TypeError):
-                return None  # 未完成归件；下一 tick 重新读取，不认转述的 quote。
+                matches = []
             if len(matches) == 1:
                 external = matches[0].get("id")
                 found = find_external(external) if external else None
                 if found:
                     key = found["item"]["object_key"]
-        action = action_for(text) if key is not None or (not parent and item is not None and event.object_key == event.ext_id) else "update"
-        return Classification(action, key)
+        if key is not None:
+            return Classification(action_for(text), key)
+        if message.get("chat_id") != target.get("feishu_chat_id"):
+            return Classification(discard=True)
+        text = re.sub(r"^\s*@Ash\s*", "", text, flags=re.I).strip()
+        short = target.get("short_name", target["name"])
+        named = re.fullmatch(re.escape(short) + r"#([1-9][0-9]*)\s+(不对(?:[，,:：。！!\s].*)?)", text, re.S)
+        if named:
+            found = find_external(object_key=named[1])
+            return Classification("rework", found["item"]["object_key"]) if found else Classification(discard=True)
+        # 引用查不到只当资料，不从 CLI 提供的 quote 推测归件。
+        return Classification()
 
     def _intake_message(self, item, target):
         for material in item.get("materials", []):
             if material.get("source") == "cli:feishu" and material.get("ext_id"):
                 message = self._message(material["ext_id"], target)
-                if message:
+                if message and message.get("chat_id") == target.get("feishu_chat_id"):
                     return message
         return None
 
@@ -163,7 +178,7 @@ class IssueDelivery:
                 "若已合并且 release=tag，照交付对象 docs/runbooks/release.md 完成发布；集群授权只用 "
                 "~/workspace/runtime/repos/grant-console/scripts/request_grant.py，--requested-by 带本活 id。"
                 "等授权时交 later 退出，不换身份、不复用过期授权、不绕过授权卡；留住申请号并用 status 回查，不重复申请。"
-                "流程回查线上 revision 的 source_commit 等于合并提交才推进。"
+                "发布提交后回执 JSON 给 release_submitted=true；流程只定时核对线上版本包含合并提交，不重复叫执行者。"
             ),
             "验收": (
                 "由另一家照 issue 的验收步骤逐项验，回执 JSON acceptance={passed:布尔,output:原样输出,head:交付提交号}。"
@@ -174,8 +189,9 @@ class IssueDelivery:
                 "notice 给 Kun 一条 fyi 不用回的完成通知，key=accepted；流程 after 负责关 issue。"
             ),
         }[stage]
-        if state.get("issue"):
-            common += f'登记 issue：#{state["issue"]}。\n'
+        if state.get("issue") or item["object_key"].isdigit():
+            number = state.get("issue") or item["object_key"]
+            common += f'登记 issue：#{number}。通知正文必须写：不对就在群里回一句「{target.get("short_name", target["name"])}#{number} 不对」。\n'
         if state.get("merge"):
             common += f'已合并提交：{state["merge"]}；发版 tag：{state.get("tag", "无")}。\n'
         if stage == "审查":
@@ -185,19 +201,23 @@ class IssueDelivery:
         return common + instructions
 
     def _ci(self, pr, target):
+        required = target["ci"]
+        if required == "none":
+            return True
         base = f'repos/{target["repo"]}/commits/{pr["head"]["sha"]}'
         pages = json.loads(run([self.io.gh, "api", "--paginate", "--slurp", base + "/check-runs?per_page=100"]).stdout)
-        checks = [c for p in pages for c in p["check_runs"]]
-        statuses = self.io.api(base + "/status")
-        states = statuses.get("statuses", [])
-        return (bool(checks or states)
-                and all(c["status"] == "completed" and c["conclusion"] in ("success", "neutral") for c in checks)
-                and all(s["state"] == "success" for s in states))
+        # 同名重跑只取最新一次，失败的旧运行不能覆盖新结果。
+        checks = sorted([c for page in pages for c in page["check_runs"]], key=lambda c: c.get("id", 0))
+        results = {c["name"]: c.get("conclusion") if c.get("status") == "completed" else "pending" for c in checks}
+        for status in self.io.api(base + "/status").get("statuses", []):
+            results.setdefault(status["context"], status["state"])
+        values = [results.get(name) for name in required]
+        return all(v in ("success", "skipped", "neutral") for v in values) and "success" in values
 
     def _safe_pr(self, pr, item):
         body = pr.get("body") or ""
         return (f'<!-- workshop-item: {item["id"]} -->' in body
-                and not re.search(r"\b(?:close[sd]?|fix(?:es|ed)?|resolve[sd]?)\s+(?:(?:[\w.-]+/[\w.-]+)?#\d+|https://github\.com/[^/]+/[^/]+/issues/\d+)", body, re.I))
+                and not re.search(r"\b(?:close[sd]?|fix(?:es|ed)?|resolve[sd]?)(?:\s*:\s*|\s+)(?:(?:[\w.-]+/[\w.-]+)?#\d+|https://github\.com/[^/]+/[^/]+/issues/\d+)", (pr.get("title") or "") + "\n" + body, re.I))
 
     def assess(self, item, receipt, target):
         data, stage = report(receipt), item["stage"]
@@ -225,7 +245,9 @@ class IssueDelivery:
                 return Evidence(checks, True, reason="issue 五项和检查命令已回查")
             if stage == "收尾":
                 state = self.io.read(item, target)
-                return Evidence(checks, bool(state.get("accepted") and receipt.leave and receipt.notice), reason="验收记录及收尾登记")
+                hint = f'{target.get("short_name", target["name"])}#{issue["number"]} 不对'
+                notified = any(hint in n.get("text", "") for n in receipt.notice)
+                return Evidence(checks, bool(state.get("accepted") and receipt.leave and notified), reason="验收记录及收尾登记；通知须含群内返工活名")
             pr = self.io.pr(item, target)
             sha = pr["head"]["sha"]
             paths = [p["filename"] for p in self.io.pages(f'repos/{target["repo"]}/pulls/{pr["number"]}/files?per_page=100')]
@@ -255,8 +277,8 @@ class IssueDelivery:
                 return Evidence(checks, passed, actions, reason="按已验证的提交审查必须改与建议", paths=paths)
             if stage == "交付":
                 state = self.io.read(item, target)
-                passed = state.get("reviewed_head") == sha and (pr.get("merged") or self._ci(pr, target))
-                return Evidence(checks, bool(passed), actions, reason="审过的头提交与 CI 已回查", paths=paths)
+                passed = state.get("reviewed_head") == sha
+                return Evidence(checks, bool(passed), actions, reason="审过的头提交已回查；CI 由完成钩子定时核对", paths=paths)
             return Evidence(checks, True, reason="PR 存在且提交一致", paths=paths)
         except (ValueError, KeyError) as exc:
             return Evidence(checks, False, reason=str(exc))
@@ -271,72 +293,93 @@ class IssueDelivery:
         matches = [r for r in self.io.pages(f'repos/{target["repo"]}/issues?state=all&per_page=100')
                    if "pull_request" not in r and marker in (r.get("body") or "")]
         if len(matches) > 1:
-            raise ValueError("接单标记重复，不能猜 issue")
+            raise BusinessWait("接单标记重复，不能猜 issue", rerun=False)
         if matches:
             state["issue"] = matches[0]["number"]
             return
         if state.get("creating"):
-            raise ValueError("上次开 issue 结果未确认，需回查后恢复，不能重复开")
+            raise BusinessWait("上次开 issue 结果未确认，需回查后恢复，不能重复开", rerun=False)
         message = self._intake_message(item, target)
         if not message:
-            raise ValueError("接单原消息无法核实")
+            raise BusinessWait("接单原消息无法核实", rerun=False)
         text = json.loads(message["body"]["content"]).get("text", "")
         state["creating"] = True
         self.io.save(item, target, state)
         issue = self.io.api(f'repos/{target["repo"]}/issues', data={
-            "title": text[:100] or "待说清楚的需求", "body": marker + "\n\n## Kun 的原话\n" + text,
+            "title": text[:100] or "待说清楚的需求", "body": marker + f'\n<!-- workshop-intake: {item["id"]} -->' + "\n\n## Kun 的原话\n" + text,
             "labels": [target.get("label", "Ready for Agent")]})
         state["issue"] = issue["number"]
 
     def _tag(self, item, target, state):
         sha = state["merge"]
+        checkout = str(Path(target["checkout"]).expanduser())
         url = f'https://github.com/{target["repo"]}.git'
-        refs = run([self.io.git, "ls-remote", "--tags", url]).stdout.splitlines()
-        existing = [line.split()[1].removeprefix("refs/tags/").removesuffix("^{}") for line in refs
+        def existing_tag():
+            refs = run([self.io.git, "ls-remote", "--tags", url]).stdout.splitlines()
+            tags = [line.split()[1].removeprefix("refs/tags/").removesuffix("^{}") for line in refs
                     if line.split()[0] == sha and line.split()[1].startswith("refs/tags/v")]
-        if existing:
-            state["tag"] = sorted(existing)[0]
-            return
-        if "tag" not in state:
-            from zoneinfo import ZoneInfo
-            state["tag"] = datetime.now(ZoneInfo("Asia/Shanghai")).strftime("v%Y.%m.%d-%H%M")
+            return sorted(tags)[0] if tags else None
+        tag = existing_tag()
+        if not tag:
+            run([self.io.git, "-C", checkout, "fetch", "origin", "main", "--tags"])
+            run([self.io.git, "-C", checkout, "cat-file", "-e", sha + "^{commit}"])
+            command = [*target["tag_command"], sha]
+            command[0] = str(Path(checkout, command[0]).resolve())
+            result = run(command, cwd=checkout, timeout=target.get("release_timeout", 300), check=False)
+            state["tag_output"] = {"stdout": result.stdout, "stderr": result.stderr, "exit_code": result.returncode}
             self.io.save(item, target, state)
-        if any(line.split()[1].removesuffix("^{}") == "refs/tags/" + state["tag"] for line in refs):
-            raise ValueError("发版 tag 已指向别的提交，禁止覆盖")
-        with tempfile.TemporaryDirectory(prefix="workshop-tag-") as folder:
-            copy = self.io.copy(target, sha, Path(folder) / "repo")
-            run([self.io.git, "-C", str(copy), "-c", "user.name=workshop", "-c", "user.email=workshop@localhost",
-                 "tag", "-a", state["tag"], sha, "-m", f'workshop {item["id"]}'])
-            run([self.io.git, "-C", str(copy), "push", url, "refs/tags/" + state["tag"]])
+            tag = existing_tag()
+        if not tag:
+            raise BusinessWait("发版脚本未确认远端 tag，稍后回查", rerun=False)
+        state["tag"] = tag
+
+    @staticmethod
+    def _field(value, path):
+        for part in path.split("."):
+            value = value.get(part, {}) if isinstance(value, dict) else {}
+        return value
 
     def _deployed(self, target, sha):
-        config = target.get("deployment", {})
-        if not config.get("app"):
+        config = target["deployment"]
+        try:
+            result = run([executable("kubectl"), "--request-timeout=20s", "--context", config["context"],
+                "-n", config["namespace"], "get", "application", config["app"], "-o", "json"], check=False)
+            if result.returncode:
+                return False
+            app = json.loads(result.stdout)
+            revision = self._field(app, config["revision_field"])
+            if (self._field(app, "status.sync.status") != "Synced" or self._field(app, "status.health.status") != "Healthy"
+                    or not isinstance(revision, str) or not re.fullmatch(r"[0-9a-f]{40}", revision)):
+                return False
+            url = f'https://github.com/{target["repo"]}.git'
+            refs = run([self.io.git, "ls-remote", url, "refs/heads/" + config["branch"]]).stdout.split()
+            if not refs or refs[0] != revision:
+                return False
+            record = self.io.api(f'repos/{target["repo"]}/contents/{config["release_file"]}?ref={quote(revision)}')
+            source = self._field(json.loads(base64.b64decode(record["content"])), config["source_field"])
+            if not isinstance(source, str) or not re.fullmatch(r"[0-9a-f]{40}", source):
+                return False
+            checkout = str(Path(target["checkout"]).expanduser())
+            run([self.io.git, "-C", checkout, "fetch", url, source, sha])
+            return run([self.io.git, "-C", checkout, "merge-base", "--is-ancestor", sha, source], check=False).returncode == 0
+        except (ValueError, KeyError, Retryable):
             return False
-        args = [executable("argocd")]
-        if config.get("context"):
-            args += ["--argocd-context", config["context"]]
-        result = run(args + ["app", "get", config["app"], "-o", "json"], check=False)
-        if result.returncode:
-            return False
-        app = json.loads(result.stdout)
-        sync = app.get("status", {}).get("sync", {})
-        source = app.get("spec", {}).get("source", {})
-        if (sync.get("status") != "Synced" or app.get("status", {}).get("health", {}).get("status") != "Healthy"
-                or source.get("repoURL") != f'git@github.com:{target["repo"]}.git'
-                or source.get("targetRevision") != "production" or source.get("path") != "manifests"
-                or not re.fullmatch(r"[0-9a-f]{40}", sync.get("revision", ""))):
-            return False
-        record = self.io.api(f'repos/{target["repo"]}/contents/release.json?ref={quote(sync["revision"])}')
-        return json.loads(base64.b64decode(record["content"]))["source_commit"] == sha
 
     def after(self, item, completed_stage, key, target):
+        try:
+            return self._after(item, completed_stage, key, target)
+        except ValueError as exc:
+            return After(pending=True, rerun=True, reason=str(exc), next="按关口理由修正")
+        except BusinessWait as wait:
+            return After(pending=True, rerun=wait.rerun, reason=wait.reason, next="按关口理由修正或复查", recheck_after="+5m")
+
+    def _after(self, item, completed_stage, key, target):
         with self.io.locked(item, target) as state:
-            if key in state["effects"]:
+            if key in state["effects"] and not state["effects"][key].get("pending"):
                 return After(**state["effects"][key])
             result = After()
             if item.get("pending_rework"):
-                return After(pending=True, reason="已收到可信返工", next="按返工意见回到执行")
+                return After(pending=True, rerun=True, reason="已收到可信返工", next="按返工意见回到执行")
             if item.get("result", {}).get("advance") == "执行" and completed_stage != "说清楚":
                 state.pop("reviewed_head", None)
                 state.pop("evidence_head", None)
@@ -350,31 +393,33 @@ class IssueDelivery:
                 from workshop.core.models import Receipt
                 evidence = self.assess(item, Receipt(**item["result"]), target)
                 if not evidence.passed:
-                    raise ValueError("说清楚阶段还不能放行：" + evidence.reason)
+                    raise BusinessWait("说清楚阶段还不能放行：" + evidence.reason)
             elif completed_stage in ("执行", "证据", "审查"):
                 pr = self.io.pr(item, target)
                 from workshop.core.models import Receipt
                 current = report(Receipt(**item["result"]))
                 if current.get("head") != pr["head"]["sha"]:
-                    raise ValueError("结算时提交已变化，须重新检查和审查")
+                    raise BusinessWait("结算时提交已变化，须重新检查和审查")
                 if completed_stage == "执行":
                     if pr.get("merged") or pr["state"] != "open":
-                        raise ValueError("执行须交新的打开的 PR")
+                        raise BusinessWait("执行须交新的打开的 PR")
                     state["acceptance_after"] = max((m.get("seq", 0) for m in item.get("materials", [])), default=0)
                     state.pop("accepted", None)
                     state.pop("reviewed_head", None)
                     state.pop("evidence_head", None)
                     state.pop("merge", None)
                     state.pop("tag", None)
+                    state.pop("release_submitted", None)
                 if completed_stage == "证据":
                     state["evidence_head"] = pr["head"]["sha"]
                 if completed_stage == "审查":
+                    self.io.bot_review(item, target, pr)
                     state["reviewed_head"] = pr["head"]["sha"]
                 state["pr"] = pr["number"]
             elif completed_stage == "交付":
                 pr = self.io.pr(item, target)
                 if state.get("reviewed_head") != pr["head"]["sha"] or not self._safe_pr(pr, item):
-                    raise ValueError("合并前头提交或正文已变，须重新审查")
+                    raise BusinessWait("合并前头提交或正文已变，须重新审查")
                 if not pr.get("merged"):
                     if not self._ci(pr, target):
                         return After(pending=True, reason="CI 尚未全部成功", next="回查 CI，失败则修正")
@@ -383,20 +428,24 @@ class IssueDelivery:
                          "--subject", f'workshop: {item["id"]}', "--body", f'Related to #{state["issue"]}'])
                     pr = self.io.api(f'repos/{target["repo"]}/pulls/{pr["number"]}')
                 if not pr.get("merged") or not pr.get("merge_commit_sha"):
-                    raise ValueError("合并结果未确认")
+                    raise BusinessWait("合并结果未确认")
                 state["merge"] = pr["merge_commit_sha"]
                 self.io.save(item, target, state)
                 if target.get("release", "none") == "tag":
                     self._tag(item, target, state)
+                    from workshop.core.models import Receipt
+                    if report(Receipt(**item.get("result", {"outcome": "done", "summary": ""}))).get("release_submitted") is True:
+                        state["release_submitted"] = True
                     if not self._deployed(target, state["merge"]):
-                        result = After(pending=True, reason="已合并并打 tag，线上版本尚未核对通过", next="按发版手册申请授权、上线并核对版本")
+                        result = After(pending=True, rerun=not state.get("release_submitted", False),
+                                       reason="线上版本尚未核对通过", next="按发版手册发布" if not state.get("release_submitted") else "定时回查线上版本")
                 elif target.get("release", "none") != "none":
-                    raise ValueError("未知 release 类型")
+                    raise BusinessWait("未知 release 类型")
             elif completed_stage == "验收":
                 state["accepted"] = True
             elif completed_stage == "收尾":
                 if not state.get("accepted"):
-                    raise ValueError("未验收不能关 issue")
+                    raise BusinessWait("未验收不能关 issue")
                 issue = self._issue(item, target)
                 if issue["state"] != "closed":
                     run([self.io.gh, "issue", "close", str(issue["number"]), "--repo", target["repo"]])

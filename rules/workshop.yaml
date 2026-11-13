@@ -16,7 +16,24 @@ targets:
     kun_feishu_open_id: ou_43456ed5ae17472375fcbb6ec0fc4661
     ask_kun_state: ~/.local/state/ask-kun/asks.json
     pending_limit: 5
-    deployment: {app: grant-console-centaladmin}  # 只读回查用本机 Argo 上下文；部署另用获批身份
+    short_name: gc
+    ci: [check-and-build]
+    prepare:
+      - {argv: [uv, sync, --locked], cwd: services/devops-console}
+    check_timeout: 900
+    bot_review:
+      login: lambdatheory-agent[bot]
+      signer: [~/workspace/runtime/tools/agent_github_identity/.venv/bin/python, -I, ~/workspace/runtime/tools/agent_github_identity/agent_gh_token.py]
+    tag_command: [scripts/tag-release.sh]
+    release_timeout: 300
+    deployment:
+      context: central-admin-agent
+      namespace: argocd
+      app: grant-console-centaladmin
+      revision_field: status.sync.revision
+      branch: production
+      release_file: release.json
+      source_field: source_commit
     release: tag
     two_reviewers: ['.github/', 'deploy/', 'grant_console/']
   workshop:
@@ -24,6 +41,11 @@ targets:
     selector: ordered
     stage_selectors: {审查: ordered}
     sources: [github]
+    short_name: ws
+    ci: none
+    prepare: [{argv: [uv, sync, --locked]}]
+    check_timeout: 300
+    bot_review: false
     repo: kun-g/workshop
     checkout: ~/workspace/runtime/repos/workshop
     skill: issue-delivery

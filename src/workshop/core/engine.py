@@ -55,15 +55,19 @@ class Engine:
         item = self.log.get("items", card["item"])
         return {"card": card, "item": item} if item and item["target"] == target else None
 
-    def after(self, flow, item, stage, key, target):
+    def after(self, flow, item, stage, key, target, *, recheck=False):
         def invoke():
             result = flow.after(item, stage, key, target)
             return asdict(result) if isinstance(result, After) else result
+        if recheck:
+            self.fact("effect", {"id": key, "done": False})
         value = self.effect(key, invoke)
         result = After(**value) if isinstance(value, dict) else After(aliases=value or [])
-        if (type(result.pending) is not bool or not isinstance(result.reason, str)
+        if (type(result.pending) is not bool or type(result.rerun) is not bool or not isinstance(result.reason, str)
                 or not isinstance(result.next, str) or result.pending and (not result.reason or not result.next)):
             raise ValueError("仍留本阶段须有原因和下一步")
+        if result.pending and not result.rerun:
+            due(result.recheck_after, self.clock())
         aliases = result.aliases
         if not isinstance(aliases, list) or not all(isinstance(a, str) and a for a in aliases):
             raise ValueError("流程返回的别名必须是非空字符串列表")
@@ -77,13 +81,58 @@ class Engine:
                           "item": item["id"]}, item["id"], source="alias", ext_id=f"{key}:{alias}")
         return result
 
-    def pending_changes(self, item, result, target):
+    def pending_changes(self, item, result, target, hook):
         count = item.get("after_pending_count", 0) + 1
+        changes = dict(next=result.next, gate_reason=result.reason, after_pending_count=count, after_wait=None)
         if count >= target.get("pending_limit", 5):
             self.card(item, f"pending:{item['stage']}:{item.get('pending_episode', 0)}", "notice",
                       notice(result.reason + "；" + result.next))
-        return dict(state="空闲", next=result.next, gate_reason=result.reason, after_pending_count=count,
-                    leave={"kind": "工序", "owner": "车间", "at": stamp(self.clock()), "about": result.next})
+            changes.update(state="卡住", blocked_by="阶段等待达到上限", leave={"kind": "等你", "about": result.reason})
+        elif result.rerun:
+            changes.update(state="空闲", leave={"kind": "工序", "owner": "车间", "at": stamp(self.clock()), "about": result.next})
+        else:
+            # 取插件建议与核心指数退避较晚者，等待不占执行者。
+            at = max(due(result.recheck_after, self.clock()),
+                     stamp(self.clock() + timedelta(seconds=min(300 * 2 ** (count - 1), 3600))))
+            self.timer(item, f"{hook['key']}:{count}", at, result.next)
+            changes.update(state="定时", after_wait={**hook, "at": at},
+                           leave={"kind": "工序", "owner": "车间", "at": at, "about": result.next})
+        return changes
+
+    def recheck_after(self, item):
+        hook = item.get("after_wait")
+        if not hook or item["state"] != "空闲" or stamp(self.clock()) < hook["at"] or not self.retry_due(hook["key"]):
+            return
+        target = self.rules.target(item["target"])
+        try:
+            flow = self.plugins.get("flow", target["plugin"])
+            result = self.after(flow, {**item, "result": hook["receipt"]}, item["stage"], hook["key"], target, recheck=True)
+            with self.log.transaction():
+                if result.pending:
+                    self.change(item, **self.pending_changes(item, result, target, hook))
+                else:
+                    self.change(item, stage=hook["to"], state="完成" if hook["complete"] else "空闲",
+                                next=hook["to"], after_wait=None, after_pending_count=0,
+                                pending_episode=item.get("pending_episode", 0) + 1, blocked_by="",
+                                leave=hook["receipt"].get("leave") or {"kind": "工序", "owner": "车间", "at": stamp(self.clock()), "about": hook["to"]})
+            self.retry_clear(hook["key"])
+        except Retryable as exc:
+            self.retry_failure(item["target"], "flow", target["plugin"], hook["key"], exc)
+        except Exception as exc:
+            self.broken(item["target"], "flow", target["plugin"], exc)
+
+    def cleanup_flows(self):
+        keep = [r["brief"].get("workdir") for r in self.active() if not r.get("stopped")]
+        for name in self.rules.data["targets"]:
+            target = self.rules.target(name)
+            if self.control(name).get("broken"):
+                continue
+            try:
+                cleanup = getattr(self.plugins.get("flow", target["plugin"]), "cleanup", None)
+                if cleanup:
+                    cleanup(target, keep)
+            except Exception as exc:
+                self.broken(name, "flow", target["plugin"], exc)
 
     def ingest(self, event: Event, round_token: str | None = None, *, ingress: str = "source") -> bool:
         if ingress == "external":
@@ -135,12 +184,18 @@ class Engine:
             try:
                 item = self.log.get("items", event.item_id)
                 result = self.plugins.get("flow", target["plugin"]).classify(
-                    event, item, target, lambda external: self.find_external(event.target, external))
-                if result is None:
-                    continue
+                    event, item, target, lambda external=None, *, object_key=None:
+                    ({"item": found} if (found := self.log.get("items", f"{event.target}:{self.resolve_key(event.target, object_key)}")) else None)
+                    if object_key is not None else self.find_external(event.target, external))
                 decision = Classification(result) if isinstance(result, str) else result
                 if not isinstance(decision, Classification):
                     raise ValueError("流程返回了未知判定")
+                if type(decision.discard) is not bool:
+                    raise ValueError("丢弃标记必须是布尔值")
+                if decision.discard:
+                    self.fact("event_discarded", {"id": entry["id"], "event_seq": entry["event_seq"]})
+                    self.retry_clear(entry["id"])
+                    continue
                 action = decision.action
                 if decision.object_key is not None:
                     key = self.resolve_key(event.target, decision.object_key)
@@ -295,7 +350,8 @@ class Engine:
                             if event.target != target:
                                 raise ValueError("来源不能跨交付对象写入")
                             self.ingest(event)
-                        self.fact("cursor", {"id": key, "cursor": batch.cursor})
+                        if batch.cursor != cursor:
+                            self.fact("cursor", {"id": key, "cursor": batch.cursor})
                     self.retry_clear(f"source:{key}")
                 except Retryable as exc:
                     self.retry_failure(target, "source", name, f"source:{key}", exc)
@@ -726,6 +782,7 @@ class Engine:
         item = self.log.get("items", row["item"])
         if self.control(item["target"]).get("broken") or not self.retry_due(f"finish:{row['token']}"):
             return
+        self.cleanup_flows()
         token = row["token"]
         port, name = "flow", self.rules.target(item["target"])["plugin"]
         try:
@@ -774,7 +831,10 @@ class Engine:
                 if evidence.checks:
                     changes["checks"] = evidence.checks
                 if after_result.pending:
-                    changes.update(self.pending_changes(item, after_result, target))
+                    changes.update(self.pending_changes(item, after_result, target,
+                        {"key": key, "receipt": receipt.json(), "to": decision.stage, "complete": decision.complete}))
+                    if after_result.rerun:
+                        changes.update(reviews=item.get("reviews", []), retry_executor=row["executor"])
                 elif rejected:
                     changes.update(stage="执行", state="空闲", next="验收不过，退回执行", approved=[], reviews=[],
                                    after_pending_count=0, pending_episode=item.get("pending_episode", 0) + 1,
@@ -865,7 +925,7 @@ class Engine:
                 latest = self.log.get("items", item["id"])
                 if latest["pending_rework"]:
                     return
-                changes = (self.pending_changes(latest, result, target) if result.pending else
+                changes = (self.pending_changes(latest, result, target, {"key": key, "receipt": receipt.json(), "to": decision.stage, "complete": decision.complete}) if result.pending else
                            dict(state="空闲", next=decision.stage, gate_reason="已按原证据授权推进",
                                 after_pending_count=0, pending_episode=latest.get("pending_episode", 0) + 1))
                 self.change(latest, "gate_passed", stage=pending["from"] if result.pending else decision.stage,
@@ -904,6 +964,9 @@ class Engine:
 
     def _tick(self):
         with self.exclusive():
+            if not getattr(self, "cleaned_flows", False):
+                self.cleanup_flows()
+                self.cleaned_flows = True
             self.sources()
             self.classify_events()
             self.channels()
@@ -938,15 +1001,17 @@ class Engine:
                         self.cancel_questions(item)
                         self.change(item, stage="执行" if item["checks"] else "说清楚", state="空闲",
                                     pending_rework=False, approved=[], pending_advance=None, reviews=[], review_required=1,
-                                    after_pending_count=0, pending_episode=item.get("pending_episode", 0) + 1,
+                                    after_pending_count=0, after_wait=None, pending_episode=item.get("pending_episode", 0) + 1,
                                     wait_for_ready=False, retry_executor=None, gate_count=0, next="按新事件返工")
                     item = self.log.get("items", item["id"])
+                self.recheck_after(item)
+                item = self.log.get("items", item["id"])
                 self.complete_approval(item)
                 item = self.log.get("items", item["id"])
                 if not self.taskhome(item):
                     continue
                 item = self.log.get("items", item["id"])
-                if item["state"] == "空闲" and self.occupied() < self.rules.data["limits"]["concurrent"]:
+                if item["state"] == "空闲" and not item.get("after_wait") and self.occupied() < self.rules.data["limits"]["concurrent"]:
                     self.reserve(item)
             self.channels()
             self.heartbeat()

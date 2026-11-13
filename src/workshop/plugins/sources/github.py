@@ -6,6 +6,9 @@ import re
 import shutil
 import subprocess
 import time
+import os
+from pathlib import Path
+import tempfile
 from urllib.parse import urlencode
 
 from workshop.core.models import Event, Poll
@@ -17,21 +20,42 @@ class _YieldPoll(Exception):
 
 
 class GitHubSource:
-    def __init__(self, gh=None):
+    def __init__(self, gh=None, state_dir=None):
+        self.state_dir = Path(state_dir) if state_dir else None
         self.gh = gh or shutil.which("gh")
         if not self.gh:
             raise RuntimeError("找不到 gh；请在启动 PATH 中配置")
 
+    def _cached(self, record):
+        path = self.cache_root / (record.get("fingerprint", "missing") + ".json")
+        try:
+            return json.loads(path.read_text())
+        except (OSError, ValueError):
+            return None
+
+    def _save_response(self, value):
+        payload = json.dumps(value, sort_keys=True, ensure_ascii=False)
+        fingerprint = hashlib.sha256(payload.encode()).hexdigest()
+        path = self.cache_root / (fingerprint + ".json")
+        if not path.exists():
+            with tempfile.NamedTemporaryFile("w", dir=self.cache_root, delete=False) as output:
+                output.write(payload)
+                output.flush()
+                os.fsync(output.fileno())
+            os.replace(output.name, path)
+        return fingerprint
+
     def _get(self, endpoint, cache):
         old = cache.get(endpoint, {})
-        if endpoint in self.refreshed:
-            return old["data"], old.get("next")
+        saved = self._cached(old)
+        if endpoint in self.refreshed and saved is not None:
+            return saved, old.get("next")
         remaining = self.deadline - time.monotonic()
         if self.requests >= self.limit or remaining < 1:
             raise _YieldPoll()
         self.requests += 1
         args = [self.gh, "api", "--method", "GET", "--include", endpoint]
-        if old.get("etag"):
+        if old.get("etag") and saved is not None:
             args += ["-H", f'If-None-Match: {old["etag"]}']
         try:
             result = subprocess.run(args, text=True, capture_output=True, timeout=min(12, remaining))
@@ -45,7 +69,7 @@ class GitHubSource:
         code = int(status[1])
         if code == 304:
             self.refreshed.add(endpoint)
-            return old["data"], old.get("next")
+            return saved, old.get("next")
         if code != 200 or result.returncode:
             raise Retryable(f"GitHub 读取失败：HTTP {code}")
         fields = {line.split(":", 1)[0].lower(): line.split(":", 1)[1] for line in headers.splitlines()[1:] if ":" in line}
@@ -54,7 +78,7 @@ class GitHubSource:
                      if line.lower().startswith("link:")), "")
         next_page = re.search(r'<https://api.github.com/([^>]+)>; rel="next"', link)
         value = json.loads(body)
-        cache[endpoint] = {"etag": fields.get("etag", "").strip(), "data": value,
+        cache[endpoint] = {"etag": fields.get("etag", "").strip(), "fingerprint": self._save_response(value),
                            "next": next_page[1] if next_page else None}
         self.refreshed.add(endpoint)
         return value, cache[endpoint]["next"]
@@ -71,6 +95,11 @@ class GitHubSource:
     def poll(self, target, cursor):
         state = json.loads(cursor) if cursor else {"cache": {}, "known": {}, "seen": {}}
         state = deepcopy(state)
+        self.cache_root = self.state_dir or Path(target.get("github_cache_dir", "~/.local/state/workshop/github-responses")).expanduser()
+        self.cache_root.mkdir(parents=True, exist_ok=True)
+        for record in state["cache"].values():
+            if "data" in record:
+                record["fingerprint"] = self._save_response(record.pop("data"))
         self.refreshed = set(state.get("refreshed", []))
         self.requests = 0
         self.limit = target.get("github_requests_per_tick", 20)
@@ -86,10 +115,14 @@ class GitHubSource:
 
         def emit(kind, number, key, identity, value, action="update"):
             signature = hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()
-            ext = f"{repo}:{kind}:{number}:{identity}:{signature}"
-            if seen.get(f"{kind}:{number}:{identity}") == signature:
+            identity_key = f"{kind}:{number}:{identity}"
+            previous = seen.get(identity_key)
+            if previous == signature:
                 return
-            seen[f"{kind}:{number}:{identity}"] = signature
+            if previous is not None:
+                action = "update"
+            ext = f"{repo}:{identity_key}" + ("" if action in ("ready", "rework") else f":{signature}")
+            seen[identity_key] = signature
             events.append(Event("github", ext, name, key, f"{repo} #{number}",
                                 {"kind": kind, "repo": repo, "number": number, "data": value}, action=action))
 
@@ -111,15 +144,23 @@ class GitHubSource:
         try:
             issues = self._list(base + "/issues?" + urlencode({"state": "all", "labels": label, "per_page": 100}), cache)
             for issue in issues:
-                if "pull_request" not in issue:
+                if "pull_request" not in issue and (issue.get("state") != "closed" or str(issue["number"]) in known):
                     known[str(issue["number"])] = True
             # 保留已接单对象，即使移除标签或收尾，仍能接受评论和返工。
             for number in known:
                 issue, _ = self._get(f"{base}/issues/{number}", cache)
+                changes = self._list(f"{base}/issues/{number}/events?per_page=100", cache)
                 emit("issue", number, number, "body", issue)
-                for change in self._list(f"{base}/issues/{number}/events?per_page=100", cache):
+                # 程序建单的初次标签与 issue 同次创建，不能冒充 Kun 再放行。
+                own_intake = re.search(r"<!-- workshop-intake: [^<>]+ -->", issue.get("body") or "")
+                initial = next((c.get("id") for c in changes if c.get("event") == "labeled" and c.get("label", {}).get("name") == label), None) if own_intake else None
+                own_labels = state.setdefault("own_labels", {})
+                if initial is not None:
+                    own_labels[number] = initial
+                initial = own_labels.get(number)
+                for change in changes:
                     if change.get("event") == "labeled" and change.get("label", {}).get("name") == label:
-                        action = "ready" if change.get("actor", {}).get("login") == "kun-g" else "update"
+                        action = "ready" if change.get("actor", {}).get("login") == "kun-g" and change["id"] != initial else "update"
                         emit("label", number, number, change["id"], change, action)
                 comments(f"{base}/issues/{number}/comments", "issue-comment", number, number)
 

@@ -55,6 +55,7 @@ class Event:
 class Classification:
     action: str = "update"
     object_key: str | None = None
+    discard: bool = False
 
 
 @dataclass(frozen=True)
@@ -76,6 +77,8 @@ class After:
     pending: bool = False
     reason: str = ""
     next: str = ""
+    rerun: bool = False
+    recheck_after: str = "+5m"
 
 
 @dataclass(frozen=True)

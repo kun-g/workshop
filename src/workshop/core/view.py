@@ -48,6 +48,10 @@ def evolve(db, fact: dict) -> None:
         item["cause"] = fact["seq"]
         apply_action(item, body["action"])
         put("items", item_id, item)
+    elif kind == "event_discarded":
+        entry = get("effects", body["id"])
+        entry.update(done=True, discarded=True)
+        put("effects", body["id"], entry)
     elif kind == "event_classified":
         if "event" in body:
             evolve(db, {**fact, "kind": "event", "source": body["event"]["source"], "body": body["event"]})
