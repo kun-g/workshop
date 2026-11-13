@@ -70,10 +70,18 @@ class Log:
         row = self.db.execute(f"SELECT body FROM {table} WHERE id=?", (key,)).fetchone()
         return json.loads(row[0]) if row else None
 
-    def all(self, table):
+    def all(self, table, *, where=None, unless=None):
+        """where=(字段, 值) 只要该字段等于值的行，unless=(字段, 值) 筛掉等于值的行；在库里先筛，
+        不在 Python 里逐行解析（例如已结束的轮、别的活的轮）。"""
         if table not in TABLES:
             raise ValueError("未知视图")
-        return [json.loads(row[0]) for row in self.db.execute(f"SELECT body FROM {table} ORDER BY rowid")]
+        clauses, params = [], []
+        for (field, value), test in ((where or (None, None), "IS"), (unless or (None, None), "IS NOT")):
+            if field:
+                clauses.append(f"json_extract(body, ?) {test} ?")
+                params += [f"$.{field}", value]
+        query = f"SELECT body FROM {table}" + (" WHERE " + " AND ".join(clauses) if clauses else "") + " ORDER BY rowid"
+        return [json.loads(row[0]) for row in self.db.execute(query, params)]
 
     def facts(self, item=None):
         query = "SELECT * FROM facts" + (" WHERE item=?" if item else "") + " ORDER BY seq"

@@ -108,6 +108,10 @@ def test_review_copy_is_readonly_worktree_and_cleanup_unregisters_it(tmp_path, c
     # 再要同一提交的只读副本，复用而不重开。
     assert flow.review_copy({'id': 'alpha:7'}, target(checkout), sha) == str(path)
     flow.cleanup_reviews(target(checkout), keep=[])
+    assert path.exists()  # 刚建的在宽限期内（REVIEW_GRACE_SECONDS），不清。
+    old = time.time() - 2 * 3600
+    os.utime(path, (old, old))
+    flow.cleanup_reviews(target(checkout), keep=[])
     assert not path.exists() and worktrees(checkout) == before
 
 

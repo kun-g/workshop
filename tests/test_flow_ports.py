@@ -48,8 +48,8 @@ def test_aliases_replay_pause_and_collision(engine, monkeypatch):
     engine.ingest(event())
     flow = engine.plugins.get('flow', 'flow')
     monkeypatch.setattr(flow, 'after', lambda *args: After(aliases=['7']))
-    engine.after(flow, item(engine), '接单', 'once', engine.rules.target('alpha'))
-    engine.after(flow, item(engine), '接单', 'once', engine.rules.target('alpha'))
+    engine.after(item(engine), '接单', 'once', engine.rules.target('alpha'))
+    engine.after(item(engine), '接单', 'once', engine.rules.target('alpha'))
     engine.ingest(event(key='7', ext_id='same-object'))
     assert len(engine.log.all('items')) == 1
     assert len([f for f in engine.log.facts() if f['kind'] == 'alias_bound']) == 1
@@ -59,7 +59,7 @@ def test_aliases_replay_pause_and_collision(engine, monkeypatch):
     assert len(engine.log.all('items')) == 1 and len(item(engine)['materials']) == 3
     engine.ingest(event(key='other', ext_id='other'))
     with pytest.raises(ValueError, match='别名冲突'):
-        engine.after(flow, item(engine, 'other'), '接单', 'collision', engine.rules.target('alpha'))
+        engine.after(item(engine, 'other'), '接单', 'collision', engine.rules.target('alpha'))
     assert engine.resolve_key('alpha', '7') == 'one'
     before = engine.log.all('aliases')
     engine.log.rebuild()
@@ -165,7 +165,7 @@ def test_alias_does_not_make_agent_event_trusted(engine, monkeypatch):
     engine.ingest(event())
     flow = engine.plugins.get('flow', 'flow')
     monkeypatch.setattr(flow, 'after', lambda *args: ['7'])
-    engine.after(flow, item(engine), '接单', 'alias', engine.rules.target('alpha'))
+    engine.after(item(engine), '接单', 'alias', engine.rules.target('alpha'))
     engine.tick()
     monkeypatch.setattr(flow, 'classify', lambda *args: pytest.fail('agent should not classify'))
     engine.ingest(event(key='7', ext_id='agent', action='rework'), round_token=current(engine)['token'], ingress='external')

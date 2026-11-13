@@ -6,7 +6,8 @@ from pathlib import Path
 import sys
 import time
 
-from .core.engine import Engine
+from .core.engine import Engine, finder
+from .core.jobs import Jobs, execute
 from .core.log import Log
 from .core.models import Event
 from .core.report import resolve, status, unfiled, usage, why
@@ -47,9 +48,11 @@ def parser():
     resume.add_argument("target")
     resume.add_argument("--select", help="all / none / 事实编号，逗号分隔；省略时只列清单，保持暂停")
     resume.add_argument("--seen", help="上次看过的全部事实编号，逗号分隔；空清单填 none")
-    run = commands.add_parser("run")
+    run = commands.add_parser("run", help="守护进程：每拍只读写状态库和本地文件，插件调用放到后台作业；--once 只跑一拍，插件调用就地进行")
     run.add_argument("--once", action="store_true")
-    run.add_argument("--interval", type=float, default=20)
+    run.add_argument("--interval", type=float, default=2)
+    job = commands.add_parser("job", help="（守护进程内部用）在独立进程里跑一个作业，结果写回作业目录")
+    job.add_argument("directory", type=Path)
     return result
 
 
@@ -69,6 +72,8 @@ def main(argv=None):
     try:
         if args.command == "status":
             print(status(log))
+        elif args.command == "job":
+            execute(args.directory, Registry(), lambda target: finder(log, target))
         elif args.command == "why":
             try:
                 rules = current_rules(args, log.get("controls", "@rules")).data
@@ -87,7 +92,11 @@ def main(argv=None):
                 rules = Rules(Rules.validate(saved["data"]).data, saved.get("path"))
             else:
                 rules = current_rules(args, saved)
-            engine = Engine(log, rules, Registry())
+            jobs = None
+            if args.command == "run" and not args.once:
+                state_dir = str(args.state_dir.resolve())
+                jobs = Jobs(args.state_dir / "jobs", [sys.executable, "-m", "workshop.cli", "--state-dir", state_dir, "job"])
+            engine = Engine(log, rules, Registry(), jobs=jobs)
             if args.command in ("event", "receipt"):
                 data = json.loads(args.json if args.json is not None else args.file.read_text() if args.file else sys.stdin.read())
                 added = engine.ingest(Event(**data), round_token=os.environ.get("WORKSHOP_ROUND_TOKEN"), ingress="external") if args.command == "event" else engine.submit(args.token, data)

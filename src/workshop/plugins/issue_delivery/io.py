@@ -14,6 +14,10 @@ import urllib.error
 
 from workshop.core.ports import Retryable
 
+# 审查只读副本刚建或刚复用后这么久内不清：派活说明（建副本）和预订这一轮在不同的拍，
+# 清理作业又和它们并行跑，副本可能还没登进「在用」名单。
+REVIEW_GRACE_SECONDS = 3600
+
 
 def executable(name):
     path = shutil.which(name)
@@ -227,6 +231,7 @@ class IO:
             # 去写权限最后才动顶层目录；顶层还可写说明上次没做完，补做一遍。
             if final.stat().st_mode & 0o222:
                 readonly(final)
+            os.utime(final)
             return str(final)
         destination = Path(tempfile.mkdtemp(prefix="review-", dir=root)) / "repo"
         self.copy(target, sha, destination)
@@ -244,6 +249,8 @@ class IO:
         keep = {str(Path(p).resolve()) for p in keep if p}
         for directory in root.iterdir():
             if str(directory.resolve()) in keep or not directory.is_dir() or directory.is_symlink():
+                continue
+            if time.time() - directory.stat().st_mtime < REVIEW_GRACE_SECONDS:
                 continue
             # 只清理由本插件管理的目录；先解开只读位，不追随文件链接，再收回主检出上的登记。
             writable(directory)

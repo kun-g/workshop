@@ -8,6 +8,7 @@ from pathlib import Path
 import uuid
 import sys
 import hashlib
+import time
 
 from .gates import advance_problem, decide, overlaps, validate_stages
 from .models import STAGES as ALL_STAGES
@@ -16,6 +17,7 @@ from .models import Brief, Event, Receipt, STAGES, Started, due, stamp, utcnow
 from .ports import Unavailable, Retryable, ChannelRejected
 from .cards import frozen_question, question, notice, validate_question, validate_notice
 from .models import After, Answer, FlowBrief, Classification, Evidence, Release, Usage, RoundUsage
+from .jobs import Pending
 
 
 def gate(ingress):
@@ -24,9 +26,28 @@ def gate(ingress):
     return {"release_gate": True} if ingress == "source" else {}
 
 
+def finder(log, target):
+    """给流程判定用的只读查找：按外部编号找卡，或按对象键（先解析别名）找同目标的活。"""
+    def resolve(object_key):
+        alias = log.get("aliases", f"{target}:{object_key}")
+        return alias["object_key"] if alias else object_key
+
+    def find(external=None, *, object_key=None):
+        if object_key is not None:
+            found = log.get("items", f"{target}:{resolve(object_key)}")
+            return {"item": found} if found else None
+        matches = [c for c in log.all("cards") if c.get("external") == external]
+        if len(matches) != 1:
+            return None
+        item = log.get("items", matches[0]["item"])
+        return {"card": matches[0], "item": item} if item and item["target"] == target else None
+    return find
+
+
 class Engine:
-    def __init__(self, log: Log, rules, plugins, clock=utcnow):
-        self.log, self.rules, self.plugins, self.clock = log, rules, plugins, clock
+    def __init__(self, log: Log, rules, plugins, clock=utcnow, jobs=None):
+        """jobs 为空时插件调用就地进行（测试和单次命令）；守护进程传入作业，一拍里不等任何外部调用。"""
+        self.log, self.rules, self.plugins, self.clock, self.jobs = log, rules, plugins, clock, jobs
         self.restart_requested = False
         self.tick_failures = self.control("@tick").get("failures", 0)
         saved = self.log.get("controls", "@rules") or {}
@@ -51,23 +72,28 @@ class Engine:
     def control(self, target):
         return self.log.get("controls", target) or {}
 
+    def call(self, port, name, method, *args, identity=None, item=None, lookup=None):
+        """调一次插件。有作业时：结果已出就返回，没出就登记或认回作业并抛 Pending，下一拍再来取。"""
+        if self.jobs is None:
+            if lookup is not None:
+                args = (*args, finder(self.log, lookup))
+            return getattr(self.plugins.get(port, name), method)(*args)
+        return self.jobs.call(port, name, method, args, identity=identity, item=item, lookup=lookup)
+
     def resolve_key(self, target, object_key):
         alias = self.log.get("aliases", f"{target}:{object_key}")
         return alias["object_key"] if alias else object_key
 
     def find_external(self, target, external):
-        matches = [c for c in self.log.all("cards") if c.get("external") == external]
-        if len(matches) != 1:
-            return None
-        card = matches[0]
-        item = self.log.get("items", card["item"])
-        return {"card": card, "item": item} if item and item["target"] == target else None
+        return finder(self.log, target)(external)
 
-    def after(self, flow, item, stage, key, target, *, recheck=False):
+    def after(self, item, stage, key, target, *, recheck=False):
         def invoke():
-            result = flow.after(item, stage, key, target)
+            # 同一完成钩子每次回查是一次新调用；回查次数进身份，免得认回上一次的结果。
+            result = self.call("flow", target["plugin"], "after", item, stage, key, target,
+                               identity=[key, item.get("after_pending_count", 0)], item=item["id"])
             return asdict(result) if isinstance(result, After) else result
-        if recheck:
+        if recheck and (self.log.get("effects", key) or {}).get("done"):
             self.fact("effect", {"id": key, "done": False})
         value = self.effect(key, invoke)
         result = After(**value) if isinstance(value, dict) else After(aliases=value or [])
@@ -120,8 +146,7 @@ class Engine:
             return
         target = self.rules.target(item["target"])
         try:
-            flow = self.plugins.get("flow", target["plugin"])
-            result = self.after(flow, {**item, "result": hook["receipt"]}, item["stage"], hook["key"], target, recheck=True)
+            result = self.after({**item, "result": hook["receipt"]}, item["stage"], hook["key"], target, recheck=True)
             with self.log.transaction():
                 if result.pending:
                     self.change(item, **self.pending_changes(item, result, target, hook))
@@ -143,9 +168,10 @@ class Engine:
             if self.control(name).get("broken"):
                 continue
             try:
-                cleanup = getattr(self.plugins.get("flow", target["plugin"]), "cleanup", None)
-                if cleanup:
-                    cleanup(target, keep)
+                if getattr(self.plugins.get("flow", target["plugin"]), "cleanup", None):
+                    self.call("flow", target["plugin"], "cleanup", target, keep)
+            except Pending:
+                pass  # 清理不挡别的事，作业自己跑完。
             except Exception as exc:
                 self.broken(name, "flow", target["plugin"], exc)
 
@@ -263,10 +289,8 @@ class Engine:
             target = self.rules.target(event.target)
             try:
                 item = self.log.get("items", event.item_id)
-                result = self.plugins.get("flow", target["plugin"]).classify(
-                    event, item, target, lambda external=None, *, object_key=None:
-                    ({"item": found} if (found := self.log.get("items", f"{event.target}:{self.resolve_key(event.target, object_key)}")) else None)
-                    if object_key is not None else self.find_external(event.target, external))
+                result = self.call("flow", target["plugin"], "classify", event, item, target,
+                                   identity=[entry["id"], asdict(event)], lookup=event.target)
                 decision = Classification(result) if isinstance(result, str) else result
                 if not isinstance(decision, Classification):
                     raise ValueError("流程返回了未知判定")
@@ -295,6 +319,8 @@ class Engine:
                               "event_seq": entry["event_seq"], **note,
                               **({"event": {**asdict(event), "action": action}} if entry.get("defer_creation") else {})}, event.item_id)
                 self.retry_clear(entry["id"])
+            except Pending:
+                continue
             except Retryable as exc:
                 self.retry_failure(event.target, "flow", target["plugin"], entry["id"], exc)
             except Exception as exc:
@@ -525,7 +551,8 @@ class Engine:
                 if not self.retry_due(f"source:{key}"):
                     continue
                 try:
-                    batch = self.plugins.get("source", name).poll(self.rules.target(target), cursor)
+                    # 身份只认交付对象：游标每次都可能变，带进身份就成了一出结果马上再拉；拉的间隔由新鲜期管。
+                    batch = self.call("source", name, "poll", self.rules.target(target), cursor, identity=[target])
                     with self.log.transaction():
                         for event in batch.events:
                             if event.target != target:
@@ -534,6 +561,8 @@ class Engine:
                         if batch.cursor != cursor:
                             self.fact("cursor", {"id": key, "cursor": batch.cursor})
                     self.retry_clear(f"source:{key}")
+                except Pending:
+                    continue
                 except Retryable as exc:
                     self.retry_failure(target, "source", name, f"source:{key}", exc)
                 except Exception as exc:
@@ -626,40 +655,49 @@ class Engine:
     def channels(self):
         name = self.rules.data["channel"]
         try:
-            channel = self.plugins.get("channel", name)
+            self.plugins.get("channel", name)
             for card in self.log.all("cards"):
                 try:
                     if card.get("rejected"):
                         continue
                     if card.get("cancelled"):
                         if not card.get("cancel_done"):
-                            channel.cancel(card["id"], card.get("external"))
+                            self.call("channel", name, "cancel", card["id"], card.get("external"), identity=["cancel", card["id"]])
                             self.fact("card_changed", {"id": card["id"], "cancel_done": True}, card["item"])
                     elif not card["sent"]:
                         external = None
-                        if card.get("sending"):
-                            external = channel.reconcile(card["id"], card)
+                        method = "ask" if card["mode"] == "ask" else "notify"
+                        sending = [card["id"]]
+                        # 发送作业还在跑或已出结果，就认它，不另去对账，免得把自己的发送算成不确定。
+                        if card.get("sending") and not (self.jobs and self.jobs.exists("channel", name, method, sending)):
+                            external = self.call("channel", name, "reconcile", card["id"], card, identity=[card["id"]])
                             if external is None:
                                 self.reconcile_uncertain(card)
                                 continue
                             self.reconcile_clear(card)
                         if external in (None, "absent"):
-                            self.fact("card_changed", {"id": card["id"], "sending": True}, card["item"])
-                            external = getattr(channel, "ask" if card["mode"] == "ask" else "notify")(
-                                card["id"], card["payload"])
+                            if not card.get("sending"):
+                                self.fact("card_changed", {"id": card["id"], "sending": True}, card["item"])
+                            external = self.call("channel", name, method, card["id"], card["payload"], identity=sending)
                         if not isinstance(external, str) or not external:
                             raise ValueError("通道没有返回外部编号")
                         self.fact("card_changed", {"id": card["id"], "external": external, "sent": True, "reconcile_failed": False}, card["item"])
                     self.delivery_ok(card["id"])
                     if card.get("rejection_of"):
                         self.delivery_ok(card["rejection_of"])
+                except Pending:
+                    continue
                 except ChannelRejected as exc:
                     self.undeliverable(card, str(exc))
                 except Exception as exc:
                     self.delivery_error(card["id"], exc, card["item"])
             cards = [c for c in self.log.all("cards") if c["mode"] == "ask" and c["sent"]
                      and not c["answered"] and not c.get("cancelled")]
-            for answer in channel.poll(cards):
+            try:
+                answers = self.call("channel", name, "poll", cards, identity=["poll"])
+            except Pending:
+                answers = []
+            for answer in answers:
                 with self.log.transaction():
                     card = self.log.get("cards", answer.card_id)
                     if not card or card["mode"] != "ask" or not card["sent"] or card["answered"] or card.get("cancelled"):
@@ -731,8 +769,11 @@ class Engine:
             self.change(item, state="空闲", next=timer["about"])
 
     def effect(self, key, action):
-        if not (self.log.get("effects", key) or {}).get("done"):
-            self.fact("effect", {"id": key, "done": False})
+        entry = self.log.get("effects", key)
+        if not (entry or {}).get("done"):
+            if entry is None or "done" not in entry:
+                # 作业没出结果时每拍都会回到这里；意图只记一次。
+                self.fact("effect", {"id": key, "done": False})
             result = action()
             self.fact("effect", {"id": key, "done": True, "result": result})
         return self.log.get("effects", key).get("result")
@@ -742,35 +783,40 @@ class Engine:
         if not name:
             return True
         try:
-            home = self.plugins.get("taskhome", name)
+            self.plugins.get("taskhome", name)
             target = self.rules.target(item["target"])
             if not item.get("ticket"):
-                ticket = self.effect(f'ticket:{item["id"]}', lambda: home.open(item["id"], item, target))
+                key = f'ticket:{item["id"]}'
+                ticket = self.effect(key, lambda: self.call("taskhome", name, "open", item["id"], item, target, identity=[key]))
                 self.change(item, ticket=ticket)
             else:
                 key = f'ticket:{item["id"]}:{item["revision"]}'
-                self.effect(key, lambda: home.update(key, item["ticket"], item, target))
+                self.effect(key, lambda: self.call("taskhome", name, "update", key, item["ticket"], item, target, identity=[key]))
             return True
+        except Pending:
+            return False
         except Exception as exc:
             self.broken(item["target"], "taskhome", name, exc)
             return False
 
     def active(self):
-        return [r for r in self.log.all("rounds") if r["status"] != "ended"]
+        return self.log.all("rounds", unless=("status", "ended"))
 
     def occupied(self):
         return sum(not row.get("stopped") for row in self.active())
 
     def launch(self, row):
         item = self.log.get("items", row["item"])
-        executor = self.plugins.get("executor", row["executor"])
+        self.plugins.get("executor", row["executor"])
         brief = Brief(**row["brief"])
         if row["session"]:
-            started = executor.resume(row["token"], row["session"], brief, item, row["config"], row["target"])
+            started = self.call("executor", row["executor"], "resume", row["token"], row["session"], brief, item,
+                                row["config"], row["target"], identity=[row["token"]], item=item["id"])
             if started.session != row["session"]:
                 raise ValueError("执行者没有接回原会话")
         else:
-            started = executor.launch(row["token"], brief, item, row["config"], row["target"])
+            started = self.call("executor", row["executor"], "launch", row["token"], brief, item, row["config"],
+                                row["target"], identity=[row["token"]], item=item["id"])
         if not started.session or not started.handle:
             raise ValueError("执行者必须返回会话和运行标识")
         with self.log.transaction():
@@ -794,6 +840,7 @@ class Engine:
             return
         target = self.rules.target(item["target"])
         port, name = "flow", target["plugin"]
+        unavailable = tuple(dict.fromkeys((*unavailable, *self.recently_unavailable(item))))
         try:
             flow = self.plugins.get(port, name)
             stages = flow.stages(target)
@@ -804,7 +851,7 @@ class Engine:
                             retry_executor=None, review_required=1, reviews=[],
                             gate_reason=f'规则已去掉「{item["stage"]}」阶段，直接进{following}')
                 return
-            content = flow.brief(item, item["stage"], target)
+            content = self.call(port, name, "brief", item, item["stage"], target, item=item["id"])
             content = FlowBrief(content) if isinstance(content, str) else content
             if (not isinstance(content, FlowBrief) or not isinstance(content.instructions, str)
                     or type(content.readonly) is not bool
@@ -813,16 +860,21 @@ class Engine:
             instructions = content.instructions
             candidates = []
             metered = []
+            waiting = None
             for config in self.rules.candidates(item["stage"], item["target"], item["writer"]):
                 if (config["use"] in unavailable or item.get("retry_executor") and config["use"] != item["retry_executor"]
                         or item["stage"] == "审查" and config["family"] in item.get("reviews", [])):
                     continue
                 port, name = "executor", config["use"]
-                executor = self.plugins.get(port, name)
+                self.plugins.get(port, name)
                 try:
-                    available = executor.available(config)
+                    available = self.call(port, name, "available", config)
                 except Unavailable:
                     available = False
+                except Pending as exc:
+                    # 各家的可用性一起查，不一家一家排队等。
+                    waiting = waiting or exc
+                    continue
                 if not available:
                     continue
                 billing_key = hashlib.sha256(json.dumps(config, sort_keys=True).encode()).hexdigest()
@@ -830,6 +882,8 @@ class Engine:
                     metered.append((billing_key, config))
                     continue
                 candidates.append({"config": config, "available": True})
+            if waiting:
+                raise waiting
             if not candidates and metered:
                 context = "没有可用的订阅候选；是否授权本件活使用这些按量计费候选：" + json.dumps([c for _, c in metered], ensure_ascii=False)
                 payload = question("是否批准本件活使用按量计费执行者", approval=True)
@@ -837,12 +891,13 @@ class Engine:
                 self.card(item, f'billing:{item["revision"]}', "ask", payload, billing_configs=[k for k, _ in metered], core_approval=True)
                 self.change(item, state="等你", next="按量计费先授权", blocked_by="Kun", leave={"kind": "等你", "about": "按量计费授权"})
                 return
-            history = [r for r in self.log.all("rounds") if r["item"] == item["id"]]
+            history = self.log.all("rounds", where=("item", item["id"]))
             selection_target = {**target, "selection": {"writer": item["writer"], "reviewed": item.get("reviews", []),
                                 "retry_executor": item.get("retry_executor"), "excluded": list(unavailable)}}
             selector_name = self.rules.selector(item["stage"], item["target"])
             port, name = "selector", selector_name
-            choice = self.plugins.get(port, name).select(selection_target, item["stage"], len(history) + 1, history, candidates)
+            self.plugins.get(port, name)
+            choice = self.call(port, name, "select", selection_target, item["stage"], len(history) + 1, history, candidates)
             chosen = choice.config if choice is not None else None
             if chosen is not None:
                 # 校验输出权限边界，不在核心另写挑选策略。
@@ -886,15 +941,30 @@ class Engine:
                 self.launch(row)
             except Unavailable:
                 # 端口保证这种错误没有启动副作用，才允许释放并换下一家。
-                with self.log.transaction():
-                    self.fact("round_changed", {"token": token, "status": "ended", "outcome": "unavailable",
-                              "ended": stamp(self.clock())}, item["id"])
-                    self.change(item, state="空闲", round=None, next="选择下一执行者")
+                self.release_unavailable(row)
                 self.reserve(self.log.get("items", item["id"]), (*unavailable, chosen["use"]))
         except Retryable as exc:
             self.start_retry(item, locals().get("row"), port, name, exc)
         except Exception as exc:
             self.broken(item["target"], port, name, exc)
+
+    def recently_unavailable(self, item, minutes=10):
+        """这件活最近几轮启动时说没法用的执行者；启动作业晚一拍才出结果，重新挑时要避开它们。"""
+        since = stamp(self.clock() - timedelta(minutes=minutes))
+        names = []
+        for row in reversed(self.log.all("rounds", where=("item", item["id"]))):
+            if row.get("outcome") != "unavailable" or row["stage"] != item["stage"] or (row.get("ended") or "") < since:
+                break
+            names.append(row["executor"])
+        return names
+
+    def release_unavailable(self, row):
+        """启动说没法用：端口保证没有启动副作用，结束这一轮、放开活，换下一家。"""
+        item = self.log.get("items", row["item"])
+        with self.log.transaction():
+            self.fact("round_changed", {"token": row["token"], "status": "ended", "outcome": "unavailable",
+                      "ended": stamp(self.clock())}, item["id"])
+            self.change(item, state="空闲", round=None, next="选择下一执行者")
 
     def serial_holder(self, item):
         """同一交付对象里占着串行路径的另一件活：进了执行、没收尾完成、没放弃、不在排队。"""
@@ -1012,11 +1082,14 @@ class Engine:
             reason = "这一轮超过规则期限"
         if not reason:
             try:
-                state = self.plugins.get("executor", row["executor"]).poll(row["token"], Started(**row["started"]) if row.get("started") else None)
+                state = self.call("executor", row["executor"], "poll", row["token"],
+                                  Started(**row["started"]) if row.get("started") else None, identity=[row["token"]])
                 if state not in ("running", "exited"):
                     raise ValueError("执行者返回了未知存活状态")
                 if state == "exited":
                     reason = "执行者已退出但没有交回执"
+            except Pending:
+                return
             except Retryable as exc:
                 self.delivery_error(f"poll:{row['token']}", exc, row["item"])
                 return
@@ -1066,15 +1139,15 @@ class Engine:
         token = row["token"]
         port, name = "executor", row["executor"]
         try:
-            executor = self.plugins.get(port, name)
+            self.plugins.get(port, name)
             started = Started(**row["started"]) if row.get("started") else None
             if not row.get("stopped"):
-                executor.stop(token, started)
+                self.call(port, name, "stop", token, started, identity=[token], item=item["id"])
                 self.fact("round_changed", {"token": token, "stopped": True}, item["id"])
             if not row.get("usage_checked"):
                 value = None
                 try:
-                    value = executor.usage(token, started, row["at"])
+                    value = self.call(port, name, "usage", token, started, row["at"], identity=[token, row["at"]], item=item["id"])
                     if value is not None:
                         value.validate()
                 except Exception as exc:
@@ -1110,7 +1183,9 @@ class Engine:
             port, name = "flow", target["plugin"]
             flow = self.plugins.get(port, name)
             evidence = (Evidence(**row["assessment"]) if row.get("assessment") else
-                        Evidence() if row.get("automatic_failure") else flow.assess(item, receipt, target))
+                        Evidence() if row.get("automatic_failure") else
+                        self.call(port, name, "assess", item, receipt, target,
+                                  identity=[item["id"], item["stage"], token, row["receipt"]], item=item["id"]))
             evidence.validate()
             stages = flow.stages(target)
             decision = decide(item, receipt, evidence, stages, self.rules)
@@ -1129,7 +1204,7 @@ class Engine:
             after_result = After()
             if advancing:
                 key = f"after:{token}"
-                after_result = self.after(flow, {**item, "result": receipt.json()}, row["stage"], key, target)
+                after_result = self.after({**item, "result": receipt.json()}, row["stage"], key, target)
             with self.log.transaction():
                 item = self.log.get("items", item["id"])
                 # 本轮结果写完整原因：交过被拒的回执时，具体字段和合法取值一并记下（代交的摘要里常没有）。
@@ -1240,7 +1315,6 @@ class Engine:
             return
         target = self.rules.target(item["target"])
         try:
-            flow = self.plugins.get("flow", target["plugin"])
             key = f"after:{pending['token']}"
             with self.log.transaction():
                 latest = self.log.get("items", item["id"])
@@ -1248,7 +1322,7 @@ class Engine:
                     return
                 if not self.log.get("effects", key):
                     self.fact("effect", {"id": key, "done": False})
-            result = self.after(flow, {**item, "result": receipt.json()}, pending["from"], key, target)
+            result = self.after({**item, "result": receipt.json()}, pending["from"], key, target)
             with self.log.transaction():
                 latest = self.log.get("items", item["id"])
                 if latest["pending_rework"]:
@@ -1262,8 +1336,9 @@ class Engine:
             self.broken(item["target"], "flow", target["plugin"], exc)
 
     def tick(self):
+        began = time.monotonic()
         try:
-            self._tick()
+            self._tick(began)
         except Exception as exc:
             try:
                 with self.log.transaction():
@@ -1279,7 +1354,7 @@ class Engine:
             except Exception as recording_error:
                 print(f"车间 tick 失败且暂时无法记录：{exc!r}; {recording_error!r}", file=sys.stderr)
 
-    def heartbeat(self):
+    def heartbeat(self, began=None):
         now = stamp(self.clock())
         heartbeat = self.log.path.parent / "heartbeat.json"
         temporary = heartbeat.with_suffix(".tmp")
@@ -1288,7 +1363,9 @@ class Engine:
             if not failure.get("since"):
                 failure["since"] = now
                 self.fact("control", {"id": failure["id"], "since": now})
-        temporary.write_text(json.dumps({"at": now, "last_ok_at": now, "active": self.occupied(),
+        # tick_ms：这一拍从进入到写心跳前的耗时；一拍只读写事实库和本地文件，应是毫秒级。
+        elapsed = round((time.monotonic() - began) * 1000) if began is not None else None
+        temporary.write_text(json.dumps({"at": now, "last_ok_at": now, "tick_ms": elapsed, "active": self.occupied(),
             "delivery_failed_count": len(failures),
             "delivery_failed_since": min((c.get("since", now) for c in failures), default=None)}))
         with self.log.transaction():
@@ -1297,8 +1374,10 @@ class Engine:
             temporary.replace(heartbeat)
         self.tick_failures = 0
 
-    def _tick(self):
+    def _tick(self, began=None):
         with self.exclusive():
+            if self.jobs:
+                self.jobs.reap()
             if not getattr(self, "cleaned_flows", False):
                 self.cleanup_flows()
                 self.cleaned_flows = True
@@ -1313,7 +1392,13 @@ class Engine:
                     if row["status"] == "starting" and not row.get("started") and not row.get("abort_requested") and not expired:
                         if self.control(item["target"]).get("broken"):
                             continue
-                        self.launch(row)
+                        try:
+                            self.launch(row)
+                        except Unavailable:
+                            # 启动作业晚于预订出结果：放开这一轮，避开最近没法用的执行者另挑。
+                            self.release_unavailable(row)
+                            self.reserve(self.log.get("items", item["id"]))
+                            continue
                         row = self.log.get("rounds", row["token"])
                     if row["status"] == "starting" and (row.get("abort_requested") or expired):
                         self.automatic_failure(row["token"], row.get("abort_requested") or "这一轮超过规则期限")
@@ -1322,35 +1407,43 @@ class Engine:
                     row = self.log.get("rounds", row["token"])
                     if row["status"] == "finishing":
                         self.finish(row)
+                except Pending:
+                    continue  # 这一轮在等作业出结果，下一拍再看。
                 except Retryable as exc:
                     self.start_retry(item, row, "executor", row["executor"], exc)
                 except Exception as exc:
                     self.broken(item["target"], "executor", row["executor"], exc)
             for item in self.log.all("items"):
-                control = self.control(item["target"])
-                if control.get("paused") or control.get("broken"):
-                    continue
-                if (item["pending_rework"] and item["depth"] <= self.rules.data["limits"]["chain_depth"]
-                        and not any(r["item"] == item["id"] for r in self.active())):
-                    with self.log.transaction():
-                        self.cancel_questions(item)
-                        self.change(item, stage="执行" if item["checks"] else "说清楚", state="空闲",
-                                    **({} if item["checks"] else {"serial_hold": False}),
-                                    pending_rework=False, approved=[], pending_advance=None, reviews=[], review_required=1,
-                                    after_pending_count=0, after_wait=None, pending_episode=item.get("pending_episode", 0) + 1,
-                                    wait_for_ready=False, retry_executor=None, gate_count=0, next="按新事件返工")
-                    item = self.log.get("items", item["id"])
-                self.recheck_after(item)
-                item = self.log.get("items", item["id"])
-                self.complete_approval(item)
-                item = self.log.get("items", item["id"])
-                if not self.taskhome(item):
-                    continue
-                item = self.log.get("items", item["id"])
-                if item["state"] in ("空闲", "排队") and not item.get("after_wait"):
-                    item = self.serial_queue(item)
-                if item["state"] == "空闲" and not item.get("after_wait") and self.occupied() < self.rules.data["limits"]["concurrent"]:
-                    self.reserve(item)
+                try:
+                    self.advance(item)
+                except Pending:
+                    continue  # 这件活在等作业出结果，下一拍再看；别的活照常推进。
             self.release_workdirs()
             self.channels()
-            self.heartbeat()
+            self.heartbeat(began)
+
+    def advance(self, item):
+        control = self.control(item["target"])
+        if control.get("paused") or control.get("broken"):
+            return
+        if (item["pending_rework"] and item["depth"] <= self.rules.data["limits"]["chain_depth"]
+                and not any(r["item"] == item["id"] for r in self.active())):
+            with self.log.transaction():
+                self.cancel_questions(item)
+                self.change(item, stage="执行" if item["checks"] else "说清楚", state="空闲",
+                            **({} if item["checks"] else {"serial_hold": False}),
+                            pending_rework=False, approved=[], pending_advance=None, reviews=[], review_required=1,
+                            after_pending_count=0, after_wait=None, pending_episode=item.get("pending_episode", 0) + 1,
+                            wait_for_ready=False, retry_executor=None, gate_count=0, next="按新事件返工")
+            item = self.log.get("items", item["id"])
+        self.recheck_after(item)
+        item = self.log.get("items", item["id"])
+        self.complete_approval(item)
+        item = self.log.get("items", item["id"])
+        if not self.taskhome(item):
+            return
+        item = self.log.get("items", item["id"])
+        if item["state"] in ("空闲", "排队") and not item.get("after_wait"):
+            item = self.serial_queue(item)
+        if item["state"] == "空闲" and not item.get("after_wait") and self.occupied() < self.rules.data["limits"]["concurrent"]:
+            self.reserve(item)
