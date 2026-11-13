@@ -617,3 +617,28 @@ def test_headless_does_not_write_folder_trust(setup, kind):
     assert (after.st_ino, after.st_mtime_ns, after.st_ctime_ns) == (before.st_ino, before.st_mtime_ns, before.st_ctime_ns)
     assert not (executor.directory('one')/'trust-warning.json').exists()
     executor.stop('one', started)
+
+
+@pytest.mark.parametrize('kind', ['codex', 'cursor-grok', 'claude'])
+def test_model_change_starts_fresh_session_instead_of_resume(setup, kind):
+    """ws#30：规则换了模型，codex 拒绝用新模型接回旧会话（exit 0、无回执）；换新会话。模型没变照常接回。"""
+    root, make, item, target = setup
+    executor = make(kind)
+    old = {**CONFIG, 'model': 'gpt-6.1-sol'}
+    first = executor.launch('one', BRIEF, item, old, target)
+    wait_for(lambda: (root/'agents').exists() and (root/'agents').read_text().endswith('\n'))
+    executor.stop('one', first)
+    target['runtime']['env']['WORKSHOP_ROUND_TOKEN'] = 'two'
+    second = make(kind).resume('two', first.session, BRIEF, item, old, target)
+    wait_for(lambda: len((root/'agents').read_text().splitlines()) == 2)
+    make(kind).stop('two', second)
+    target['runtime']['env']['WORKSHOP_ROUND_TOKEN'] = 'three'
+    third = make(kind).resume('three', first.session, BRIEF, item, {**CONFIG, 'model': 'gpt-6-astra'}, target)
+    wait_for(lambda: len((root/'agents').read_text().splitlines()) == 3)
+    calls = [json.loads(row)['args'] for row in (root/'agents').read_text().splitlines()]
+    resumed = lambda args: any(flag in args for flag in ('resume', '--resume'))
+    assert [resumed(args) for args in calls] == [False, True, False]
+    assert calls[2][calls[2].index('--model') + 1] == 'gpt-6-astra'
+    assert read(executor.directory('three')/'spec.json')['fresh_session'] is True
+    assert third.session == first.session  # 车间这边还是同一件活的会话，只是厂商会话换了新的
+    make(kind).stop('three', third)

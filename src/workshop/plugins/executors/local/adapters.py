@@ -21,6 +21,15 @@ from .processes import stop_round
 PROXIED = ('claude', 'codex', 'cursor-grok')  # 无人值守、由包装进程代交回执的执行者
 
 
+def recorded_model(spec_path):
+    """会话上一轮启动时要求的模型，从那一轮的 argv 读（旧轮的 spec 也有）；不写为 None。"""
+    try:
+        argv = read(spec_path)['argv']
+    except (OSError, ValueError, KeyError):
+        return None
+    return argv[argv.index('--model') + 1] if '--model' in argv[:-1] else None
+
+
 def executable(name):
     found = shutil.which(name, path=os.environ.get('PATH', '') + ':/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin')
     return str(Path(found).absolute()) if found else None
@@ -96,6 +105,10 @@ class Executor:
                 workdir = assigned or item.get('workdir') or previous['workdir']
                 # 上一轮在同一轮里改过一次仍交不出合格回执：不再接回这个会话，换新会话从说明重来。
                 fresh = self.kind in PROXIED and (self.root / 'rounds' / previous['round'] / RECEIPT_REJECTED).exists()
+                # 规则换了模型：codex 拒绝用别的模型接回旧会话（exit 0、无回执），换新会话。
+                recorded = recorded_model(self.root / 'rounds' / previous['round'] / 'spec.json')
+                if self.kind in PROXIED and recorded != self.model(config):
+                    fresh = True
             else:
                 workdir = assigned or item.get('workdir')
             if not workdir and self.kind == 'orca-claude' and not readonly:
@@ -168,6 +181,10 @@ class Executor:
                                                      'group': {'pid': proc.pid, 'birth': birth}})
             return self._started(directory, spec)
 
+    def model(self, config):
+        """这一轮实际要求的模型；cursor-grok 不写时用默认模型。"""
+        return config.get('model') or ('grok-4.7-high' if self.kind == 'cursor-grok' else None)
+
     def _argv(self, config, workdir, session, resume, directory, readonly):
         model = ['--model', config['model']] if config.get('model') else []
         if self.kind in ('claude', 'orca-claude'):
@@ -194,7 +211,7 @@ class Executor:
                 argv += ['-c', 'model_reasoning_effort=' + json.dumps(config['effort'])]
             return argv + (['resume', session] if resume else ['--sandbox', 'read-only'])
         return [self.commands['cursor-agent'], '-p', '--mode', 'plan', '--trust', '--model',
-                config.get('model', 'grok-4.7-high'), '--workspace', workdir, '--output-format', 'stream-json',
+                self.model(config), '--workspace', workdir, '--output-format', 'stream-json',
                 *(['--resume', session] if resume else [])]
 
     def _started(self, directory, spec):
