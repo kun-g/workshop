@@ -11,7 +11,8 @@ def status(log):
     running = sum(i["state"] == "跑着" for i in items)
     waiting = sum(i["state"] == "等你" for i in items)
     blocked = sum(i["state"] == "卡住" for i in items)
-    lines = [f"活 {len(items)} 件 · 跑着 {running} · 等你 {waiting} · 卡住 {blocked}",
+    queued = sum(i["state"] == "排队" for i in items)
+    lines = [f"活 {len(items)} 件 · 跑着 {running} · 等你 {waiting} · 卡住 {blocked}" + (f" · 排队 {queued}" if queued else ""),
              "活\t阶段\t状态\t谁在推\t下一步\t卡在谁手里"]
     for item in items:
         row = log.get("rounds", item.get("round", ""))

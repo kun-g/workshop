@@ -77,6 +77,11 @@ def evolve(db, fact: dict) -> None:
         item["cause"] = fact["seq"]
         apply_action(item, body["action"])
         put("items", item_id, item)
+    elif kind == "item_abandoned":
+        # 放弃的事实序号：之前收到的返工、放行即使之后才分类或补放，也不再让它回来。
+        item = get("items", item_id)
+        item["abandoned_seq"] = fact["seq"]
+        put("items", item_id, item)
     elif kind == "item_dropped":
         db.execute("DELETE FROM items WHERE id=?", (item_id,))
     elif kind == "event_discarded":
@@ -106,6 +111,7 @@ def evolve(db, fact: dict) -> None:
         if body["approved"]:
             item["approved"] = sorted(set(item["approved"] + body.get("actions", [])))
             item["billing_approved"] = sorted(set(item.get("billing_approved", []) + body.get("billing_configs", [])))
+            item["frozen_approved"] = sorted(set(item.get("frozen_approved", []) + body.get("frozen_files", [])))
         put("items", item_id, item)
     elif kind == "round_result":
         item = get("items", item_id)

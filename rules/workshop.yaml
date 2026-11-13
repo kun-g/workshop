@@ -44,6 +44,21 @@ targets:
     # 前缀匹配仓库根起的相对路径。名单由 grant-console 负责会话 11-13 给出。
     two_reviewers: ['.github/', 'deploy/', 'scripts/', 'services/devops-console/grant_console/',
                     'services/devops-console/k8s/', 'docs/ci.md', 'docs/runbooks/release.md']
+    # 冻结：自动部署那条线收尾前不改，除非 Kun 单独放行（grant-console 负责会话 11-13）。前缀匹配同 two_reviewers。
+    frozen_paths: ['.github/', 'deploy/', 'docs/ci.md', 'docs/runbooks/release.md']
+    # 串行：审批卡的渲染和回调，碰到的活一件一件过执行（grant-console 负责会话 11-13；按 main e18321a 核过）。
+    # app.py 的 grant_decision 处理审批卡回调，整份列入：碰 app.py 的活都会排队。
+    # 仓库里没有 cards/ 目录，故不列。
+    serial_paths: ['services/devops-console/grant_console/notifications.py',
+                   'services/devops-console/grant_console/app.py',
+                   'services/devops-console/grant_console/approval_display.py',
+                   'services/devops-console/grant_console/assets/icons/',
+                   'services/devops-console/grant_console/lark_receiver.py',
+                   'services/lark-event-daemon/',
+                   'tools/lark_card_render.py',
+                   'services/devops-console/tests/test_card_',
+                   'services/devops-console/tests/test_lark_receiver.py',
+                   'docs/requirements/approval-card.md']
   workshop:
     plugin: issue_delivery
     selector: ordered

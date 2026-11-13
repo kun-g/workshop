@@ -37,6 +37,10 @@ class Rules:
                 raise ValueError(f"{name} 缺流程插件")
             if type(target.get("pending_limit", 5)) is not int or target.get("pending_limit", 5) < 1:
                 raise ValueError("pending_limit 必须是正整数")
+            for field in ("frozen_paths", "serial_paths"):
+                value = target.get(field, [])
+                if not isinstance(value, list) or not all(isinstance(v, str) and v.strip() for v in value):
+                    raise ValueError(f"{name} 的 {field} 必须是非空路径前缀列表")
         for role in ("writer", "reviewer", "acceptor"):
             value = data.get("executors", {}).get(role)
             entries = value if isinstance(value, list) else [value]
