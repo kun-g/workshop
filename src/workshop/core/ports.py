@@ -1,7 +1,7 @@
-"""同步短时端口；不等待人或一轮结束。字段和恢复时序见接入文档。"""
+"""同步短时端口；不等待人或一轮结束。守护进程把每次调用放进独立的作业进程（jobs.py），一拍不等它。字段和恢复时序见接入文档。"""
 from typing import Callable, Literal, Protocol
 from .cards import Question, Notice
-from .models import After, Answer, Brief, FlowBrief, Classification, Evidence, Event, Poll, Receipt, Started, RoundUsage, Selection
+from .models import After, Answer, Brief, FlowBrief, Classification, Evidence, Event, Poll, Receipt, Release, Started, RoundUsage, Selection
 
 
 class ChannelRejected(Exception):
@@ -43,6 +43,12 @@ class Flow(Protocol):
     def after(self, item: dict, completed_stage: str, key: str, target: dict) -> After | list[str] | None:
         """准许推进后调用，item.result 含本轮回执，key 必须持久幂等；After 可绑定别名或仍留本阶段。"""
         ...
+    def hold_workdir(self, item: dict, target: dict) -> str:
+        """可选。活已收尾完成，执行者开过的工作目录还要不要留：返回留着的原因，空串表示可以收回。
+
+        短时只读；Retryable 稍后再问。核心对留着的活约一小时再问一次。
+        """
+        ...
 
 
 class Executor(Protocol):
@@ -63,6 +69,14 @@ class Executor(Protocol):
         ...
     def usage(self, token: str, started: Started | None, since: str) -> RoundUsage | None:
         """从 since 起的主会话和按模型合计的子执行增量；未读到子执行须标 children_reported=False。"""
+        ...
+    def release(self, item: dict, target: dict) -> Release | None:
+        """可选。收回本执行者为这件已收尾的活开的工作目录。
+
+        不是自己开的、或已经不在，返回 None；收回了返回 Release(True)；
+        有没交出去的改动等原因不能收，返回 Release(False, 原因)，核心通知 Kun 一次，不再重试。
+        暂时故障抛 Retryable。只在这件活没有在跑的轮次时调用。
+        """
         ...
 
 

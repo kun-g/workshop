@@ -22,9 +22,23 @@ Orca 插话钩子去掉轮次令牌后以 `cli:orca` 进入：流程用核心已
 
 说清楚时回查 issue 五项，并核对回执检查与 `workshop-checks` 内容一致，包含 `required_checks`（默认 `[["scripts/check.sh"]]`）。回执 JSON 的 `paths` 登记预计会改的路径（仓库根起的相对路径，目录以 / 结尾），作为说清楚的 Evidence.paths 交给核心，规则配了 `serial_paths` 时按它在执行前排队；不是字符串列表时说清楚不过。之后各阶段的实际改动取 PR 文件列表，改名的文件新旧路径都算（冻结、串行、两家审都按它判）。缺少标准时用 ask 或 notice+等你，Kun 重打标签后原活继续。
 
-证据轮在独立 clone、detached 完整 SHA 上真实重跑登记检查；环境白名单清除 GitHub/SSH/云凭据，原样 stdout/stderr、退出码、SHA 写入核心证据 reason。每条检查默认限时 60 秒，可在目标配置 `check_timeout`；超时记退出码 124、timed_out=true 和已得到的原样输出，判检查不过，不隔离流程。准备命令由 prepare 的 argv/cwd 指定，cwd 限定在干净副本中；grant-console 先在 services/devops-console 跑 uv sync --locked。这个检查没有业务写入，但会建立临时副本并运行仓库脚本；不是恶意代码安全沙箱。
+证据轮在干净副本（见下节）的 detached 完整 SHA 上真实重跑登记检查；环境白名单清除 GitHub/SSH/云凭据，原样 stdout/stderr、退出码、SHA 写入核心证据 reason。每条检查默认限时 60 秒，可在目标配置 `check_timeout`；超时记退出码 124、timed_out=true 和已得到的原样输出，判检查不过，不隔离流程。准备命令由 prepare 的 argv/cwd 指定，cwd 限定在干净副本中；grant-console 先在 services/devops-console 跑 uv sync --locked。这个检查没有业务写入，但会建立临时副本并运行仓库脚本；不是恶意代码安全沙箱。
 
-审查副本独立 clone，不共享对象/配置；去掉 hooks、凭据助手，origin 改不可达地址，文件与目录去写位。`FlowBrief.workdir/readonly` 交给执行者，执行者负责启动环境去凭据。审查只读，必须改与建议分开；核心按改动路径和规则要求两家不同家族。审查轮结束并停止执行者后清理副本；daemon 启动清残留时保留未停止轮的目录。头提交变了，证据、审查、合并守卫均拒绝推进。验收由核心排除写代码家族，插件核对原样输出与实际交付提交。验收轮的 `FlowBrief` 给合并提交的只读副本；生成说明时在干净副本对合并提交重跑登记检查（按提交号缓存为 merge_runs，只跑一次），原样附进说明，因为验收者是只读会话，跑不了命令，也不能落在停在 PR 头的活 worktree 里。写了亲眼看才要求 `visual-acceptance` 卡的 yes 答案。
+审查和验收副本同样是主检出上的 detached worktree（见下节），文件与目录去写位。`FlowBrief.workdir/readonly` 交给执行者，执行者负责启动环境去凭据。审查只读，必须改与建议分开；核心按改动路径和规则要求两家不同家族。审查轮结束并停止执行者后清理副本；daemon 启动清残留时保留未停止轮的目录。头提交变了，证据、审查、合并守卫均拒绝推进。验收由核心排除写代码家族，插件核对原样输出与实际交付提交。验收轮的 `FlowBrief` 给合并提交的只读副本；生成说明时在干净副本对合并提交重跑登记检查（按提交号缓存为 merge_runs，只跑一次），原样附进说明，因为验收者是只读会话，跑不了命令，也不能落在停在 PR 头的活 worktree 里。写了亲眼看才要求 `visual-acceptance` 卡的 yes 答案。
+
+## 干净副本、依赖缓存和执行者 worktree 怎么管
+
+**副本**（ws#48，Kun 11-13：「这个 worktree 它本身不是已经隔离的吗？」）：检查、审查、验收用的副本都在交付对象主检出（规则 `checkout`）上开 detached worktree，不另 clone、不另建仓库。
+
+- 开：`git -c core.hooksPath=/dev/null worktree add --detach <目录> <完整提交号>`。主检出里已有这个提交就不 fetch；没有才 `fetch --no-tags --no-write-fetch-head https://github.com/<repo>.git <sha>`，只取这一个提交，不写主检出的 FETCH_HEAD，不动它的分支、HEAD 和工作区。耗时随文件数涨，不随历史涨。
+- 只含该提交的受跟踪文件，没有上一次的遗留。同一系统用户本来就能写任何文件，单独 clone 隔离不了多少，所以不再改 origin、不另做配置隔离；检查环境里用 `GIT_CONFIG_*` 把 `core.hooksPath` 设成 `/dev/null`，检查里跑的 git 也不执行主检出的钩子。凭据白名单（`clean_env`）照旧。
+- 位置：检查副本在 `issue_delivery_state_dir/copies/check-*/repo`，审查/验收只读副本在 `issue_delivery_state_dir/reviews/<活哈希>-<sha>`（先在临时目录开，再 `worktree move` 过去，最后去写位）。
+- 收：检查不论通过、失败、超时还是准备命令出错，跑完都 `worktree remove --force`，删不掉（只读）就先恢复写位再删目录，然后 `worktree prune`。审查副本在轮停止后由 `cleanup` 收；daemon 启动时 `cleanup` 再清一遍：审查副本保留未停止轮的目录，检查副本超过 6 小时的视为进程被杀留下的，删掉并收回登记。
+- 同一主检出上的 fetch、worktree add/move/remove/prune 用 `issue_delivery_state_dir/copies/<主检出哈希>.lock` 串行；跑检查本身不持锁，几件活可以同时跑。
+
+**依赖缓存**：检查仍在每轮新建的空 HOME、无凭据环境里跑，但副本里有 `uv.lock` 时，环境多一个 `UV_CACHE_DIR=issue_delivery_state_dir/uv-cache/<uv.lock 内容哈希前 16 位>`。选按锁文件分、不选只读共享缓存，是因为只读缓存要另有人负责预热；按锁文件分时，改了依赖的 PR 只写自己那一份，不会动到别的锁文件在用的缓存。同一锁文件的检查共用一份，第二次 `uv sync --locked` 不再下载（11-13 本机：冷缓存 2.7 秒，热缓存 0.14 秒）。每次取缓存时只留最近用过的 5 份，其余超过一天没用的删掉；要整个清，停掉车间后删 `uv-cache/` 即可，下次检查重新下载。没有 `uv.lock` 的仓库不设缓存，沿用空 HOME。
+
+**执行者 worktree**：活收尾完成后，核心先问流程 `hold_workdir`：这件活还有打开的 PR 就留着，约一小时后再问。流程不留时，核心请为这件活开过会话的执行者 `release`。orca-claude 和 orca-codex 只认自己按活 id 开的 `ws-<哈希>` 目录：worktree 有未提交改动（不算被忽略的文件），或本地分支上有任何远端分支都没有的提交，就留着，核心给 Kun 发一条通知，不再重试；否则 `orca worktree rm` 删 worktree，再 `git branch -D` 删本地分支，活上的 workdir 清空。返工开新一轮时按同一个名字重新开 worktree。守护进程照常每一拍检查一遍，已收尾但没收过的老活（升级前收尾的）也按同一判断收。不是车间按活 id 开的 worktree（比如别的流程或人手开的）不碰。
 
 ## 重走验收
 
@@ -91,4 +105,4 @@ print(json.dumps([asdict(e) for e in batch.events], ensure_ascii=False, indent=2
 PY
 ```
 
-测试覆盖假 gh/git/lark-cli/kubectl/tag-release.sh 的 JSON 回放，以及本地真实 git 提交上的检查与只读副本。测试不连接 GitHub、飞书、Orca 或集群。跨块测试将流程生成的只读审查副本通过 Brief.workdir 交给 Codex/Orca Claude 执行者插件，用假的 CLI 记录实际子进程 cwd/env，断言没有 GH_TOKEN、SSH_AUTH_SOCK 等凭据。
+测试覆盖假 gh/git/lark-cli/kubectl/tag-release.sh 的 JSON 回放（默认在测试进程内调用同一份替身代码，省掉每次起解释器），以及本地真实 git 提交上的检查与只读副本。测试不连接 GitHub、飞书、Orca 或集群。跨块测试将流程生成的只读审查副本通过 Brief.workdir 交给 Codex/Orca Claude 执行者插件，用假的 CLI 记录实际子进程 cwd/env，断言没有 GH_TOKEN、SSH_AUTH_SOCK 等凭据。

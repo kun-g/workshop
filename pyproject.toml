@@ -14,6 +14,7 @@ workshop = "workshop.cli:main"
 
 [project.entry-points."workshop.selector"]
 ordered = "workshop.plugins.selectors.ordered:make_selector"
+quota = "workshop.plugins.selectors.quota:make_selector"
 
 [project.entry-points."workshop.flow"]
 issue_delivery = "workshop.plugins.issue_delivery:make_flow"
@@ -26,6 +27,7 @@ ask_kun = "workshop.plugins.channels.ask_kun:make_channel"
 
 [project.entry-points."workshop.executor"]
 orca-claude = "workshop.plugins.executors.local:make_orca_claude"
+orca-codex = "workshop.plugins.executors.local:make_orca_codex"
 codex = "workshop.plugins.executors.local:make_codex"
 cursor-grok = "workshop.plugins.executors.local:make_cursor_grok"
 claude = "workshop.plugins.executors.local:make_claude"

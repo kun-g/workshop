@@ -90,6 +90,13 @@ class After:
 
 
 @dataclass(frozen=True)
+class Release:
+    """执行者收回一件已收尾的活的工作目录的结果；released=False 时 reason 写为什么留着。"""
+    released: bool
+    reason: str = ""
+
+
+@dataclass(frozen=True)
 class Brief:
     instructions: str
     materials: list[dict]
@@ -134,7 +141,8 @@ class Started:
 
 @dataclass(frozen=True)
 class Selection:
-    config: dict
+    # config 为 None 表示一个都没选，reason 说明原因。
+    config: dict | None
     reason: str
 
 

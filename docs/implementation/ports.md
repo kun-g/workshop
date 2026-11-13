@@ -1,19 +1,22 @@
 # 核心与插件接入契约（W1、W2-A）
 
-类型以 `core/ports.py`、`models.py`、`cards.py` 为准。Kun 11-13 决定：第一版不接工单系统，issue 就是活的登记；`TaskHome` 保留为可选端口。第一版只带 `ordered` 挑选逻辑，业务流程、来源、执行者、通道和独立看门程序由下一波实现。
+类型以 `core/ports.py`、`models.py`、`cards.py` 为准。Kun 11-13 决定：第一版不接工单系统，issue 就是活的登记；`TaskHome` 保留为可选端口。挑选逻辑有 `ordered` 和 `quota` 两段，业务流程、来源、执行者、通道和独立看门程序由下一波实现。
 
 ## 注册、规则和运行入口
 
 插件通过入口点 `workshop.<port>` 注册无参数工厂，名字对应唯一规则 `rules/workshop.yaml`。端口名为 `source`、`flow`、`executor`、`channel`、`taskhome`、`selector`。例如：
 
+守护进程里每次插件调用都在独立的作业进程里跑（见 [作业.md](作业.md)）：插件不能靠实例里的内存在两次调用之间传东西，状态放文件；参数和返回值只用 `models.py` 的值类型、字典、列表和标量。
+
 ```toml
 [project.entry-points."workshop.selector"]
 ordered = "workshop.plugins.selectors.ordered:make_selector"
+quota = "workshop.plugins.selectors.quota:make_selector"
 [project.entry-points."workshop.flow"]
 issue_delivery = "workshop.plugins.issue_delivery:make_flow"
 ```
 
-规则中 `selector: ordered` 指定默认挑选逻辑；`stage_selectors` 可按阶段覆盖，交付对象也可设置 selector 和 stage_selectors。优先级：对象的阶段覆盖 > 对象默认 > 全局阶段覆盖 > 全局默认。第一版这些名字均为 ordered。`channel` 必填，`taskhome` 可省略。`limits.round_timeout_seconds` 是每轮期限，默认/示例为 7200 秒。`stage_executors` 可按中文阶段给候选，交付对象自己的同名配置优先；省略时接单/说清楚/执行/证据/交付/收尾/观察沿用 writer，审查沿用 reviewer，验收沿用 acceptor。例如：
+规则中 `selector: ordered` 指定默认挑选逻辑；`stage_selectors` 可按阶段覆盖，交付对象也可设置 selector 和 stage_selectors。优先级：对象的阶段覆盖 > 对象默认 > 全局阶段覆盖 > 全局默认。现行规则全局和各交付对象都用 quota。`channel` 必填，`taskhome` 可省略。`limits.round_timeout_seconds` 是每轮期限，默认/示例为 7200 秒。`stage_executors` 可按中文阶段给候选，交付对象自己的同名配置优先；省略时接单/说清楚/执行/证据/交付/收尾/观察沿用 writer，审查沿用 reviewer，验收沿用 acceptor。例如：
 
 ```yaml
 selector: ordered
@@ -83,6 +86,8 @@ pending=true 表示尚未完成这个阶段，须带非空 reason 和 next，不
 
 可选 `cleanup(target, keep)` 只清流程管理的临时副本；守护进程启动时和轮停止后调用，keep 包含所有未停止轮的 brief.workdir，必须保留。其他流程可不实现。
 
+可选 `hold_workdir(item, target) -> str`：活收尾完成后，执行者开过的工作目录还要不要留。返回留着的原因（核心记在活的 release_hold，约一小时后再问），空串表示可以收回。短时只读；Retryable 稍后再问，其他异常按流程故障处理。不实现等于不留。
+
 可选 `describe(event, target) -> str | None` 给 `workshop why` 每条事件一句话说明（例如谁对哪个对象做了什么）。只读事件本身，不回查上游、不写状态；返回 None、空串或抛异常时核心退回「来源 + 事件种类」（body.kind，没有则为「资料」）。核心把说明压成一行、截到 200 字；原始资料只在 `why --raw` 时打印。
 
 外部入口事件判定后：归到某件活（含因此新建的活），那件活的 why 有一行「归件 来源 动作（更新/返工/放行）：摘要（原事件 号）」，摘要先用判定时流程给的 summary，没有（旧事实）再用 describe。判为丢弃的、还没判定完的、归到的活已被清掉的，列在 `workshop why --unfiled`（未归件）里，带丢弃原因和事件号，不静默消失。
@@ -98,6 +103,9 @@ pending=true 表示尚未完成这个阶段，须带非空 reason 和 next，不
 `poll(token, started) -> "running" | "exited"` 提供明确的存活状态，不把静默当退出。`stop(token, started)` 幂等关闭，确认退出后才返回。启动后未拿到 Started 的崩溃窗口里 started 可为 null，适配器必须按 token 对账、查询/关闭；不得制造一个假 handle。退出未交回执、超时、`workshop abort <token>` 都生成失败结果并退避。abort 先登记请求，下一 tick 停止；不会为结束一个未确认的启动再重开一轮。无法确认退出时仍保留占位。核心探测前重读轮；已有回执就不再 poll，poll 期间收到回执也不会被自动失败覆盖。执行者停止与流程结算分开：交付对象故障期间仍处理 poll、超时、abort、stop 和用量采集；确认停止即记 stopped 并释放并发位，但轮保持 finishing、活保留卡住与 before_plugin_failure，恢复后才 assess/decide/after。已确认停止和采过的用量不重复调用。stop 与流程结算各有独立退避，Retryable 第 3 次隔离；stop 在故障期间仍按 5/10/20/40/60 分钟退避继续尝试，普通 stop 异常立即隔离并同样退避，绝不能在确认停止前释放位。故障对象不启动新轮，也不再调用流程判定/完成钩子；恢复后接上原回执。
 
 `usage(token, started, since) -> RoundUsage | None` 从本轮开始时刻 since 读取增量，不能返回整个接回会话累计值。started 在上述崩溃窗口也可为 null，无法取得则返回 None。RoundUsage 含 main（一条 Usage）、children（子 agent 按实际模型合计，各模型一条 Usage）、children_reported（是否已完整核对子 agent，默认 false）。Usage 每项均可 null：
+
+
+可选 `release(item, target) -> Release | None`：活收尾完成、流程 `hold_workdir` 不留、这件活没有在跑的轮次时，核心对活的 sessions 里的执行者逐个调用，收回该执行者为这件活开的工作目录。不是自己开的或已经不在，返回 None，核心问下一家；收回了返回 `Release(True)`，核心清空活的 workdir（返工时执行者重新开）；有没交出去的改动等原因不能收，返回 `Release(False, 原因)`，核心通知 Kun 一次，不再重试。暂时故障抛 Retryable，约一小时后再试；其他异常按执行者故障隔离。所有执行者都不认领时只记一笔，不再问。
 
 ```json
 {
@@ -119,9 +127,11 @@ rounds 同时保存规则要求的 executor/model/effort、挑选理由、开始
 
 ## 挑选逻辑 Selector
 
-`select(target, stage, round_number, history, candidates) -> Selection(config, reason) | None`。history 是这件活之前所有轮的快照，包括执行者、规则模型、实际主/子用量和结果；candidates 依唯一规则的阶段候选顺序排列，每项含 config、available=true。核心已调用 available，并筛掉写代码家族（审查/验收）、无额度候选、尚未批准的按量候选，也落实两家审和关口重试的家族/执行者限制。target.selection 仍提供 writer、reviewed、retry_executor、excluded 背景供解释；硬规矩不委托插件。
+`select(target, stage, round_number, history, candidates) -> Selection(config, reason) | None`。`Selection(None, reason)` 表示一个都没选并说明原因：核心记 `selection_none` 事实（why 显示「挑选逻辑没选出执行者 …」），把原因写进「没有可用执行者」卡的 context 和 leave.about；返回 None 时照旧只发通用卡。history 是这件活之前所有轮的快照，包括执行者、规则模型、实际主/子用量和结果；candidates 依唯一规则的阶段候选顺序排列，每项含 config、available=true。核心已调用 available，并筛掉写代码家族（审查/验收）、无额度候选、尚未批准的按量候选，也落实两家审和关口重试的家族/执行者限制。target.selection 仍提供 writer、reviewed、retry_executor、excluded 背景供解释；硬规矩不委托插件。
 
-第一版唯一实现 `workshop.plugins.selectors.ordered` 只返回获准候选的第一项和理由。核心校验输出仍属于候选，违例记 selection_failed，why 能看到原因，按暂时起轮失败退避，连续 3 次升级故障；不会调用违例执行者。挑选逻辑可以全局/对象/阶段配置，但本版不带其他逻辑。
+`workshop.plugins.selectors.ordered` 只返回获准候选的第一项和理由。
+
+`workshop.plugins.selectors.quota` 按候选顺序取第一个额度够的。候选上 `quota: {provider, window, min_remaining, label}` 是门槛（剩余百分比 ≥ min_remaining 才选），没写门槛的候选不看额度，所以全无门槛时结果和 ordered 一样。额度只读本机 ai_quota 快照库（交付对象上 `quota_snapshot: {path, max_age_minutes}`，默认 `~/.local/state/ai_quota/quota.db`、45 分钟），取该家最近一次成功采集；库读不到、缺窗口或超过过期线时跳过有门槛的候选并写进理由。候选上 `first_when_writer: [家]` 表示写代码的是这些家时把它排到最前（核心已排除写代码那家，这里只调顺序）。理由例：「Codex 周额度剩 50%（门槛 15%），选 orca-codex；阶段 执行，第 1 轮」。所有候选都被跳过时返回 `Selection(None, 理由)`，理由列出每个候选为什么被跳过。核心校验输出仍属于候选，违例记 selection_failed，why 能看到原因，按暂时起轮失败退避，连续 3 次升级故障；不会调用违例执行者。挑选逻辑可以全局/对象/阶段配置。
 
 `workshop usage` 仅统计 status=ended 的轮，在跑、启动中、收尾中的轮不计入未上报或未知模型。保留今天、最近 7 天、按活，并按实际模型分组，未知模型单列。组内列轮数、审查/验收一次过、平均耗时、四种 token、API 折合花费和缓存命中率。一次过的统计单位为“活、阶段、执行者家族”的首次尝试；后续重试不把首次失败改成成功，两家审分别计各自首次尝试。缺判定的首次尝试排除并显示缺失数。平均耗时只取有起止数据的轮；缓存命中率只取输入/缓存读/缓存写三项完整的轮，公式为缓存读总和 ÷ 三项总和，分母 0 显示未知。每项只累加已知值，全部缺失显示未知；模型行同时列未上报轮数，各比率另外列缺失数。主会话和子 agent 的 token/花费按实际模型分别汇总，同一模型在同一轮出现两处，轮数与耗时只计一次。模型耗时是它参与的车间整轮耗时，不冒充子 agent 独立执行时长；审查/验收一次过只归因主执行模型，子 agent 贡献只算用量。各行另列「子 agent 未计 N 轮」。
 
@@ -196,12 +206,12 @@ poll 每批先调用一次 `list --all`，列表中 waiting/sending 的卡不再
 
 默认 `~/.local/state/workshop/workshop.db`，`WORKSHOP_STATE_DIR` 或 `--state-dir` 改目录。WAL + synchronous FULL；事实追加和视图更新同事务。facts trigger 禁止 UPDATE/DELETE；只有 evolve 写各视图，`Log.rebuild()` 重放验证一致。视图为 `(id, body JSON)`，表包括 items、rounds、cards、timers、controls、cursors、deferred、effects。
 
-`run` 每 20 秒 tick，`--once` 一次。tick 用旁边的文件锁串行；pause/resume 只做短 SQLite 事务，不拿 tick 锁，插件挂起时仍可暂停。`resume <target>` 只列清单并输出已看事实号；必须同时带 `--select all|none|编号列表 --seen 上次已看编号列表` 才恢复，空清单写 none。清单变化拒绝并重新列出，不能用当前新清单代替人看过的清单。
+`run` 每 2 秒一拍，插件调用都放到后台作业（见 [作业.md](作业.md)），一拍毫秒级；`--once` 只跑一拍，插件调用就地进行，供手工排查。tick 用旁边的文件锁串行；pause/resume 只做短 SQLite 事务，不拿 tick 锁，插件挂起时仍可暂停。`resume <target>` 只列清单并输出已看事实号；必须同时带 `--select all|none|编号列表 --seen 上次已看编号列表` 才恢复，空清单写 none。清单变化拒绝并重新列出，不能用当前新清单代替人看过的清单。
 
 插件故障卡住前保存 state/next/blocked_by/leave，恢复只还原因该故障叠加的卡住；原来的等你、定时和失败耗尽不被一律改为空闲。故障期间到期定时保留，恢复后再处理；已回答/已放行的事实也保留。每次新的插件故障用新事实号发一次通知，不是终身只发一次。已被该插件故障卡住的活不重复追加 work_blocked，故障期间仅推迟该类流程结算，执行者侧继续安全停轮并释放已停止轮的并发位。
 
 ### 看门接入
 
-只有成功走完 tick 才原子替换 `heartbeat.json`，含 UTC at、last_ok_at（两者相同）、active，以及 delivery_failed_count（当前未恢复投递失败信号数）和 delivery_failed_since（其中最早开始时刻，无故障为 null）。成功恢复清除对应失败信号；拒收通知自身失败也在此计数。看门在投递故障持续超过 180 秒时告警/兜底。失败 tick 不改心跳；首次 tick 即失败时文件不存在，看门应按缺失/last_ok_at 陈旧判断失联，不能只看守护进程还活着。普通 tick 异常记 tick_failed，同一错误在恢复前只记一次；controls 的 @tick 仅在连续失败达到 1/3/10 次阈值时更新 failures（10 表示至少 10 次），成功恢复时归零；相同故障持续 30 次也仅三条阈值 control。阈值间计数在进程内，重启从最近持久阈值接续，不作为精确失败次数报表；同一错误事实去重可跨重启，再坏会重新记事实。下一 tick 继续；若暂时写不进数据库则输出 stderr 并继续尝试，初始化打不开数据库才无法启动。独立看门下一波实现，可查 rounds JSON 的 at、status、deadline、stopped；starting/running/finishing 是未结算轮，stopped=true 不占执行者位。
+只有成功走完 tick 才原子替换 `heartbeat.json`，含 UTC at、last_ok_at（两者相同）、tick_ms（这一拍耗时，毫秒）、active，以及 delivery_failed_count（当前未恢复投递失败信号数）和 delivery_failed_since（其中最早开始时刻，无故障为 null）。成功恢复清除对应失败信号；拒收通知自身失败也在此计数。看门在投递故障持续超过 180 秒时告警/兜底。失败 tick 不改心跳；首次 tick 即失败时文件不存在，看门应按缺失/last_ok_at 陈旧判断失联，不能只看守护进程还活着。普通 tick 异常记 tick_failed，同一错误在恢复前只记一次；controls 的 @tick 仅在连续失败达到 1/3/10 次阈值时更新 failures（10 表示至少 10 次），成功恢复时归零；相同故障持续 30 次也仅三条阈值 control。阈值间计数在进程内，重启从最近持久阈值接续，不作为精确失败次数报表；同一错误事实去重可跨重启，再坏会重新记事实。下一 tick 继续；若暂时写不进数据库则输出 stderr 并继续尝试，初始化打不开数据库才无法启动。独立看门下一波实现，可查 rounds JSON 的 at、status、deadline、stopped；starting/running/finishing 是未结算轮，stopped=true 不占执行者位。
 
 `extension_metrics(log, repository, base, head, target, started)` 保留观察阶段的核心改动行数、第一件活用时固定检查，流程负责调用并登记结果。

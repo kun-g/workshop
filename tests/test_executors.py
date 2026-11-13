@@ -10,7 +10,7 @@ import time
 import pytest
 
 from workshop.core.models import Brief
-from workshop.core.ports import Retryable
+from workshop.core.ports import Retryable, Unavailable
 from workshop.plugins.executors.local.adapters import Executor
 from workshop.plugins.executors.local.storage import read, write
 
@@ -40,6 +40,9 @@ if name == 'orca':
 if name == 'workshop':
     with (root/'receipts').open('a') as f: f.write(json.dumps(args)+'\n')
     sys.exit(0)
+if name == 'codex' and args[:2] == ['login', 'status']:
+    print('Logged in using API key' if (root/'api-key-login').exists() else 'Logged in using ChatGPT')
+    sys.exit(0)
 prompt = args[-1] if name == 'claude' and '-p' not in args else sys.stdin.read()
 if (root/'ignore-term').exists(): signal.signal(signal.SIGTERM, signal.SIG_IGN)
 if (root/'spawn-descendant').exists():
@@ -47,6 +50,8 @@ if (root/'spawn-descendant').exists():
     (root/'descendant-pid').write_text(str(descendant.pid))
 with (root/'agents').open('a') as f:
     f.write(json.dumps({'name':name,'args':args,'prompt':prompt,'env':dict(os.environ),'cwd':os.getcwd(),'pid':os.getpid()})+'\n')
+if (root/'agent-receipt').exists():
+    subprocess.run([str(root/'workshop'), 'receipt', os.environ['WORKSHOP_ROUND_TOKEN'], '--file', 'receipt.json'])
 if (root/'crash').exists():
     sys.exit(1)  # 起不来：会话号还没输出就退出
 if name == 'codex':
@@ -440,7 +445,8 @@ def test_stop_escalates_to_kill_for_ignoring_process_group(setup):
     root,make,item,target=setup
     (root/'ignore-term').touch()
     (root/'spawn-descendant').touch()
-    executor=make('codex');executor.stop_timeout=.2
+    # 并行跑测试（-n 8）时机器忙，KILL 后确认进程组退出要的时间会超过 0.2 秒；给 2 秒，仍要求走到 KILL。
+    executor=make('codex');executor.stop_timeout=2
     started=executor.launch('one',BRIEF,item,CONFIG,target)
     wait_for(lambda:(root/'agents').exists() and (root/'agents').read_text().endswith('\n'))
     executor.stop('one',started)
@@ -720,3 +726,156 @@ def test_failed_fresh_launch_after_model_change_never_resumes_old_session(setup,
     assert not any(flag in last for flag in ('resume', '--resume')), last
     assert last[last.index('--model') + 1] == 'new-model'
     make(kind).stop('three', third)
+
+
+def codex_hook(directory, data):
+    """按 Codex 调钩子的方式跑 hook.py：环境来自终端里的会话，输入是钩子 JSON。"""
+    from workshop.plugins.executors.local import hook
+    spec = read(directory/'spec.json')
+    env = dict(os.environ, **spec['env'])
+    return subprocess.run([sys.executable, hook.__file__], env=env, text=True, input=json.dumps(data), capture_output=True)
+
+
+def test_orca_codex_round_terminal_receipt_close_usage_and_resume(setup):
+    root, make, item, target = setup
+    item.pop('workdir')
+    (root/'agent-receipt').touch()
+    executor = make('orca-codex')
+    assert executor.available(CONFIG)
+    first = executor.launch('one', BRIEF, item, CONFIG, target)
+    directory = executor.directory('one')
+    wait_for(lambda: (root/'receipts').exists())
+    orca = [json.loads(line) for line in (root/'orca-calls').read_text().splitlines()]
+    assert orca[0][:2] == ['worktree', 'create'] and orca[1][:2] == ['terminal', 'create']
+    call = json.loads((root/'agents').read_text())
+    args = call['args']
+    assert call['name'] == 'codex' and call['cwd'] == str((root/'repo').resolve())
+    # 模型和强度来自规则；可写；钩子只对本次放行；信任只在内存里给，不写用户配置。
+    assert args[args.index('-m')+1] == 'actual-request'
+    assert 'model_reasoning_effort="high"' in args
+    assert args[args.index('-s')+1] == 'danger-full-access' and args[args.index('-a')+1] == 'never'
+    assert 'read-only' not in ' '.join(args)
+    assert '--dangerously-bypass-hook-trust' in args
+    assert 'model_provider="openai"' in args
+    assert any(a.startswith('hooks.SessionStart=') and 'hook.py' in a for a in args)
+    assert any(a.startswith('hooks.UserPromptSubmit=') and 'hook.py' in a for a in args)
+    assert any(a.startswith('projects={') and str((root/'repo').resolve()) in a for a in args)
+    assert args[-2] == '--' and args[-1].startswith('可信说明')
+    assert not (Path(os.environ['HOME'])/'.codex'/'config.toml').exists()
+    assert json.loads((root/'receipts').read_text())[:2] == ['receipt', 'one']
+    # Codex 开会话时钩子记下会话号；插话照样记成车间事件。
+    result = codex_hook(directory, {'hook_event_name': 'SessionStart', 'session_id': 'codex-main', 'source': 'startup'})
+    assert result.returncode == 0 and not result.stdout
+    result = codex_hook(directory, {'hook_event_name': 'UserPromptSubmit', 'session_id': 'codex-main', 'turn_id': 't1',
+                                    'prompt': '人类插话：先别推'})
+    assert result.returncode == 0
+    steering = [json.loads(line) for line in (root/'receipts').read_text().splitlines() if json.loads(line)[0] == 'event']
+    assert json.loads(steering[0][2])['body']['text'] == '人类插话：先别推'
+    session_file = Path(read(directory/'spec.json')['session_file'])
+    assert read(session_file) == {'vendor_id': 'codex-main', 'model': 'actual-request'}
+    assert executor.poll('one', first) == 'running'
+    executor.stop('one', first)
+    assert ['terminal', 'close', '--terminal', read(directory/'terminal.json')['handle'], '--json'] in [
+        json.loads(line) for line in (root/'orca-calls').read_text().splitlines()]
+    assert executor.poll('one', first) == 'exited'
+    import shutil
+    rollout = Path(os.environ['HOME'])/'.codex/sessions/2026/11/13/rollout-main.jsonl'
+    rollout.parent.mkdir(parents=True)
+    shutil.copyfile(Path(__file__).parent/'fixtures'/'executors'/'codex.jsonl', rollout)
+    usage = executor.usage('one', first, '2026-11-13T01:00:00+00:00')
+    assert usage.main.model_actual == 'gpt-6-astra' and usage.main.input == 100 and usage.main.output == 20
+    # 下一轮在同一 worktree 接回同一个 Codex 会话。
+    target['runtime']['env']['WORKSHOP_ROUND_TOKEN'] = 'two'
+    second = make('orca-codex').resume('two', first.session, BRIEF, item, CONFIG, target)
+    wait_for(lambda: len((root/'agents').read_text().splitlines()) == 2)
+    args = json.loads((root/'agents').read_text().splitlines()[1])['args']
+    assert args[0] == 'resume' and args[args.index('--')-1] == 'codex-main'
+    assert second.session == first.session and second.workdir == first.workdir
+    make('orca-codex').stop('two', second)
+
+
+@pytest.mark.parametrize('missing', [['model'], ['effort'], ['model', 'effort']])
+def test_orca_codex_refuses_to_start_without_model_or_effort(setup, missing):
+    root, make, item, target = setup
+    config = {k: v for k, v in CONFIG.items() if k not in missing}
+    executor = make('orca-codex')
+    with pytest.raises(ValueError, match='缺 ' + '、'.join(missing)):
+        executor.launch('one', BRIEF, item, config, target)
+    assert not (root/'orca-calls').exists() and not (root/'agents').exists()
+    assert not (executor.directory('one')/'spec.json').exists()
+
+
+def test_orca_codex_readonly_brief_uses_readonly_sandbox(setup):
+    root, make, item, target = setup
+    executor = make('orca-codex')
+    started = executor.launch('one', Brief('只读说明', [], workdir=item['workdir'], readonly=True), item, CONFIG, target)
+    wait_for(lambda: (root/'agents').exists() and (root/'agents').read_text().endswith('\n'))
+    call = json.loads((root/'agents').read_text())
+    assert call['args'][call['args'].index('-s')+1] == 'read-only'
+    assert 'GH_TOKEN' not in call['env'] and '--add-dir' not in call['args']
+    executor.stop('one', started)
+
+
+def test_orca_codex_finds_session_from_rollout_when_hook_missed(setup):
+    root, make, item, target = setup
+    executor = make('orca-codex')
+    started = executor.launch('one', BRIEF, item, CONFIG, target)
+    wait_for(lambda: (root/'agents').exists())
+    from datetime import datetime, timezone
+    sessions = Path(os.environ['HOME'])/'.codex/sessions/2026/11/13'
+    sessions.mkdir(parents=True)
+    now = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
+    def rollout(name, **meta):
+        (sessions/f'rollout-{name}.jsonl').write_text(json.dumps({'type': 'session_meta', 'payload': {'timestamp': now, **meta}}) + '\n')
+    rollout('other', id='elsewhere', cwd='/other/repo', source='cli')
+    rollout('child', id='child', cwd=item['workdir'], source={'subagent': {}})
+    rollout('main', id='found-main', cwd=item['workdir'], source='cli')
+    executor.stop('one', started)
+    assert read(Path(read(executor.directory('one')/'spec.json')['session_file'])) == {'vendor_id': 'found-main', 'model': 'actual-request'}
+
+
+def test_orca_codex_does_not_guess_between_two_sessions_in_same_workdir(setup):
+    root, make, item, target = setup
+    executor = make('orca-codex')
+    started = executor.launch('one', BRIEF, item, CONFIG, target)
+    wait_for(lambda: (root/'agents').exists())
+    from datetime import datetime, timezone
+    sessions = Path(os.environ['HOME'])/'.codex/sessions/2026/11/13'
+    sessions.mkdir(parents=True)
+    now = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
+    for name in ('ours', 'human'):
+        (sessions/f'rollout-{name}.jsonl').write_text(json.dumps({'type': 'session_meta', 'payload': {
+            'timestamp': now, 'id': name, 'cwd': item['workdir'], 'source': 'cli'}}) + '\n')
+    executor.stop('one', started)
+    assert not Path(read(executor.directory('one')/'spec.json')['session_file']).exists()
+    # 认不出哪个是本轮的会话：下一轮在同一 worktree 开新会话，不接回人开的那个。
+    target['runtime']['env']['WORKSHOP_ROUND_TOKEN'] = 'two'
+    second = make('orca-codex').resume('two', started.session, BRIEF, item, CONFIG, target)
+    wait_for(lambda: len((root/'agents').read_text().splitlines()) == 2)
+    args = json.loads((root/'agents').read_text().splitlines()[1])['args']
+    assert 'resume' not in args and 'human' not in args and 'ours' not in args
+    make('orca-codex').stop('two', second)
+
+
+def test_orca_codex_starts_fresh_session_when_rule_model_changes(setup):
+    root, make, item, target = setup
+    executor = make('orca-codex')
+    first = executor.launch('one', BRIEF, item, CONFIG, target)
+    wait_for(lambda: (root/'agents').exists())
+    assert codex_hook(executor.directory('one'), {'hook_event_name': 'SessionStart', 'session_id': 'codex-main'}).returncode == 0
+    executor.stop('one', first)
+    target['runtime']['env']['WORKSHOP_ROUND_TOKEN'] = 'two'
+    second = make('orca-codex').resume('two', first.session, BRIEF, item, dict(CONFIG, model='another-model'), target)
+    wait_for(lambda: len((root/'agents').read_text().splitlines()) == 2)
+    args = json.loads((root/'agents').read_text().splitlines()[1])['args']
+    assert 'resume' not in args and 'codex-main' not in args and args[args.index('-m')+1] == 'another-model'
+    make('orca-codex').stop('two', second)
+
+
+def test_orca_codex_refuses_api_key_login_for_subscription_rule(setup):
+    root, make, item, target = setup
+    (root/'api-key-login').touch()
+    executor = make('orca-codex')
+    with pytest.raises(Unavailable, match='不是 ChatGPT 订阅登录'):
+        executor.launch('one', BRIEF, item, CONFIG, target)
+    assert not (root/'agents').exists() and not (root/'orca-calls').exists()
