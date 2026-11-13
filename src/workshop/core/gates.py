@@ -32,6 +32,29 @@ def validate_stages(stages):
         raise ValueError("阶段必须有序且包含四道关口需要的阶段")
 
 
+def allowed_advances(item: dict, stages) -> list[str]:
+    """本阶段回执 advance 能填的阶段：下一段；证据到验收可退回执行；到过验收的执行可直接回验收。"""
+    current = item["stage"]
+    # 下一段按全局顺序取规则里还在的那一个（当前阶段被规则去掉时同样认它之后的第一个），和关口判定一致。
+    following = next((s for s in stages if STAGES.index(s) > STAGES.index(current)), None)
+    allowed = [following] if following else []
+    if current in ("证据", "审查", "交付", "验收") and "执行" not in allowed:
+        allowed.append("执行")
+    if (current == "执行" and "验收" in stages and following != "验收"
+            and any(entry.get("stage") == "验收" for entry in item.get("history", []))):
+        allowed.append("验收")
+    return allowed
+
+
+def advance_problem(item: dict, advance, stages) -> str:
+    """advance 不合法时给出具体原因（填了什么、能填什么）；合法或没填时返回空串。"""
+    if advance is None or advance in allowed_advances(item, stages):
+        return ""
+    allowed = allowed_advances(item, stages)
+    choices = "、".join(f"「{s}」" for s in allowed) or "（没有下一段，不填）"
+    return f"advance 是「{advance}」；{item['stage']}之后只能是{choices}，不推进就不填"
+
+
 def decide(item: dict, receipt: Receipt, evidence: Evidence, stages, rules: Rules) -> Decision:
     validate_stages(stages)
     unknown = set(evidence.actions) - set(rules.data["ask_first"]) - set(rules.data["skip_ask"])
@@ -53,9 +76,10 @@ def decide(item: dict, receipt: Receipt, evidence: Evidence, stages, rules: Rule
     if not requested:
         complete = current == stages[-1] and receipt.outcome == "done" and evidence.passed
         return Decision(current, complete, "完成" if complete else "未提议下一阶段", complete=complete)
-    index = stages.index(current)
-    if index + 1 >= len(stages) or requested != stages[index + 1]:
-        return Decision(current, False, "不能越过流程阶段和关口")
+    # 下一阶段按全局顺序取规则里还在的那一个；当前阶段被规则去掉时（例如关掉审查后在跑的那一轮），同样认它之后的第一个。
+    following = next((s for s in stages if STAGES.index(s) > STAGES.index(current)), None)
+    if following is None or requested != following:
+        return Decision(current, False, "不能越过流程阶段和关口：" + advance_problem(item, requested, stages))
     checks = evidence.checks or item.get("checks", [])
     if requested == "执行" and not (checks and all(
             isinstance(argv, list) and argv and all(isinstance(v, str) and v.strip() for v in argv)
@@ -64,7 +88,7 @@ def decide(item: dict, receipt: Receipt, evidence: Evidence, stages, rules: Rule
     if not evidence.passed:
         return Decision(current, False, evidence.reason or "本阶段证据未通过")
     frozen = ()
-    if stages.index(current) > stages.index("执行"):
+    if STAGES.index(current) > STAGES.index("执行"):
         # 执行之后按实际改动查冻结路径；放行过的文件不再问，退回执行后碰到新的冻结文件再问。
         prefixes = rules.data["targets"].get(item.get("target"), {}).get("frozen_paths", [])
         frozen = tuple(p for p in touched(evidence.paths, prefixes) if p not in item.get("frozen_approved", []))

@@ -69,12 +69,72 @@ def test_runnable_check_gate_and_no_skipping(engine):
     assert not engine.active()
 
 
-def test_jump_to_close_is_blocked(engine):
+def test_jump_to_close_is_rejected_when_submitted(engine):
+    """越级的 advance 交回执时就被拒，原因写清能填什么；这一轮还开着，可以改对重交。"""
     engine.ingest(event())
     engine.tick()
-    finish(engine, "收尾")
+    row = current(engine)
+    with pytest.raises(ValueError, match="advance 是「收尾」；接单之后只能是「说清楚」"):
+        engine.submit(row["token"], dict(outcome="done", summary="完成接单", advance="收尾"))
+    assert current(engine)["receipt"] is None
+    assert "接单之后只能是「说清楚」" in current(engine)["receipt_rejected"]
+    finish(engine, "说清楚")
+    assert item(engine)["stage"] == "说清楚"
+
+
+def test_rejected_receipt_reason_survives_exit_and_reaches_item(engine):
+    """执行者交错了回执又没改对就退出：自动失败的结果里带着被拒原因，活上留着给下一轮说明。"""
+    engine.ingest(event())
+    engine.tick()
+    row = current(engine)
+    with pytest.raises(ValueError) as rejected:
+        engine.submit(row["token"], {"outcome": "success", "summary": "完成", "advance": "收尾", "head": "abc"})
+    # 字段、取值、本阶段 advance 一次报全。
+    assert '回执顶层有不认识的字段 head' in str(rejected.value)
+    assert 'outcome 是 "success"，只能是 done、failed、nothing' in str(rejected.value)
+    assert 'advance 是「收尾」；接单之后只能是「说清楚」' in str(rejected.value)
+    engine.automatic_failure(row["token"], "执行者已退出但没有交回执")
+    engine.tick()
+    failure = item(engine)["last_failure"]
+    assert failure.startswith("执行者已退出但没有交回执；最后一次交的回执被拒：回执顶层有不认识的字段 head")
+    engine.clock.now += timedelta(hours=1)
+    engine.tick()
+    finish(engine, "说清楚")
+    assert item(engine)["stage"] == "说清楚" and item(engine)["last_failure"] is None
+
+
+def test_self_submitted_rejection_survives_proxy_failed_receipt(engine):
+    """ws#30 复审：执行者自己交的回执被拒、之后只输出文字，包装进程代交的 failed 没写字段原因；
+    下一轮说明要的 last_failure 仍带着被拒的具体原因。"""
+    engine.ingest(event())
+    engine.tick()
+    row = current(engine)
+    with pytest.raises(ValueError):
+        engine.submit(row["token"], {"outcome": "success", "summary": "完成", "advance": "验收"})
+    engine.submit(row["token"], {"outcome": "failed", "summary": "最后一条消息里没有回执 JSON 对象（要有 outcome、summary）"})
+    engine.tick()
+    failure = item(engine)["last_failure"]
+    assert failure.startswith("最后一条消息里没有回执 JSON 对象")
+    assert 'outcome 是 "success"，只能是 done、failed、nothing' in failure
+    assert "advance 是「验收」；接单之后只能是「说清楚」" in failure
+    # 这一轮自己的结果和 workshop why 里也看得到具体原因（ws#30 复审）。
+    result = [f for f in engine.log.facts() if f["kind"] == "round_result" and f["body"]["token"] == row["token"]][-1]
+    assert result["body"]["summary"] == failure
+    assert engine.log.get("rounds", row["token"])["summary"] == failure
+    text = why(engine.log, "alpha:one")
+    assert f'回执被拒 {row["token"]}：' in text and 'outcome 是 "success"，只能是 done、failed、nothing' in text
+
+
+def test_gate_still_names_allowed_advance(engine):
+    """交回执时没核对上的（例如读不到阶段），收轮时关口照样拦，原因同样具体。"""
+    engine.ingest(event())
+    engine.tick()
+    row = current(engine)
+    engine.advance_error = lambda token, advance: ""
+    engine.submit(row["token"], dict(outcome="done", summary="完成接单", advance="收尾"))
+    engine.tick()
     assert item(engine)["stage"] == "接单"
-    assert "不能越过" in item(engine)["gate_reason"]
+    assert "不能越过" in item(engine)["gate_reason"] and "只能是「说清楚」" in item(engine)["gate_reason"]
 
 
 def test_approval_gate_and_explicit_answer(engine):
@@ -619,3 +679,15 @@ def test_next_stage_round_explains_its_triggering_receipt(engine):
     reach(engine, "说清楚")
     cause = current(engine)["cause"]
     assert next(f for f in engine.log.facts() if f["seq"] == cause)["kind"] == "receipt"
+
+
+def test_advance_check_follows_stages_switched_off_by_rules(engine):
+    """规则关掉审查（#55）后，证据之后能填的是交付；交回执时的核对和关口一致。"""
+    flow = engine.plugins.get("flow", "flow")
+    flow.path = tuple(s for s in flow.path if s != "审查")
+    reach(engine, "证据")
+    row = current(engine)
+    with pytest.raises(ValueError, match="advance 是「审查」；证据之后只能是「交付」、「执行」"):
+        engine.submit(row["token"], dict(outcome="done", summary="完成证据", advance="审查"))
+    finish(engine, "交付")
+    assert item(engine)["stage"] == "交付"

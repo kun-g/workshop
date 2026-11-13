@@ -37,6 +37,11 @@ def parser():
     abandon = commands.add_parser("abandon", help="放弃一件活：停在当前阶段、让出串行路径，要再做就返工；活写成 <短名>#<编号> 或 <交付对象>:<对象键>")
     abandon.add_argument("item")
     abandon.add_argument("--reason", required=True, help="为什么不做了，记进这件活")
+    answer = commands.add_parser("answer", help="把 Kun 在会话里给的回答记到一张问卡上（飞书 Q 号或卡号），和点卡同样生效")
+    answer.add_argument("card", help="飞书 Q 号（如 Q1847）或车间卡号")
+    answer.add_argument("choice", help="选项的 key")
+    answer.add_argument("--quote", required=True, help="Kun 的原话，逐字")
+    answer.add_argument("--session", required=True, help="Kun 说这句话的会话号")
     commands.add_parser("pause").add_argument("target")
     resume = commands.add_parser("resume")
     resume.add_argument("target")
@@ -98,6 +103,9 @@ def main(argv=None):
                 item_id = resolve(log, rules.data["targets"], args.item)
                 engine.abandon(item_id, args.reason)
                 print(f"已放弃 {item_id}；串行路径已让出，要再做就返工")
+            elif args.command == "answer":
+                card = engine.answer_here(args.card, args.choice, args.quote, args.session)
+                print(f'已记到 {card["item"]} 的卡 {card.get("external") or card["id"]}：{args.choice}')
             elif args.command == "pause":
                 engine.pause(args.target)
                 print(f"已暂停 {args.target}；当前一轮继续收尾")

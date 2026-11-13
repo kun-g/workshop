@@ -18,6 +18,8 @@ Orca 插话钩子去掉轮次令牌后以 `cli:orca` 进入：流程用核心已
 
 ## 证据与审查
 
+阶段开关：规则里交付对象写 `stages`（按顺序列出阶段）时，`stages()` 照它返回；本流程只允许省掉审查，少了证据或交付就报错。省掉审查时，能合并的头提交是证据检查过的 `evidence_head`；合并前若配了 bot_review，在交付的 after 里补一条 bot 批准，正文写明「未审查」。核心按全局阶段顺序取规则里还在的下一阶段：规则改掉某阶段时，在跑的那一轮交回的推进仍认；闲着的活派轮前直接挪到下一阶段，不起轮。
+
 说清楚时回查 issue 五项，并核对回执检查与 `workshop-checks` 内容一致，包含 `required_checks`（默认 `[["scripts/check.sh"]]`）。回执 JSON 的 `paths` 登记预计会改的路径（仓库根起的相对路径，目录以 / 结尾），作为说清楚的 Evidence.paths 交给核心，规则配了 `serial_paths` 时按它在执行前排队；不是字符串列表时说清楚不过。之后各阶段的实际改动取 PR 文件列表，改名的文件新旧路径都算（冻结、串行、两家审都按它判）。缺少标准时用 ask 或 notice+等你，Kun 重打标签后原活继续。
 
 证据轮在干净副本（见下节）的 detached 完整 SHA 上真实重跑登记检查；环境白名单清除 GitHub/SSH/云凭据，原样 stdout/stderr、退出码、SHA 写入核心证据 reason。每条检查默认限时 60 秒，可在目标配置 `check_timeout`；超时记退出码 124、timed_out=true 和已得到的原样输出，判检查不过，不隔离流程。准备命令由 prepare 的 argv/cwd 指定，cwd 限定在干净副本中；grant-console 先在 services/devops-console 跑 uv sync --locked。这个检查没有业务写入，但会建立临时副本并运行仓库脚本；不是恶意代码安全沙箱。
@@ -36,7 +38,7 @@ Orca 插话钩子去掉轮次令牌后以 `cli:orca` 进入：流程用核心已
 
 **依赖缓存**：检查仍在每轮新建的空 HOME、无凭据环境里跑，但副本里有 `uv.lock` 时，环境多一个 `UV_CACHE_DIR=issue_delivery_state_dir/uv-cache/<uv.lock 内容哈希前 16 位>`。选按锁文件分、不选只读共享缓存，是因为只读缓存要另有人负责预热；按锁文件分时，改了依赖的 PR 只写自己那一份，不会动到别的锁文件在用的缓存。同一锁文件的检查共用一份，第二次 `uv sync --locked` 不再下载（11-13 本机：冷缓存 2.7 秒，热缓存 0.14 秒）。每次取缓存时只留最近用过的 5 份，其余超过一天没用的删掉；要整个清，停掉车间后删 `uv-cache/` 即可，下次检查重新下载。没有 `uv.lock` 的仓库不设缓存，沿用空 HOME。
 
-**执行者 worktree**：活收尾完成后，核心先问流程 `hold_workdir`：这件活还有打开的 PR 就留着，约一小时后再问。流程不留时，核心请为这件活开过会话的执行者 `release`。orca-claude 只认自己按活 id 开的 `ws-<哈希>` 目录：worktree 有未提交改动（不算被忽略的文件），或本地分支上有任何远端分支都没有的提交，就留着，核心给 Kun 发一条通知，不再重试；否则 `orca worktree rm` 删 worktree，再 `git branch -D` 删本地分支，活上的 workdir 清空。返工开新一轮时按同一个名字重新开 worktree。守护进程照常每一拍检查一遍，已收尾但没收过的老活（升级前收尾的）也按同一判断收。不是车间按活 id 开的 worktree（比如别的流程或人手开的）不碰。
+**执行者 worktree**：活收尾完成后，核心先问流程 `hold_workdir`：这件活还有打开的 PR 就留着，约一小时后再问。流程不留时，核心请为这件活开过会话的执行者 `release`。orca-claude 和 orca-codex 只认自己按活 id 开的 `ws-<哈希>` 目录：worktree 有未提交改动（不算被忽略的文件），或本地分支上有任何远端分支都没有的提交，就留着，核心给 Kun 发一条通知，不再重试；否则 `orca worktree rm` 删 worktree，再 `git branch -D` 删本地分支，活上的 workdir 清空。返工开新一轮时按同一个名字重新开 worktree。守护进程照常每一拍检查一遍，已收尾但没收过的老活（升级前收尾的）也按同一判断收。不是车间按活 id 开的 worktree（比如别的流程或人手开的）不碰。
 
 ## 重走验收
 

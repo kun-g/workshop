@@ -9,12 +9,13 @@ import uuid
 import sys
 import hashlib
 
-from .gates import decide, overlaps, validate_stages
+from .gates import advance_problem, decide, overlaps, validate_stages
+from .models import STAGES as ALL_STAGES
 from .log import Log
 from .models import Brief, Event, Receipt, STAGES, Started, due, stamp, utcnow
 from .ports import Unavailable, Retryable, ChannelRejected
 from .cards import frozen_question, question, notice, validate_question, validate_notice
-from .models import After, FlowBrief, Classification, Evidence, Release, Usage, RoundUsage
+from .models import After, Answer, FlowBrief, Classification, Evidence, Release, Usage, RoundUsage
 
 
 def gate(ingress):
@@ -394,9 +395,25 @@ class Engine:
                     self.change(item, **restored, plugin_blocked=False, before_plugin_failure=None)
 
     def submit(self, token: str, data: dict) -> bool:
-        receipt = Receipt.parse(data, self.clock())
-        for event in receipt.events:
-            self.rules.target(event["target"])
+        try:
+            try:
+                receipt = Receipt.parse(data, self.clock())
+            except ValueError as exc:
+                # advance 填错也并进同一次拒绝，执行者一次改全。
+                advance = data.get("advance") if isinstance(data, dict) else None
+                extra = self.advance_error(token, advance) if isinstance(advance, str) else ""
+                if extra and extra not in str(exc):
+                    raise ValueError(f"{exc}；{extra}") from exc
+                raise
+            for event in receipt.events:
+                self.rules.target(event["target"])
+            extra = self.advance_error(token, receipt.advance)
+            if extra:
+                raise ValueError(extra)
+        except (ValueError, TypeError, KeyError) as exc:
+            # 原因记在这一轮上：执行者没改对就退出时，自动失败的结果里仍看得到。
+            self.receipt_rejected(token, exc)
+            raise
         with self.log.transaction():
             row = self.log.get("rounds", token)
             if not row:
@@ -409,6 +426,39 @@ class Engine:
                 raise ValueError("该轮不能再交回执")
             return self.fact("receipt", {"token": token, "receipt": data}, row["item"],
                              source="receipt", ext_id=token)
+
+    def advance_error(self, token, advance) -> str:
+        """交回执时就按本阶段核对 advance，执行者能在同一轮看到原因改对重交；没问题返回空串。"""
+        row = self.log.get("rounds", token) if isinstance(token, str) else None
+        if not row or advance is None:
+            return ""
+        item = self.log.get("items", row["item"])
+        if not item or item["stage"] != row["stage"]:
+            return ""
+        try:
+            target = self.rules.target(item["target"])
+            stages = self.plugins.get("flow", target["plugin"]).stages(target)
+            validate_stages(stages)
+        except Exception:
+            return ""  # 读不到阶段时留给收轮时的关口判定。
+        return advance_problem(item, advance, stages)
+
+    @staticmethod
+    def failure_reason(row, receipt):
+        """没跑成的原因；这一轮自己交的回执被拒过，具体字段原因一并带上（代交的摘要里常没有）。"""
+        if receipt.outcome != "failed":
+            return None
+        rejected = row.get("receipt_rejected")
+        if rejected and rejected not in receipt.summary:
+            return f"{receipt.summary}；这一轮交的回执被拒过：{rejected}"
+        return receipt.summary
+
+    def receipt_rejected(self, token, exc):
+        row = self.log.get("rounds", token) if isinstance(token, str) else None
+        if not row or row.get("receipt") is not None or row["status"] not in ("starting", "running"):
+            return
+        with self.log.transaction():
+            self.fact("round_changed", {"token": token, "receipt_rejected": str(exc)}, row["item"])
 
     def card(self, item, key, mode, payload, **extra):
         if mode == "ask":
@@ -622,20 +672,7 @@ class Engine:
                     if card["payload"]["kind"] == "approval" and answer.value not in [c["key"] for c in card["payload"]["choices"]]:
                         self.invalid_answer(card, answer.value)
                         continue
-                    approved = answer.value == "yes" if card.get("core_approval") else answer.approved
-                    choice_label = next((c["label"] for c in card["payload"]["choices"] if c["key"] == answer.value), answer.value)
-                    # 回答单独追加，由 evolve 在最新资料上追加，不回写旧资料快照。
-                    self.fact("answer", {**asdict(answer), "approved": approved, "choice_label": choice_label, "key": card["payload"].get("key", card["key"]),
-                              "title": card["payload"]["decision"], "actions": card.get("actions", []), "billing_configs": card.get("billing_configs", []),
-                              "frozen_files": card.get("frozen_files", [])},
-                              card["item"], source="answer", ext_id=card["id"])
-                    self.fact("card_changed", {"id": card["id"], "answered": True, "answer": answer.value, "choice_label": choice_label, "approved": approved}, card["item"])
-                    item = self.log.get("items", card["item"])
-                    if card.get("billing_configs") and not approved:
-                        self.change(item, state="等你", wait_for_ready=True, next="按量计费未获批准，等待放行", blocked_by="Kun",
-                                    leave={"kind": "等你", "about": "调整执行者或授权后放行"})
-                    elif item["state"] == "等你" and not item.get("wait_for_ready") and not self.waiting(item):
-                        self.change(item, state="空闲", next="按回答继续", blocked_by="")
+                    self.record_answer(card, answer)
             self.delivery_ok(f"channel:{name}")
         except Exception as exc:
             self.delivery_error(f"channel:{name}", exc)
@@ -661,6 +698,23 @@ class Engine:
                                   item["title"], timer["about"], item["depth"]))
                 if not self.control(item["target"]).get("paused"):
                     self.apply_timer(timer, item)
+
+    def record_answer(self, card, answer, provenance=None):
+        """记下 Kun 对一张卡的回答。provenance 记回答从哪个渠道来（飞书卡片不写；会话转录写会话号和原话）。"""
+        approved = answer.value == "yes" if card.get("core_approval") else answer.approved
+        choice_label = next((c["label"] for c in card["payload"]["choices"] if c["key"] == answer.value), answer.value)
+        # 回答单独追加，由 evolve 在最新资料上追加，不回写旧资料快照。
+        self.fact("answer", {**asdict(answer), "approved": approved, "choice_label": choice_label, "key": card["payload"].get("key", card["key"]),
+                  "title": card["payload"]["decision"], "actions": card.get("actions", []), "billing_configs": card.get("billing_configs", []),
+                  "frozen_files": card.get("frozen_files", []), **({"via": provenance} if provenance else {})},
+                  card["item"], source="answer", ext_id=card["id"])
+        self.fact("card_changed", {"id": card["id"], "answered": True, "answer": answer.value, "choice_label": choice_label, "approved": approved}, card["item"])
+        item = self.log.get("items", card["item"])
+        if card.get("billing_configs") and not approved:
+            self.change(item, state="等你", wait_for_ready=True, next="按量计费未获批准，等待放行", blocked_by="Kun",
+                        leave={"kind": "等你", "about": "调整执行者或授权后放行"})
+        elif item["state"] == "等你" and not item.get("wait_for_ready") and not self.waiting(item):
+            self.change(item, state="空闲", next="按回答继续", blocked_by="")
 
     def apply_timer(self, timer, item):
         if item["state"] == "放弃":
@@ -744,6 +798,12 @@ class Engine:
             flow = self.plugins.get(port, name)
             stages = flow.stages(target)
             validate_stages(stages)
+            if item["stage"] not in stages:
+                following = next(s for s in stages if ALL_STAGES.index(s) > ALL_STAGES.index(item["stage"]))
+                self.change(item, stage=following, state="空闲", next=following, failures=0, retry_at=None,
+                            retry_executor=None, review_required=1, reviews=[],
+                            gate_reason=f'规则已去掉「{item["stage"]}」阶段，直接进{following}')
+                return
             content = flow.brief(item, item["stage"], target)
             content = FlowBrief(content) if isinstance(content, str) else content
             if (not isinstance(content, FlowBrief) or not isinstance(content.instructions, str)
@@ -796,9 +856,15 @@ class Engine:
                     self.fact("selection_failed", {"reason": reason, "selector": selector_name}, item["id"])
                     raise Retryable(reason)
             if chosen is None:
-                self.card(item, f'capacity:{item["revision"]}', "ask", question("现有订阅没有可用执行者"))
+                # 挑选逻辑可用 Selection(None, 理由) 说明为什么一个都没选；理由进事实和卡片，why 能看到。
+                why_none = choice.reason.strip() if choice is not None and isinstance(choice.reason, str) else ""
+                payload = question("现有订阅没有可用执行者")
+                if why_none:
+                    self.fact("selection_none", {"reason": why_none, "selector": selector_name}, item["id"])
+                    payload["context"] = "挑选逻辑没有选出执行者：" + why_none
+                self.card(item, f'capacity:{item["revision"]}', "ask", payload)
                 self.change(item, state="等你", next="等现有订阅恢复", blocked_by="Kun",
-                            leave={"kind": "等你", "about": "执行者不可用"})
+                            leave={"kind": "等你", "about": "执行者不可用" + (f"：{why_none}" if why_none else "")})
                 return
             port, name = "executor", chosen["use"]
             token = str(uuid.uuid4())
@@ -898,6 +964,27 @@ class Engine:
                         leave={"kind": "工序", "owner": "车间", "at": at, "about": "重试启动"})
             self.retry_failure(item["target"], port, name, f"start:{item['target']}:{name}", exc)
 
+    def answer_here(self, ref, value, quote, session):
+        """Kun 在会话里回答一张卡（渠道由 Kun 选）：按卡号或飞书 Q 号找卡，记下会话号和 Kun 的原话，和卡片回答同样生效。"""
+        if not quote.strip() or not session.strip():
+            raise ValueError("要写 Kun 的原话和会话号")
+        with self.log.transaction():
+            cards = [c for c in self.log.all("cards") if c["mode"] == "ask" and ref in (c["id"], c.get("external"))]
+            if len(cards) != 1:
+                raise ValueError(f"找不到唯一一张问卡：{ref}")
+            card = cards[0]
+            if card["answered"] or card.get("cancelled"):
+                raise ValueError("这张卡已经答过或作废")
+            keys = [c["key"] for c in card["payload"]["choices"]]
+            if keys and value not in keys:
+                raise ValueError(f"回答须是选项之一：{', '.join(keys)}")
+            payload = card["payload"]
+            # 批准与否和卡片通道同一判法：只有审批卡答 yes 才算批准。
+            approved = payload["kind"] == "approval" and value == "yes" and "yes" in keys
+            self.record_answer(card, Answer(card["id"], value, approved),
+                               provenance={"channel": "session", "session": session, "quote": quote})
+        return card
+
     def abort(self, token, reason="人手动结束这一轮"):
         with self.log.transaction():
             row = self.log.get("rounds", token)
@@ -910,6 +997,8 @@ class Engine:
             latest = self.log.get("rounds", token)
             if not latest or latest.get("receipt") is not None or latest["status"] not in ("starting", "running"):
                 return
+            if latest.get("receipt_rejected"):
+                reason += f'；最后一次交的回执被拒：{latest["receipt_rejected"]}'
             if self.submit(token, {"outcome": "failed", "summary": reason}):
                 self.fact("round_changed", {"token": token, "automatic_failure": True}, latest["item"])
 
@@ -1043,8 +1132,10 @@ class Engine:
                 after_result = self.after(flow, {**item, "result": receipt.json()}, row["stage"], key, target)
             with self.log.transaction():
                 item = self.log.get("items", item["id"])
+                # 本轮结果写完整原因：交过被拒的回执时，具体字段和合法取值一并记下（代交的摘要里常没有）。
+                summary = self.failure_reason(row, receipt) or receipt.summary
                 self.fact("round_result", {"token": token, "stage": row["stage"], "outcome": receipt.outcome,
-                          "summary": receipt.summary, "evidence": receipt.evidence, "reason": evidence.reason},
+                          "summary": summary, "evidence": receipt.evidence, "reason": evidence.reason},
                           item["id"], source="result", ext_id=token)
                 for ask in receipt.ask:
                     self.card(item, f'{token}:{ask["key"]}', "ask", ask)
@@ -1056,7 +1147,9 @@ class Engine:
                     leave = receipt.leave
                     self.timer(item, f"leave:{token}", leave["at"], leave["about"], leave["kind"], leave.get("owner", "Kun"), base=received_at)
                 changes = dict(failures=0, round=None, retry_at=None, cause=max(item["cause"], row["receipt_seq"]),
-                               retry_executor=None, review_required=required, reviews=reviews)
+                               retry_executor=None, review_required=required, reviews=reviews,
+                               # 没跑成的原因交给流程写进下一轮说明；跑成了就清掉。
+                               last_failure=summary if receipt.outcome == "failed" else None)
                 if evidence.checks:
                     changes["checks"] = evidence.checks
                 if evidence.paths:
@@ -1114,7 +1207,7 @@ class Engine:
                 elif receipt.later and changes["state"] == "空闲":
                     changes.update(state="定时", next="等约好的时间")
                 self.fact("round_changed", {"token": token, "status": "ended", "ended": stamp(self.clock()),
-                           "outcome": receipt.outcome, "summary": receipt.summary,
+                           "outcome": receipt.outcome, "summary": summary,
                            "passed": evidence.passed if row["stage"] in ("审查", "验收") and receipt.outcome != "nothing" and not row.get("automatic_failure") else None}, item["id"])
                 if item.get("plugin_blocked") and self.control(item["target"]).get("broken"):
                     changes["before_plugin_failure"] = {k: changes.get(k, item.get(k)) for k in ("state", "next", "blocked_by", "leave")}

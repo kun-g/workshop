@@ -6,6 +6,10 @@ def make_orca_claude():
     return Executor('orca-claude')
 
 
+def make_orca_codex():
+    return Executor('orca-codex')
+
+
 def make_codex():
     return Executor('codex')
 

@@ -2,8 +2,11 @@
 targets:
   grant-console:
     plugin: issue_delivery
-    selector: ordered
-    stage_selectors: {审查: ordered}
+    selector: quota
+    # 本机 ai_quota 快照（和 ai-quota MCP 同一数据源），只读；最近一次成功采集超过 45 分钟算过期（和 ai_quota 提醒同一条线）。
+    quota_snapshot: &quota_snapshot {path: ~/.local/state/ai_quota/quota.db, max_age_minutes: 45}
+    # 阶段开关：去掉审查（Kun 11-13：「先跳过 Review 加快交付，反正现在的系统是我自己在用」）。要恢复就把审查加回证据和交付之间。
+    stages: [接单, 说清楚, 执行, 证据, 交付, 验收, 收尾]
     sources: [github]
     repo: kun-g/grant-console
     # 仅作为证据/审查 clone 的只读来源；发布在插件状态目录 releases/ 的专用检出。
@@ -61,8 +64,10 @@ targets:
                    'docs/requirements/approval-card.md']
   workshop:
     plugin: issue_delivery
-    selector: ordered
-    stage_selectors: {审查: ordered}
+    selector: quota
+    quota_snapshot: *quota_snapshot
+    # 阶段开关：去掉审查（Kun 11-13：「先跳过 Review 加快交付，反正现在的系统是我自己在用」）。要恢复就把审查加回证据和交付之间。
+    stages: [接单, 说清楚, 执行, 证据, 交付, 验收, 收尾]
     sources: [github]
     short_name: ws
     ci: none
@@ -77,19 +82,27 @@ targets:
     # 交付对象就是车间自己：合并后快进 checkout（主检出）并让守护进程这一拍后退出，由 launchd 拉起。
     release: self
 executors:
-  writer: {use: orca-claude, family: claude, billing: subscription, model: claude-opus-5-5, effort: high}
+  # quota 挑选逻辑按顺序取第一个额度够的；quota.min_remaining 是门槛（剩余百分比），没写门槛的候选不看额度。
+  # 11-13 Kun：Codex 周额度剩 15% 以上派 Codex 写代码，不够仍派 Claude Code。
+  # orca-codex 的 model、effort 必须写明（缺了拒绝启动）；取值是开工负责会话 11-13 派 Codex 写代码（W1、W2）用的。
+  # orca-codex 每件活开自己的会话，不接回 codex 审查的会话，所以和审查用的 gpt-6.1-sol 不同不会被 resume 拒绝。
+  writer:
+    - {use: orca-codex, family: codex, billing: subscription, model: gpt-6-astra, effort: high,
+       quota: {provider: codex, window: Weekly, min_remaining: 15, label: Codex 周额度}}
+    - {use: orca-claude, family: claude, billing: subscription, model: claude-opus-5-5, effort: high}
   reviewer:
     # 11-13：cursor-grok 11 轮里 7 轮进程正常退出却没交回执，先让 codex 打头，查清后再换回。
     # 11-13 实测 24 轮（Sol/Astra × medium/high/xhigh × 4 份材料）：high 回执格式全对、埋的缺陷都抓到；不写强度时默认档会交错格式。已有会话是 gpt-6.1-sol 开的，换模型 resume 会被 codex 拒绝，所以用 gpt-6.1-sol。
     - {use: codex, family: codex, billing: subscription, model: gpt-6.1-sol, effort: high}
     - {use: cursor-grok, family: grok, billing: subscription}
-    - {use: claude, family: claude, billing: subscription}
+    # 写和审不同家：写代码的是 codex 家时核心已排除 codex，claude 排第一。
+    - {use: claude, family: claude, billing: subscription, first_when_writer: [codex]}
   acceptor:
     - {use: codex, family: codex, billing: subscription, model: gpt-6.1-sol, effort: high}
-    - {use: claude, family: claude, billing: subscription}
+    - {use: claude, family: claude, billing: subscription, first_when_writer: [codex]}
 limits: {concurrent: 5, chain_depth: 8, round_timeout_seconds: 7200}
-selector: ordered
-stage_selectors: {执行: ordered}
+# 所有阶段默认用 quota；没有额度门槛时它和 ordered 一样按顺序取第一个。
+selector: quota
 channel: ask_kun
 ask_first:
   - 对外发消息

@@ -138,6 +138,8 @@ def why(log, item_id, rules=None, plugins=None, raw=False):
                     detail += f'；子 agent 模型={display(entry.get("model_actual"))} token={child_tokens} API折合USD={display(entry.get("cost_usd"))}'
             if not row.get("children_reported"):
                 detail += "；子 agent 未计"
+        elif kind == "round_changed" and body.get("receipt_rejected"):
+            detail = f'回执被拒 {body["token"]}：{body["receipt_rejected"]}'
         elif kind == "receipt":
             receipt = body["receipt"]
             detail = f'回执 {receipt["outcome"]} {receipt["summary"]}'
@@ -145,12 +147,17 @@ def why(log, item_id, rules=None, plugins=None, raw=False):
             detail = f'{"关口拦住" if kind == "gate_blocked" else "过关口"} {body.get("gate_reason", "")}'
         elif kind == "selection_failed":
             detail = f'挑选逻辑起轮失败 {body["reason"]}'
+        elif kind == "selection_none":
+            detail = f'挑选逻辑没选出执行者 {body["reason"]}'
         elif kind in ("card_rejected", "card_cancelled_external"):
             detail = f'卡片{ "拒收" if kind == "card_rejected" else "作废"} {body["id"]}：{body["reason"]}'
         elif kind == "invalid_answer":
             detail = f'非选项回答 卡片 {body["card"]}「{body["title"]}」收到「{body["value"]}」，仍等原卡'
         elif kind == "answer":
             detail = f'回答 {body["value"]}'
+            via = body.get("via")
+            if isinstance(via, dict) and via.get("channel") == "session":
+                detail += f'（会话 {via.get("session")} 转录，Kun 原话：「{via.get("quote")}」）'
         elif kind == "work_blocked":
             detail = f'卡住 {body["blocked_by"]}'
         else:

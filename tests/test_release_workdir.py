@@ -94,6 +94,15 @@ def test_pushed_work_is_released_worktree_and_branch_deleted(local):
     assert branches(local['repo']) == ['main']
 
 
+def test_orca_codex_releases_the_same_way(local):
+    # orca-codex 也按活 id 开同名 worktree，收回规则相同。
+    codex = Executor('orca-codex', state_dir=local['root'] / 'state-codex',
+                     commands={'orca': local['executor'].commands['orca'], 'git': GIT}, home=local['root'])
+    git(local['workdir'], 'push', '-q', 'origin', local['branch'])
+    assert codex.release(local['item'], local['target']) == Release(True)
+    assert not local['workdir'].exists() and branches(local['repo']) == ['main']
+
+
 def test_dirty_worktree_is_kept_with_reason(local):
     # E3：有未提交改动不删。
     (local['workdir'] / 'README').write_text('edited\n')
