@@ -6,10 +6,12 @@
 from contextlib import contextmanager
 from datetime import timedelta
 import json
+import os
 from pathlib import Path
 import socket
 import subprocess
 import sys
+import threading
 import time
 import urllib.request
 
@@ -226,6 +228,102 @@ def test_same_call_reuses_result_without_new_job(tmp_path, monkeypatch):
     assert first.passed and len(job_plugins.calls("assess-start")) == 1
     assert jobs.call("flow", "flow", "assess", args, identity=["alpha:7", "证据", "t1"]) == first
     assert len(list((tmp_path / "jobs").iterdir())) == 1 and len(job_plugins.calls("assess-start")) == 1
+
+
+def test_slow_process_creation_does_not_hold_tick(world, monkeypatch):
+    """操作系统创建进程也会变慢；不能把这段等待留在一拍里。"""
+    spawn = os.posix_spawnp
+    callers = []
+    main_thread = threading.get_ident()
+
+    def slow_spawn(*args, **kwargs):
+        callers.append(threading.get_ident())
+        time.sleep(.2)
+        return spawn(*args, **kwargs)
+
+    monkeypatch.setattr(os, "posix_spawnp", slow_spawn)
+    configure(world["path"], check_seconds=0)
+    engine = world["engine"]()
+    try:
+        beats = wait(world, engine, monkeypatch,
+                     lambda: any(r["stage"] == "证据" and r["status"] == "ended"
+                                 for r in rounds(engine.log, "7")))
+        assert callers and main_thread not in callers
+        assert all(b["tick_ms"] <= LIMIT_MS and elapsed <= LIMIT_MS for elapsed, b in beats)
+        assert item(engine.log, "7")["stage"] == "审查"
+    finally:
+        engine.jobs.launcher.shutdown(wait=True)
+        engine.log.close()
+
+
+@pytest.mark.parametrize("cancel", [False, True])
+@pytest.mark.parametrize("child_finished", [False, True])
+def test_job_is_recognized_or_cancelled_while_process_is_being_created(tmp_path, monkeypatch, cancel, child_finished):
+    monkeypatch.setenv("JOBTEST_DIR", str(tmp_path))
+    configure(tmp_path)
+    Log(tmp_path / "workshop.db").close()
+    entered, release = threading.Event(), threading.Event()
+    spawn = os.posix_spawnp
+
+    def held_spawn(*args, **kwargs):
+        pid = spawn(*args, **kwargs) if child_finished else None
+        entered.set()
+        assert release.wait(10)
+        return pid if child_finished else spawn(*args, **kwargs)
+
+    monkeypatch.setattr(os, "posix_spawnp", held_spawn)
+    jobs = Jobs(tmp_path / "jobs", [sys.executable, RUNNER, str(tmp_path)])
+    revived = Jobs(jobs.directory, jobs.command)
+    args = [{}, None]
+    path = jobs.path("source", "source", "poll", args)
+    try:
+        with pytest.raises(Pending):
+            jobs.call("source", "source", "poll", args)
+        assert entered.wait(10)
+        assert (path / "pid").read_text() == "-1"
+        if child_finished:
+            deadline = time.monotonic() + 10
+            while not (path / "result.json").exists():
+                assert time.monotonic() < deadline
+                time.sleep(.01)
+        with pytest.raises(Pending):
+            revived.call("source", "source", "poll", args)
+        assert revived.spawned == 0
+        if cancel:
+            jobs.kill(path)
+        release.set()
+        jobs.launcher.shutdown(wait=True)
+        if cancel:
+            assert not path.exists()
+        else:
+            deadline = time.monotonic() + 10
+            while not (path / "result.json").exists():
+                assert time.monotonic() < deadline
+                time.sleep(.01)
+            assert revived.call("source", "source", "poll", args).cursor == "after-batch"
+            assert len(job_plugins.calls("source-start")) == 1
+    finally:
+        release.set()
+        jobs.launcher.shutdown(wait=True)
+        jobs.reap()
+        for pid in jobs.children:
+            try:
+                os.waitpid(pid, 0)
+            except ChildProcessError:
+                pass
+
+
+def test_background_process_creation_failure_is_retryable(tmp_path, monkeypatch):
+    def fail(*args, **kwargs):
+        raise OSError("spawn unavailable")
+
+    monkeypatch.setattr(os, "posix_spawnp", fail)
+    jobs = Jobs(tmp_path / "jobs", [sys.executable])
+    with pytest.raises(Pending):
+        jobs.call("source", "source", "poll", [])
+    jobs.launcher.shutdown(wait=True)
+    with pytest.raises(Retryable, match="spawn unavailable"):
+        jobs.call("source", "source", "poll", [])
 
 
 @pytest.mark.parametrize("external", ["external:already-sent", "absent", None])
