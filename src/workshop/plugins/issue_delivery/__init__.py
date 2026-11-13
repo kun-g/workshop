@@ -207,15 +207,22 @@ class IssueDelivery:
             # 验收者是只读会话：给交付提交的只读副本，并附流程在干净副本跑的检查结果，免得它对着 PR 头或跑不了命令。
             merge = state["merge"]
             directory = self.io.review_copy(item, target, merge)
-            extra = f"\n只验交付提交 {merge}；工作目录是该提交的只读副本。"
-            runs = state.get("merge_runs") or {}
-            if runs.get("head") == merge:
-                extra += ("\n流程已在干净副本对交付提交重跑登记检查，以下是原样结果（可信，acceptance.output 照抄相关部分）：\n"
-                          + json.dumps(runs["runs"], ensure_ascii=False))
-            else:
-                extra += "\n流程还没有交付提交的检查结果；拿不到就验收不过，说明缺什么。"
+            runs = self._merge_runs(item, target, merge)
+            extra = (f"\n只验交付提交 {merge}；工作目录是该提交的只读副本。"
+                     "\n流程已在干净副本对交付提交重跑登记检查，以下是原样结果（可信，acceptance.output 照抄相关部分）：\n"
+                     + json.dumps(runs, ensure_ascii=False))
             return FlowBrief(common + instructions + extra, directory, True)
         return common + instructions
+
+    def _merge_runs(self, item, target, merge):
+        """交付提交上的登记检查只跑一次，按提交号缓存在插件状态里。"""
+        with self.io.locked(item, target) as state:
+            cached = state.get("merge_runs") or {}
+            if cached.get("head") != merge:
+                cached = {"head": merge, "runs": self.io.verify(target, merge, item.get("checks", []))}
+                state["merge_runs"] = cached
+                self.io.save(item, target, state)
+            return cached["runs"]
 
     def _ci(self, pr, target):
         required = target["ci"]
@@ -446,9 +453,6 @@ class IssueDelivery:
                     raise BusinessWait("合并结果未确认")
                 state["merge"] = pr["merge_commit_sha"]
                 self.io.save(item, target, state)
-                if (state.get("merge_runs") or {}).get("head") != state["merge"]:
-                    state["merge_runs"] = {"head": state["merge"], "runs": self.io.verify(target, state["merge"], item.get("checks", []))}
-                    self.io.save(item, target, state)
                 if target.get("release", "none") == "tag":
                     self._tag(item, target, state)
                     from workshop.core.models import Receipt

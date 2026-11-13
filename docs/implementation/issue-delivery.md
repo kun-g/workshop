@@ -22,7 +22,7 @@ Orca 插话钩子去掉轮次令牌后以 `cli:orca` 进入：流程用核心已
 
 证据轮在独立 clone、detached 完整 SHA 上真实重跑登记检查；环境白名单清除 GitHub/SSH/云凭据，原样 stdout/stderr、退出码、SHA 写入核心证据 reason。每条检查默认限时 60 秒，可在目标配置 `check_timeout`；超时记退出码 124、timed_out=true 和已得到的原样输出，判检查不过，不隔离流程。准备命令由 prepare 的 argv/cwd 指定，cwd 限定在干净副本中；grant-console 先在 services/devops-console 跑 uv sync --locked。这个检查没有业务写入，但会建立临时副本并运行仓库脚本；不是恶意代码安全沙箱。
 
-审查副本独立 clone，不共享对象/配置；去掉 hooks、凭据助手，origin 改不可达地址，文件与目录去写位。`FlowBrief.workdir/readonly` 交给执行者，执行者负责启动环境去凭据。审查只读，必须改与建议分开；核心按改动路径和规则要求两家不同家族。审查轮结束并停止执行者后清理副本；daemon 启动清残留时保留未停止轮的目录。头提交变了，证据、审查、合并守卫均拒绝推进。验收由核心排除写代码家族，插件核对原样输出与实际交付提交。合并后 after(交付) 在干净副本对合并提交重跑登记检查一次，结果存为 merge_runs；验收轮的 `FlowBrief` 给合并提交的只读副本，并把 merge_runs 原样附进说明，因为验收者是只读会话，跑不了命令，也不能落在停在 PR 头的活 worktree 里。写了亲眼看才要求 `visual-acceptance` 卡的 yes 答案。
+审查副本独立 clone，不共享对象/配置；去掉 hooks、凭据助手，origin 改不可达地址，文件与目录去写位。`FlowBrief.workdir/readonly` 交给执行者，执行者负责启动环境去凭据。审查只读，必须改与建议分开；核心按改动路径和规则要求两家不同家族。审查轮结束并停止执行者后清理副本；daemon 启动清残留时保留未停止轮的目录。头提交变了，证据、审查、合并守卫均拒绝推进。验收由核心排除写代码家族，插件核对原样输出与实际交付提交。验收轮的 `FlowBrief` 给合并提交的只读副本；生成说明时在干净副本对合并提交重跑登记检查（按提交号缓存为 merge_runs，只跑一次），原样附进说明，因为验收者是只读会话，跑不了命令，也不能落在停在 PR 头的活 worktree 里。写了亲眼看才要求 `visual-acceptance` 卡的 yes 答案。
 
 ## 交付和崩溃恢复
 
