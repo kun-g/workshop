@@ -21,6 +21,7 @@ uv run workshop --rules /absolute/path/to/rules/workshop.yaml run --once
 - [插件接入契约](docs/implementation/ports.md)：五类端口、回执、幂等、恢复和看门读取方式。
 - 状态目录：默认 `~/.local/state/workshop/`，用 `WORKSHOP_STATE_DIR` 改。
 - `event`、`receipt <token>` 支持 `--json`、`--file` 或标准输入。
+- `drop <活>` 清掉一件还没跑过轮次的活（例如没放行就被更新事件误建的）；有过轮次、卡、未到期定时或别名的活拒绝清掉。清掉后同一对象要再放行才重新建活，只带清掉之后的资料。
 - `pause <target>` 暂停交付对象；`resume <target>` 列遗漏，同时带 `--select all|none|事实号,事实号 --seen 上次已看事实号` 才恢复（空清单填 none）。
 
 本地离线演示（目录须为空）：

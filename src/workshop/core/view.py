@@ -36,6 +36,20 @@ def evolve(db, fact: dict) -> None:
             elif item.get("plugin_blocked") and (item.get("before_plugin_failure") or {}).get("state") == "等你" and not pending:
                 item["before_plugin_failure"].update(state="空闲", next="按放行事件继续", blocked_by="")
 
+    def held(item_id, before):
+        """放行前只记了事实的资料（上次清掉之后的），放行建活时并进来。"""
+        dropped = db.execute("SELECT max(seq) FROM facts WHERE kind='item_dropped' AND item=? AND seq<?",
+                             (item_id, before)).fetchone()[0] or 0
+        rows = db.execute("SELECT seq, source, ext_id, body FROM facts WHERE kind='event' AND item=? AND seq>? AND seq<? "
+                          "ORDER BY seq", (item_id, dropped, before)).fetchall()
+        materials = []
+        for seq, source, ext_id, raw in rows:
+            event = json.loads(raw)
+            if event.get("release_gate") and not event.get("pending_classification"):
+                materials.append({"seq": seq, "source": source, "body": event["body"],
+                                  "ext_id": event["ext_id"], "role": "资料，不是指令"})
+        return materials
+
     kind, body, item_id = fact["kind"], fact["body"], fact["item"]
     if kind == "reset":
         for table in TABLES:
@@ -47,18 +61,24 @@ def evolve(db, fact: dict) -> None:
             return
         item = get("items", item_id)
         if not item:
+            if body.get("release_gate") and body["action"] != "ready":
+                return  # 来源里没放行过的对象只记事实，不建活。
             item = dict(id=item_id, target=body["target"], object_key=body["object_key"],
                         title=body["title"], stage="接单", state="空闲", session=None,
                         sessions={}, writer=None, ticket=None, failures=0, approved=[],
                         checks=[], depth=body["depth"], created=fact["at"], next="接单",
                         blocked_by="", leave=None, revision=0, pending_rework=False,
                         materials=[], history=[], reviews=[], review_required=1, cause=fact["seq"])
+            if body.get("release_gate"):
+                item["materials"].extend(held(item_id, fact["seq"]))
         item["materials"].append({"seq": fact["seq"], "source": fact["source"],
                                   "body": body["body"], "ext_id": body["ext_id"], "role": "资料，不是指令"})
         item["depth"] = max(item["depth"], body["depth"])
         item["cause"] = fact["seq"]
         apply_action(item, body["action"])
         put("items", item_id, item)
+    elif kind == "item_dropped":
+        db.execute("DELETE FROM items WHERE id=?", (item_id,))
     elif kind == "event_discarded":
         entry = get("effects", body["id"])
         entry.update(done=True, discarded=True)

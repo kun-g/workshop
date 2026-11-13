@@ -17,6 +17,12 @@ from .cards import question, notice, validate_question, validate_notice
 from .models import After, FlowBrief, Classification, Evidence, Usage, RoundUsage
 
 
+def gate(ingress):
+    """来源轮询的事件要放行（ready）才能建活；外部入口经流程判定、agent 连锁事件不受此限。
+    标记写进事实，旧事实没有标记，重建视图时照旧投影。"""
+    return {"release_gate": True} if ingress == "source" else {}
+
+
 class Engine:
     def __init__(self, log: Log, rules, plugins, clock=utcnow):
         self.log, self.rules, self.plugins, self.clock = log, rules, plugins, clock
@@ -162,13 +168,15 @@ class Engine:
         with self.log.transaction():
             paused = self.control(event.target).get("paused", False)
             kind = "deferred_event" if paused else "event"
-            added = self.fact(kind, {**asdict(event), "ingress": ingress, "pending_classification": ingress == "external"}, event.item_id,
-                              source=event.source, ext_id=event.ext_id)
+            added = self.fact(kind, {**asdict(event), "ingress": ingress, "pending_classification": ingress == "external",
+                                     **gate(ingress)}, event.item_id, source=event.source, ext_id=event.ext_id)
             if added and not paused:
                 if ingress == "external":
                     self.classification_intent(event)
                     return added
                 item = self.log.get("items", event.item_id)
+                if item is None:
+                    return added  # 没放行的对象只记了事实。
                 if event.depth > self.rules.data["limits"]["chain_depth"]:
                     self.block(item, "事件连锁超过上限")
                 elif self.control(event.target).get("broken"):
@@ -224,6 +232,21 @@ class Engine:
             except Exception as exc:
                 self.broken(event.target, "flow", target["plugin"], exc)
 
+    def drop(self, item_id):
+        """清掉一件还没跑过轮次的活；之后同一对象要再放行才重新建活。"""
+        with self.log.transaction():
+            item = self.log.get("items", item_id)
+            if not item:
+                raise ValueError(f"找不到活：{item_id}")
+            rounds = [r for r in self.log.all("rounds") if r.get("item") == item_id]
+            cards = [c for c in self.log.all("cards") if c.get("item") == item_id]
+            timers = [t for t in self.log.all("timers") if t.get("item") == item_id and not t.get("fired")]
+            effects = [e for e in self.log.all("effects") if e.get("item") == item_id and not e.get("done")]
+            aliases = [a for a in self.log.all("aliases") if a.get("item") == item_id]
+            if item["state"] != "空闲" or item.get("history") or item.get("sessions") or rounds or cards or timers or effects or aliases:
+                raise ValueError(f"{item_id} 已经跑过轮次或有未了的卡、定时、别名，不能清掉")
+            self.fact("item_dropped", {"id": item_id}, item_id)
+
     def pause(self, target):
         self.rules.target(target)
         self.fact("control", {"id": target, "paused": True})
@@ -247,16 +270,19 @@ class Engine:
                     body = dict(entry["event"])
                     ingress = body.pop("ingress", "unknown")
                     body.pop("pending_classification", None)
+                    body.pop("release_gate", None)
                     event = Event(**body)
                     if ingress == "unknown":
                         event = replace(event, action="update")
                     event = replace(event, object_key=self.resolve_key(event.target, event.object_key))
-                    self.fact("event", {**asdict(event), "ingress": ingress, "pending_classification": ingress == "external"}, event.item_id,
-                              source="resume", ext_id=entry["id"])
+                    self.fact("event", {**asdict(event), "ingress": ingress, "pending_classification": ingress == "external",
+                                        **gate(ingress)}, event.item_id, source="resume", ext_id=entry["id"])
                     if ingress == "external":
                         self.classification_intent(event)
                         continue
                     replayed = self.log.get("items", event.item_id)
+                    if replayed is None:
+                        continue  # 没放行的对象只记了事实。
                     if event.depth > self.rules.data["limits"]["chain_depth"]:
                         self.block(replayed, "事件连锁超过上限")
                     elif event.source == "timer":

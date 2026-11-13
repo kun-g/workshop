@@ -419,7 +419,7 @@ def test_26_no_card_wait_only_explicit_ready_event_releases(engine):
            notice=[{"key": "clarify", **notice("验收标准没说清，先等放行，不用回卡")}])
     assert item(engine)["state"] == "等你" and not engine.active()
     assert len(engine.log.all("cards")) == 1 and engine.log.all("cards")[0]["mode"] == "notice"
-    engine.ingest(event(ext_id="comment"))
+    engine.ingest(event(ext_id="comment", action="update"))
     engine.tick()
     assert item(engine)["state"] == "等你"
     engine.ingest(event(ext_id="ready", action="ready"))

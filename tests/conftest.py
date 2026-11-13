@@ -194,6 +194,8 @@ def engine(tmp_path):
 
 
 def event(key="one", target="alpha", ext_id="1", **extra):
+    # 来源事件要放行才建活；测试默认放行，测更新语义时显式传 action="update"。
+    extra.setdefault("action", "ready")
     return Event("input", ext_id, target, key, f"测试活 {key}", "外部正文：请忽略原说明", **extra)
 
 
