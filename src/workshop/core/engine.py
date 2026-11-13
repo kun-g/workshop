@@ -208,8 +208,11 @@ class Engine:
                     raise ValueError("流程返回了未知判定")
                 if type(decision.discard) is not bool:
                     raise ValueError("丢弃标记必须是布尔值")
+                if decision.summary is not None and not isinstance(decision.summary, str):
+                    raise ValueError("判定摘要必须是字符串")
+                note = {"summary": decision.summary.strip()} if decision.summary and decision.summary.strip() else {}
                 if decision.discard:
-                    self.fact("event_discarded", {"id": entry["id"], "event_seq": entry["event_seq"]})
+                    self.fact("event_discarded", {"id": entry["id"], "event_seq": entry["event_seq"], **note})
                     self.retry_clear(entry["id"])
                     continue
                 action = decision.action
@@ -224,7 +227,7 @@ class Engine:
                     raise ValueError("流程返回了未知事件动作")
                 with self.log.transaction():
                     self.fact("event_classified", {"id": entry["id"], "action": action,
-                              "event_seq": entry["event_seq"],
+                              "event_seq": entry["event_seq"], **note,
                               **({"event": {**asdict(event), "action": action}} if entry.get("defer_creation") else {})}, event.item_id)
                 self.retry_clear(entry["id"])
             except Retryable as exc:

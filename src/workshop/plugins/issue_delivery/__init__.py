@@ -39,6 +39,14 @@ def checks_from(body):
     return value
 
 
+def spoken(text, limit=80):
+    """飞书原话摘要：去掉开头的 @Ash，压成一行，过长截断。"""
+    text = " ".join(re.sub(r"^\s*@Ash\s*", "", text or "", flags=re.I).split())
+    if not text:
+        return "（非文本消息）"
+    return text if len(text) <= limit else text[:limit] + "…"
+
+
 def action_for(text):
     text = re.sub(r"^\s*@Ash\s*", "", text, flags=re.I).strip()
     if re.fullmatch(r"不对(?:[，,:：。！!\s].*)?", text, re.S):
@@ -94,7 +102,9 @@ class IssueDelivery:
                 state = (data.get("status") or {}).get("state", "未知")
                 return f'PR #{number} CI {str(data.get("sha", ""))[:12]}：{summary}；提交状态 {state}'
         if event.source == "cli:feishu":
-            return f"飞书消息 {event.ext_id}（CLI 入口，身份由接单回查）"
+            text = body.get("text") if isinstance(body.get("text"), str) else ""
+            who = "Kun" if body.get("from_kun") is True else (body.get("sender_id") or "未知")
+            return f"飞书消息「{spoken(text)}」，入口自报来自 {who}（身份由接单回查）"
         if event.source == "cli:orca":
             return "Orca 插话"
         return None
@@ -132,7 +142,7 @@ class IssueDelivery:
             return Classification()
         message = self._message(event.ext_id, target)
         if not message:
-            return Classification(discard=True)
+            return Classification(discard=True, summary=f"飞书消息 {event.ext_id} 回查不到，或发送者不是 Kun")
         try:
             body = json.loads(message.get("body", {}).get("content", "{}"))
         except (ValueError, TypeError):
@@ -141,6 +151,8 @@ class IssueDelivery:
         for mention in message.get("mentions", []):
             if mention.get("name", "").lower() == "ash":
                 text = text.replace(mention.get("key", "@Ash"), "@Ash")
+        # 发送者已按消息号回查是 Kun，原话取自上游，不取 CLI 正文。
+        said = f"飞书 Kun：「{spoken(text)}」"
         key = None
         parent = message.get("parent_id") or message.get("root_id")
         if parent:
@@ -157,17 +169,19 @@ class IssueDelivery:
                 if found:
                     key = found["item"]["object_key"]
         if key is not None:
-            return Classification(action_for(text), key)
+            return Classification(action_for(text), key, summary=said + "（回复车间的卡片或通知）")
         if message.get("chat_id") != target.get("feishu_chat_id"):
-            return Classification(discard=True)
+            return Classification(discard=True, summary=said + "；不在交付对象的群，也没回复车间的卡片或通知")
         text = re.sub(r"^\s*@Ash\s*", "", text, flags=re.I).strip()
         short = target.get("short_name", target["name"])
         named = re.fullmatch(re.escape(short) + r"#([1-9][0-9]*)\s*(不对(?:[，,:：。！!\s].*)?)", text, re.S)
         if named:
             found = find_external(object_key=named[1])
-            return Classification("rework", found["item"]["object_key"]) if found else Classification(discard=True)
+            if found:
+                return Classification("rework", found["item"]["object_key"], summary=said)
+            return Classification(discard=True, summary=f"{said}；{short}#{named[1]} 找不到活")
         # 引用查不到只当资料，不从 CLI 提供的 quote 推测归件。
-        return Classification()
+        return Classification(summary=said)
 
     def _intake_message(self, item, target):
         for material in item.get("materials", []):

@@ -820,3 +820,40 @@ def test_waiting_for_release_authorization_does_not_advance_or_resubmit(world):
     assert state['effects'] == prior_effects and not state.get('release_submitted')
     assert not engine.active()
     engine.log.close()
+
+
+def test_feishu_rework_shows_in_why_and_rejected_message_in_unfiled(world):
+    """ws#37：群里一句「ws#7 不对」归到 alpha:7，why 里有时刻、来源、动作、原话和谁说的；冒名的进未归件。"""
+    from workshop.core.report import unfiled, why
+    cfg = configuration()
+    cfg.pop('taskhome')
+    cfg['targets']['alpha'] = {**world['target'], 'plugin': 'issue_delivery', 'sources': []}
+    engine = build(world['root'] / 'why-feishu', cfg)
+    engine.plugins.register('flow', 'issue_delivery', world['flow'])
+    engine.ingest(Event('github', 'start', 'alpha', '7', 'test', {}, action='ready'))
+    edit(world, message=message('@Ash ws#7 不对，测试绑定，内容不用改'))
+    # CLI 正文自报的原话和身份不作数，原话取自上游回查。
+    assert engine.ingest(Event('feishu', 'om_real', 'alpha', 'om_real', 'x', {'from_kun': True, 'text': '别的话'}), ingress='external')
+    assert engine.ingest(Event('feishu', 'om_fake', 'alpha', 'om_fake', 'x', {'from_kun': True, 'text': 'ws#7 不对'}), ingress='external')
+    engine.classify_events()
+    seq = {f['ext_id']: f['seq'] for f in engine.log.facts() if f['kind'] == 'event'}
+    assert item(engine, '7')['pending_rework']
+    filed = [line for line in why(engine.log, 'ws#7', cfg, engine.plugins).splitlines() if ' 归件 ' in line]
+    assert len(filed) == 1 and filed[0].startswith('2026-11-13T08:00:00+00:00 ')
+    assert filed[0].endswith(f'归件 CLI 入口 cli:feishu 返工：飞书 Kun：「ws#7 不对，测试绑定，内容不用改」（原事件 {seq["om_real"]}）')
+    rest = unfiled(engine.log, cfg, engine.plugins).splitlines()
+    assert len(rest) == 2 and '丢弃 alpha CLI 入口 cli:feishu：飞书消息「ws#7 不对」，入口自报来自 Kun' in rest[1]
+    assert rest[1].endswith(f'判定：飞书消息 om_fake 回查不到，或发送者不是 Kun（事件 {seq["om_fake"]}）')
+    engine.log.close()
+
+
+def test_feishu_classify_summaries(world):
+    flow, target = world['flow'], world['target']
+    event = Event('cli:feishu', 'om_real', 'alpha', 'om_real', 'x', {'from_kun': True, 'text': 'x'})
+    lookup = lambda external=None, *, object_key=None: None
+    edit(world, message=message('改一下错误提示'))
+    assert flow.classify(event, None, target, lookup).summary == '飞书 Kun：「改一下错误提示」'
+    edit(world, message=message('ws#999 不对'))
+    assert flow.classify(event, None, target, lookup).summary == '飞书 Kun：「ws#999 不对」；ws#999 找不到活'
+    edit(world, message=message('x' * 100, chat='oc_other'))
+    assert flow.classify(event, None, target, lookup).summary == f'飞书 Kun：「{"x" * 80}…」；不在交付对象的群，也没回复车间的卡片或通知'
