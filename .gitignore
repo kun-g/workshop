@@ -1,4 +1,7 @@
-__pycache__/
 .venv/
-*.pyc
+__pycache__/
 .pytest_cache/
+.import_linter_cache/
+*.egg-info/
+.local/
+*.pyc
