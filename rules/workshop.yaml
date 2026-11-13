@@ -36,7 +36,9 @@ targets:
       release_file: release.json
       source_field: source_commit
     release: tag
-    two_reviewers: ['.github/', 'deploy/', 'grant_console/']
+    # 前缀匹配仓库根起的相对路径。名单由 grant-console 负责会话 11-13 给出。
+    two_reviewers: ['.github/', 'deploy/', 'scripts/', 'services/devops-console/grant_console/',
+                    'services/devops-console/k8s/', 'docs/ci.md', 'docs/runbooks/release.md']
   workshop:
     plugin: issue_delivery
     selector: ordered
