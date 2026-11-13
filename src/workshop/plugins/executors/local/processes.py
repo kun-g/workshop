@@ -13,7 +13,8 @@ from .storage import alive, identity, lock, read, write
 def members(group):
     leader = identity(group['pid'])
     if leader and group.get('birth') and leader != group['birth']:
-        raise RuntimeError('进程组编号已重用，不能停止另一组进程')
+        # This identity has exited; the reused number belongs to an unrelated group.
+        return []
     result = subprocess.run(['/bin/ps', '-axo', 'pid=,pgid=,stat='], capture_output=True, text=True, check=True)
     return [int(parts[0]) for line in result.stdout.splitlines() if len(parts := line.split()) == 3
             and int(parts[1]) == group['pid'] and not parts[2].startswith('Z')]

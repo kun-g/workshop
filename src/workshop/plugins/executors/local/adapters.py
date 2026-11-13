@@ -12,7 +12,7 @@ import time
 import uuid
 
 from workshop.core.models import Started, RoundUsage, Usage
-from workshop.core.ports import Unavailable
+from workshop.core.ports import Retryable, Unavailable
 from .storage import alive, identity, lock, read, write
 from .runner import vendor_session
 from .processes import stop_round
@@ -202,7 +202,7 @@ class Executor:
         # Child may have spawned in the tiny window before child.json. No exit proof then.
         if (directory / 'child.json').exists():
             return 'exited'
-        raise RuntimeError('启动结果或进程状态无法确认；保留占位')
+        raise Retryable('启动结果或进程状态无法确认；保留占位')
 
     def stop(self, token, started):
         directory = self.directory(token)

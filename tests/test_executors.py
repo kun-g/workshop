@@ -232,7 +232,7 @@ def test_uncertain_launch_is_never_repeated(setup):
     with pytest.raises(RuntimeError, match='尚无已启动'):
         make('codex').launch('one', BRIEF, item, CONFIG, target)
     assert not (root/'agents').exists()
-    with pytest.raises(RuntimeError):
+    with pytest.raises(Retryable):
         executor.poll('one', None)
 
 
@@ -517,3 +517,47 @@ def test_hook_and_fallback_receipt_use_real_cli_without_depth_growth(setup):
         executor.stop(token, None)
     finally:
         engine.log.close()
+
+
+@pytest.mark.parametrize('has_exit_record', [False, True])
+def test_stop_treats_reused_group_leader_as_exited(tmp_path, has_exit_record):
+    from unittest.mock import patch
+    from workshop.plugins.executors.local.processes import members
+    from workshop.plugins.executors.local.storage import identity
+    executor = Executor('codex', state_dir=tmp_path/'state')
+    directory = executor.directory('old-round')
+    unrelated = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(120)'], start_new_session=True)
+    try:
+        assert identity(unrelated.pid)
+        # Persisted identity belongs to the former owner of this now-reused PID/PGID.
+        stale = {'pid': unrelated.pid, 'birth': 'previous process start time'}
+        write(directory/'supervisor.json', {**stale, 'group': stale})
+        if has_exit_record:
+            write(directory/'exited.json', {'code': 0})
+        with patch('workshop.plugins.executors.local.processes.os.killpg') as kill:
+            assert members(stale) == []
+            executor.stop('old-round', None)
+            kill.assert_not_called()
+        assert read(directory/'stopped.json')['confirmed']
+        assert executor.poll('old-round', None) == 'exited'
+        assert unrelated.poll() is None
+    finally:
+        unrelated.terminate()
+        unrelated.wait(timeout=5)
+
+
+def test_poll_terminal_created_before_runner_claim_is_retryable(setup):
+    from unittest.mock import patch
+    root, make, item, target = setup
+    executor = make('orca-claude')
+    with patch.object(executor, '_orca', return_value={'handle': 'pending-terminal'}) as create:
+        started = executor.launch('one', BRIEF, item, CONFIG, target)
+        for _ in range(2):
+            with pytest.raises(Retryable, match='启动结果或进程状态无法确认'):
+                executor.poll('one', started)
+        assert executor.launch('one', BRIEF, item, CONFIG, target) == started
+        create.assert_called_once()
+    assert read(executor.directory('one')/'terminal.json')['handle'] == 'pending-terminal'
+    assert not (root/'agents').exists()
+    write(executor.directory('one')/'exited.json', {'code': 0})
+    assert executor.poll('one', started) == 'exited'
