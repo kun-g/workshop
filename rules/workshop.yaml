@@ -59,8 +59,9 @@ targets:
 executors:
   writer: {use: orca-claude, family: claude, billing: subscription, model: claude-opus-5-5, effort: high}
   reviewer:
-    - {use: cursor-grok, family: grok, billing: subscription}
+    # 11-13：cursor-grok 11 轮里 7 轮进程正常退出却没交回执，先让 codex 打头，查清后再换回。
     - {use: codex, family: codex, billing: subscription}
+    - {use: cursor-grok, family: grok, billing: subscription}
     - {use: claude, family: claude, billing: subscription}
   acceptor:
     - {use: codex, family: codex, billing: subscription}
