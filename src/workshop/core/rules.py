@@ -35,6 +35,8 @@ class Rules:
         for name, target in data["targets"].items():
             if not isinstance(target, dict) or not target.get("plugin"):
                 raise ValueError(f"{name} 缺流程插件")
+            if type(target.get("pending_limit", 5)) is not int or target.get("pending_limit", 5) < 1:
+                raise ValueError("pending_limit 必须是正整数")
         for role in ("writer", "reviewer", "acceptor"):
             value = data.get("executors", {}).get(role)
             entries = value if isinstance(value, list) else [value]

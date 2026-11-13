@@ -10,7 +10,13 @@ targets:
     skill: issue-delivery
     permissions: repository
     label: Ready for Agent
-    feishu_group: grant-console 开发
+    # grant-console 开发；按群编号匹配，不把群名当凭据。
+    feishu_chat_id: oc_b518118e43fc373572b6efb5e1887e2b
+    feishu_profile: tuan
+    kun_feishu_open_id: ou_43456ed5ae17472375fcbb6ec0fc4661
+    ask_kun_state: ~/.local/state/ask-kun/asks.json
+    pending_limit: 5
+    deployment: {app: grant-console-centaladmin}  # 只读回查用本机 Argo 上下文；部署另用获批身份
     release: tag
     two_reviewers: ['.github/', 'deploy/', 'grant_console/']
   workshop:

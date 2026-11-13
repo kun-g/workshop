@@ -31,7 +31,7 @@ class FakeFlow:
         self.path = STAGES[:-1]
         self.upstream = {}  # 模拟按消息号回查上游，独立于 CLI 正文。
 
-    def classify(self, event, item, target):
+    def classify(self, event, item, target, find_external=None):
         message = self.upstream.get((event.source, event.ext_id), {})
         if message.get("sender") == "Kun":
             return message.get("action", "update")

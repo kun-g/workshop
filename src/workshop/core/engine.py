@@ -14,7 +14,7 @@ from .log import Log
 from .models import Brief, Event, Receipt, Started, due, stamp, utcnow
 from .ports import Unavailable, Retryable
 from .cards import question, notice, validate_question, validate_notice
-from .models import Evidence, Usage, RoundUsage
+from .models import After, FlowBrief, Classification, Evidence, Usage, RoundUsage
 
 
 class Engine:
@@ -43,6 +43,48 @@ class Engine:
     def control(self, target):
         return self.log.get("controls", target) or {}
 
+    def resolve_key(self, target, object_key):
+        alias = self.log.get("aliases", f"{target}:{object_key}")
+        return alias["object_key"] if alias else object_key
+
+    def find_external(self, target, external):
+        matches = [c for c in self.log.all("cards") if c.get("external") == external]
+        if len(matches) != 1:
+            return None
+        card = matches[0]
+        item = self.log.get("items", card["item"])
+        return {"card": card, "item": item} if item and item["target"] == target else None
+
+    def after(self, flow, item, stage, key, target):
+        def invoke():
+            result = flow.after(item, stage, key, target)
+            return asdict(result) if isinstance(result, After) else result
+        value = self.effect(key, invoke)
+        result = After(**value) if isinstance(value, dict) else After(aliases=value or [])
+        if (type(result.pending) is not bool or not isinstance(result.reason, str)
+                or not isinstance(result.next, str) or result.pending and (not result.reason or not result.next)):
+            raise ValueError("仍留本阶段须有原因和下一步")
+        aliases = result.aliases
+        if not isinstance(aliases, list) or not all(isinstance(a, str) and a for a in aliases):
+            raise ValueError("流程返回的别名必须是非空字符串列表")
+        with self.log.transaction():
+            for alias in aliases:
+                identity = f'{item["target"]}:{alias}'
+                existing = self.log.get("aliases", identity) or self.log.get("items", identity)
+                if existing and existing["object_key"] != item["object_key"]:
+                    raise ValueError(f"别名冲突：{identity}")
+                self.fact("alias_bound", {"id": identity, "object_key": item["object_key"],
+                          "item": item["id"]}, item["id"], source="alias", ext_id=f"{key}:{alias}")
+        return result
+
+    def pending_changes(self, item, result, target):
+        count = item.get("after_pending_count", 0) + 1
+        if count >= target.get("pending_limit", 5):
+            self.card(item, f"pending:{item['stage']}:{item.get('pending_episode', 0)}", "notice",
+                      notice(result.reason + "；" + result.next))
+        return dict(state="空闲", next=result.next, gate_reason=result.reason, after_pending_count=count,
+                    leave={"kind": "工序", "owner": "车间", "at": stamp(self.clock()), "about": result.next})
+
     def ingest(self, event: Event, round_token: str | None = None, *, ingress: str = "source") -> bool:
         if ingress == "external":
             event = replace(event, source=f"cli:{event.source}")
@@ -58,15 +100,17 @@ class Engine:
         elif ingress != "source":
             raise ValueError("事件入口必须是可信来源、外部入口或带轮次令牌的 agent")
         event.validate()
+        event = replace(event, object_key=self.resolve_key(event.target, event.object_key))
         self.rules.target(event.target)
         with self.log.transaction():
             paused = self.control(event.target).get("paused", False)
             kind = "deferred_event" if paused else "event"
-            added = self.fact(kind, {**asdict(event), "ingress": ingress}, event.item_id,
+            added = self.fact(kind, {**asdict(event), "ingress": ingress, "pending_classification": ingress == "external"}, event.item_id,
                               source=event.source, ext_id=event.ext_id)
             if added and not paused:
                 if ingress == "external":
                     self.classification_intent(event)
+                    return added
                 item = self.log.get("items", event.item_id)
                 if event.depth > self.rules.data["limits"]["chain_depth"]:
                     self.block(item, "事件连锁超过上限")
@@ -77,7 +121,7 @@ class Engine:
     def classification_intent(self, event):
         seq = self.log.db.execute("SELECT max(seq) FROM facts").fetchone()[0]
         self.fact("effect", {"id": f"classify:{seq}", "kind": "classify", "done": False,
-                             "event": asdict(event), "item": event.item_id, "event_seq": seq}, event.item_id)
+                             "event": asdict(event), "item": event.item_id, "event_seq": seq, "defer_creation": True}, event.item_id)
 
     def classify_events(self):
         for entry in self.log.all("effects"):
@@ -90,12 +134,27 @@ class Engine:
             target = self.rules.target(event.target)
             try:
                 item = self.log.get("items", event.item_id)
-                action = self.plugins.get("flow", target["plugin"]).classify(event, item, target)
+                result = self.plugins.get("flow", target["plugin"]).classify(
+                    event, item, target, lambda external: self.find_external(event.target, external))
+                if result is None:
+                    continue
+                decision = Classification(result) if isinstance(result, str) else result
+                if not isinstance(decision, Classification):
+                    raise ValueError("流程返回了未知判定")
+                action = decision.action
+                if decision.object_key is not None:
+                    key = self.resolve_key(event.target, decision.object_key)
+                    if not isinstance(key, str) or not key or not self.log.get("items", f"{event.target}:{key}"):
+                        raise ValueError("可信归件只能指向已有活")
+                    event = replace(event, object_key=key)
+                else:
+                    event = replace(event, object_key=self.resolve_key(event.target, event.object_key))
                 if action not in ("update", "ready", "rework"):
                     raise ValueError("流程返回了未知事件动作")
                 with self.log.transaction():
                     self.fact("event_classified", {"id": entry["id"], "action": action,
-                              "event_seq": entry["event_seq"]}, event.item_id)
+                              "event_seq": entry["event_seq"],
+                              **({"event": {**asdict(event), "action": action}} if entry.get("defer_creation") else {})}, event.item_id)
                 self.retry_clear(entry["id"])
             except Retryable as exc:
                 self.retry_failure(event.target, "flow", target["plugin"], entry["id"], exc)
@@ -124,13 +183,16 @@ class Engine:
                 if replay:
                     body = dict(entry["event"])
                     ingress = body.pop("ingress", "unknown")
+                    body.pop("pending_classification", None)
                     event = Event(**body)
                     if ingress == "unknown":
                         event = replace(event, action="update")
-                    self.fact("event", {**asdict(event), "ingress": ingress}, event.item_id,
+                    event = replace(event, object_key=self.resolve_key(event.target, event.object_key))
+                    self.fact("event", {**asdict(event), "ingress": ingress, "pending_classification": ingress == "external"}, event.item_id,
                               source="resume", ext_id=entry["id"])
                     if ingress == "external":
                         self.classification_intent(event)
+                        continue
                     replayed = self.log.get("items", event.item_id)
                     if event.depth > self.rules.data["limits"]["chain_depth"]:
                         self.block(replayed, "事件连锁超过上限")
@@ -216,6 +278,10 @@ class Engine:
     def sources(self):
         for target, rule in self.rules.data["targets"].items():
             if self.control(target).get("broken"):
+                continue
+            # 先结算已经开始的完成钩子，再读新变化，避免别名尚未绑定时另开活。
+            if any(r["target"]["name"] == target and r["status"] == "finishing"
+                   and self.log.get("effects", f'after:{r["token"]}') for r in self.active()):
                 continue
             for name in rule.get("sources", []):
                 key = f"{target}:{name}"
@@ -424,7 +490,13 @@ class Engine:
             flow = self.plugins.get(port, name)
             stages = flow.stages(target)
             validate_stages(stages)
-            instructions = flow.brief(item, item["stage"], target)
+            content = flow.brief(item, item["stage"], target)
+            content = FlowBrief(content) if isinstance(content, str) else content
+            if (not isinstance(content, FlowBrief) or not isinstance(content.instructions, str)
+                    or type(content.readonly) is not bool
+                    or content.workdir is not None and not Path(content.workdir).is_absolute()):
+                raise ValueError("派活说明或目录无效")
+            instructions = content.instructions
             candidates = []
             metered = []
             for config in self.rules.candidates(item["stage"], item["target"], item["writer"]):
@@ -477,7 +549,8 @@ class Engine:
             port, name = "executor", chosen["use"]
             token = str(uuid.uuid4())
             brief = Brief(instructions, [m for m in item["materials"] if m["role"] != "Kun 的回答"],
-                          answers=[m for m in item["materials"] if m["role"] == "Kun 的回答"])
+                          answers=[m for m in item["materials"] if m["role"] == "Kun 的回答"],
+                          workdir=content.workdir, readonly=content.readonly)
             target = {**target, "runtime": self.runtime(token)}
             row = dict(token=token, item=item["id"], stage=item["stage"], executor=chosen["use"],
                        config=chosen, requested={"executor": chosen["use"], "model": chosen.get("model"), "effort": chosen.get("effort")}, selector=selector_name, selection_reason=choice.reason, target=target, deadline=stamp(self.clock() + timedelta(seconds=self.rules.data["limits"].get("round_timeout_seconds", 7200))), brief=asdict(brief), session=item["sessions"].get(chosen["use"]),
@@ -678,9 +751,10 @@ class Engine:
             missing_leave = decision.complete and not (receipt.leave or receipt.ask or receipt.later)
             advancing = (receipt.outcome == "done" and decision.allowed and not missing_leave
                          and not receipt.ask and not wait_ready and not another_review and not rejected)
+            after_result = After()
             if advancing:
                 key = f"after:{token}"
-                self.effect(key, lambda: flow.after(item, row["stage"], key, target))
+                after_result = self.after(flow, {**item, "result": receipt.json()}, row["stage"], key, target)
             with self.log.transaction():
                 item = self.log.get("items", item["id"])
                 self.fact("round_result", {"token": token, "stage": row["stage"], "outcome": receipt.outcome,
@@ -699,8 +773,11 @@ class Engine:
                                retry_executor=None, review_required=required, reviews=reviews)
                 if evidence.checks:
                     changes["checks"] = evidence.checks
-                if rejected:
+                if after_result.pending:
+                    changes.update(self.pending_changes(item, after_result, target))
+                elif rejected:
                     changes.update(stage="执行", state="空闲", next="验收不过，退回执行", approved=[], reviews=[],
+                                   after_pending_count=0, pending_episode=item.get("pending_episode", 0) + 1,
                                    review_required=1, pending_advance=None, gate_count=0,
                                    leave={"kind": "工序", "owner": "车间", "at": stamp(self.clock()), "about": "修正验收问题"})
                 elif receipt.outcome == "failed":
@@ -711,6 +788,7 @@ class Engine:
                     changes.update(stage="审查", state="空闲", next="另一家审查", gate_count=0,
                                    leave={"kind": "工序", "owner": "车间", "at": stamp(self.clock()), "about": "另一家审查"})
                 elif advancing:
+                    changes.update(after_pending_count=0, pending_episode=item.get("pending_episode", 0) + 1)
                     changes.update(stage=decision.stage, state="完成" if decision.complete else "空闲",
                                    next="已收尾" if decision.complete else decision.stage, blocked_by="", gate_count=0,
                                    leave=receipt.leave or {"kind": "工序", "at": stamp(self.clock()), "owner": "车间", "about": decision.stage})
@@ -782,13 +860,16 @@ class Engine:
                     return
                 if not self.log.get("effects", key):
                     self.fact("effect", {"id": key, "done": False})
-            self.effect(key, lambda: flow.after(item, pending["from"], key, target))
+            result = self.after(flow, {**item, "result": receipt.json()}, pending["from"], key, target)
             with self.log.transaction():
                 latest = self.log.get("items", item["id"])
                 if latest["pending_rework"]:
                     return
-                self.change(latest, "gate_passed", stage=decision.stage, state="空闲", next=decision.stage,
-                            pending_advance=None, gate_count=0, gate_reason="已按原证据授权推进")
+                changes = (self.pending_changes(latest, result, target) if result.pending else
+                           dict(state="空闲", next=decision.stage, gate_reason="已按原证据授权推进",
+                                after_pending_count=0, pending_episode=latest.get("pending_episode", 0) + 1))
+                self.change(latest, "gate_passed", stage=pending["from"] if result.pending else decision.stage,
+                            pending_advance=None, gate_count=0, **changes)
         except Exception as exc:
             self.broken(item["target"], "flow", target["plugin"], exc)
 
@@ -857,6 +938,7 @@ class Engine:
                         self.cancel_questions(item)
                         self.change(item, stage="执行" if item["checks"] else "说清楚", state="空闲",
                                     pending_rework=False, approved=[], pending_advance=None, reviews=[], review_required=1,
+                                    after_pending_count=0, pending_episode=item.get("pending_episode", 0) + 1,
                                     wait_for_ready=False, retry_executor=None, gate_count=0, next="按新事件返工")
                     item = self.log.get("items", item["id"])
                 self.complete_approval(item)

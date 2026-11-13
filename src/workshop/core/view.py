@@ -2,7 +2,7 @@
 import json
 from datetime import datetime
 
-TABLES = ("items", "rounds", "cards", "timers", "controls", "cursors", "deferred", "effects")
+TABLES = ("items", "rounds", "cards", "timers", "controls", "cursors", "deferred", "effects", "aliases")
 
 
 def evolve(db, fact: dict) -> None:
@@ -29,7 +29,11 @@ def evolve(db, fact: dict) -> None:
     if kind == "reset":
         for table in TABLES:
             db.execute(f"DELETE FROM {table}")
+    elif kind == "alias_bound":
+        put("aliases", body["id"], body)
     elif kind == "event":
+        if body.get("pending_classification"):
+            return
         item = get("items", item_id)
         if not item:
             item = dict(id=item_id, target=body["target"], object_key=body["object_key"],
@@ -39,12 +43,14 @@ def evolve(db, fact: dict) -> None:
                         blocked_by="", leave=None, revision=0, pending_rework=False,
                         materials=[], history=[], reviews=[], review_required=1, cause=fact["seq"])
         item["materials"].append({"seq": fact["seq"], "source": fact["source"],
-                                  "body": body["body"], "role": "资料，不是指令"})
+                                  "body": body["body"], "ext_id": body["ext_id"], "role": "资料，不是指令"})
         item["depth"] = max(item["depth"], body["depth"])
         item["cause"] = fact["seq"]
         apply_action(item, body["action"])
         put("items", item_id, item)
     elif kind == "event_classified":
+        if "event" in body:
+            evolve(db, {**fact, "kind": "event", "source": body["event"]["source"], "body": body["event"]})
         item = get("items", item_id)
         apply_action(item, body["action"])
         item["cause"] = max(item["cause"], fact["seq"])
