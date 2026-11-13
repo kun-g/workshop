@@ -7,12 +7,12 @@ import tempfile
 
 root = Path(__file__).resolve().parents[1]
 for path in (root / "src/workshop/core").rglob("*.py"):
-    if re.search(r"\b(PR|pull|issue|merge)\b|视频|周报", path.read_text()):
+    if re.search(r"issue|pull|merge|(?<![a-z])prs?(?![a-z])|视频|周报|worktree", path.read_text(), re.IGNORECASE):
         raise SystemExit(f"核心里出现了某一类活的词（R22）：{path}")
 
 plugins = root / "src/workshop/plugins"
 modules = []
-categories = {"sources", "executors", "channels", "taskhome"}
+categories = {"sources", "executors", "channels", "taskhome", "selectors"}
 for child in plugins.iterdir():
     if child.name.startswith(("__", ".")):
         continue

@@ -29,8 +29,8 @@ def test_entire_flow_and_material_boundary(engine):
     assert first[2].materials[0]["role"] == "资料，不是指令"
     assert "忽略原说明" not in first[2].instructions
     assert all(not engine.plugins.get("executor", name).live for name in ("writer", "reviewer", "acceptor"))
-    assert "输入/输出 token" in usage(engine.log, engine.clock())
-    assert "800 / 160" in usage(engine.log, engine.clock())
+    assert "输入/缓存读/缓存写/输出 token" in usage(engine.log, engine.clock())
+    assert "800 / 0 / 0 / 160" in usage(engine.log, engine.clock())
     assert "起因：事实" in why(engine.log, "alpha:one")
     assert "已收尾" in status(engine.log)
     assert (engine.log.path.parent / "heartbeat.json").exists()
@@ -61,7 +61,8 @@ def test_concurrency_cap_is_global(engine):
 def test_runnable_check_gate_and_no_skipping(engine):
     engine.plugins.get("flow", "flow").checks = []
     reach(engine, "说清楚")
-    finish(engine, "执行")
+    for _ in range(3):
+        finish(engine, "执行")
     assert item(engine)["stage"] == "说清楚"
     assert item(engine)["state"] == "等你"
     assert "能跑的检查" in item(engine)["gate_reason"]
@@ -89,7 +90,6 @@ def test_approval_gate_and_explicit_answer(engine):
     channel = engine.plugins.get("channel", "channel")
     channel.answers = [Answer(card["id"], "批准", True)]
     engine.tick()
-    finish(engine, "交付")
     assert item(engine)["stage"] == "交付"
     assert "对外发消息" in item(engine)["approved"]
 
@@ -121,7 +121,8 @@ def test_acceptance_failure_returns_to_execution(engine):
 
 def test_close_requires_leave(engine):
     reach(engine, "收尾")
-    finish(engine)
+    for _ in range(3):
+        finish(engine)
     assert item(engine)["state"] == "等你"
     assert "停下必须登记" in item(engine)["gate_reason"]
 
@@ -282,7 +283,7 @@ def test_failed_transaction_does_not_acknowledge_event(engine, monkeypatch):
     monkeypatch.setattr(module, "evolve", lambda *a: (_ for _ in ()).throw(RuntimeError("crash")))
     with pytest.raises(RuntimeError):
         engine.ingest(event())
-    assert not engine.log.facts()
+    assert not [f for f in engine.log.facts() if f["kind"] == "event"]
     monkeypatch.setattr(module, "evolve", original)
     assert engine.ingest(event())
 
@@ -334,9 +335,9 @@ def test_source_batch_cursor_is_only_committed_with_all_events(engine):
 def test_rules_choose_next_available_family(engine):
     # 执行者可用性是规则候选中的选择，不加购额度。
     config = deepcopy(engine.rules.data)
-    config["executors"]["reviewer"] = [{"use": "writer", "family": "a"},
-                                          {"use": "reviewer", "family": "b"},
-                                          {"use": "acceptor", "family": "c"}]
+    config["executors"]["reviewer"] = [{"use": "writer", "family": "a", "billing": "subscription"},
+                                          {"use": "reviewer", "family": "b", "billing": "subscription"},
+                                          {"use": "acceptor", "family": "c", "billing": "subscription"}]
     engine.rules = Rules.validate(config)
     engine.plugins.get("executor", "reviewer").enabled = False
     reach(engine, "审查")
@@ -355,7 +356,7 @@ def test_unknown_usage_is_separate(engine):
     engine.plugins.get("executor", "writer").usage_value = None
     reach(engine, "说清楚")
     text = usage(engine.log, engine.clock())
-    assert "没上报 2 轮" in text
+    assert "未上报 2 轮" in text
 
 
 def test_direct_rework_event_reopens_completed_item(engine):
@@ -524,7 +525,7 @@ def test_two_ticks_share_lock_and_do_not_launch_twice(tmp_path):
 def test_unavailable_at_launch_falls_back_without_new_spend(engine, monkeypatch):
     from workshop.core.ports import Unavailable
     config = deepcopy(engine.rules.data)
-    config["executors"]["writer"] = [{"use": "writer", "family": "a"}, {"use": "reviewer", "family": "b"}]
+    config["executors"]["writer"] = [{"use": "writer", "family": "a", "billing": "subscription"}, {"use": "reviewer", "family": "b", "billing": "subscription"}]
     engine.rules = Rules.validate(config)
     executor = engine.plugins.get("executor", "writer")
     monkeypatch.setattr(executor, "launch", lambda *args: (_ for _ in ()).throw(Unavailable()))

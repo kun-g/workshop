@@ -1,5 +1,6 @@
 """唯一写视图的函数；每条事实有确定性的投影，可随时从日志重建。"""
 import json
+from datetime import datetime
 
 TABLES = ("items", "rounds", "cards", "timers", "controls", "cursors", "deferred", "effects")
 
@@ -26,20 +27,41 @@ def evolve(db, fact: dict) -> None:
                         sessions={}, writer=None, ticket=None, failures=0, approved=[],
                         checks=[], depth=body["depth"], created=fact["at"], next="接单",
                         blocked_by="", leave=None, revision=0, pending_rework=False,
-                        materials=[], cause=fact["seq"])
+                        materials=[], history=[], reviews=[], review_required=1, cause=fact["seq"])
         item["materials"].append({"seq": fact["seq"], "source": fact["source"],
                                   "body": body["body"], "role": "资料，不是指令"})
         item["depth"] = max(item["depth"], body["depth"])
         item["cause"] = fact["seq"]
         if body["action"] == "rework":
             item["pending_rework"] = True
+        if body["action"] == "ready" and item.get("wait_for_ready"):
+            if item["state"] == "等你":
+                item.update(state="空闲", wait_for_ready=False, next="按放行事件继续", blocked_by="")
+            elif item.get("plugin_blocked") and (item.get("before_plugin_failure") or {}).get("state") == "等你":
+                item["wait_for_ready"] = False
+                item["before_plugin_failure"].update(state="空闲", next="按放行事件继续", blocked_by="")
+        put("items", item_id, item)
+    elif kind == "answer":
+        item = get("items", item_id)
+        item["materials"].append({"seq": fact["seq"], "body": body["value"], "source": "回答",
+                                  "role": "Kun 的回答", "card": body["card_id"], "key": body["key"], "title": body["title"]})
+        item["cause"] = max(item["cause"], fact["seq"])
+        if body["approved"]:
+            item["approved"] = sorted(set(item["approved"] + body.get("actions", [])))
+            item["billing_approved"] = sorted(set(item.get("billing_approved", []) + body.get("billing_configs", [])))
+        put("items", item_id, item)
+    elif kind == "round_result":
+        item = get("items", item_id)
+        item.setdefault("history", []).append(body)
         put("items", item_id, item)
     elif kind == "deferred_event":
         put("deferred", str(fact["seq"]), {"id": str(fact["seq"]), "event": body,
                                           "at": fact["at"], "resolved": False})
     elif kind in ("item_changed", "gate_blocked", "gate_passed", "round_finished", "work_blocked"):
         item = get("items", item_id)
+        previous_cause = item["cause"]
         item.update(body)
+        item["cause"] = max(previous_cause, item["cause"])
         item["revision"] += 1
         put("items", item_id, item)
     elif kind == "round_reserved":
@@ -51,6 +73,8 @@ def evolve(db, fact: dict) -> None:
     elif kind == "round_changed":
         row = get("rounds", body["token"])
         row.update(body)
+        if row.get("ended") and row.get("at"):
+            row["elapsed_seconds"] = max(0.0, (datetime.fromisoformat(row["ended"]) - datetime.fromisoformat(row["at"])).total_seconds())
         put("rounds", body["token"], row)
     elif kind == "receipt":
         row = get("rounds", body["token"])
@@ -82,4 +106,4 @@ def evolve(db, fact: dict) -> None:
         row = get("effects", body["id"])
         row.update(body)
         put("effects", body["id"], row)
-    # answer、plugin_failed、delivery_failed、usage_failed 等事实只用于解释，不另投影。
+    # 故障事实用于解释；其状态由对应增量事实投影。

@@ -1,132 +1,163 @@
-# 核心与插件接入契约（W1）
+# 核心与插件接入契约（修改轮 1、2）
 
-本页供下一波插件实现者使用。类型和签名以 `src/workshop/core/ports.py`、`models.py` 为准；核心实现不导入插件。需求来源是核心 R1–R23、C1–C4，本单只为 R23 提供心跳，不实现独立看门程序。
+类型以 `core/ports.py`、`models.py`、`cards.py` 为准。Kun 11-13 决定：第一版不接工单系统，issue 就是活的登记；`TaskHome` 保留为可选端口。第一版只带 `ordered` 挑选逻辑，业务流程、来源、执行者、通道和独立看门程序由下一波实现。
 
-## 装配和规则
+## 注册、规则和运行入口
 
-插件无参数工厂通过 Python 入口点注册，工厂返回端口实现。例如：
+插件通过入口点 `workshop.<port>` 注册无参数工厂，名字对应唯一规则 `rules/workshop.yaml`。端口名为 `source`、`flow`、`executor`、`channel`、`taskhome`、`selector`。例如：
 
 ```toml
+[project.entry-points."workshop.selector"]
+ordered = "workshop.plugins.selectors.ordered:make_selector"
 [project.entry-points."workshop.flow"]
 issue_delivery = "workshop.plugins.issue_delivery:make_flow"
-[project.entry-points."workshop.source"]
-github = "workshop.plugins.sources.github:make_source"
-[project.entry-points."workshop.executor"]
-orca-claude = "workshop.plugins.executors.orca_claude:make_executor"
-codex = "workshop.plugins.executors.codex:make_executor"
-[project.entry-points."workshop.channel"]
-ask_kun = "workshop.plugins.channels.ask_kun:make_channel"
-[project.entry-points."workshop.taskhome"]
-sb_task = "workshop.plugins.taskhome.sb_task:make_taskhome"
 ```
 
-`Registry` 按 `(port, name)` 惰性创建并缓存实例。工厂不能假定有会话身份；构造时不做对外动作。规则只在 `rules/workshop.yaml`，改完重启守护进程；CLI 可用 `--rules` 或 `WORKSHOP_RULES` 指定同一份文件的绝对路径。不同插件只能经核心端口协作。流程插件目录内部可分文件互引；不同流程、不同来源、不同执行者之间由动态 import-linter independence 合约隔离。
+规则中 `selector: ordered` 指定默认挑选逻辑；`stage_selectors` 可按阶段覆盖，交付对象也可设置 selector 和 stage_selectors。优先级：对象的阶段覆盖 > 对象默认 > 全局阶段覆盖 > 全局默认。第一版这些名字均为 ordered。`channel` 必填，`taskhome` 可省略。`limits.round_timeout_seconds` 是每轮期限，默认/示例为 7200 秒。`stage_executors` 可按中文阶段给候选，交付对象自己的同名配置优先；省略时接单/说清楚/执行/证据/交付/收尾/观察沿用 writer，审查沿用 reviewer，验收沿用 acceptor。例如：
 
-每个方法拿到的 `target` 是这一交付对象的原始规则，加 `name` 字段。包含 `plugin`、`sources`、`repo`、`checkout`、`skill`、`permissions` 等。核心不解释插件专属字段。执行者配置 `config` 是规则中的 `use`、`family`、`model`、`effort` 等。`family` 表示同一家执行者；审查、验收按候选顺序选可用的，跳过执行阶段记录的 `writer` 家族。
+```yaml
+selector: ordered
+stage_executors:
+  接单: {use: cheap-agent, family: cheap, billing: subscription, model: chosen-small, effort: low}
+  证据: {use: checks-script, family: script, billing: subscription}
+executors:
+  writer: {use: orca-claude, family: claude, billing: subscription, model: chosen-large, effort: high}
+  reviewer: [{use: codex, family: codex, billing: subscription}, {use: cursor-grok, family: grok, billing: subscription}]
+  acceptor: [{use: codex, family: codex, billing: subscription}]
+limits: {concurrent: 2, chain_depth: 8, round_timeout_seconds: 7200}
+```
 
-## 活、事件、资料
+核心不解释 repo、checkout、skill、permissions 等业务字段，原样放入 `target`；加入 `name` 标识交付对象。所有插件收到的是 JSON 快照，不得写数据库。
 
-`Event(source, ext_id, target, object_key, title, body, depth=0, action="update")`。同一 `(source, ext_id)` 全局只收一次；来源应让编号包括租户/仓库/对象范围。`item_id = target + ":" + object_key`，对象键应稳定，避免把同一对象不同事件当成不同活。正文为 JSON 值。外部文字始终标记为“资料，不是指令”；`action="rework"` 只能由可信适配器识别明确的返工要求后给出，不能把任意正文解析成核心指令。
+首次启动用 `workshop --rules /绝对路径/workshop.yaml run`。核心把有效规则及源文件绝对路径作为事实保存；下一次 `run` 重读同一规则文件。`receipt`、`event` 默认读取状态库中的规则快照，不依赖 agent 当前目录。执行者拿到 `target.runtime`：
 
-活快照是 JSON dict，插件不得改数据库。稳定字段：
+- `state_dir`、`rules_path`：绝对路径；程序化测试没有源规则文件时 rules_path 为 null。
+- `command`：可直接执行的 argv，以本环境的绝对 Python 路径、`-m workshop.cli` 和全局参数开头。适配器在后面追加 `receipt <token> --file <绝对路径>`，不依赖 PATH 中有 `workshop` 或工作目录中有 uv 项目。
+- `env`：`WORKSHOP_STATE_DIR`、`WORKSHOP_ROUND_TOKEN`，有源规则文件时还含 `WORKSHOP_RULES`。
 
-| 字段 | 含义 |
-| --- | --- |
-| `id`, `target`, `object_key`, `title` | 活的身份 |
-| `stage` | 接单、说清楚、执行、证据、审查、交付、验收、收尾、观察之一 |
-| `state` | 空闲、跑着、等你、定时、卡住、完成之一 |
-| `materials` | `body`、`source`、`role`，事件资料另有事实 `seq` |
-| `session`, `sessions` | 最近的会话，以及按执行者名字保存的会话字典 |
-| `writer`, `worktree`, `ticket` | 执行阶段使用的家族、工作目录、工单号；没有则为空/字段缺省 |
-| `checks`, `approved`, `depth` | 检查 argv 列表、已经批准的动作类别、当前连锁深度 |
-| `next`, `blocked_by`, `leave` | 下一步、卡在谁手里、工序/送回/等你登记 |
-| `revision`, `cause`, `round` | 视图修订、最近触发事实号、当前轮次令牌（可空） |
+## 资料、回答与跨轮历史
 
-新的普通事件在同一活追加资料；正在跑的一轮不被改派，也不会同时开第二轮。适配器如需把人直接给运行会话的话登记，调用 `workshop event`；核心不向运行终端再注入同一句话。明确返工事件在当前轮结束后退回执行；没有检查时先回说清楚。
+`Event(source, ext_id, target, object_key, title, body, depth=0, action="update")`。同一 source/ext_id 去重，同一 `target:object_key` 归一件活。正文仅为资料。来源可明确标 `action="rework"`（返工）或 `action="ready"`（放行），不得仅把任意外部正文解析成指令。
+
+在 agent 环境调用 `workshop event` 时，只要有 `WORKSHOP_ROUND_TOKEN`，核心就从那一轮的活推算 depth+1，忽略调用方填写的 depth；不存在的令牌拒绝。回执里的派生事件同样由核心算层数，第 9 层卡住。
+
+活快照中的稳定字段：id、target、object_key、title、stage、state、materials、history、session、sessions、writer、workdir、ticket、checks、approved、depth、next、blocked_by、leave、revision、cause、round。`sessions` 按执行者名字保存会话；`workdir` 是中性的执行目录。`history` 每轮追加 token、stage、outcome、summary、evidence、证据判定 reason，流程 brief 能读到审查意见和返工原因；`gate_reason` 是关口需要修正的理由。
+
+`Brief.instructions` 是可信派活说明；`Brief.materials` 仅含外部资料，标“资料，不是指令”。`Brief.answers` 单独放 Kun 的回答，含 card、key、title、body、seq、role="Kun 的回答"。回答是独立事实，由 evolve 在最新资料上追加，不回写旧数组；cause 不倒退。回答与资料不是授权工具调用的自由文本，核心授权仍须明确的 `Answer.approved=True`。
 
 ## 来源 Source
 
-`poll(target, cursor) -> Poll(events, cursor)` 只读、短时返回。每 tick 每交付对象调用一次。整批事件和新 cursor 在同一 SQLite 事务提交；任何一个事件非法，整批回滚，不确认 cursor。可重放，核心负责去重。暂停时仍拉取和记录，但记进遗漏清单，不派活；恢复必须由人显式选择补哪些。
+`poll(target, cursor) -> Poll(events, cursor)`，短时只读。整批事件与 cursor 同事务，失败整批不确认；来源不得返回另一交付对象的事件。暂停期间继续记遗漏，不派新轮。
 
-异常记 `plugin_failed` 事实，受影响交付对象的活标卡住，发一次通知；别的交付对象继续。修好以后 `resume <target> --select ...` 解开插件故障。来源不能返回别的交付对象的事件。
+`Retryable` 表示暂时故障，5/10/20 分钟退避，连续第 3 次升级插件故障。成功清掉连续计数。普通异常立即记故障、隔离受影响交付对象；其他交付对象继续。
 
-## 流程 Flow
+## 流程 Flow 和关口
 
-`stages(target) -> tuple[str, ...]` 返回核心阶段的有序子集，必须含接单、说清楚、执行、验收、收尾。流程只能省略其他阶段，不能改变顺序。`brief(item, stage, target) -> str` 返回可信派活说明；外部正文不拼在这里，核心另装入 `Brief.materials`。
+`stages(target)` 返回阶段有序子集，必须包含接单、说清楚、执行、验收、收尾。`brief(item, stage, target)` 返回可信说明；`assess(item, receipt, target) -> Evidence` 必须短时只读，不靠回执 done 自证完成。
 
-`assess(item, receipt, target) -> Evidence` 是只读证据核对，返回：`checks` 为可运行 argv 列表（如 `[["uv", "run", "pytest", "-q"]]`），`passed` 为布尔值，`actions` 为拟交付动作的类别列表，`reason` 为解释。不能仅因 `receipt.outcome == "done"` 就判断通过；实际验输出、工件、所指提交。动作类别必须与规则 `ask_first` / `skip_ask` 一致。具体动作是否不可逆/对外/花钱是适配器的领域判断，核心按这些类别执行授权关口。
+Evidence 字段：checks（检查 argv 列表）、passed（布尔）、actions（拟交付动作类别）、reason（判定解释）、paths（本次改动路径列表）、reviewers（1 或 2）。actions 中任何类别不在 `ask_first ∪ skip_ask`，都是插件错误，记事实、卡住这一类并通知，不放行。执行前必须有能跑的检查；交付前处理授权；验收证据不过无论 done/nothing/failed 都退回执行。
 
-`after(item, completed_stage, key, target) -> None` 在核心允许推进、确认本轮进程已退出后调用。它收到完成阶段的快照；只有成功返回，核心才提交推进事实。不得自行更改阶段、绕过授权或在提前的阶段执行交付动作。携带 `ask` 的回执暂不推进，也不调 after；回答后同阶段接回原执行者，再交回执。`after` 必须以 `key` 做持久幂等；核心在调用前保存 effect 意图，成功后保存完成，崩溃窗口可能重调相同 key。
+交付对象的 `two_reviewers` 路径前缀命中 paths，或 Evidence.reviewers=2 时，核心在审查阶段依次找两家不同家族，两家都过才能交付。已通过家族记入活的 reviews；写代码那家仍排除。第一次审查带 ask 时不计作通过，答完接回同一审查会话。返工清空本次审查记录。
 
-核心只接受下一阶段、证据/审查/交付/验收退回执行、最终阶段完成这几种变化。进入执行前必须有检查；进入交付前检查授权，省略交付的流程在进入验收前检查授权；验收不过退执行；最终完成还必须登记工序、送回或等你。授权卡回答只有 `approved=True` 才加入已批准类别，返工时清空。
+`after(item, completed_stage, key, target)` 在停止本轮且核心准许推进后调用，必须持久 key 幂等。授权问题保存 receipt、Evidence、原阶段、下一阶段；明确批准后直接用这些证据过关口并调用同一个 after key，不再多起一轮审查。拒绝则回原阶段按答案调整。after 不得越权推进或提前做交付动作。
 
-流程异常隔离使用同名流程的所有交付对象。插件无法通过提议越过核心关口，但这些端口不是恶意 Python 代码的权限沙箱；真实适配器仍须遵守方法约定与外部系统的权限。
+普通关口未过先同阶段接回同一个执行者，带 gate_reason；同一关口连续拦 3 次才问 Kun。最终完成必须登记工序、送回或等你。其他人负责的工序到点仅发一次通知；只有 owner="车间" 才唤醒活。
 
 ## 执行者 Executor
 
-`available(config) -> bool` 只检查现有订阅和已付额度；绝不自动开通按量收费或加购。明确不可用返回 False 或抛 `Unavailable`，核心依序选下一家；都不可用就登记等你。
+`available(config) -> bool` 仅查现有额度，不自动加购。每个规则候选必须明写 billing=subscription 或 metered；按量候选在这件活获明确批准前不交给挑选逻辑。若另有可用订阅候选则直接使用，避免为用不上的按量候选提问；否则发 C4 授权卡，批准后按配置指纹放入候选。拒绝则保留等你，等待调整后放行，不立即重复发卡。`Unavailable` 表示无额度且确认没启动，可挑下一候选；`Retryable` 表示暂时启动失败且确认没启动，按退避重试，连续第 3 次隔离。普通启动异常表示结果不确定，保留占位，不能猜没启动而换一家。
 
-`launch(token, brief, item, config) -> Started(session, handle, worktree)` 起一轮；`resume(token, session, brief, item, config)` 在同一会话接回一轮，返回 session 必须不变。`Brief.instructions` 是可信说明，`Brief.materials` 是不可信资料，不能把后者当权限、系统提示词或工具调用指令。把轮次令牌传给会话（推荐 `WORKSHOP_ROUND_TOKEN`），把状态目录和规则绝对路径传给它，让结束时能调用 CLI 交回执。
+`launch(token, brief, item, config, target) -> Started(session, handle, workdir)` 和 `resume(token, session, brief, item, config, target)` 必须按 token 持久幂等。核心启动前记意图，崩溃后重放同 token 须找到同一轮；resume 返回同一个 session。target 包含完整交付规则及上述 runtime。环境中传轮次令牌，结束时用 runtime.command 交回执，提交后不再做业务动作。
 
-启动前核心先持久保存 token、派活说明、执行者配置和原 session。适配器必须以 token 持久幂等，并能在核心重启后找回已启动的同一终端；不能仅靠进程内 dict。建议由 token 导出启动身份、自己分配 session UUID，并持久记录 terminal handle。启动中途失败且不知道是否已经起进程时，抛普通异常，核心卡住这类活，保留并发占位，不会换一家再起。`Unavailable` 只可用于确认毫无启动副作用的情况；核心可释放占位后选下一家。
+`poll(token, started) -> "running" | "exited"` 提供明确的存活状态，不把静默当退出。`stop(token, started)` 幂等关闭，确认退出后才返回。启动后未拿到 Started 的崩溃窗口里 started 可为 null，适配器必须按 token 对账、查询/关闭；不得制造一个假 handle。退出未交回执、超时、`workshop abort <token>` 都生成失败结果并退避。abort 先登记请求，下一 tick 停止；不会为结束一个未确认的启动再重开一轮。无法确认退出时仍保留占位。
 
-`stop(token, started) -> None` 必须幂等，只在确认上一轮进程/终端退出后成功。异常不释放占位。核心先停止，再读用量、判关口、调用流程完成钩子、提交结束事实。已确认停止但流程处理失败的轮不占执行者并发数；它仍是未结算轮，修复恢复后继续处理。等待人时进程已退出，回答后下一轮按该执行者的 session 接回。
+`usage(token, started, since) -> RoundUsage | None` 从本轮开始时刻 since 读取增量，不能返回整个接回会话累计值。started 在上述崩溃窗口也可为 null，无法取得则返回 None。RoundUsage 含 main（一条 Usage）、children（子 agent 按实际模型合计，各模型一条 Usage）、children_reported（是否已完整核对子 agent，默认 false）。Usage 每项均可 null：
 
-`usage(token, started) -> Usage(tokens_in, tokens_out, cost) | None` 是整轮累计值，金额单位 USD。不能取得就返回 None，不能冒报 0。异常记 `usage_failed`，显示“没上报”，不阻碍结算。每轮首次结算读取一次；没有自动补采协议。实际进程用量会依执行者数据能力而定。
+```json
+{
+  "model_actual": "从会话记录读出的实际模型",
+  "input": 100,
+  "cache_read": 200,
+  "cache_write": 50,
+  "output": 20,
+  "cost_usd": 0.01,
+  "billing": "subscription"
+}
+```
 
-## 回执
+main 必须只算主会话，children 只算子 agent，不可把同一子 agent 同时算进主会话和子项；上游累计量不能可靠拆分时相应字段留 null。子 agent 模型由执行者自己决定，不归挑选逻辑管。读不到/只读到部分子 agent 时 children_reported=false，why 和 usage 明确显示「子 agent 未计」；确认无子 agent 时用空 children 和 true。
+
+input 是不含缓存读写的普通输入；billing 为 subscription / metered / null。cost_usd 是按对应模型 API 标价折算的 USD，订阅同样折算，不能混入实际订阅账单分摊。执行者负责已知标价的核算与来源，核心不猜价格；拿不到实际模型、缓存细分或价格就给 null，不能填 0 或照抄规则模型。0 仅表示确实观测为 0。usage 异常记事实，未取得的字段保持 null，不阻塞结束。
+
+rounds 同时保存规则要求的 executor/model/effort、挑选理由、开始结束与 elapsed_seconds、主会话 Usage、分模型 usage_by_model（scope=main/children）、children_reported、outcome、审查/验收 passed（未知为 null）。实际退出未交回执等故障不伪造 passed。`why` 展示每轮这些记录。
+
+## 挑选逻辑 Selector
+
+`select(target, stage, round_number, history, candidates) -> Selection(config, reason) | None`。history 是这件活之前所有轮的快照，包括执行者、规则模型、实际主/子用量和结果；candidates 依唯一规则的阶段候选顺序排列，每项含 config、available=true。核心已调用 available，并筛掉写代码家族（审查/验收）、无额度候选、尚未批准的按量候选，也落实两家审和关口重试的家族/执行者限制。target.selection 仍提供 writer、reviewed、retry_executor、excluded 背景供解释；硬规矩不委托插件。
+
+第一版唯一实现 `workshop.plugins.selectors.ordered` 只返回获准候选的第一项和理由。核心校验输出仍属于候选，违例记 selection_failed，why 能看到原因，按暂时起轮失败退避，连续 3 次升级故障；不会调用违例执行者。挑选逻辑可以全局/对象/阶段配置，但本版不带其他逻辑。
+
+`workshop usage` 保留今天、最近 7 天、按活，并按实际模型分组，未知模型单列。组内列轮数、审查/验收一次过、平均耗时、四种 token、API 折合花费和缓存命中率。一次过的统计单位为“活、阶段、执行者家族”的首次尝试；后续重试不把首次失败改成成功，两家审分别计各自首次尝试。缺判定的首次尝试排除并显示缺失数。平均耗时只取有起止数据的轮；缓存命中率只取输入/缓存读/缓存写三项完整的轮，公式为缓存读总和 ÷ 三项总和，分母 0 显示未知。每项只累加已知值，全部缺失显示未知；模型行同时列未上报轮数，各比率另外列缺失数。主会话和子 agent 的 token/花费按实际模型分别汇总，同一模型在同一轮出现两处，轮数与耗时只计一次。模型耗时是它参与的车间整轮耗时，不冒充子 agent 独立执行时长；审查/验收一次过只归因主执行模型，子 agent 贡献只算用量。各行另列「子 agent 未计 N 轮」。
+
+## 回执和无卡等你
+
+outcome=done 表示本轮拿到了供流程核验的结果，核心仍判证据和关口；nothing 表示没有新结果，不自行推进、不发空卡，没有安排则登记五分钟后复看；failed 表示这一轮没跑成，按 5/10/20/40/60 分钟退避、之后封顶 60 分钟。每次连续失败第 3 次通知一次，第 10 次卡住；成功后新一段连续失败会重新通知。验收实际证据不过优先于 failed 退避，直接回执行。进程退出/超时且无回执时没有验收证据，按运行失败退避，passed 保持 null，不伪造验收结论。
+
+`receipt <token> --file <JSON>`、`--json` 或 stdin；提交成功才确认收到，下一 tick 停进程并结算。相同 token 相同 JSON 幂等，不同回执拒绝。时间支持 +Ns/+Nm/+Nh/+Nd 或带时区 ISO 8601，相对时间按提交时刻算。字段 outcome、summary 必填，其余可省略：advance、evidence（字符串列表）、ask、notice、later、events、leave。
 
 ```json
 {
   "outcome": "done",
-  "summary": "这一轮完成了什么",
-  "advance": "证据",
-  "evidence": ["check:relative/path/to/output.txt"],
-  "ask": [{"key": "design", "title": "要你定的事", "options": ["A", "B"], "recommend": 0}],
-  "notice": [{"key": "accepted", "text": "验收通过，不用回", "fyi": true}],
-  "later": [{"key": "look", "at": "+30m", "about": "再看结果"}],
-  "events": [],
-  "leave": {"kind": "工序", "owner": "车间", "at": "+1d", "about": "观察结果"}
+  "summary": "需要先确定验收标准",
+  "notice": [{"key": "clarify-needed", "subject": "先说清楚验收标准", "text": "已停在说清楚，补充后放行即可，不用回卡", "fyi": true}],
+  "leave": {"kind": "等你", "about": "等待明确的放行事件"}
 }
 ```
 
-`outcome` 为 done / nothing / failed；除 outcome、summary 外可省略。上例展示各字段，不要求每轮都有。`workshop receipt <token> --file receipt.json`，也可 `--json` 或 stdin；相同 token 相同 JSON 重投返回已收到，不同内容拒绝。CLI 提交事务成功才确认收到。**确认收到不表示已经判关口或已经关终端**：下一 tick 才停止本轮并处理结果，避免退出终端杀掉还在提交的 CLI。提交后执行者不要再做业务动作。
+这是 Kun 11-13 补定的“无卡等你”：停在原阶段，标等你，只发一次不用回的通知，不起执行者。普通 update 事件仅追加资料；来源明确标记的 `action="ready"` 事件才解开同一件活，从原阶段继续。暂停/插件故障期间收到的放行也按各自恢复规则保留。若有 ask，则等全部问题回答，不把 ready 当作卡片答案。
 
-`ask` 一旦出现就先等回答，保留当前阶段；全部问题答完才继续。notice 的 key 在同一活内去重（同一通知只发一次）；ask、later 的 key 在本轮内去重。相对时间支持 `+Ns/+Nm/+Nh/+Nd`，从回执提交时间算起；绝对时间必须是带时区 ISO 8601。`leave` 工序须有 owner、at、about；送回须有 at、about；等你须有 about 和非空 ask。最终阶段不给 leave/ask/later 会被关口拦住。普通推进自动登记由车间执行的下一工序；失败登记退避工序，连续第 3 次通知一次，第 10 次卡住等你。重试间隔 5、10、20、40、60 分钟，之后封顶 60 分钟。
+leave 工序须有 owner、at、about；送回须有 at、about；等你须有 about，并且有 ask 或 notice。notice 的 key 在一件活内去重，ask/later 的 key 在一轮内去重。正常推进自动登记下一工序。回执里有 ask 时不推进，问题解决后接回原阶段。
 
-`events` 元素同 Event JSON；核心覆盖 source/ext_id 为本轮可去重身份，覆盖 depth 为原活深度 + 1。第 9 层记录为卡住，不派执行者。事件正文不能自行降低连锁深度。
+## 卡片、通道与对账
 
-## 通道 Channel
+`Question`、`Choice`、`Notice` 的 TypedDict 和运行时校验在 `core/cards.py`，由端口模块导入。回执 ask 元素是 Question 加 key：
 
-`ask(key, card) -> external_id`、`notify(key, card) -> external_id` 收到核心稳定 key 与 JSON 字典（原 payload，加 item）。幂等投递后立即返回，不等待人。核心保存发送意图、外部编号和发送完成。适配器应直接把 key 传给上游的 request-id 去重机制；若上游不支持去重，必须在适配器解决“已发出但回包丢失”的歧义，不能假装核心能提供跨系统 exactly-once。
-
-`poll(cards) -> list[Answer(card_id, value, approved=False)]` 收到已发送、未回答的核心卡记录，包括 `id`、`external`、`payload`、`item`。非阻塞地查询；无回答返回空列表。Answer.card_id 用核心 id，不是外部卡号；value 用实际答案。只有用户明确点了批准，才给 `approved=True`。通知没有回答。重复答案由核心忽略。
-
-通道任何异常只记录失败，待发/未答卡仍在 SQLite；其他活继续。插件恢复后重试原 key；不要把网络超时解读为拒绝或批准。
-
-## 工单 TaskHome
-
-`open(key, item, target) -> ticket` 幂等发一张工单。`update(key, ticket, item, target)` 同步阶段、状态、交付路径、要 Kun 什么；同一快照重试是同一 key。核心保存 effect 意图/结果，重启后不会忘单号。
-
-适配器不能冒用负责会话身份。sb task 的 take/review/done 等须由每轮会话执行；把相应命令写入流程派活说明，工单适配器 update 只同步它有权改的字段。工单异常隔离受影响交付对象，不让未登记的活悄悄继续派。
-
-## 存储、恢复和看门接入
-
-默认 `~/.local/state/workshop/workshop.db`；测试/部署可设 `WORKSHOP_STATE_DIR` 或全局 `--state-dir`。SQLite WAL + synchronous FULL；facts、视图一事务。facts 有 `seq,kind,source,ext_id,item,body,at` 和 `UNIQUE(source,ext_id)`，SQLite trigger 禁 UPDATE/DELETE。items、rounds、cards、timers、controls、cursors、deferred、effects 均为 `(id, body JSON)`；仅 evolve 写视图。`Log.rebuild()` 重放 facts，测试验证结果一致。
-
-`workshop run` 默认每 20 秒 tick，`--once` 只跑一次。一个数据库的 tick/pause/resume 通过相邻 `.lock` 文件互斥；CLI event/receipt 可在执行者启动过程中通过 SQLite 事务提交，不等待该锁，避免递归死锁。插件方法必须短时返回或自行设置超时；不能阻塞等待一轮或等人。
-
-每 tick 开始原子替换状态目录的 `heartbeat.json`：`{"at": "UTC ISO 8601", "active": 2}`。看门程序下一波独立运行，读取 at 判超时；查看超时轮可读：
-
-```sql
-SELECT id, json_extract(body, '$.item') AS item,
-       json_extract(body, '$.at') AS started_at,
-       json_extract(body, '$.status') AS status
-FROM rounds WHERE json_extract(body, '$.status') != 'ended';
+```json
+{
+  "key": "design",
+  "subject": "方案选择",
+  "decision": "采用当前方案还是调整",
+  "context": "完整上下文与证据",
+  "choices": [
+    {"key": "yes", "label": "继续", "effect": "按当前方案继续"},
+    {"key": "no", "label": "调整", "effect": "保留阶段并调整方案"}
+  ],
+  "recommend": "yes",
+  "reason": "依据已登记证据",
+  "kind": "reversible"
+}
 ```
 
-`starting/running/finishing` 都是未结算轮；`body.stopped=true` 表示实际进程已确认退出。心跳时间过旧可识别阻塞在插件调用中；这单不发独立看门告警。
+subject ≤30、decision ≤42、reason ≤60；choices 必须 2–3 个，key/label ≤18、effect ≤60，recommend 指向一个 key，kind 为 approval 或 reversible。context 非空。通知使用另一格式 `{subject, text, fyi:true}`，回执再加 key；subject ≤30，text 非空。核心自己的问题也遵守同一校验。
 
-暂停只挡新派活，现有轮可交回执并关掉。恢复不带 --select 只列遗漏、不改变状态；`--select all|none|事实号,事实号` 才恢复。失败耗尽和连锁上限不会因 resume 自动清除；人明确给返工事件后可重做失败耗尽的活，连锁上限的活保留卡住供调查。
+`ask(key, Question)`、`notify(key, Notice)` 短时返回外部编号。**发之前核心先记 sending 意图**；异常/重启后先调用 `reconcile(key, card_record)`：返回已发外部编号表示已发；`"absent"` 表示确定未发才可重试；null 表示不确定，保持待对账，禁止盲目重发。
 
-`extension_metrics(log, repository, base, head, target, started)` 是观察阶段可调用的固定只读检查：统计核心增删行数，计算该交付对象第一件活从 started 到完成的小时数；未完成时为 None。流程插件负责在接入新流程的观察派活说明中调用并记录结果。
+ask-kun ask 没有 request-id，适配器不能声称直接幂等。可先持久保存 key 到唯一 from 标记（如 `车间:<key哈希>`）和 subject 的映射，调用 ask 时使用该 from；重启后用 `ask-kun list` 按 from+subject 对账。列表不完整或请求可能仍在处理中时返回 null，不能返回 absent。相同 subject 的不同轮必须用不同稳定 from 区分。notify 若支持上游幂等标识也照样要实现对账。
+
+`poll(cards) -> list[Answer(card_id, value, approved=False)]`，card_id 是核心卡号；只有明确批准才给 approved=True。`cancel(key, external)` 按核心 key 幂等作废，外部编号不明时先对账。返工时核心先把旧问题标 cancelled，再通知通道作废；晚到答案忽略，取消失败会保留待处理记录。每张卡每次故障只记一条 delivery_failed，恢复后再坏会再记；通道整体查询失败也按事件段去重。通道故障不阻塞其他活。
+
+## 可选工单 TaskHome
+
+第一版规则不配置，核心不发单也不卡活；以后配置才调用 `open(key, item, target) -> ticket`、`update(key, ticket, item, target)`。两者须持久幂等，不能冒充负责会话领单/收单。
+
+## SQLite、恢复与看门
+
+默认 `~/.local/state/workshop/workshop.db`，`WORKSHOP_STATE_DIR` 或 `--state-dir` 改目录。WAL + synchronous FULL；事实追加和视图更新同事务。facts trigger 禁止 UPDATE/DELETE；只有 evolve 写各视图，`Log.rebuild()` 重放验证一致。视图为 `(id, body JSON)`，表包括 items、rounds、cards、timers、controls、cursors、deferred、effects。
+
+`run` 每 20 秒 tick，`--once` 一次。tick 用旁边的文件锁串行；pause/resume 只做短 SQLite 事务，不拿 tick 锁，插件挂起时仍可暂停。`resume <target>` 只列清单并输出已看事实号；必须同时带 `--select all|none|编号列表 --seen 上次已看编号列表` 才恢复，空清单写 none。清单变化拒绝并重新列出，不能用当前新清单代替人看过的清单。
+
+插件故障卡住前保存 state/next/blocked_by/leave，恢复只还原因该故障叠加的卡住；原来的等你、定时和失败耗尽不被一律改为空闲。故障期间到期定时保留，恢复后再处理；已回答/已放行的事实也保留。每次新的插件故障用新事实号发一次通知，不是终身只发一次。
+
+每 tick 原子替换 `heartbeat.json`，含 UTC at 和 active。普通 tick 异常记 tick_failed，下一 tick 继续；若暂时写不进数据库则输出 stderr 并继续尝试，初始化打不开数据库才无法启动。独立看门下一波实现，可查 rounds JSON 的 at、status、deadline、stopped；starting/running/finishing 是未结算轮，stopped=true 不占执行者位。
+
+`extension_metrics(log, repository, base, head, target, started)` 保留观察阶段的核心改动行数、第一件活用时固定检查，流程负责调用并登记结果。

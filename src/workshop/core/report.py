@@ -29,12 +29,30 @@ def why(log, item_id):
         if kind == "event":
             detail = f'事件 {fact["source"]} {body["body"]}'
         elif kind == "round_reserved":
-            detail = f'{body["stage"]} {body["executor"]} 一轮 {body["token"]} 起因：事实 {body["cause"]}'
+            detail = (f'{body["stage"]} {body["executor"]} 一轮 {body["token"]} 起因：事实 {body["cause"]} '
+                      f'规则模型={display(body.get("requested", {}).get("model"))} 强度={display(body.get("requested", {}).get("effort"))} '
+                      f'选择理由：{body.get("selection_reason", "未知")}')
+        elif kind == "round_changed" and body.get("status") == "ended":
+            row = log.get("rounds", body["token"])
+            value = row.get("usage") or {}
+            tokens = " / ".join(display(value.get(k)) for k in TOKEN_FIELDS)
+            detail = (f'轮结束 {body["token"]} 结果={row.get("outcome", "未知")} '
+                      f'判过={display(row.get("passed"))} 实际模型={display(value.get("model_actual"))} '
+                      f'耗时={display(row.get("elapsed_seconds"))}秒 token={tokens} '
+                      f'API折合USD={display(value.get("cost_usd"))} 计费={display(value.get("billing"))}')
+            for entry in entries(row):
+                if entry["scope"] == "children":
+                    child_tokens = " / ".join(display(entry.get(k)) for k in TOKEN_FIELDS)
+                    detail += f'；子 agent 模型={display(entry.get("model_actual"))} token={child_tokens} API折合USD={display(entry.get("cost_usd"))}'
+            if not row.get("children_reported"):
+                detail += "；子 agent 未计"
         elif kind == "receipt":
             receipt = body["receipt"]
             detail = f'回执 {receipt["outcome"]} {receipt["summary"]}'
         elif kind in ("gate_blocked", "gate_passed"):
             detail = f'{"关口拦住" if kind == "gate_blocked" else "过关口"} {body.get("gate_reason", "")}'
+        elif kind == "selection_failed":
+            detail = f'挑选逻辑起轮失败 {body["reason"]}'
         elif kind == "answer":
             detail = f'回答 {body["value"]}'
         elif kind == "work_blocked":
@@ -45,20 +63,98 @@ def why(log, item_id):
     return "\n".join(lines)
 
 
+TOKEN_FIELDS = ("input", "cache_read", "cache_write", "output")
+
+
+def display(value):
+    return "未知" if value is None else str(value)
+
+
+def entries(row):
+    return row.get("usage_by_model") or [{"scope": "main", **(row.get("usage") or {})}]
+
+
+def sum_known(values):
+    known = [v for v in values if v is not None]
+    return sum(known) if known else None
+
+
+def total(rows, field):
+    return sum_known([entry.get(field) for row in rows for entry in entries(row)])
+
+
+def incomplete(value):
+    return any(value.get(k) is None for k in (*TOKEN_FIELDS, "model_actual", "cost_usd", "billing"))
+
+
+def model_metrics(log):
+    rows = log.all("rounds")
+    first = {}
+    for row in rows:
+        if row["stage"] in ("审查", "验收"):
+            key = (row["item"], row["stage"], row["config"]["family"])
+            first.setdefault(key, row["token"])
+    groups = {}
+    for row in rows:
+        for value in entries(row):
+            model = value.get("model_actual")
+            groups.setdefault(model, []).append({**row, "usage": value, "scope": value["scope"]})
+    result = {}
+    for model, selected in groups.items():
+        unique = {r["token"]: r for r in selected}
+        durations = [r["elapsed_seconds"] for r in unique.values() if r.get("elapsed_seconds") is not None]
+        cache_rows = [r for r in selected if all(r["usage"].get(k) is not None for k in ("input", "cache_read", "cache_write"))]
+        denominator = sum(sum(r["usage"][k] for k in ("input", "cache_read", "cache_write")) for r in cache_rows)
+        rates = {}
+        for stage in ("审查", "验收"):
+            attempts = [r for r in selected if r["stage"] == stage and r["scope"] == "main"
+                        and first.get((r["item"], stage, r["config"]["family"])) == r["token"]]
+            known = [r for r in attempts if r.get("passed") is not None and r.get("outcome") is not None]
+            rates[stage] = {"passed": sum(r["passed"] and r["outcome"] == "done" for r in known),
+                            "total": len(known), "missing": len(attempts) - len(known)}
+        unreported = {r["token"] for r in selected if incomplete(r["usage"]) or r.get("elapsed_seconds") is None
+                      or r["scope"] == "main" and r["stage"] in ("审查", "验收") and r.get("passed") is None}
+        cache_missing = {r["token"] for r in selected if any(r["usage"].get(k) is None for k in ("input", "cache_read", "cache_write"))}
+        result[model] = dict(rounds=len(unique), tokens={k: sum_known([r["usage"].get(k) for r in selected]) for k in TOKEN_FIELDS},
+                            cost_usd=sum_known([r["usage"].get("cost_usd") for r in selected]),
+                            average_seconds=sum(durations) / len(durations) if durations else None,
+                            duration_missing=len(unique) - len(durations),
+                            cache_hit_rate=sum(r["usage"]["cache_read"] for r in cache_rows) / denominator if denominator else None,
+                            cache_missing=len(cache_missing), rates=rates, unreported=len(unreported),
+                            children_unreported=sum(not r.get("children_reported") for r in unique.values()))
+    return result
+
+
 def usage(log, now=None):
     now = (now or utcnow()).astimezone()
     today = now.replace(hour=0, minute=0, second=0, microsecond=0)
     rows = log.all("rounds")
 
     def summarize(label, selected):
-        known = [r["usage"] for r in selected if r.get("usage") is not None]
-        return (f'{label}\t{len(selected)}\t{sum(u["tokens_in"] for u in known)} / '
-                f'{sum(u["tokens_out"] for u in known)}\t${sum(u["cost"] for u in known):.4f}'
-                f'\t没上报 {len(selected) - len(known)} 轮')
+        tokens = " / ".join(display(total(selected, k)) for k in TOKEN_FIELDS)
+        cost = total(selected, "cost_usd")
+        money = f"${cost:.4f}" if cost is not None else "未知"
+        missing = sum(any(incomplete(entry) for entry in entries(r)) for r in selected)
+        children_missing = sum(not r.get("children_reported") for r in selected)
+        return f"{label}\t{len(selected)}\t{tokens}\t{money}\t未上报 {missing} 轮；子 agent 未计 {children_missing} 轮"
 
-    lines = ["期间/活\t轮数\t输入/输出 token\t折合 USD\t未上报",
+    lines = ["期间/活\t轮数\t输入/缓存读/缓存写/输出 token\tAPI 折合 USD\t未上报",
              summarize("今天", [r for r in rows if datetime.fromisoformat(r["at"]) >= today]),
              summarize("最近 7 天", [r for r in rows if datetime.fromisoformat(r["at"]) >= now - timedelta(days=7)])]
     for item_id in dict.fromkeys(r["item"] for r in rows):
         lines.append(summarize(f"按活 {item_id}", [r for r in rows if r["item"] == item_id]))
+    lines.append("按实际模型\t轮数\t审查一次过\t验收一次过\t平均秒\t输入/缓存读/缓存写/输出 token\tAPI 折合 USD\t缓存命中率\t未上报")
+    for model, stats in model_metrics(log).items():
+        def rate(stage):
+            value = stats["rates"][stage]
+            return f'{value["passed"]}/{value["total"]}（缺 {value["missing"]}）' if value["total"] else f'未知（缺 {value["missing"]}）'
+        tokens = " / ".join(display(stats["tokens"][k]) for k in TOKEN_FIELDS)
+        hit = stats["cache_hit_rate"]
+        hit = f"{hit:.1%}" if hit is not None else "未知"
+        cost = stats["cost_usd"]
+        cost = f"${cost:.4f}" if cost is not None else "未知"
+        average = stats["average_seconds"]
+        average = f"{average:.1f}" if average is not None else "未知"
+        lines.append(f'{display(model)}\t{stats["rounds"]}\t{rate("审查")}\t{rate("验收")}\t{average}（缺 {stats["duration_missing"]}）'
+                     f'\t{tokens}\t{cost}\t{hit}（缺 {stats["cache_missing"]}）\t未上报 {stats["unreported"]} 轮；子 agent 未计 {stats["children_unreported"]} 轮')
     return "\n".join(lines)

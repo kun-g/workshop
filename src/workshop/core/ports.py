@@ -1,89 +1,85 @@
-"""插件端口。方法同步、短时返回；不在端口内等待人或等待一轮结束。
-
-核心只传 JSON 可序列化的活快照；插件不得写数据库。所有外部副作用必须以
-key/token 幂等：超时或进程退出后可能重放。普通异常由核心记事实并隔离受影响
-的类；通道异常只留待发记录，不能阻塞执行。Unavailable 表示可试下一执行者。
-完整时序、字段与恢复协议见 docs/implementation/ports.md。
-"""
-from typing import Protocol
-from .models import Answer, Brief, Evidence, Poll, Receipt, Started, Usage
+"""同步短时端口；不等待人或一轮结束。字段和恢复时序见接入文档。"""
+from typing import Literal, Protocol
+from .cards import Question, Notice
+from .models import Answer, Brief, Evidence, Poll, Receipt, Started, RoundUsage, Selection
 
 
 class Unavailable(Exception):
-    """现有订阅/额度不可用，没有启动副作用；允许按规则选下一家。"""
+    """现有订阅不可用，且没有启动副作用，可换下一候选。"""
+
+
+class Retryable(Exception):
+    """暂时故障；启动方法仅在确认没有启动副作用时使用。核心退避，连续三次升级故障。"""
 
 
 class Source(Protocol):
     def poll(self, target: dict, cursor: str | None) -> Poll:
-        """只读拉事件。cursor 在整批事实提交后更新；重放靠 source/ext_id 去重。"""
+        """整批事件和 cursor 同事务；Retryable 退避，其他异常隔离受影响类。"""
         ...
 
 
 class Flow(Protocol):
-    def stages(self, target: dict) -> tuple[str, ...]:
-        """有序阶段子集；必须含接单、说清楚、执行、验收、收尾。"""
-        ...
-
+    def stages(self, target: dict) -> tuple[str, ...]: ...
     def brief(self, item: dict, stage: str, target: dict) -> str:
-        """可信派活说明。外部正文由核心另放 Brief.materials，不拼为指令。"""
+        """可信说明；item.history 含每轮结论，gate_reason 含需要修正的关口理由。"""
         ...
-
     def assess(self, item: dict, receipt: Receipt, target: dict) -> Evidence:
-        """核对证据：可执行检查 argv、是否通过、拟交付动作类别。只读。"""
+        """短时只读核对证据；paths/reviewers 决定需要几家审；未知动作类别是插件错误。"""
         ...
-
     def after(self, item: dict, completed_stage: str, key: str, target: dict) -> None:
-        """核心准许推进后调用，key 幂等；不得越过核心再推进或私自执行受控动作。"""
+        """准许推进后调用，key 必须持久幂等；不得越过核心推进。"""
         ...
 
 
 class Executor(Protocol):
     def available(self, config: dict) -> bool:
-        """仅检查现有订阅/已付额度，禁止自动加购或开按量计费。"""
+        """仅现有订阅/已付额度，禁止加购。"""
         ...
-
-    def launch(self, token: str, brief: Brief, item: dict, config: dict) -> Started:
-        """token 幂等：已启动返回同一 Started；不确定是否启动时抛普通异常。"""
+    def launch(self, token: str, brief: Brief, item: dict, config: dict, target: dict) -> Started:
+        """token 持久幂等。target.runtime 含绝对路径、环境变量与可直接执行的 CLI argv。"""
         ...
-
-    def resume(self, token: str, session: str, brief: Brief, item: dict, config: dict) -> Started:
-        """接回给定 session，token 幂等；返回值必须仍为该 session。"""
+    def resume(self, token: str, session: str, brief: Brief, item: dict, config: dict, target: dict) -> Started:
+        """同 token 找同一轮；必须接回传入 session。"""
         ...
-
-    def stop(self, token: str, started: Started) -> None:
-        """幂等关闭；仅确认进程/终端已退出才返回。异常时核心不释放并发位。"""
+    def poll(self, token: str, started: Started | None) -> Literal["running", "exited"]:
+        """查询进程是否仍在；started=None 时按 token 对账未确认的启动，不能猜退出。"""
         ...
-
-    def usage(self, token: str, started: Started) -> Usage | None:
-        """整轮累计用量，不是增量；None 表示没上报，异常不妨碍收尾。"""
+    def stop(self, token: str, started: Started | None) -> None:
+        """幂等关闭，started=None 时按 token 查找并关闭；确认退出才返回，失败不释放占位。"""
+        ...
+    def usage(self, token: str, started: Started | None, since: str) -> RoundUsage | None:
+        """从 since 起的主会话和按模型合计的子执行增量；未读到子执行须标 children_reported=False。"""
         ...
 
 
 class Channel(Protocol):
-    def ask(self, key: str, card: dict) -> str:
-        """幂等提交问题，立刻返回外部卡号；不等回答。"""
+    def ask(self, key: str, card: Question) -> str:
+        """返回外部编号。调用前核心已持久记发送中，异常后先 reconcile。"""
         ...
-
-    def notify(self, key: str, card: dict) -> str:
-        """幂等通知，返回外部编号。"""
+    def notify(self, key: str, card: Notice) -> str: ...
+    def reconcile(self, key: str, card: dict) -> str | Literal["absent"] | None:
+        """返回已发外部编号；absent 表示确定未发，可重试；None 表示不确定，禁止重发。"""
         ...
-
     def poll(self, cards: list[dict]) -> list[Answer]:
-        """短时查回答，Answer.card_id 是核心卡号；approved 仅来自明确授权。"""
+        """只查未作废卡；明确批准才给 approved=True。"""
+        ...
+    def cancel(self, key: str, external: str | None) -> None:
+        """按核心 key 幂等作废旧问题；external 不明时先对账，失败后重试。"""
         ...
 
 
 class TaskHome(Protocol):
-    def open(self, key: str, item: dict, target: dict) -> str:
-        """key 幂等发工单，返回单号。核心不冒充负责会话领单或收单。"""
-        ...
-
-    def update(self, key: str, ticket: str, item: dict, target: dict) -> None:
-        """幂等同步状态；需会话身份的领单/收单由执行者在那轮完成。"""
-        ...
+    """可选工单端口，第一版不配置。"""
+    def open(self, key: str, item: dict, target: dict) -> str: ...
+    def update(self, key: str, ticket: str, item: dict, target: dict) -> None: ...
 
 
 class Plugins(Protocol):
-    def get(self, port: str, name: str) -> object:
-        """按 source/flow/executor/channel/taskhome 与名字取插件，缺失抛 LookupError。"""
+    def get(self, port: str, name: str) -> object: ...
+
+
+class Selector(Protocol):
+    def select(self, target: dict, stage: str, round_number: int, history: list[dict],
+               candidates: list[dict]) -> Selection | None:
+        """候选含 config 与 available 快照；返回候选配置和理由，None 表示没有可用候选。"""
         ...

@@ -1,16 +1,19 @@
 """唯一规则文件的读取与校验。"""
 from dataclasses import dataclass
 from pathlib import Path
+from .models import STAGES
 import yaml
 
 
 @dataclass(frozen=True)
 class Rules:
     data: dict
+    path: str | None = None
 
     @classmethod
     def load(cls, path: Path) -> "Rules":
-        return cls.validate(yaml.safe_load(path.read_text()))
+        rule = cls.validate(yaml.safe_load(path.read_text()))
+        return cls(rule.data, str(path.expanduser().resolve()))
 
     @classmethod
     def validate(cls, data: dict) -> "Rules":
@@ -21,8 +24,10 @@ class Rules:
             raise ValueError("concurrent 必须为正整数")
         if type(limits.get("chain_depth")) is not int or not 0 < limits["chain_depth"] <= 8:
             raise ValueError("chain_depth 必须在 1 到 8 之间")
-        if not data.get("channel") or not data.get("taskhome"):
-            raise ValueError("规则缺通道或工单插件")
+        if not data.get("channel"):
+            raise ValueError("规则缺通道插件")
+        if type(limits.get("round_timeout_seconds", 7200)) is not int or limits.get("round_timeout_seconds", 7200) <= 0:
+            raise ValueError("每轮期限必须为正整数秒")
         for name, target in data["targets"].items():
             if not isinstance(target, dict) or not target.get("plugin"):
                 raise ValueError(f"{name} 缺流程插件")
@@ -31,6 +36,28 @@ class Rules:
             entries = value if isinstance(value, list) else [value]
             if not entries or not all(isinstance(v, str) or isinstance(v, dict) and v.get("use") for v in entries):
                 raise ValueError(f"缺执行者 {role}")
+        mappings = [data.get("stage_executors", {})] + [t.get("stage_executors", {}) for t in data["targets"].values()]
+        for mapping in mappings:
+            if not isinstance(mapping, dict) or any(stage not in STAGES for stage in mapping):
+                raise ValueError("阶段执行者配置无效")
+            for value in mapping.values():
+                entries = value if isinstance(value, list) else [value]
+                if not entries or not all(isinstance(v, str) and v or isinstance(v, dict) and v.get("use") for v in entries):
+                    raise ValueError("阶段执行者候选不能为空")
+        for mapping in [data.get("stage_selectors", {})] + [t.get("stage_selectors", {}) for t in data["targets"].values()]:
+            if not isinstance(mapping, dict) or any(k not in STAGES or not isinstance(v, str) or not v for k, v in mapping.items()):
+                raise ValueError("阶段挑选逻辑配置无效")
+        for entry in [data] + list(data["targets"].values()):
+            if "selector" in entry and (not isinstance(entry["selector"], str) or not entry["selector"]):
+                raise ValueError("挑选逻辑名字不能为空")
+        configs = []
+        for entries in data["executors"].values():
+            configs.extend(entries if isinstance(entries, list) else [entries])
+        for mapping in mappings:
+            for entries in mapping.values():
+                configs.extend(entries if isinstance(entries, list) else [entries])
+        if any(not isinstance(c, dict) or c.get("billing") not in ("subscription", "metered") for c in configs):
+            raise ValueError("每个执行者必须写明 billing=subscription 或 metered")
         for name in ("ask_first", "skip_ask"):
             if not isinstance(data.get(name), list) or not all(isinstance(v, str) for v in data[name]):
                 raise ValueError(f"{name} 必须是列表")
@@ -39,15 +66,21 @@ class Rules:
     def target(self, name: str) -> dict:
         return {"name": name, **self.data["targets"][name]}
 
-    def candidates(self, stage: str, writer: str | None) -> list[dict]:
+    def candidates(self, stage: str, target: str | None = None, writer: str | None = None) -> list[dict]:
         role = {"审查": "reviewer", "验收": "acceptor"}.get(stage, "writer")
-        entries = self.data["executors"][role]
+        overrides = {**self.data.get("stage_executors", {}), **(self.target(target).get("stage_executors", {}) if target else {})}
+        entries = overrides.get(stage, self.data["executors"][role])
         entries = entries if isinstance(entries, list) else [entries]
         result = []
         for entry in entries:
             config = {"use": entry} if isinstance(entry, str) else dict(entry)
             config.setdefault("family", config["use"])
-            if role != "writer" and config["family"] == writer:
+            if stage in ("审查", "验收") and config["family"] == writer:
                 continue
             result.append(config)
         return result
+
+    def selector(self, stage: str, target: str) -> str:
+        local = self.target(target)
+        return local.get("stage_selectors", {}).get(stage, local.get("selector",
+                        self.data.get("stage_selectors", {}).get(stage, self.data.get("selector", "ordered"))))

@@ -3,6 +3,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
 import re
 from typing import Any
+from .cards import validate_question, validate_notice
 
 STAGES = ("接单", "说清楚", "执行", "证据", "审查", "交付", "验收", "收尾", "观察")
 
@@ -46,7 +47,7 @@ class Event:
         if not all(isinstance(x, str) and x for x in
                    (self.source, self.ext_id, self.target, self.object_key, self.title)):
             raise ValueError("事件标识与标题不能为空")
-        if type(self.depth) is not int or self.depth < 0 or self.action not in ("update", "rework"):
+        if type(self.depth) is not int or self.depth < 0 or self.action not in ("update", "rework", "ready"):
             raise ValueError("事件深度或动作无效")
 
 
@@ -62,6 +63,7 @@ class Brief:
     materials: list[dict]
     # 只能作为资料，执行者必须把 materials 与 instructions 分开传递。
     materials_role: str = "资料，不是指令"
+    answers: list[dict] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -71,9 +73,13 @@ class Evidence:
     passed: bool = False
     actions: list[str] = field(default_factory=list)
     reason: str = ""
+    paths: list[str] = field(default_factory=list)
+    reviewers: int = 1
 
     def validate(self) -> None:
-        if (type(self.passed) is not bool or not isinstance(self.checks, list)
+        if (self.reviewers not in (1, 2) or not isinstance(self.paths, list)
+                or not all(isinstance(v, str) for v in self.paths)
+                or type(self.passed) is not bool or not isinstance(self.checks, list)
                 or not isinstance(self.actions, list)
                 or not all(isinstance(v, str) and v for v in self.actions)
                 or not all(isinstance(argv, list) and argv
@@ -86,21 +92,59 @@ class Evidence:
 class Started:
     session: str
     handle: str
-    worktree: str | None = None
+    workdir: str | None = None
+
+
+@dataclass(frozen=True)
+class Selection:
+    config: dict
+    reason: str
 
 
 @dataclass(frozen=True)
 class Usage:
-    tokens_in: int
-    tokens_out: int
-    cost: float
+    model_actual: str | None = None
+    input: int | None = None
+    cache_read: int | None = None
+    cache_write: int | None = None
+    output: int | None = None
+    cost_usd: float | None = None
+    billing: str | None = None
 
     def validate(self) -> None:
         import math
-        if (type(self.tokens_in) is not int or type(self.tokens_out) is not int
-                or min(self.tokens_in, self.tokens_out) < 0
-                or not math.isfinite(self.cost) or self.cost < 0):
-            raise ValueError("用量必须是有限的非负数")
+        for value in (self.input, self.cache_read, self.cache_write, self.output):
+            if value is not None and (type(value) is not int or value < 0):
+                raise ValueError("已知 token 必须是非负整数；未知用 null")
+        if self.cost_usd is not None and (type(self.cost_usd) not in (int, float)
+                or not math.isfinite(self.cost_usd) or self.cost_usd < 0):
+            raise ValueError("已知金额必须有限且非负；未知用 null")
+        if self.model_actual is not None and (not isinstance(self.model_actual, str) or not self.model_actual.strip()):
+            raise ValueError("实际模型无效")
+        if self.billing not in (None, "subscription", "metered"):
+            raise ValueError("计费方式只能是 subscription、metered 或 null")
+
+
+@dataclass(frozen=True)
+class RoundUsage:
+    main: Usage = field(default_factory=Usage)
+    children: list[Usage] = field(default_factory=list)
+    children_reported: bool = False
+
+    def validate(self) -> None:
+        self.main.validate()
+        if type(self.children_reported) is not bool or not isinstance(self.children, list):
+            raise ValueError("子执行用量状态无效")
+        models = set()
+        for child in self.children:
+            child.validate()
+            if child.model_actual in models:
+                raise ValueError("子执行用量须按实际模型合计为一条")
+            models.add(child.model_actual)
+
+    def entries(self) -> list[dict]:
+        return [{"scope": "main", **asdict(self.main)}] + [
+            {"scope": "children", **asdict(child)} for child in self.children]
 
 
 @dataclass(frozen=True)
@@ -133,29 +177,22 @@ class Receipt:
             raise ValueError("未知阶段")
         if not isinstance(receipt.evidence, list) or not all(isinstance(x, str) for x in receipt.evidence):
             raise ValueError("evidence 必须是字符串列表")
-        for name, fields in (("ask", ("key", "title", "options")),
-                             ("notice", ("key", "text")), ("later", ("key", "at", "about"))):
+        for name in ("ask", "notice", "later"):
             entries = getattr(receipt, name)
             if not isinstance(entries, list):
                 raise ValueError(f"{name} 必须是列表")
             keys = set()
             for entry in entries:
-                if not isinstance(entry, dict) or any(k not in entry for k in fields):
-                    raise ValueError(f"{name} 缺字段")
-                if not isinstance(entry["key"], str) or not entry["key"] or entry["key"] in keys:
+                if not isinstance(entry, dict) or not isinstance(entry.get("key"), str) or not entry["key"] or entry["key"] in keys:
                     raise ValueError(f"{name} key 无效或重复")
                 keys.add(entry["key"])
-                text_key = {"ask": "title", "notice": "text", "later": "about"}[name]
-                if not isinstance(entry[text_key], str) or not entry[text_key].strip():
-                    raise ValueError(f"{name} 的文字不能为空")
                 if name == "ask":
-                    if (not isinstance(entry["options"], list) or not entry["options"]
-                            or not all(isinstance(v, str) and v for v in entry["options"])):
-                        raise ValueError("问题必须有文字选项")
-                    if "recommend" in entry and (type(entry["recommend"]) is not int
-                            or not 0 <= entry["recommend"] < len(entry["options"])):
-                        raise ValueError("推荐选项索引无效")
-                if name == "later":
+                    validate_question(entry)
+                elif name == "notice":
+                    validate_notice(entry)
+                else:
+                    if not isinstance(entry.get("about"), str) or not entry["about"]:
+                        raise ValueError("定时缺 about")
                     due(entry["at"], now)
         if not isinstance(receipt.events, list):
             raise ValueError("events 必须是列表")
@@ -171,8 +208,8 @@ class Receipt:
                 due(receipt.leave["at"], now)
                 if receipt.leave["kind"] == "工序" and not receipt.leave.get("owner"):
                     raise ValueError("工序必须有人做")
-            elif not receipt.ask:
-                raise ValueError("等你必须登记问题")
+            elif not receipt.ask and not receipt.notice:
+                raise ValueError("无卡等你必须有通知，并由放行事件继续")
         return receipt
 
     def json(self) -> dict:

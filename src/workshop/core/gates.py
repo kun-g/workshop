@@ -22,6 +22,9 @@ def validate_stages(stages):
 
 def decide(item: dict, receipt: Receipt, evidence: Evidence, stages, rules: Rules) -> Decision:
     validate_stages(stages)
+    unknown = set(evidence.actions) - set(rules.data["ask_first"]) - set(rules.data["skip_ask"])
+    if unknown:
+        raise ValueError(f"未登记的动作类别：{sorted(unknown)}")
     current = item["stage"]
     requested = receipt.advance
     if current == "验收" and not evidence.passed:

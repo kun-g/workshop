@@ -12,6 +12,9 @@ dependencies = ["PyYAML>=6.0.2,<7"]
 [project.scripts]
 workshop = "workshop.cli:main"
 
+[project.entry-points."workshop.selector"]
+ordered = "workshop.plugins.selectors.ordered:make_selector"
+
 [dependency-groups]
 dev = ["pytest>=8.3,<10", "import-linter>=2.1,<3"]
 

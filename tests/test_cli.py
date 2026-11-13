@@ -19,7 +19,7 @@ def test_cli_on_completed_state(tmp_path, capsys, monkeypatch):
     assert main(["why", "alpha:one"]) == 0
     assert "起因：事实" in capsys.readouterr().out
     assert main(["usage"]) == 0
-    assert "800 / 160" in capsys.readouterr().out
+    assert "800 / 0 / 0 / 160" in capsys.readouterr().out
 
 
 def test_cli_ingest_pause_and_select(tmp_path, capsys, monkeypatch):
@@ -29,7 +29,11 @@ def test_cli_ingest_pause_and_select(tmp_path, capsys, monkeypatch):
     assert main(["event", "--json", payload]) == 0
     assert main(["resume", "workshop"]) == 0
     assert "尚未恢复" in capsys.readouterr().out
-    assert main(["resume", "workshop", "--select", "all"]) == 0
+    from workshop.core.log import Log
+    log = Log(tmp_path / "workshop.db")
+    seen = ",".join(e["id"] for e in log.all("deferred"))
+    log.close()
+    assert main(["resume", "workshop", "--select", "all", "--seen", seen]) == 0
     assert "补 1 个事件" in capsys.readouterr().out
     assert main(["event", "--json", payload]) == 0
     assert "未重复记录" in capsys.readouterr().out

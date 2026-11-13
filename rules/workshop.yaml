@@ -2,6 +2,8 @@
 targets:
   grant-console:
     plugin: issue_delivery
+    selector: ordered
+    stage_selectors: {审查: ordered}
     sources: [github]
     repo: kun-g/grant-console
     checkout: ~/workspace/runtime/repos/grant-console
@@ -13,6 +15,8 @@ targets:
     two_reviewers: ['.github/', 'deploy/', 'grant_console/']
   workshop:
     plugin: issue_delivery
+    selector: ordered
+    stage_selectors: {审查: ordered}
     sources: [github]
     repo: kun-g/workshop
     checkout: ~/workspace/runtime/repos/workshop
@@ -21,17 +25,18 @@ targets:
     label: Ready for Agent
     release: none
 executors:
-  writer: {use: orca-claude, family: claude, model: claude-opus-5-5, effort: high}
+  writer: {use: orca-claude, family: claude, billing: subscription, model: claude-opus-5-5, effort: high}
   reviewer:
-    - {use: cursor-grok, family: grok}
-    - {use: codex, family: codex}
-    - {use: claude, family: claude}
+    - {use: cursor-grok, family: grok, billing: subscription}
+    - {use: codex, family: codex, billing: subscription}
+    - {use: claude, family: claude, billing: subscription}
   acceptor:
-    - {use: codex, family: codex}
-    - {use: claude, family: claude}
-limits: {concurrent: 2, chain_depth: 8}
+    - {use: codex, family: codex, billing: subscription}
+    - {use: claude, family: claude, billing: subscription}
+limits: {concurrent: 2, chain_depth: 8, round_timeout_seconds: 7200}
+selector: ordered
+stage_selectors: {执行: ordered}
 channel: ask_kun
-taskhome: sb_task
 ask_first:
   - 对外发消息
   - 删别处的东西
@@ -39,3 +44,6 @@ ask_first:
   - 有别人在用的交付对象上线
 skip_ask:
   - 只有你在用的交付对象上线
+
+# 阶段可单独指定候选；省略时沿用 writer/reviewer/acceptor。
+stage_executors: {}
