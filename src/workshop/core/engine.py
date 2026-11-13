@@ -9,11 +9,11 @@ import uuid
 import sys
 import hashlib
 
-from .gates import advance_problem, decide, validate_stages
+from .gates import advance_problem, decide, overlaps, validate_stages
 from .log import Log
-from .models import Brief, Event, Receipt, Started, due, stamp, utcnow
+from .models import Brief, Event, Receipt, STAGES, Started, due, stamp, utcnow
 from .ports import Unavailable, Retryable, ChannelRejected
-from .cards import question, notice, validate_question, validate_notice
+from .cards import frozen_question, question, notice, validate_question, validate_notice
 from .models import After, FlowBrief, Classification, Evidence, Usage, RoundUsage
 
 
@@ -183,10 +183,12 @@ class Engine:
                     self.block(item, "流程插件等待修复", plugin=True)
             return added
 
-    def classification_intent(self, event):
+    def classification_intent(self, event, received_seq=None):
+        """received_seq：原来收到时的事实序号；暂停后补放的事件带原序号，放弃前收到的旧返工照样作废。"""
         seq = self.log.db.execute("SELECT max(seq) FROM facts").fetchone()[0]
         self.fact("effect", {"id": f"classify:{seq}", "kind": "classify", "done": False,
-                             "event": asdict(event), "item": event.item_id, "event_seq": seq, "defer_creation": True}, event.item_id)
+                             "event": asdict(event), "item": event.item_id, "event_seq": seq,
+                             "received_seq": received_seq or seq, "defer_creation": True}, event.item_id)
 
     def classify_events(self):
         for entry in self.log.all("effects"):
@@ -225,6 +227,7 @@ class Engine:
                     event = replace(event, object_key=self.resolve_key(event.target, event.object_key))
                 if action not in ("update", "ready", "rework"):
                     raise ValueError("流程返回了未知事件动作")
+                action = self.after_abandon(event.item_id, entry.get("received_seq", entry["event_seq"]), action)
                 with self.log.transaction():
                     self.fact("event_classified", {"id": entry["id"], "action": action,
                               "event_seq": entry["event_seq"], **note,
@@ -234,6 +237,13 @@ class Engine:
                 self.retry_failure(event.target, "flow", target["plugin"], entry["id"], exc)
             except Exception as exc:
                 self.broken(event.target, "flow", target["plugin"], exc)
+
+    def after_abandon(self, item_id, seq, action):
+        """放弃之前收到的事件，晚到的分类或补放只当资料：返工、放行降为普通更新。"""
+        item = self.log.get("items", item_id)
+        if action in ("rework", "ready") and item and seq < item.get("abandoned_seq", 0):
+            return "update"
+        return action
 
     def drop(self, item_id):
         """清掉一件还没跑过轮次的活；之后同一对象要再放行才重新建活。"""
@@ -249,6 +259,27 @@ class Engine:
             if item["state"] != "空闲" or item.get("history") or item.get("sessions") or rounds or cards or timers or effects or aliases:
                 raise ValueError(f"{item_id} 已经跑过轮次或有未了的卡、定时、别名，不能清掉")
             self.fact("item_dropped", {"id": item_id}, item_id)
+
+    def abandon(self, item_id, reason):
+        """Kun 决定不做了：停在当前阶段，状态「放弃」，取消没答的问题，让出串行路径。
+        记录都留着；要再做就返工（可信的「不对」），回到执行重新排队。"""
+        if not isinstance(reason, str) or not reason.strip():
+            raise ValueError("放弃要写原因")
+        with self.log.transaction():
+            item = self.log.get("items", item_id)
+            if not item:
+                raise ValueError(f"找不到活：{item_id}")
+            if item["state"] in ("完成", "放弃"):
+                raise ValueError(f"{item_id} 已经{item['state']}，不用放弃")
+            if any(r["item"] == item_id for r in self.active()):
+                raise ValueError(f"{item_id} 还有一轮没结束，先用 abort 结束那一轮再放弃")
+            self.fact("item_abandoned", {"id": item_id, "reason": reason.strip()}, item_id)
+            self.cancel_questions(item)
+            # 放弃前收到的返工、插件故障的恢复快照都作废：只有放弃之后的新返工才让它回来。
+            self.change(item, state="放弃", next=f"已放弃：{reason.strip()}", blocked_by="", serial_hold=False,
+                        pending_advance=None, after_wait=None, wait_for_ready=False, retry_at=None,
+                        pending_rework=False, plugin_blocked=False, before_plugin_failure=None,
+                        leave={"kind": "等你", "about": "已放弃；要再做就返工"})
 
     def pause(self, target):
         self.rules.target(target)
@@ -278,10 +309,11 @@ class Engine:
                     if ingress == "unknown":
                         event = replace(event, action="update")
                     event = replace(event, object_key=self.resolve_key(event.target, event.object_key))
+                    event = replace(event, action=self.after_abandon(event.item_id, int(entry["id"]), event.action))
                     self.fact("event", {**asdict(event), "ingress": ingress, "pending_classification": ingress == "external",
                                         **gate(ingress)}, event.item_id, source="resume", ext_id=entry["id"])
                     if ingress == "external":
-                        self.classification_intent(event)
+                        self.classification_intent(event, int(entry["id"]))
                         continue
                     replayed = self.log.get("items", event.item_id)
                     if replayed is None:
@@ -399,7 +431,7 @@ class Engine:
                     pseudo = {"id": f"@{affected}"}
                     self.card(pseudo, f"plugin:{port}:{name}:{incident}", "notice", notice(f"{affected} 插件故障：{exc}"))
                 for item in self.log.all("items"):
-                    if item["target"] == affected and item["state"] != "完成" and not item.get("plugin_blocked"):
+                    if item["target"] == affected and item["state"] not in ("完成", "放弃") and not item.get("plugin_blocked"):
                         self.block(item, f"{port}/{name}: {exc}", plugin=True)
 
     def waiting(self, item):
@@ -572,7 +604,8 @@ class Engine:
                     choice_label = next((c["label"] for c in card["payload"]["choices"] if c["key"] == answer.value), answer.value)
                     # 回答单独追加，由 evolve 在最新资料上追加，不回写旧资料快照。
                     self.fact("answer", {**asdict(answer), "approved": approved, "choice_label": choice_label, "key": card["payload"].get("key", card["key"]),
-                              "title": card["payload"]["decision"], "actions": card.get("actions", []), "billing_configs": card.get("billing_configs", [])},
+                              "title": card["payload"]["decision"], "actions": card.get("actions", []), "billing_configs": card.get("billing_configs", []),
+                              "frozen_files": card.get("frozen_files", [])},
                               card["item"], source="answer", ext_id=card["id"])
                     self.fact("card_changed", {"id": card["id"], "answered": True, "answer": answer.value, "choice_label": choice_label, "approved": approved}, card["item"])
                     item = self.log.get("items", card["item"])
@@ -608,6 +641,8 @@ class Engine:
                     self.apply_timer(timer, item)
 
     def apply_timer(self, timer, item):
+        if item["state"] == "放弃":
+            return  # 放弃前约的工序和送回不再打扰；到点只记事实。
         if timer["kind"] == "送回":
             self.card(item, timer["id"], "ask", question(timer["about"]))
             if item["state"] not in ("跑着", "卡住"):
@@ -770,6 +805,37 @@ class Engine:
             self.start_retry(item, locals().get("row"), port, name, exc)
         except Exception as exc:
             self.broken(item["target"], port, name, exc)
+
+    def serial_holder(self, item):
+        """同一交付对象里占着串行路径的另一件活：进了执行、没收尾完成、没放弃、不在排队。"""
+        start = STAGES.index("执行")
+        return next((other for other in self.log.all("items")
+                     if other["id"] != item["id"] and other["target"] == item["target"] and other.get("serial_hold")
+                     and other["state"] not in ("完成", "放弃", "排队") and STAGES.index(other["stage"]) >= start), None)
+
+    def serial_queue(self, item):
+        """规则 serial_paths：碰到的活同一时间只放一件过执行，其余停在当前阶段前排队，前一件收尾完成或放弃后自动放下一件。
+        按说清楚时登记的路径加之后实际改动判；占位从进执行起，退回执行期间仍占着。"""
+        prefixes = self.rules.target(item["target"]).get("serial_paths", [])
+        needed = (prefixes and STAGES.index(item["stage"]) >= STAGES.index("执行")
+                  and overlaps(item.get("paths", []), prefixes))
+        if not needed:
+            if item["state"] == "排队":
+                self.change(item, state="空闲", next=item["stage"], blocked_by="", serial_hold=False)
+            return self.log.get("items", item["id"])
+        holder = self.serial_holder(item)
+        if holder:
+            about = f'排队：等 {holder["id"]} 收尾让出串行路径'
+            if item["state"] != "排队" or item.get("blocked_by") != holder["id"] or item.get("serial_hold"):
+                self.change(item, state="排队", next=about, blocked_by=holder["id"], serial_hold=False,
+                            leave={"kind": "工序", "owner": "车间", "at": stamp(self.clock()), "about": about})
+        elif item["state"] == "排队" or not item.get("serial_hold"):
+            changes = dict(serial_hold=True)
+            if item["state"] == "排队":
+                changes.update(state="空闲", next=item["stage"], blocked_by="",
+                               leave={"kind": "工序", "owner": "车间", "at": stamp(self.clock()), "about": item["stage"]})
+            self.change(item, **changes)
+        return self.log.get("items", item["id"])
 
     def runtime(self, token):
         state_dir = str(self.log.path.parent.resolve())
@@ -973,6 +1039,9 @@ class Engine:
                                last_failure=receipt.summary if receipt.outcome == "failed" else None)
                 if evidence.checks:
                     changes["checks"] = evidence.checks
+                if evidence.paths:
+                    # 说清楚时登记的预计路径和之后实际改动的并集，串行路径排队按它判。
+                    changes["paths"] = sorted(set(item.get("paths", [])) | set(evidence.paths))
                 if after_result.pending:
                     changes.update(self.pending_changes(item, after_result, target,
                         {"key": key, "receipt": receipt.json(), "to": decision.stage, "complete": decision.complete}))
@@ -998,10 +1067,13 @@ class Engine:
                     if decision.stage == "执行" and item["stage"] != "说清楚":
                         changes.update(approved=[], reviews=[], review_required=1)
                     self.fact("gate_passed", {"gate_reason": decision.reason}, item["id"])
-                elif decision.needs_approval and receipt.outcome == "done" and not receipt.ask:
-                    self.card(item, f"approval:{token}", "ask", question(decision.reason, approval=True), actions=list(decision.needs_approval), core_approval=True)
+                elif (decision.needs_approval or decision.frozen) and receipt.outcome == "done" and not receipt.ask:
+                    payload = (frozen_question(item, decision.frozen, decision.needs_approval) if decision.frozen
+                               else question(decision.reason, approval=True))
+                    card_id = self.card(item, f"approval:{token}", "ask", payload, actions=list(decision.needs_approval),
+                                        frozen_files=list(decision.frozen), core_approval=True)
                     changes.update(state="等你", next=decision.reason, blocked_by="Kun", leave={"kind": "等你", "about": decision.reason},
-                                   pending_advance={"token": token, "card": f'{item["id"]}:approval:{token}', "from": item["stage"], "to": receipt.advance,
+                                   pending_advance={"token": token, "card": card_id, "from": item["stage"], "to": receipt.advance,
                                                     "evidence": asdict(evidence), "receipt": row["receipt"], "stages": list(stages)})
                     self.fact("gate_blocked", {"gate_reason": decision.reason}, item["id"])
                 elif receipt.ask or receipt.later or receipt.leave:
@@ -1150,6 +1222,7 @@ class Engine:
                     with self.log.transaction():
                         self.cancel_questions(item)
                         self.change(item, stage="执行" if item["checks"] else "说清楚", state="空闲",
+                                    **({} if item["checks"] else {"serial_hold": False}),
                                     pending_rework=False, approved=[], pending_advance=None, reviews=[], review_required=1,
                                     after_pending_count=0, after_wait=None, pending_episode=item.get("pending_episode", 0) + 1,
                                     wait_for_ready=False, retry_executor=None, gate_count=0, next="按新事件返工")
@@ -1161,6 +1234,8 @@ class Engine:
                 if not self.taskhome(item):
                     continue
                 item = self.log.get("items", item["id"])
+                if item["state"] in ("空闲", "排队") and not item.get("after_wait"):
+                    item = self.serial_queue(item)
                 if item["state"] == "空闲" and not item.get("after_wait") and self.occupied() < self.rules.data["limits"]["concurrent"]:
                     self.reserve(item)
             self.channels()

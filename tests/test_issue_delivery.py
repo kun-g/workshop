@@ -834,6 +834,54 @@ def test_waiting_for_release_authorization_does_not_advance_or_resubmit(world):
     engine.log.close()
 
 
+def test_clarify_hands_declared_paths_to_core(world):
+    data = snapshot(world, '说清楚')
+    receipt = Receipt('done', '', evidence=[result(world, checks=[['scripts/check.sh']], paths=['cards/', ' src/a.py '])])
+    evidence = world['flow'].assess(data, receipt, world['target'])
+    assert evidence.passed and evidence.paths == ['cards/', 'src/a.py']
+    receipt = Receipt('done', '', evidence=[result(world, checks=[['scripts/check.sh']])])
+    evidence = world['flow'].assess(data, receipt, world['target'])
+    assert evidence.passed and evidence.paths == []
+    for bad in ('cards/', [''], [3]):
+        receipt = Receipt('done', '', evidence=[result(world, checks=[['scripts/check.sh']], paths=bad)])
+        evidence = world['flow'].assess(data, receipt, world['target'])
+        assert not evidence.passed and 'paths' in evidence.reason
+
+
+def test_clarify_brief_asks_for_paths(world):
+    data = snapshot(world, '说清楚')
+    world['io'].save(data, world['target'], {'effects': {}, 'issue': 7})
+    brief = world['flow'].brief(data, '说清楚', world['target'])
+    text = brief if isinstance(brief, str) else brief.instructions
+    assert 'evidence 那条 JSON 的 paths' in text and '串行路径' in text
+
+
+def test_renamed_files_count_old_and_new_paths(world):
+    edit(world, files=[{'filename': 'src/moved.yaml', 'previous_filename': 'deploy/a.yaml', 'status': 'renamed'},
+                       {'filename': 'src/b.py'}])
+    data = snapshot(world, '执行')
+    receipt = Receipt('done', '', advance='证据', evidence=[result(world)])
+    assert world['flow'].assess(data, receipt, world['target']).paths == ['deploy/a.yaml', 'src/b.py', 'src/moved.yaml']
+
+
+def test_renaming_out_of_frozen_path_still_stops(world):
+    cfg = configuration()
+    cfg.pop('taskhome')
+    cfg['targets']['alpha'] = {**world['target'], 'plugin': 'issue_delivery', 'sources': [], 'frozen_paths': ['deploy/']}
+    edit(world, files=[{'filename': 'src/moved.yaml', 'previous_filename': 'deploy/a.yaml', 'status': 'renamed'}])
+    engine = build(world['root'] / 'frozen', cfg)
+    engine.plugins.register('flow', 'issue_delivery', world['flow'])
+    engine.ingest(Event('github', 'start', 'alpha', '7', 'test', {}, action='ready'))
+    engine.tick()
+    for stage in ['说清楚', '执行', '证据', '审查']:
+        finish(engine, stage, key='7', evidence=[result(world, checks=[['scripts/check.sh']])])
+    waiting = item(engine, '7')
+    assert waiting['stage'] == '证据' and waiting['state'] == '等你'
+    card = next(c for c in engine.log.all('cards') if c.get('core_approval'))
+    assert card['frozen_files'] == ['deploy/a.yaml']
+    engine.log.close()
+
+
 def test_feishu_rework_shows_in_why_and_rejected_message_in_unfiled(world):
     """ws#37：群里一句「ws#7 不对」归到 alpha:7，why 里有时刻、来源、动作、原话和谁说的；冒名的进未归件。"""
     from workshop.core.report import unfiled, why
