@@ -46,6 +46,11 @@ def configure(path, **values):
     (path / "config.json").write_text(json.dumps(values))
 
 
+def allow(world, *kinds):
+    for kind in kinds:
+        (world["path"] / f"allow-{kind}").touch()
+
+
 def forbidden(name):
     def refuse(*args, **kwargs):
         raise AssertionError(f"一拍里不许调用 {name}")
@@ -110,8 +115,12 @@ def world(tmp_path, monkeypatch):
         jobs = Jobs(tmp_path / "jobs", [sys.executable, RUNNER, str(tmp_path)])
         return Engine(Log(tmp_path / "workshop.db"), rules(), job_plugins.registry(), clock, jobs=jobs)
 
-    yield dict(path=tmp_path, clock=clock, log=log, engine=engine)
-    log.close()
+    try:
+        yield dict(path=tmp_path, clock=clock, log=log, engine=engine)
+    finally:
+        # 断言失败也放行子进程，避免它们等到兜底期限才退出。
+        allow({"path": tmp_path}, *job_plugins.config().get("blocked", []))
+        log.close()
 
 
 def tick(world, engine, monkeypatch):
@@ -139,8 +148,8 @@ def wait(world, engine, monkeypatch, done, seconds=40):
 
 
 def test_slow_check_source_and_channel_do_not_hold_the_tick(world, monkeypatch):
-    # 慢插件只要比一拍（100 毫秒）长得多，就足以看出一拍不被它挡住；3 秒够派出另一件活。
-    configure(world["path"], check_seconds=3, source_seconds=3, channel_seconds=3, checks=[["/bin/sleep", "5"]])
+    # 作业保持阻塞，直到已经看到另一件活被派出，不靠固定睡眠猜时序。
+    configure(world["path"], blocked=["check", "source", "channel"], checks=[["/bin/sleep", "5"]])
     engine = world["engine"]()
     log = engine.log
     seen = {"label": False, "dispatched_during_check": False}
@@ -152,6 +161,9 @@ def test_slow_check_source_and_channel_do_not_hold_the_tick(world, monkeypatch):
         started = [r for r in rounds(log, "8") if r.get("started")]
         if checking and started:
             seen["dispatched_during_check"] = True
+        if all(seen.values()) and job_plugins.calls("source-start") and job_plugins.calls("send-start"):
+            assert not job_plugins.calls("sent") or (world["path"] / "allow-channel").exists()
+            allow(world, "check", "source", "channel")
         return any(r["stage"] == "证据" and r["status"] == "ended" for r in rounds(log, "7"))
 
     beats = wait(world, engine, monkeypatch, observe)
@@ -172,19 +184,26 @@ def test_slow_check_source_and_channel_do_not_hold_the_tick(world, monkeypatch):
 
 @pytest.mark.parametrize("finished_before_restart", [False, True])
 def test_restart_recovers_running_or_finished_check_without_rerun(world, monkeypatch, finished_before_restart):
-    configure(world["path"], check_seconds=3, checks=[["/bin/sleep", "5"]])
+    configure(world["path"], blocked=["check"], checks=[["/bin/sleep", "5"]])
     engine = world["engine"]()
     wait(world, engine, monkeypatch, lambda: bool(job_plugins.calls("assess-start")))
     assert shown(world["log"], "7") == "等检查"
+    assert not job_plugins.calls("assess-end")
     # 守护进程重启：丢掉引擎和作业对象，用同一个状态目录重新起。
     engine.log.close()
     del engine
     if finished_before_restart:
+        allow(world, "check")
         deadline = time.monotonic() + 20
         while not job_plugins.calls("assess-end") and time.monotonic() < deadline:
             time.sleep(0.1)
         assert job_plugins.calls("assess-end")
     revived = world["engine"]()
+    if not finished_before_restart:
+        tick(world, revived, monkeypatch)
+        assert shown(revived.log, "7") == "等检查"
+        assert not job_plugins.calls("assess-end")
+        allow(world, "check")
     wait(world, revived, monkeypatch,
          lambda: any(r["stage"] == "证据" and r["status"] == "ended" for r in rounds(revived.log, "7")))
     assert item(revived.log, "7")["stage"] == "审查"
@@ -432,13 +451,20 @@ def completed_item(world):
 @pytest.mark.parametrize("restart_at", ["hold-start", "release-start"])
 @pytest.mark.parametrize("reason", ["", "仍有未交出的改动"])
 def test_release_jobs_do_not_block_and_survive_restart(world, monkeypatch, restart_at, reason):
-    configure(world["path"], hold_seconds=0.5, release_seconds=0.5, release_reason=reason)
+    configure(world["path"], blocked=["hold", "release"], release_reason=reason)
+    if restart_at == "release-start":
+        allow(world, "hold")
     completed_item(world)
     engine = world["engine"]()
     beats = wait(world, engine, monkeypatch, lambda: bool(job_plugins.calls(restart_at)))
     assert item(engine.log, "9")["workdir"] == "/fake/completed"
     engine.log.close()
     revived = world["engine"]()
+    elapsed, beat = tick(world, revived, monkeypatch)
+    beats.append((elapsed, beat))
+    assert not job_plugins.calls(restart_at.replace("-start", "-end"))
+    assert item(revived.log, "9")["workdir"] == "/fake/completed"
+    allow(world, "hold", "release")
     beats += wait(world, revived, monkeypatch, lambda: bool(item(revived.log, "9").get("workdir_released")))
     assert all(elapsed <= LIMIT_MS and beat["tick_ms"] <= LIMIT_MS for elapsed, beat in beats), [
         {"wall_ms": round(elapsed, 2), "tick_ms": beat["tick_ms"]} for elapsed, beat in beats]
@@ -476,13 +502,15 @@ def test_release_hold_is_rechecked_after_delay_and_new_completion(world, monkeyp
 
 
 def test_rework_waits_for_active_release_before_launching(world, monkeypatch):
-    configure(world["path"], release_seconds=0.5)
+    configure(world["path"], blocked=["release"])
     completed_item(world)
     engine = world["engine"]()
     wait(world, engine, monkeypatch, lambda: bool(job_plugins.calls("release-start")))
     engine.change(item(engine.log, "9"), pending_rework=True)
     tick(world, engine, monkeypatch)
     assert not rounds(engine.log, "9")
+    assert not job_plugins.calls("release-end")
+    allow(world, "release")
     wait(world, engine, monkeypatch, lambda: any(r.get("started") for r in rounds(engine.log, "9")))
     calls = job_plugins.calls()
     released = next(i for i, row in enumerate(calls) if row[0] == "release-end")
