@@ -106,12 +106,16 @@ class Executor:
                 # 上一轮在同一轮里改过一次仍交不出合格回执：不再接回这个会话，换新会话从说明重来。
                 fresh = self.kind in PROXIED and (self.root / 'rounds' / previous['round'] / RECEIPT_REJECTED).exists()
                 # 规则换了模型：codex 拒绝用别的模型接回旧会话（exit 0、无回执），换新会话。
-                recorded = recorded_model(self.root / 'rounds' / previous['round'] / 'spec.json')
-                if self.kind in PROXIED and recorded != self.model(config):
-                    fresh = True
-                # 没记下厂商会话号的（启动后没读到）也接不回，开新会话。
-                if self.kind in ('codex', 'cursor-grok') and not session_file.exists():
-                    fresh = True
+                # codex/cursor-grok 按厂商会话记录里开会话时的模型判：没记下会话号、没记模型、
+                # 或上一次换新会话没起来（记录已清掉）都开新会话，绝不拿新模型接回旧会话。
+                if self.kind in ('codex', 'cursor-grok'):
+                    vendor = read(session_file) if session_file.exists() else {}
+                    if not vendor.get('vendor_id') or vendor.get('model') != self.model(config):
+                        fresh = True
+                elif self.kind == 'claude':
+                    recorded = recorded_model(self.root / 'rounds' / previous['round'] / 'spec.json')
+                    if recorded != self.model(config):
+                        fresh = True
             else:
                 workdir = assigned or item.get('workdir')
             if not workdir and self.kind == 'orca-claude' and not readonly:
@@ -141,13 +145,16 @@ class Executor:
             prompt_path = directory / 'brief.txt'
             prompt_path.write_text(prompt)
             if self.kind in ('codex', 'cursor-grok'):
-                # 厂商会话号要等它启动后从输出里读；新会话先不知道。
+                # 厂商会话号要等它启动后从输出里读；新会话先不知道。旧记录先清掉：
+                # 新会话没起来时，下一轮看不到记录照样开新会话，不会接回旧模型的会话。
                 vendor_id = read(session_file)['vendor_id'] if resume and not fresh else None
+                if vendor_id is None and session_file.exists():
+                    session_file.unlink()
             elif self.kind == 'claude':
                 vendor_id = (str(uuid.uuid4()) if fresh else read(session_file).get('vendor_id', session)
                              if resume and session_file.exists() else session)
                 if fresh:
-                    write(session_file, {'vendor_id': vendor_id})
+                    write(session_file, {'vendor_id': vendor_id, 'model': self.model(config)})
             else:
                 vendor_id = session
             argv = self._argv(config, workdir, vendor_id, resume and not fresh, directory, readonly)
@@ -164,7 +171,7 @@ class Executor:
                     'env': env, 'argv': argv, 'retry_argv': retry_argv, 'vendor_id': vendor_id,
                     'fresh_session': fresh, 'prompt': str(prompt_path),
                     'receipt_command': runtime['command'], 'interactive': self.kind == 'orca-claude',
-                    'billing': config.get('billing'), 'model': config.get('model'), 'item': {k: item[k] for k in ('id', 'target', 'object_key')}}
+                    'billing': config.get('billing'), 'model': self.model(config), 'item': {k: item[k] for k in ('id', 'target', 'object_key')}}
             write(session_info, {'workdir': workdir, 'round': directory.name})
             write(directory / 'spec.json', spec)
             command = [sys.executable, str(Path(__file__).with_name('runner.py')), str(directory)]

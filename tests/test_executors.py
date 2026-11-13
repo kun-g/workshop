@@ -47,6 +47,8 @@ if (root/'spawn-descendant').exists():
     (root/'descendant-pid').write_text(str(descendant.pid))
 with (root/'agents').open('a') as f:
     f.write(json.dumps({'name':name,'args':args,'prompt':prompt,'env':dict(os.environ),'cwd':os.getcwd(),'pid':os.getpid()})+'\n')
+if (root/'crash').exists():
+    sys.exit(1)  # 起不来：会话号还没输出就退出
 if name == 'codex':
     print(json.dumps({'type':'thread.started','thread_id':'real-codex-session'}),flush=True)
 if name == 'cursor-agent':
@@ -692,3 +694,29 @@ def test_codex_starts_fresh_session_when_rule_model_changes(setup):
     calls = [json.loads(row)['args'] for row in (root/'agents').read_text().splitlines()]
     assert 'resume' in calls[1] and 'real-codex-session' in calls[1]
     assert 'resume' not in calls[2] and '--sandbox' in calls[2]
+
+
+@pytest.mark.parametrize('kind', ['codex', 'cursor-grok'])
+def test_failed_fresh_launch_after_model_change_never_resumes_old_session(setup, kind):
+    """ws#30 复审：换模型开的新会话没起来（会话号没输出就退出），下一轮仍开新会话，不拿新模型接回旧会话。"""
+    root, make, item, target = setup
+    executor = make(kind)
+    first = executor.launch('one', BRIEF, item, {**CONFIG, 'model': 'old-model'}, target)
+    wait_for(lambda: (root/'agents').exists() and (root/'agents').read_text().endswith('\n'))
+    executor.stop('one', first)
+    new = {**CONFIG, 'model': 'new-model'}
+    (root/'crash').touch()
+    target['runtime']['env']['WORKSHOP_ROUND_TOKEN'] = 'two'
+    second = make(kind).resume('two', first.session, BRIEF, item, new, target)
+    wait_for(lambda: (executor.directory('two')/'exited.json').exists())
+    make(kind).stop('two', second)
+    (root/'crash').unlink()
+    target['runtime']['env']['WORKSHOP_ROUND_TOKEN'] = 'three'
+    third = make(kind).resume('three', first.session, BRIEF, item, new, target)
+    wait_for(lambda: len((root/'agents').read_text().splitlines()) >= 3 and
+             json.loads((root/'agents').read_text().splitlines()[-1])['args'][-1] != 'never')
+    calls = [json.loads(row)['args'] for row in (root/'agents').read_text().splitlines()]
+    last = calls[-1]
+    assert not any(flag in last for flag in ('resume', '--resume')), last
+    assert last[last.index('--model') + 1] == 'new-model'
+    make(kind).stop('three', third)

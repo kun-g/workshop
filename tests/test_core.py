@@ -103,6 +103,22 @@ def test_rejected_receipt_reason_survives_exit_and_reaches_item(engine):
     assert item(engine)["stage"] == "说清楚" and item(engine)["last_failure"] is None
 
 
+def test_self_submitted_rejection_survives_proxy_failed_receipt(engine):
+    """ws#30 复审：执行者自己交的回执被拒、之后只输出文字，包装进程代交的 failed 没写字段原因；
+    下一轮说明要的 last_failure 仍带着被拒的具体原因。"""
+    engine.ingest(event())
+    engine.tick()
+    row = current(engine)
+    with pytest.raises(ValueError):
+        engine.submit(row["token"], {"outcome": "success", "summary": "完成", "advance": "验收"})
+    engine.submit(row["token"], {"outcome": "failed", "summary": "最后一条消息里没有回执 JSON 对象（要有 outcome、summary）"})
+    engine.tick()
+    failure = item(engine)["last_failure"]
+    assert failure.startswith("最后一条消息里没有回执 JSON 对象")
+    assert 'outcome 是 "success"，只能是 done、failed、nothing' in failure
+    assert "advance 是「验收」；接单之后只能是「说清楚」" in failure
+
+
 def test_gate_still_names_allowed_advance(engine):
     """交回执时没核对上的（例如读不到阶段），收轮时关口照样拦，原因同样具体。"""
     engine.ingest(event())

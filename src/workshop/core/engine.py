@@ -381,6 +381,16 @@ class Engine:
             return ""  # 读不到阶段时留给收轮时的关口判定。
         return advance_problem(item, advance, stages)
 
+    @staticmethod
+    def failure_reason(row, receipt):
+        """没跑成的原因；这一轮自己交的回执被拒过，具体字段原因一并带上（代交的摘要里常没有）。"""
+        if receipt.outcome != "failed":
+            return None
+        rejected = row.get("receipt_rejected")
+        if rejected and rejected not in receipt.summary:
+            return f"{receipt.summary}；这一轮交的回执被拒过：{rejected}"
+        return receipt.summary
+
     def receipt_rejected(self, token, exc):
         row = self.log.get("rounds", token) if isinstance(token, str) else None
         if not row or row.get("receipt") is not None or row["status"] not in ("starting", "running"):
@@ -1036,7 +1046,7 @@ class Engine:
                 changes = dict(failures=0, round=None, retry_at=None, cause=max(item["cause"], row["receipt_seq"]),
                                retry_executor=None, review_required=required, reviews=reviews,
                                # 没跑成的原因交给流程写进下一轮说明；跑成了就清掉。
-                               last_failure=receipt.summary if receipt.outcome == "failed" else None)
+                               last_failure=self.failure_reason(row, receipt))
                 if evidence.checks:
                     changes["checks"] = evidence.checks
                 if evidence.paths:
