@@ -465,3 +465,49 @@ def test_recover_ws18_delivery_stuck_on_closed_duplicate_pr(world, release):
     pass_acceptance_and_close(engine, world, sha)
     assert merges(world) == 1
     engine.log.close()
+
+
+def test_completion_notice_goes_out_once_per_merge_commit(world):
+    """ws#46：验收、重走验收、收尾里执行者各自发的完成通知，同一合并提交只出一张卡；进度通知不出卡。"""
+    engine = engine_for(world, 'quiet')
+    progress = {'notice': [{'key': 'opened', 'text': 'ws#7 PR #11 已开'}]}
+    finish(engine, '说清楚', key='7', evidence=[result(world)], notice=[{'key': 'intake', 'text': 'ws#7 已接单'}])
+    finish(engine, '执行', key='7', evidence=[result(world, checks=[['scripts/check.sh']])])
+    finish(engine, '证据', key='7', evidence=[result(world)], **progress)
+    walk(engine, world, ['审查', '交付', '验收'])
+    sha = remote(world)['pr']['merge_commit_sha']
+    fail_acceptance(engine, world, sha)
+    rerun(engine, world, sha)
+    done = {'acceptance': {'passed': True, 'output': 'acceptance raw output', 'head': sha}}
+    finish(engine, '收尾', key='7', evidence=[result(world, **done)],
+           notice=[{'key': 'acceptance-ws7', 'text': 'ws#7 已验收'}])
+    cards = [c for c in engine.log.all('cards') if c['mode'] == 'notice']
+    assert [(c['key'], c['payload']['text']) for c in cards] == [(f'notice:完成:{sha}', 'ws#7 已验收')]
+    finish(engine, None, key='7', evidence=[result(world)], leave=CLOSING['leave'],
+           notice=[*CLOSING['notice'], {'key': 'accepted-2', 'text': 'ws#7 已验收（又一条）；不对就在群里回一句「ws#7 不对」'}])
+    assert item(engine, '7')['state'] == '完成'
+    cards = [c for c in engine.log.all('cards') if c['mode'] == 'notice']
+    assert [(c['key'], c['payload']['text']) for c in cards] == [(f'notice:完成:{sha}', 'ws#7 已验收')]
+    held = [f['body'] for f in engine.log.facts('alpha:7') if f['kind'] == 'notice_held']
+    assert [h['key'] for h in held] == ['intake', 'opened', 'accepted', 'accepted-2']
+    engine.log.close()
+
+
+def test_closing_evidence_carries_the_merge_commit(world):
+    data = snapshot(world, '收尾')
+    world['io'].save(data, world['target'], {'effects': {}, 'issue': 7, 'accepted': True, 'merge': world['sha']})
+    receipt = Receipt('done', '', leave={'kind': '送回', 'at': '+7d', 'about': '复看'},
+                      notice=[{**notice('已验收；不对就在群里回一句「ws#7 不对」'), 'key': 'accepted'}])
+    evidence = world['flow'].assess(data, receipt, world['target'])
+    assert evidence.passed and evidence.done_key == world['sha']
+
+
+@pytest.mark.parametrize('stage', ['接单', '说清楚', '执行', '证据', '审查', '交付', '验收', '收尾'])
+def test_briefs_say_no_progress_notices_except_closing(world, stage):
+    data = snapshot(world, stage)
+    world['io'].save(data, world['target'], {'effects': {}, 'issue': 7})
+    text = world['flow'].brief(data, stage, world['target'])
+    text = text if isinstance(text, str) else text.instructions
+    assert ('不发进度通知' in text) is (stage != '收尾')
+    if stage == '收尾':
+        assert 'key=accepted' in text and 'ws#7 不对' in text

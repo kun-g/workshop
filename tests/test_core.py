@@ -290,10 +290,10 @@ def test_flow_crash_isolates_other_type_and_only_one_notice(engine):
 def test_channel_outage_keeps_work_running_and_delivers_after_recovery(engine):
     channel = engine.plugins.get("channel", "channel")
     channel.down = True
-    reach(engine, "执行")
-    finish(engine, "证据", notice=[{"key": "progress", "text": "执行完成"}])
-    assert item(engine)["stage"] == "证据"
-    assert current(engine)
+    reach(engine, "收尾")
+    finish(engine, leave={"kind": "送回", "at": "+7d", "about": "复看"},
+           notice=[{"key": "accepted", "text": "验收已过，不用回"}])
+    assert item(engine)["state"] == "完成"
     assert engine.log.all("cards")[0]["sent"] is False
     channel.down = False
     engine.tick()

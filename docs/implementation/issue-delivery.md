@@ -40,6 +40,8 @@ Orca 插话钩子去掉轮次令牌后以 `cli:orca` 进入：流程用核心已
 
 **执行者 worktree**：活收尾完成后，核心先问流程 `hold_workdir`：这件活还有打开的 PR 就留着，约一小时后再问。流程不留时，核心请为这件活开过会话的执行者 `release`。orca-claude 和 orca-codex 只认自己按活 id 开的 `ws-<哈希>` 目录：worktree 有未提交改动（不算被忽略的文件），或本地分支上有任何远端分支都没有的提交，就留着，核心给 Kun 发一条通知，不再重试；否则 `orca worktree rm` 删 worktree，再 `git branch -D` 删本地分支，活上的 workdir 清空。返工开新一轮时按同一个名字重新开 worktree。守护进程照常每一拍检查一遍，已收尾但没收过的老活（升级前收尾的）也按同一判断收。不是车间按活 id 开的 worktree（比如别的流程或人手开的）不碰。
 
+上面的 `hold_workdir` 和 `release` 在守护进程中都由后台作业执行，一拍只提交调用或读取结果；同一次收回重启后认回，一小时后的复查和返工后的再次收尾用新的调用身份。见 [作业.md](作业.md)。
+
 ## 重走验收
 
 已合并的活验收没过、回到执行后，执行者判断问题不在代码（例如验收者拿不到合并提交、只读环境跑不了检查），可以不开 PR 直接回验收，同一合并提交只给一次。
@@ -86,7 +88,7 @@ grant-console 的 ECR/render/push-production/sync 仍由执行者申请集群授
 
 2026-11-13 只读实查：本机 Argo CLI 列出 argocd-central.hillingo.top、argocd.hillingo.top，但应用查询登录过期；没有改认证。经协调者确认改用上述 kubectl 只读路径，查到 source 为 git@github.com:kun-g/grant-console.git / production / manifests，revision 为 a7b09d7d2d39dcdeca0837f518708adf8ad421f8，Synced/Healthy。参数已写规则；查询未触发同步或发版。
 
-pending=false 才放行；rerun=false 用定时工序和指数退避回查，rerun=true 才接回执行者。同阶段连续 pending 达 pending_limit（默认 5）卡住并通知一次，不再循环。验收不过回执行；收尾只有验收记录、leave、含群内返工活名的通知才能关 issue，通知经核心通道发。
+pending=false 才放行；rerun=false 用定时工序和指数退避回查，rerun=true 才接回执行者。同阶段连续 pending 达 pending_limit（默认 5）卡住并通知一次，不再循环。验收不过回执行；收尾只有验收记录、leave、含群内返工活名的通知才能关 issue，通知经核心通道发。验收通过或收尾判过时 Evidence.done_key 给合并提交号，核心按它对每个合并提交只发一张完成卡：验收通过当轮或收尾轮的第一条出卡，随后同一提交多发的、换 key 的都不出卡，只记进 why。各阶段说明（收尾除外）写明不发进度通知，notice 只在留下等你或验收通过当轮发。
 
 ## 手动只读验收（本轮未执行）
 

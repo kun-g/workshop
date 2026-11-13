@@ -192,11 +192,16 @@ class Engine:
                 continue
             target = self.rules.target(item["target"])
             later = stamp(self.clock() + timedelta(hours=1))
+            # 同一次收回跨拍、跨重启复用结果；延期重试和返工后的收尾必须重新判断。
+            identity = [item["id"], item.get("pending_episode", 0), item["workdir"], item.get("release_at")]
             try:
                 hold = getattr(self.plugins.get("flow", target["plugin"]), "hold_workdir", None)
-                reason = hold(item, target) if hold else ""
+                reason = self.call("flow", target["plugin"], "hold_workdir", item, target,
+                                   identity=identity, item=item["id"]) if hold else ""
                 if not isinstance(reason, str):
                     raise ValueError("流程留工作目录的原因必须是字符串")
+            except Pending:
+                continue
             except Retryable:
                 self.change(item, release_at=later)
                 continue
@@ -210,9 +215,13 @@ class Engine:
             for name in sorted(item.get("sessions") or {}):
                 try:
                     release = getattr(self.plugins.get("executor", name), "release", None)
-                    result = release(item, target) if release else None
+                    result = self.call("executor", name, "release", item, target,
+                                       identity=identity, item=item["id"]) if release else None
                     if result is not None and (not isinstance(result, Release) or not result.released and not result.reason):
                         raise ValueError("执行者收回结果无效；留着时必须写原因")
+                except Pending:
+                    outcome = None
+                    break
                 except Retryable:
                     outcome = None
                     self.change(item, release_at=later)
@@ -496,6 +505,25 @@ class Engine:
             self.fact("card_created", dict(id=card_id, item=item["id"], mode=mode,
                       payload=payload, sent=False, answered=False, sending=False, cancelled=False, key=key, **extra), item["id"])
         return card_id
+
+    def receipt_notices(self, item, stage, token, receipt, evidence, closing):
+        """执行者回执里的通知只在 Kun 需要知道时发：这一轮留下等你，或这件活完成。
+
+        完成通知按 Evidence.done_key 只发一张，不看执行者用什么 key；其余的不发卡，记 notice_held 供 why 查看。
+        """
+        waiting = bool(receipt.leave and receipt.leave.get("kind") == "等你")
+        done = f'notice:完成:{evidence.done_key}' if evidence.done_key else "notice:完成"
+        for entry in receipt.notice:
+            if waiting:
+                self.card(item, f'notice:{entry["key"]}', "notice", entry)
+                continue
+            if closing and not self.log.get("cards", f'{item["id"]}:{done}'):
+                self.card(item, done, "notice", entry)
+                continue
+            reason = (f'这次完成已发过通知（{evidence.done_key or "这件活"}）' if closing
+                      else "进度通知不发：只在留下等你或完成时发")
+            self.fact("notice_held", {"token": token, "stage": stage, "key": entry["key"],
+                      "subject": entry["subject"], "text": entry["text"], "reason": reason}, item["id"])
 
     def timer(self, item, key, at, about, kind="工序", owner="车间", base=None):
         timer_id = f'{item["id"]}:{key}'
@@ -1214,8 +1242,9 @@ class Engine:
                           item["id"], source="result", ext_id=token)
                 for ask in receipt.ask:
                     self.card(item, f'{token}:{ask["key"]}', "ask", ask)
-                for entry in receipt.notice:
-                    self.card(item, f'notice:{entry["key"]}', "notice", entry)
+                completed = advancing and (decision.complete or (
+                    bool(evidence.done_key) and STAGES.index(decision.stage) > STAGES.index(row["stage"])))
+                self.receipt_notices(item, row["stage"], token, receipt, evidence, completed)
                 for later in receipt.later:
                     self.timer(item, f'{token}:{later["key"]}', later["at"], later["about"], base=received_at)
                 if receipt.leave and receipt.leave["kind"] in ("工序", "送回"):
@@ -1428,6 +1457,12 @@ class Engine:
             return
         if (item["pending_rework"] and item["depth"] <= self.rules.data["limits"]["chain_depth"]
                 and not any(r["item"] == item["id"] for r in self.active())):
+            if self.jobs and item.get("workdir") and not item.get("workdir_released"):
+                identity = [item["id"], item.get("pending_episode", 0), item["workdir"], item.get("release_at")]
+                if any(self.jobs.exists("executor", name, "release", identity)
+                       for name in item.get("sessions") or {}):
+                    # 正在收回的目录不能同时给新一轮用；本拍末尾先结算收回结果。
+                    return
             with self.log.transaction():
                 self.cancel_questions(item)
                 self.change(item, stage="执行" if item["checks"] else "说清楚", state="空闲",

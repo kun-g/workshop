@@ -25,7 +25,7 @@ import sys
 import time
 import traceback
 
-from .models import After, Answer, Brief, Classification, Event, Evidence, FlowBrief, Poll, Receipt, RoundUsage, Selection, Started, Usage
+from .models import After, Answer, Brief, Classification, Event, Evidence, FlowBrief, Poll, Receipt, Release, RoundUsage, Selection, Started, Usage
 from .ports import ChannelRejected, Retryable, Unavailable
 
 
@@ -69,7 +69,7 @@ LABELS = {
 
 ERRORS = {"Retryable": Retryable, "Unavailable": Unavailable, "ChannelRejected": ChannelRejected}
 TYPES = {cls.__name__: cls for cls in (After, Answer, Brief, Classification, Event, Evidence, FlowBrief, Poll,
-                                        Receipt, RoundUsage, Selection, Started, Usage)}
+                                        Receipt, Release, RoundUsage, Selection, Started, Usage)}
 KEEP_SECONDS = 86400
 SWEEP_SECONDS = 600
 # 一拍最多登记几个新作业；进程创建交给后台，避免系统调用拖住一拍。

@@ -419,3 +419,73 @@ def test_workshop_job_command_runs_entry_point_plugin(tmp_path):
             assert time.monotonic() < deadline
             time.sleep(0.1)
     assert isinstance(choice, Selection) and choice.config == config
+
+
+def completed_item(world):
+    """另建一件已收尾的活，和 fixture 里正在推进的两件并存。"""
+    engine = Engine(world["log"], rules(), job_plugins.registry(), world["clock"])
+    engine.ingest(event("9", ext_id="completed"))
+    engine.change(item(world["log"], "9"), state="完成", stage="收尾",
+                  workdir="/fake/completed", sessions={"writer": "session:9"})
+
+
+@pytest.mark.parametrize("restart_at", ["hold-start", "release-start"])
+@pytest.mark.parametrize("reason", ["", "仍有未交出的改动"])
+def test_release_jobs_do_not_block_and_survive_restart(world, monkeypatch, restart_at, reason):
+    configure(world["path"], hold_seconds=0.5, release_seconds=0.5, release_reason=reason)
+    completed_item(world)
+    engine = world["engine"]()
+    beats = wait(world, engine, monkeypatch, lambda: bool(job_plugins.calls(restart_at)))
+    assert item(engine.log, "9")["workdir"] == "/fake/completed"
+    engine.log.close()
+    revived = world["engine"]()
+    beats += wait(world, revived, monkeypatch, lambda: bool(item(revived.log, "9").get("workdir_released")))
+    assert all(elapsed <= LIMIT_MS and beat["tick_ms"] <= LIMIT_MS for elapsed, beat in beats)
+    assert len(job_plugins.calls("hold-start")) == len(job_plugins.calls("release-start")) == 1
+    assert rounds(revived.log, "8")  # 其他活仍能派出。
+    row = item(revived.log, "9")
+    assert row["workdir"] == ("/fake/completed" if reason else None)
+    assert row["workdir_released"] == ("留着：" + reason if reason else "已收回")
+    tick(world, revived, monkeypatch)
+    cards = [c for c in revived.log.all("cards") if "workdir-kept" in c["id"]]
+    assert len(cards) == bool(reason)
+    assert len(job_plugins.calls("release-start")) == 1
+    revived.log.close()
+
+
+def test_release_hold_is_rechecked_after_delay_and_new_completion(world, monkeypatch):
+    configure(world["path"], hold_reason="还要留")
+    completed_item(world)
+    engine = world["engine"]()
+    wait(world, engine, monkeypatch, lambda: bool(item(engine.log, "9").get("release_hold")))
+    assert not job_plugins.calls("release-start")
+    configure(world["path"])
+    tick(world, engine, monkeypatch)
+    assert len(job_plugins.calls("hold-start")) == 1
+    world["clock"].now += timedelta(hours=1)
+    wait(world, engine, monkeypatch, lambda: item(engine.log, "9").get("workdir_released") == "已收回")
+    assert len(job_plugins.calls("hold-start")) == 2
+    # 返工后再次收尾，同名目录必须重新判断，不能复用上一次的收回结果。
+    engine.change(item(engine.log, "9"), workdir="/fake/completed", workdir_released=None,
+                  pending_episode=1)
+    wait(world, engine, monkeypatch, lambda: item(engine.log, "9").get("workdir_released") == "已收回")
+    assert len(job_plugins.calls("hold-start")) == 3
+    assert len(job_plugins.calls("release-start")) == 2
+    engine.log.close()
+
+
+def test_rework_waits_for_active_release_before_launching(world, monkeypatch):
+    configure(world["path"], release_seconds=0.5)
+    completed_item(world)
+    engine = world["engine"]()
+    wait(world, engine, monkeypatch, lambda: bool(job_plugins.calls("release-start")))
+    engine.change(item(engine.log, "9"), pending_rework=True)
+    tick(world, engine, monkeypatch)
+    assert not rounds(engine.log, "9")
+    wait(world, engine, monkeypatch, lambda: any(r.get("started") for r in rounds(engine.log, "9")))
+    calls = job_plugins.calls()
+    released = next(i for i, row in enumerate(calls) if row[0] == "release-end")
+    launched = next(i for i, row in enumerate(calls) if row[0] == "launch" and row[2] == "alpha:9")
+    assert released < launched
+    assert len(job_plugins.calls("release-start")) == 1
+    engine.log.close()
