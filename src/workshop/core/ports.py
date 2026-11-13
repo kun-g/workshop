@@ -5,7 +5,7 @@ from .models import Answer, Brief, Evidence, Event, Poll, Receipt, Started, Roun
 
 
 class ChannelRejected(Exception):
-    """确定没有发送：本地校验、命令不可执行或上游明确拒收；不得待对账。"""
+    """发送命令明确拒收卡片；启动或查询故障不得使用此异常。"""
 
 
 class Unavailable(Exception):

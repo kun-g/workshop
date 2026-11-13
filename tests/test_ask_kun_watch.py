@@ -113,6 +113,7 @@ def test_poll_approval_only_stable_yes(fake, tmp_path, kind, value, approved):
 
 def test_pending_cancellation_and_failure_are_not_answers(fake, tmp_path):
     c = channel(fake, tmp_path)
+    c.ask("pending", question("批准方案", approval=True))
     assert c.poll([card()]) == []
     configure(fake, answers={"Q1": [6, "已作废"]})
     cancelled, = c.poll([card()])
@@ -131,8 +132,8 @@ def test_notify_idempotent_and_reconcile_reuses_key(fake, tmp_path):
         c.notify("notice-key", n)
     configure(fake)
     c = channel(fake, tmp_path)
-    assert c.reconcile("notice-key", {"mode": "notice"}) == "notice-key"
-    assert c.notify("notice-key", n) == "notice-key"
+    assert c.reconcile("notice-key", {"mode": "notice"}) == c._request_id("notice-key")
+    assert c.notify("notice-key", n) == c._request_id("notice-key")
     rows = calls(fake, "notify")
     assert len(rows) == 2
     assert rows[0] == rows[1]
@@ -289,7 +290,7 @@ def test_readability_repairs_and_true_upstream_validator(fake, tmp_path):
         assert fields["choices"][0]["key"] == "yes"
 
 
-@pytest.mark.parametrize("mode", ["usage", "missing", "permission", "local"])
+@pytest.mark.parametrize("mode", ["usage"])
 def test_definite_rejection_is_not_reconciliation(fake, tmp_path, mode):
     from workshop.core.ports import ChannelRejected
     c = channel(fake, tmp_path)
@@ -324,6 +325,7 @@ def test_thirty_day_cleanup_returns_cancelled(fake, tmp_path):
     path = fake.parent / "questions.json"
     rows = json.loads(path.read_text())
     rows[0]["sent_at"] = "2000-01-01T00:00:00+00:00"
+    rows[0]["status"] = "answered"
     path.write_text(json.dumps(rows))
     answer, = c.poll([card()])
     assert answer.cancelled and not answer.approved and answer.value == ""
@@ -344,17 +346,14 @@ def test_notifications_separate_state_directories_and_rebuilt_databases(fake, tm
     assert rebuilt._request_id("same") != first._request_id("same")
 
 
-def test_heartbeat_requires_two_separated_observations_and_recovers_quietly(fake, tmp_path):
-    watch = setup_watch(fake, tmp_path, NOW - timedelta(minutes=4))
-    watch.run(NOW)
-    watch.run(NOW + timedelta(seconds=10))
-    assert calls(fake, "notify") == []
-    (watch.directory / "heartbeat.json").write_text(json.dumps({"last_ok_at": NOW.isoformat()}))
-    watch.run(NOW + timedelta(seconds=60))
-    assert calls(fake, "notify") == []
-    # 正常 60 秒调度下，从最后一次成功 tick 起五分钟内告警。
-    for seconds in (120, 180, 240, 300):
+def test_recent_watch_run_alerts_on_first_stale_observation(fake, tmp_path):
+    watch = setup_watch(fake, tmp_path, NOW)
+    for seconds in (0, 60, 120, 180):
         watch.run(NOW + timedelta(seconds=seconds))
+    assert calls(fake, "notify") == []
+    watch.run(NOW + timedelta(seconds=240))
+    assert len(calls(fake, "notify")) == 1
+    watch.run(NOW + timedelta(seconds=300))
     assert len(calls(fake, "notify")) == 1
 
 
@@ -383,12 +382,21 @@ def test_attention_delivery_retries_notify_same_id_until_success(fake, tmp_path)
     assert all(row == calls(fake, "notify")[0] for row in calls(fake, "notify"))
 
 
-def test_real_attention_keeps_visible_kind(fake, tmp_path):
+@pytest.mark.parametrize("fault", ["heartbeat", "round", "database", "delivery"])
+def test_real_attention_keeps_visible_kind(fake, tmp_path, fault):
     attention = Path.home() / "workspace/runtime/tools/stuck_watch/attention.py"
     if not attention.exists():
         pytest.skip("本机没有 attention.py")
     configure(fake, notify_exit=1)
     watch = setup_watch(fake, tmp_path, NOW - timedelta(minutes=4))
+    if fault != "heartbeat":
+        (watch.directory / "heartbeat.json").write_text(json.dumps({"last_ok_at": NOW.isoformat(),
+            **({"delivery_failed_count": 1, "delivery_failed_since": (NOW-timedelta(minutes=5)).isoformat()} if fault == "delivery" else {})}))
+    if fault == "database":
+        (watch.directory / "workshop.db").unlink()
+    if fault == "round":
+        with sqlite3.connect(watch.directory / "workshop.db") as db:
+            db.execute("INSERT INTO rounds VALUES ('r', ?)", (json.dumps({"status": "running", "at": (NOW-timedelta(hours=3)).isoformat()}),))
     watch.attention = str(attention)
     watch.attention_directory = tmp_path / "real-attention"
     watch.run(NOW)
@@ -427,3 +435,146 @@ def test_old_round_uses_saved_rules_timeout(fake, tmp_path):
         db.execute("CREATE TABLE controls(id TEXT, body TEXT)")
         db.execute("INSERT INTO controls VALUES ('@rules', ?)", (json.dumps({"data": {"limits": {"round_timeout_seconds": 300}}}),))
     assert "round:0" in watch.faults(NOW)
+
+
+@pytest.mark.parametrize("mode", ["missing", "permission", "uv"])
+@pytest.mark.parametrize("operation", ["ask", "notify"])
+def test_startup_failure_is_retryable_absent_not_rejection(fake, tmp_path, mode, operation):
+    from workshop.plugins.channels.ask_kun import CommandNotStarted
+    c = channel(fake, tmp_path)
+    original = fake.read_text()
+    q = question("批准方案") if operation == "ask" else {"subject": "通知", "text": "已完成", "fyi": True}
+    if mode == "missing":
+        fake.unlink()
+    elif mode == "permission":
+        fake.chmod(0o600)
+    else:
+        configure(fake, errors={operation: [2, "error: No interpreter found for Python 3.13"]})
+    with pytest.raises(CommandNotStarted):
+        getattr(c, operation)("retry", q)
+    assert c._read("retry").get("not_started") and not c._read("retry").get("rejected")
+    assert c.reconcile("retry", {"mode": operation}) == "absent"
+    if mode == "missing":
+        fake.write_text(original)
+    fake.chmod(0o755)
+    configure(fake)
+    external = getattr(c, operation)("retry", q)
+    assert external == ("Q1" if operation == "ask" else c._request_id("retry"))
+    assert not c._read("retry").get("not_started")
+
+
+@pytest.mark.parametrize("operation", ["ask", "notify"])
+@pytest.mark.parametrize("code,error,rejected", [(2, "usage: ask-kun ask", True), (2, "尚未发送", True),
+                                                  (4, "尚未发送", False), (2, "wrapper failed", False)])
+def test_rejection_needs_both_send_exit_two_and_upstream_marker(fake, tmp_path, operation, code, error, rejected):
+    from workshop.core.ports import ChannelRejected
+    configure(fake, errors={operation: [code, error]})
+    c = channel(fake, tmp_path)
+    payload = question("选择方案") if operation == "ask" else {"subject": "通知", "text": "已完成", "fyi": True}
+    with pytest.raises(ChannelRejected if rejected else RuntimeError):
+        getattr(c, operation)("test", payload)
+    assert bool(c._read("test").get("rejected")) == rejected
+
+
+@pytest.mark.parametrize("operation", ["list", "wait", "cancel"])
+def test_query_failure_never_rejects_sent_card(fake, tmp_path, operation):
+    c = channel(fake, tmp_path)
+    c.ask("sent", question("选择方案"))
+    configure(fake, errors={operation: [2, "usage: ask-kun；尚未发送"]}, answers={"Q1": [0, "yes"]})
+    # cancel 需要 waiting 状态，避免已答的合法幂等短路。
+    if operation == "cancel":
+        configure(fake, errors={operation: [2, "usage: ask-kun；尚未发送"]})
+    with pytest.raises(RuntimeError):
+        if operation == "cancel":
+            c.cancel("sent", "Q1")
+        else:
+            c.poll([card()])
+    assert c._read("sent")["external"] == "Q1" and not c._read("sent").get("rejected")
+
+
+def test_list_environment_failure_does_not_reject_core_sent_card(fake, engine):
+    from conftest import event, item
+    engine.ingest(event())
+    c = AskKun(fake, engine.log.path.parent)
+    engine.plugins.register("channel", "channel", c)
+    cid = engine.card(item(engine), "a", "ask", question("选择方案"))
+    engine.channels()
+    configure(fake, errors={"list": [2, "error: Failed to prepare uv environment"]})
+    engine.channels()
+    record = engine.log.get("cards", cid)
+    assert record["sent"] and not record.get("rejected") and not record["cancelled"]
+
+
+def test_http_403_requires_complete_absent_list(fake, tmp_path):
+    c = channel(fake, tmp_path)
+    configure(fake, answers={"Q1": [4, ""]})
+    with pytest.raises(RuntimeError):
+        c.poll([card()])  # 编号还在，不得把权限/读取故障当成作废。
+    configure(fake, answers={"Q1": [4, ""]}, remove_on_wait=True)
+    answer, = c.poll([card()])
+    assert answer.cancelled
+    assert len(calls(fake, "wait")) == 2
+
+
+def test_poll_lists_once_and_only_waits_terminal_cards(fake, tmp_path):
+    configure(fake, answers={"Q1": [3, ""], "Q2": [3, ""], "Q3": [0, "yes"], "Q4": [6, ""]})
+    result = channel(fake, tmp_path).poll([card(f"Q{i}", id=str(i)) for i in range(1, 5)])
+    assert len(calls(fake, "list")) == 1
+    assert [row["args"][1] for row in calls(fake, "wait")] == ["Q3", "Q4"]
+    assert [a.card_id for a in result] == ["3", "4"]
+    assert result[0].approved and result[1].cancelled
+
+
+def test_incomplete_list_does_not_cancel_any_card(fake, tmp_path):
+    configure(fake, empty_list=True, has_more=True)
+    with pytest.raises(RuntimeError, match="列表不完整"):
+        channel(fake, tmp_path).poll([card()])
+    assert not calls(fake, "wait")
+
+
+@pytest.mark.parametrize("technical", ["PR # 12", "pull  request", "a1b2c3d", "~/tmp/a.py"])
+def test_titles_keep_human_work_name_and_match_upstream_notation(fake, tmp_path, technical):
+    c = channel(fake, tmp_path)
+    for name in ("订单同步", "库存校对"):
+        q = question(name + " " + technical)
+        assert c.ask(name, q)
+    rows = json.loads((fake.parent / "questions.json").read_text())
+    assert "订单同步" in rows[0]["subject"] and "库存校对" in rows[1]["subject"]
+    assert technical not in rows[0]["subject"]
+    assert rows[0]["subject"] != rows[1]["subject"]
+    upstream = Path.home() / "workspace/runtime/worktrees/oh-my-assistant/workbench/switchboard/entry/ask-kun"
+    if upstream.exists():
+        import runpy
+        from workshop.plugins.channels.ask_kun import TECHNICAL
+        true = runpy.run_path(str(upstream))
+        assert TECHNICAL.pattern == true["TECHNICAL"].pattern
+        for call in calls(fake, "ask"):
+            true["structured"](true["build_parser"]().parse_args(call["args"]))
+
+
+def test_watch_delivery_failure_threshold_and_recovery(fake, tmp_path):
+    watch = setup_watch(fake, tmp_path)
+    heartbeat = watch.directory / "heartbeat.json"
+    def write(at, count=2):
+        heartbeat.write_text(json.dumps({"last_ok_at": at.isoformat(), "delivery_failed_count": count,
+            "delivery_failed_since": NOW.isoformat() if count else None}))
+    for seconds in (0, 60, 120, 180, 240):
+        at = NOW + timedelta(seconds=seconds)
+        write(at)
+        state = watch.run(at)
+    assert set(state["active"]) == {"delivery"} and len(calls(fake, "notify")) == 1
+    write(NOW + timedelta(seconds=300), 0)
+    assert not watch.run(NOW + timedelta(seconds=300))["active"]
+
+
+@pytest.mark.parametrize("phase", [0, 1, 19, 59])
+def test_watch_detects_stop_within_four_minute_check_bound(fake, tmp_path, phase):
+    watch = setup_watch(fake, tmp_path, NOW)
+    watch.run(NOW - timedelta(seconds=phase))
+    detected = None
+    for seconds in range(60-phase, 301, 60):
+        watch.run(NOW + timedelta(seconds=seconds))
+        if calls(fake, "notify"):
+            detected = seconds
+            break
+    assert 180 < detected <= 240

@@ -45,6 +45,11 @@ class Watch:
             if age > 180 or age < -60:
                 faults["heartbeat"] = {"anchor": heartbeat["last_ok_at"],
                                        "text": "车间 heartbeat.json 已超过 3 分钟没更新或时间异常，需要你检查守护进程。"}
+            if (type(heartbeat.get("delivery_failed_count")) is int and heartbeat["delivery_failed_count"] > 0
+                    and heartbeat.get("delivery_failed_since")
+                    and (now - timestamp(heartbeat["delivery_failed_since"])).total_seconds() > 180):
+                faults["delivery"] = {"anchor": heartbeat["delivery_failed_since"],
+                    "text": "车间 heartbeat.json 记录通道持续超过三分钟发不出去，需要你检查通道，详见 watch.json。"}
         except (OSError, ValueError, KeyError, TypeError):
             faults["heartbeat"] = {"anchor": "unreadable", "text": "车间 heartbeat.json 缺失或无法读取，需要你检查守护进程。"}
         try:
@@ -68,7 +73,7 @@ class Watch:
                         deadline = timestamp(row["deadline"]) if row.get("deadline") else timestamp(row["at"]) + timedelta(seconds=duration)
                         if now > deadline + timedelta(seconds=60):
                             faults[f"round:{rid}"] = {"anchor": deadline.isoformat(),
-                                "text": f"车间 workshop.db 中一轮 {rid} 超过期限和一分钟结算余量仍未结算，需要你检查执行者和结算日志。"}
+                                "text": f"车间 workshop.db 中一轮 {rid} 超过期限和一分钟结算余量仍未结算，需要你检查执行者和结算日志，详见 watch.json。"}
                     except (ValueError, KeyError, TypeError):
                         print(f"车间看门：跳过损坏的轮次记录 {rid}", file=sys.stderr)
         except sqlite3.Error:
@@ -128,6 +133,9 @@ class Watch:
             path = self.directory / "watch.json"
             state = json.loads(path.read_text()) if path.exists() else {"sequence": 0, "active": {}}
             before = self.summary(state)
+            previous = state.get("last_run")
+            awake = previous is not None and 0 <= (now - timestamp(previous)).total_seconds() <= 90
+            state["last_run"] = now.isoformat()
             faults = self.faults(now)
             active = state["active"]
             for key in list(active):
@@ -138,15 +146,9 @@ class Watch:
                     state["sequence"] += 1
                     fingerprint = hashlib.sha256(f"{self.directory}:{key}:{state['sequence']}:{now.isoformat()}".encode()).hexdigest()[:24]
                     active[key] = {**fault, "id": f"workshop-watch:{self.scope}:{now.date()}:{fingerprint}",
-                                   "since": now.isoformat(), "last_seen": now.isoformat(),
+                                   "since": now.isoformat(),
                                    "confirmed": False, "reported": False}
-                else:
-                    incident = active[key]
-                    elapsed = (now - timestamp(incident.get("last_seen", incident["since"]))).total_seconds()
-                    if not incident.get("confirmed") and 60 <= elapsed <= 120:
-                        incident["confirmed"] = True
-                    if elapsed >= 60 or elapsed < 0:
-                        incident["last_seen"] = now.isoformat()
+                active[key]["confirmed"] = awake
             # 同一次故障跨日期不重复；确认恢复后再次故障会分配新 id。
             self._save(state)
             errors = []

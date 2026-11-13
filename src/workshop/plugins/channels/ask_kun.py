@@ -19,6 +19,25 @@ from workshop.core.ports import ChannelRejected
 DEFAULT_COMMAND = Path.home() / "workspace/runtime/worktrees/oh-my-assistant/workbench/workbench/agent-bin/ask-kun"
 
 
+# 来源：workbench/switchboard/entry/ask-kun，2026-11-13；保持校验表达式一致，不跨仓库 import。
+TECHNICAL = re.compile(
+    r"(?:[a-z][a-z0-9+.-]*://|www\.)"
+    r"|(?<![a-z0-9])(?:MR|PR|CI|Q)\s*[#!！＃]?\s*[0-9０-９]+(?![a-z0-9])"
+    r"|(?<![a-z0-9])(?=[a-f0-9]{7,40}(?![a-z0-9]))(?=[a-f0-9]*[a-f])[a-f0-9]{7,40}(?![a-z0-9])"
+    r"|(?:~[/\\]|[a-z]:\\)[^\s，。；！？]+"
+    r"|(?<![a-z0-9])/[a-z_~.][a-z0-9_.~-]*(?:/[\w./~-]+)?"
+    r"|[a-z_.~-][a-z0-9_.~-]*/[\w./~-]+"
+    r"|[\w.-]+\.(?:py|md|json|ya?ml|toml|sh|js|ts|tsx|html|txt|csv|log)(?![a-z0-9_])"
+    r"|(?<![a-z0-9_])(?:worktree|commit|merge|rebase|cherry-pick|diff|pipeline|"
+    r"deploy|rollback|repo|pull\s+request|merge\s+request|CI|CD|SHA|CLI|SDK|stdout|stderr)(?![a-z0-9_])",
+    re.I,
+)
+
+
+class CommandNotStarted(RuntimeError):
+    """外部发送程序没有启动，可原键重试；不是卡片拒收。"""
+
+
 class AskKun:
     def __init__(self, command=None, state_dir=None, timeout=30):
         command = str(command or os.environ.get("WORKSHOP_ASK_KUN", DEFAULT_COMMAND))
@@ -65,14 +84,36 @@ class AskKun:
             return subprocess.run([self.command, *args], input=input, capture_output=True,
                                   text=True, timeout=self.timeout)
         except (FileNotFoundError, PermissionError) as exc:
-            raise ChannelRejected(str(exc)) from exc
+            raise CommandNotStarted(str(exc)) from exc
 
     @staticmethod
-    def _check(result):
-        if result.returncode == 2 or result.returncode and "尚未发送" in result.stderr:
-            raise ChannelRejected(result.stderr.strip() or "通道明确拒收，尚未发送")
+    def _check(result, command=None):
+        sending = command in ("ask", "notify")
+        if sending and result.returncode == 2 and any(
+                marker in result.stderr for marker in ("尚未发送", "usage: ask-kun")):
+            raise ChannelRejected(result.stderr.strip())
+        if sending and result.returncode and (
+                result.returncode == 2 and result.stderr.lstrip().startswith("error:")
+                or "uv: command not found" in result.stderr or "uv: not found" in result.stderr):
+            raise CommandNotStarted(result.stderr.strip())
         if result.returncode:
             raise RuntimeError(f"ask-kun exit {result.returncode}: {result.stderr.strip()[:500]}")
+
+    def _send(self, key, record, *args, input=None):
+        record.pop("not_started", None)
+        self._save(key, record)  # 重试前恢复发送意图，崩溃时不得误认仍没启动。
+        try:
+            result = self._run(*args, input=input)
+            self._check(result, args[0])
+            return result
+        except CommandNotStarted as exc:
+            record["not_started"] = str(exc)
+            self._save(key, record)
+            raise
+        except ChannelRejected as exc:
+            record["rejected"] = str(exc)
+            self._save(key, record)
+            raise
 
     def _questions(self):
         result = self._run("list", "--all")
@@ -82,8 +123,13 @@ class AskKun:
             data = json.loads(result.stdout)
         except ValueError:
             return None
-        rows = data.get("questions") if isinstance(data, dict) else data
-        if not isinstance(rows, list) or not all(isinstance(row, dict) for row in rows):
+        if not isinstance(data, dict) or data.get("code") != 0 or any(
+                data.get(key) for key in ("has_more", "next_cursor", "truncated")):
+            return None
+        rows = data.get("questions")
+        if (not isinstance(rows, list) or not all(isinstance(row, dict)
+                and re.fullmatch(r"Q\d+", str(row.get("id", ""))) for row in rows)
+                or len({row["id"] for row in rows}) != len(rows)):
             return None
         return rows
 
@@ -92,6 +138,8 @@ class AskKun:
             raise ChannelRejected(record["rejected"])
         if record.get("external"):
             return record["external"]
+        if record.get("not_started"):
+            return "absent"
         if record["mode"] == "notice":
             # notify 自己按 request-id 幂等；对账重放同一正文，不另建消息。
             return self._notify(key, record)
@@ -132,19 +180,19 @@ class AskKun:
         try:
             validate_question(wire)
         except (ValueError, TypeError, KeyError) as exc:
-            raise ChannelRejected(str(exc)) from exc
+            raise CommandNotStarted(str(exc)) from exc
         if any(not re.fullmatch(r"[a-zA-Z0-9_-]{1,18}", c["key"]) for c in wire["choices"]):
-            raise ChannelRejected("选项 key 只支持字母、数字、下划线、连字符")
+            raise CommandNotStarted("选项 key 只支持字母、数字、下划线、连字符")
         # 工程标识的完整含义保留在详情；无法用短字段表达时显式指向详情。
-        technical = re.compile(r"(?:[a-z]+://|www\.|(?:MR|PR|CI|Q)\s*[#!！＃]?[0-9０-９]+|"
-                               r"(?<![a-z0-9])[a-f0-9]{7,40}(?![a-z0-9])|[/\\]|"
-                               r"\.(?:py|md|json|ya?ml|toml|sh|js|ts|tsx|html|txt|csv|log)(?![a-z0-9_])|"
-                               r"(?<![a-z0-9_])(?:worktree|commit|merge|rebase|cherry-pick|diff|pipeline|deploy|"
-                               r"rollback|repo|pull request|merge request|CI|CD|SHA|CLI|SDK|stdout|stderr)(?![a-z0-9_]))", re.I)
+        technical = TECHNICAL
         defaults = {"subject": "车间方案待确认", "decision": "是否按详情中的方案继续", "reason": "完整依据与影响已列在详情中"}
         for name, fallback in defaults.items():
             if technical.search(wire[name]):
-                wire[name] = fallback
+                if name == "subject":
+                    clean = re.sub(r"\s+", " ", technical.sub("", wire[name])).strip(" ，。；：:!！?#＃-—()（）")
+                    wire[name] = (clean + "：方案待确认")[:30] if clean else fallback
+                else:
+                    wire[name] = fallback
         labels = set()
         for index, choice in enumerate(wire["choices"], 1):
             if (choice["label"] in {"确定", "同意", "确认", "是", "否", "处理"}
@@ -160,16 +208,23 @@ class AskKun:
         return wire
 
     def ask(self, key, card):
-        wire = self._prepare(card)
+        try:
+            wire = self._prepare(card)
+        except (ValueError, TypeError, KeyError, CommandNotStarted) as exc:
+            with self._locked():
+                if not self._read(key):
+                    self._save(key, {"mode": "ask", "payload": card, "not_started": str(exc)})
+            raise CommandNotStarted(str(exc)) from exc
         with self._locked():
             record = self._read(key)
             if record:
                 if record["mode"] != "ask" or record["payload"] != card:
-                    raise ChannelRejected("同一通道 key 不能更换卡片")
+                    raise ValueError("同一通道 key 不能更换卡片")
                 external = self._reconcile(key, record)
-                if external:
+                if external not in (None, "absent"):
                     return external
-                raise RuntimeError("发问结果未确认，禁止重发，等待对账")
+                if external is None:
+                    raise RuntimeError("发问结果未确认，禁止重发，等待对账")
             digest = hashlib.sha256((self.scope + key).encode()).hexdigest()[:24]
             record = {"mode": "ask", "sender": f"车间:{digest}", "payload": card, "wire": wire}
             details = self.directory / (self._path(key).stem + ".txt")
@@ -178,7 +233,7 @@ class AskKun:
             try:
                 details.write_text(full[:6000], encoding="utf-8")
             except OSError as exc:
-                raise ChannelRejected(str(exc)) from exc
+                raise CommandNotStarted(str(exc)) from exc
             args = ["ask", "--no-wait", "--answer-format", "key", "--from", record["sender"],
                     "--subject", wire["subject"], "--decision", wire["decision"],
                     "--context", wire["context"], "--details-file", str(details),
@@ -186,17 +241,7 @@ class AskKun:
             for choice in wire["choices"]:
                 args.extend(["--choice", f"{choice['key']}={choice['label']}",
                              "--effect", f"{choice['key']}={choice['effect']}"])
-            try:
-                self._save(key, record)
-            except OSError as exc:
-                raise ChannelRejected(str(exc)) from exc
-            try:
-                result = self._run(*args)
-                self._check(result)
-            except ChannelRejected as exc:
-                record["rejected"] = str(exc)
-                self._save(key, record)
-                raise
+            result = self._send(key, record, *args)
             external = result.stdout.strip()
             if not re.fullmatch(r"Q\d+", external):
                 raise RuntimeError("ask-kun 没有返回唯一 Q 号，等待对账")
@@ -211,19 +256,18 @@ class AskKun:
     def _notify(self, key, record):
         card = record["payload"]
         # 旧正文从 stdin 输入，保留完整通知，避免 summary 的 160 字限制。
-        result = self._run("notify", "--from", "车间", "--request-id", self._request_id(key), "-",
+        self._send(key, record, "notify", "--from", "车间", "--request-id", self._request_id(key), "-",
                            input=card["subject"] + "\n" + card["text"])
-        self._check(result)
         # notify 成功无 stdout；稳定 request-id 是该通知的外部关联编号。
-        record["external"] = key
+        record["external"] = self._request_id(key)
         self._save(key, record)
-        return key
+        return record["external"]
 
     def notify(self, key, card):
         try:
             validate_notice(card)
         except ValueError as exc:
-            raise ChannelRejected(str(exc)) from exc
+            raise CommandNotStarted(str(exc)) from exc
         with self._locked():
             record = self._read(key)
             if record and (record["payload"] != card or record["mode"] != "notice"):
@@ -235,41 +279,51 @@ class AskKun:
             return self._notify(key, record)
 
     def poll(self, cards):
+        cards = [card for card in cards if not card.get("answered") and not card.get("cancelled")]
+        if not cards:
+            return []
+        rows = self._questions()
+        if rows is None:
+            raise RuntimeError("问题列表不完整，保留所有待答卡")
+        indexed = {row.get("id"): row for row in rows}
         answers, failures = [], []
-        checked = 0
         for card in cards:
-            if card.get("answered") or card.get("cancelled"):
-                continue
-            checked += 1
             try:
+                row = indexed.get(card["external"])
+                if row is None:
+                    answers.append(Answer(card["id"], "", cancelled=True))
+                    continue
+                if row.get("status") not in ("answered", "cancelled", "defaulted"):
+                    continue  # 待答无需 wait，省去每卡启动外部程序。
                 result = self._run("wait", card["external"], "--timeout", "0")
                 if result.returncode == 3:
                     continue
-                missing = result.returncode in (1, 2, 4) and any(
-                    text in result.stderr for text in ("找不到该问题", "找不到问题", "unknown_question", "question_not_found"))
-                if result.returncode and ("状态文件里没有" in result.stderr or "forbidden_node" in result.stderr):
-                    rows = self._questions()
-                    missing = rows is not None and not any(row.get("id") == card["external"] for row in rows)
+                missing = False
+                if result.returncode and (any(text in result.stderr for text in (
+                        "找不到该问题", "找不到问题", "unknown_question", "question_not_found", "状态文件里没有", "forbidden_node"))
+                        or result.returncode == 4 and "HTTP 403" in result.stderr):
+                    latest = self._questions()
+                    missing = latest is not None and not any(row.get("id") == card["external"] for row in latest)
                 if result.returncode == 6 or missing:
                     answers.append(Answer(card["id"], "", cancelled=True))
                     continue
-                self._check(result)
+                self._check(result)  # 查询错误永不产生 ChannelRejected。
                 value = result.stdout.strip()
                 payload = card["payload"]
                 approved = (payload["kind"] == "approval" and value == "yes"
                             and any(c["key"] == "yes" for c in payload["choices"]))
                 answers.append(Answer(card["id"], value, approved))
-            except (RuntimeError, ChannelRejected, OSError, subprocess.TimeoutExpired) as exc:
+            except (RuntimeError, OSError, subprocess.TimeoutExpired) as exc:
                 failures.append(f"{card['external']}: {exc}")
                 print(f"车间卡片轮询失败 {failures[-1]}", file=sys.stderr)
-        if checked and len(failures) == checked:
+        if len(failures) == len(cards):
             raise RuntimeError("; ".join(failures))
         return answers
 
     def cancel(self, key, external):
         with self._locked():
             record = self._read(key)
-            if record and record.get("cancelled"):
+            if record and (record.get("cancelled") or record.get("rejected") or record.get("not_started")):
                 return
             if not external:
                 external = self._reconcile(key, record) if record else None

@@ -19,10 +19,21 @@ def evolve(db, fact: dict) -> None:
         if action == "rework":
             item["pending_rework"] = True
         if action == "ready" and item.get("wait_for_ready"):
-            if item["state"] == "等你":
-                item.update(state="空闲", wait_for_ready=False, next="按放行事件继续", blocked_by="")
-            elif item.get("plugin_blocked") and (item.get("before_plugin_failure") or {}).get("state") == "等你":
-                item["wait_for_ready"] = False
+            # 放行解除拒收/作废问题的等待，但不伪造其他问题的答案。
+            pending = False
+            for (raw,) in db.execute("SELECT body FROM cards").fetchall():
+                card = json.loads(raw)
+                if card["item"] != item["id"] or card["mode"] != "ask":
+                    continue
+                if card.get("awaiting_release"):
+                    card["awaiting_release"] = False
+                    put("cards", card["id"], card)
+                if not card["answered"] and not card.get("cancelled") and not card.get("rejected"):
+                    pending = True
+            item["wait_for_ready"] = False  # 跑着/卡住时也消费放行，不能留下残标记。
+            if item["state"] == "等你" and not pending:
+                item.update(state="空闲", next="按放行事件继续", blocked_by="")
+            elif item.get("plugin_blocked") and (item.get("before_plugin_failure") or {}).get("state") == "等你" and not pending:
                 item["before_plugin_failure"].update(state="空闲", next="按放行事件继续", blocked_by="")
 
     kind, body, item_id = fact["kind"], fact["body"], fact["item"]
