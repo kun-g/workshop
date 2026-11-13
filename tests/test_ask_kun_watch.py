@@ -257,6 +257,10 @@ def test_launch_agents_have_absolute_paths_and_independent_schedule(tmp_path):
         assert Path(plist["ProgramArguments"][0]).is_absolute()
         assert str(tmp_path / ".local/state/workshop") in plist["StandardErrorPath"]
         assert plist["EnvironmentVariables"]["WORKSHOP_STATE_DIR"] == str(tmp_path / ".local/state/workshop")
+        # 执行者的 CLI 不在 launchd 默认 PATH：claude、cursor-agent 在 ~/.local/bin，orca 在 Orca.app 里。
+        search = plist["EnvironmentVariables"]["PATH"].split(":")
+        assert str(tmp_path.resolve() / ".local/bin") in search
+        assert "/Applications/Orca.app/Contents/Resources/bin" in search and "/opt/homebrew/bin" in search
         if label.endswith("-watch"):
             assert plist["StartInterval"] == 60 and "KeepAlive" not in plist
             assert plist["ProgramArguments"][:2] == ["/usr/bin/python3", "-I"]

@@ -10,6 +10,14 @@ SPECS = {"com.kun.workshop": {"keep_alive": True},
          "com.kun.workshop-watch": {"interval_seconds": 60, "run_at_load": True}}
 
 
+# 执行者要找到 claude、cursor-agent（~/.local/bin）和 orca（Orca.app 自带）；launchd 默认 PATH 里没有。
+ORCA_BIN = "/Applications/Orca.app/Contents/Resources/bin"
+
+
+def search_path(home):
+    return ":".join([str(home / ".local/bin"), "/opt/homebrew/bin", ORCA_BIN, "/usr/bin", "/bin", "/usr/sbin", "/sbin"])
+
+
 def payload(label, spec, *, home=None, repository=None, state_dir=None):
     if label not in SPECS or spec != SPECS[label]:
         raise ValueError("invalid workshop LaunchAgent spec")
@@ -26,7 +34,7 @@ def payload(label, spec, *, home=None, repository=None, state_dir=None):
               "RunAtLoad": True, "StandardOutPath": str(state / (label + ".stdout.log")),
               "StandardErrorPath": str(state / (label + ".stderr.log")),
               "EnvironmentVariables": {"HOME": str(home), "WORKSHOP_STATE_DIR": str(state),
-                  "PATH": "/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin", "PYTHONUNBUFFERED": "1"}}
+                  "PATH": search_path(home), "PYTHONUNBUFFERED": "1"}}
     config.update({"KeepAlive": True, "ThrottleInterval": 10} if daemon else {"StartInterval": 60})
     return plistlib.dumps(config)
 
