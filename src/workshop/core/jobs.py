@@ -19,7 +19,6 @@ import os
 from pathlib import Path
 import shutil
 import signal
-import subprocess
 import sys
 import time
 import traceback
@@ -71,6 +70,8 @@ TYPES = {cls.__name__: cls for cls in (After, Answer, Brief, Classification, Eve
                                         Receipt, RoundUsage, Selection, Started, Usage)}
 KEEP_SECONDS = 86400
 SWEEP_SECONDS = 600
+# 一拍最多新起几个作业；其余照样记成没出结果，下一拍再起。启动虽不等子进程，也有系统调用的开销。
+SPAWNS_PER_TICK = 4
 
 
 def encode(value):
@@ -150,7 +151,8 @@ class Jobs:
         self.command = list(command)
         self.deadline = deadline
         self.clock = clock
-        self.children = {}
+        self.children = set()
+        self.spawned = 0
         self.swept = 0.0
 
     def path(self, port, name, method, identity):
@@ -193,6 +195,8 @@ class Jobs:
                 return self.call(port, name, method, args, identity=identity, item=item, lookup=lookup)
             shutil.rmtree(path, ignore_errors=True)
             raise Retryable(f"作业进程没写结果就退出了：{port}/{name}.{method}")
+        if self.spawned >= SPAWNS_PER_TICK:
+            raise Pending(path.name, label, item)
         self.start(path, {"port": port, "name": name, "method": method, "args": encode(list(args)),
                           "item": item, "label": label, "lookup": lookup,
                           "started": self.clock(), "deadline": self.clock() + self.deadline})
@@ -203,16 +207,22 @@ class Jobs:
         path.mkdir(parents=True)
         write(path / "spec.json", spec)
         lock = os.open(path / "lock", os.O_CREAT | os.O_RDWR, 0o600)
+        output = os.open(path / "output.log", os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
         try:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            with (path / "output.log").open("ab") as output:
-                # 独立会话：守护进程退出或重启，作业照跑；锁随文件描述交给作业进程。
-                child = subprocess.Popen([*self.command, str(path)], stdin=subprocess.DEVNULL, stdout=output,
-                                         stderr=subprocess.STDOUT, pass_fds=(lock,), start_new_session=True)
+            # 锁随文件描述交给作业进程，作业进程活着锁就一直被持有。
+            os.set_inheritable(lock, True)
+            # posix_spawn 建好进程就返回，不像 Popen 那样等子进程 exec 完；独立会话里，守护进程退出或重启作业照跑。
+            pid = os.posix_spawnp(self.command[0], [*self.command, str(path)], os.environ,
+                                  file_actions=[(os.POSIX_SPAWN_OPEN, 0, os.devnull, os.O_RDONLY, 0),
+                                                (os.POSIX_SPAWN_DUP2, output, 1), (os.POSIX_SPAWN_DUP2, output, 2)],
+                                  setsid=True)
         finally:
             os.close(lock)
-        (path / "pid").write_text(str(child.pid))
-        self.children[child.pid] = child
+            os.close(output)
+        self.spawned += 1
+        (path / "pid").write_text(str(pid))
+        self.children.add(pid)
 
     def kill(self, path):
         try:
@@ -222,10 +232,16 @@ class Jobs:
         shutil.rmtree(path, ignore_errors=True)
 
     def reap(self):
-        """收掉已退出的作业进程（不等），定期清掉一天没人取的结果和没启动成的目录。"""
-        for pid, child in list(self.children.items()):
-            if child.poll() is not None:
-                del self.children[pid]
+        """每拍开头调用：收掉已退出的作业进程（WNOHANG，不等），重置这一拍的启动数，
+        定期清掉一天没人取的结果和没启动成的目录。"""
+        self.spawned = 0
+        for pid in list(self.children):
+            try:
+                done, _ = os.waitpid(pid, os.WNOHANG)
+            except ChildProcessError:
+                done = pid
+            if done:
+                self.children.discard(pid)
         now = self.clock()
         if now - self.swept < SWEEP_SECONDS or not self.directory.is_dir():
             return
