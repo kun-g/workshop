@@ -186,7 +186,7 @@ class IO:
                     path.chmod(path.stat().st_mode | 0o700)
             shutil.rmtree(directory)
 
-    def bot_review(self, item, target, pr):
+    def bot_review(self, item, target, pr, body="已按此提交审查"):
         config = target.get("bot_review")
         if not config:
             return
@@ -203,7 +203,7 @@ class IO:
             raise Retryable("bot 签发结果为空")
         request = urllib.request.Request("https://api.github.com/" + endpoint,
             data=json.dumps({"event": "APPROVE", "commit_id": pr["head"]["sha"],
-                             "body": f'<!-- workshop-comment: {item["id"]} --> 已按此提交审查'}).encode(),
+                             "body": f'<!-- workshop-comment: {item["id"]} --> {body}'}).encode(),
             headers={"Authorization": "Bearer " + token, "Accept": "application/vnd.github+json"}, method="POST")
         try:
             with urllib.request.urlopen(request, timeout=20) as response:

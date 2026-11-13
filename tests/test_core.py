@@ -117,6 +117,12 @@ def test_self_submitted_rejection_survives_proxy_failed_receipt(engine):
     assert failure.startswith("最后一条消息里没有回执 JSON 对象")
     assert 'outcome 是 "success"，只能是 done、failed、nothing' in failure
     assert "advance 是「验收」；接单之后只能是「说清楚」" in failure
+    # 这一轮自己的结果和 workshop why 里也看得到具体原因（ws#30 复审）。
+    result = [f for f in engine.log.facts() if f["kind"] == "round_result" and f["body"]["token"] == row["token"]][-1]
+    assert result["body"]["summary"] == failure
+    assert engine.log.get("rounds", row["token"])["summary"] == failure
+    text = why(engine.log, "alpha:one")
+    assert f'回执被拒 {row["token"]}：' in text and 'outcome 是 "success"，只能是 done、failed、nothing' in text
 
 
 def test_gate_still_names_allowed_advance(engine):
@@ -673,3 +679,15 @@ def test_next_stage_round_explains_its_triggering_receipt(engine):
     reach(engine, "说清楚")
     cause = current(engine)["cause"]
     assert next(f for f in engine.log.facts() if f["seq"] == cause)["kind"] == "receipt"
+
+
+def test_advance_check_follows_stages_switched_off_by_rules(engine):
+    """规则关掉审查（#55）后，证据之后能填的是交付；交回执时的核对和关口一致。"""
+    flow = engine.plugins.get("flow", "flow")
+    flow.path = tuple(s for s in flow.path if s != "审查")
+    reach(engine, "证据")
+    row = current(engine)
+    with pytest.raises(ValueError, match="advance 是「审查」；证据之后只能是「交付」、「执行」"):
+        engine.submit(row["token"], dict(outcome="done", summary="完成证据", advance="审查"))
+    finish(engine, "交付")
+    assert item(engine)["stage"] == "交付"

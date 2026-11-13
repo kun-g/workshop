@@ -138,6 +138,8 @@ def why(log, item_id, rules=None, plugins=None, raw=False):
                     detail += f'；子 agent 模型={display(entry.get("model_actual"))} token={child_tokens} API折合USD={display(entry.get("cost_usd"))}'
             if not row.get("children_reported"):
                 detail += "；子 agent 未计"
+        elif kind == "round_changed" and body.get("receipt_rejected"):
+            detail = f'回执被拒 {body["token"]}：{body["receipt_rejected"]}'
         elif kind == "receipt":
             receipt = body["receipt"]
             detail = f'回执 {receipt["outcome"]} {receipt["summary"]}'
