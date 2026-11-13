@@ -445,7 +445,8 @@ def test_stop_escalates_to_kill_for_ignoring_process_group(setup):
     root,make,item,target=setup
     (root/'ignore-term').touch()
     (root/'spawn-descendant').touch()
-    executor=make('codex');executor.stop_timeout=.2
+    # 并行跑测试（-n 8）时机器忙，KILL 后确认进程组退出要的时间会超过 0.2 秒；给 2 秒，仍要求走到 KILL。
+    executor=make('codex');executor.stop_timeout=2
     started=executor.launch('one',BRIEF,item,CONFIG,target)
     wait_for(lambda:(root/'agents').exists() and (root/'agents').read_text().endswith('\n'))
     executor.stop('one',started)
