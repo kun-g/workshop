@@ -52,7 +52,7 @@ def world(tmp_path, monkeypatch):
     subprocess.run(['/usr/bin/git', '-C', str(repo), '-c', 'user.name=Test', '-c', 'user.email=t@localhost', 'commit', '-qm', 'fixture'], check=True)
     sha = subprocess.check_output(['/usr/bin/git', '-C', str(repo), 'rev-parse', 'HEAD'], text=True).strip()
     store = tmp_path / 'remote.json'
-    state = {'sha': sha, 'issue': {'number': 7, 'body': BODY, 'state': 'open'},
+    state = {'sha': sha, 'checkout': str(repo), 'issue': {'number': 7, 'body': BODY, 'state': 'open'},
              'pr': {'number': 11, 'body': '<!-- workshop-item: alpha:7 -->', 'head': {'sha': sha}, 'state': 'open', 'merged': False}}
     store.write_text(json.dumps(state))
     monkeypatch.setenv('WORKSHOP_FAKE_STATE', str(store))
@@ -505,12 +505,13 @@ def test_title_auto_close_and_missing_business_data_are_pending(world):
     assert not any(c[1:3] in (['pr', 'merge'], ['issue', 'close']) for c in calls(world))
 
 
-def test_feishu_group_name_and_dm_card_are_verified(world):
+@pytest.mark.parametrize("text", ["@Ash ws#7 不对，重做", "@Ash ws#7不对，重做"])
+def test_feishu_group_name_and_dm_card_are_verified(world, text):
     flow, target = world['flow'], world['target']
     event = Event('cli:feishu', 'om_real', 'alpha', 'om_real', 'data', {'from_kun': True, 'text': 'ws#7 不对'})
     def lookup(external=None, *, object_key=None):
         return {'item': {'object_key': '7'}} if external == 'Q1' or object_key == '7' else None
-    edit(world, message=message('@Ash ws#7 不对，重做'))
+    edit(world, message=message(text))
     assert flow.classify(event, None, target, lookup) == Classification('rework', '7')
     edit(world, message=message('ws#7 不对', sender='attacker'))
     assert flow.classify(event, None, target, lookup).discard
@@ -616,3 +617,123 @@ def test_release_submission_switches_to_no_executor_wait(world):
     assert pending.pending and not pending.rerun
     assert world['flow'].after(data, '交付', 'submitted', target) == pending
     assert len([c for c in calls(world) if c[0] == 'tag-release.sh']) == 1
+
+
+@pytest.mark.parametrize('failure', ['check', 'changed_head'])
+def test_gate_feedback_sends_failed_work_back_to_execution_without_card(world, failure):
+    cfg = configuration()
+    cfg.pop('taskhome')
+    cfg['targets']['alpha'] = {**world['target'], 'plugin': 'issue_delivery', 'sources': []}
+    engine = build(world['root'] / ('gate-' + failure), cfg)
+    engine.plugins.register('flow', 'issue_delivery', world['flow'])
+    engine.ingest(Event('github', 'start', 'alpha', '7', 'test', {}))
+    engine.tick()
+    for stage in ['说清楚', '执行', '证据']:
+        finish(engine, stage, key='7', evidence=[result(world, checks=[['scripts/check.sh']])])
+    if failure == 'check':
+        # 创建真实失败提交，流程必须实际运行到非零退出码。
+        repo = world['target']['checkout']
+        Path(repo, 'scripts/check.sh').write_text('#!/bin/sh\necho regression-failed >&2\nexit 2\n')
+        subprocess.run(['/usr/bin/git', '-C', repo, 'add', '.'], check=True)
+        subprocess.run(['/usr/bin/git', '-C', repo, '-c', 'user.name=Test', '-c', 'user.email=t@localhost', 'commit', '-qm', 'check fails'], check=True)
+        sha = subprocess.check_output(['/usr/bin/git', '-C', repo, 'rev-parse', 'HEAD'], text=True).strip()
+        pr = json.loads(world['store'].read_text())['pr']
+        pr['head']['sha'] = sha
+        edit(world, pr=pr)
+        finish(engine, '审查', key='7', evidence=[result(world, head=sha)])
+        assert current(engine, '7')['stage'] == '证据'
+        feedback = current(engine, '7')['brief']['instructions']
+        assert '检查失败' in feedback and 'regression-failed' in feedback
+    else:
+        finish(engine, '审查', key='7', evidence=[result(world)])
+        finish(engine, '交付', key='7', evidence=[result(world, must_fix=[], suggestions=[])])
+        pr = json.loads(world['store'].read_text())['pr']
+        pr['head']['sha'] = 'f' * 40
+        edit(world, pr=pr)
+        # 回执给新 SHA，仍必须识别它不是审过的那一版。
+        finish(engine, '验收', key='7', evidence=[result(world, head='f' * 40)])
+        assert current(engine, '7')['stage'] == '交付'
+        feedback = current(engine, '7')['brief']['instructions']
+        assert '头提交变化' in feedback and 'f' * 40 in feedback
+    assert 'advance="执行"' in feedback and '不问 Kun' in feedback
+    # 假执行者按重派说明交退回回执，核心保留 A 的前进关口，不需新增业务逻辑。
+    finish(engine, '执行', key='7', evidence=[result(world)])
+    assert current(engine, '7')['stage'] == '执行'
+    assert engine.log.all('cards') == []
+    engine.log.close()
+
+
+def test_release_uses_merged_script_in_owned_checkout_without_changing_main(world):
+    repo = world['target']['checkout']
+    subprocess.run(['/usr/bin/git', '-C', repo, 'checkout', '-qb', 'kuns-work'], check=True)
+    Path(repo, 'scripts/tag-release.sh').write_text('#!/bin/sh\necho WRONG-SCRIPT >&2\nexit 99\n')
+    subprocess.run(['/usr/bin/git', '-C', repo, 'add', '.'], check=True)
+    subprocess.run(['/usr/bin/git', '-C', repo, '-c', 'user.name=Test', '-c', 'user.email=t@localhost', 'commit', '-qm', 'unrelated branch'], check=True)
+    Path(repo, 'untracked').write_text('Kun is working')
+    def main_state():
+        return [subprocess.check_output(['/usr/bin/git', '-C', repo, *args], text=True) for args in
+                [('status', '--porcelain'), ('symbolic-ref', 'HEAD'), ('show-ref',), ('reflog', '--all')]]
+    before = main_state()
+    target = {**world['target'], 'release': 'tag'}
+    data = snapshot(world, '交付')
+    world['io'].save(data, target, {'effects': {}, 'issue': 7, 'reviewed_head': world['sha']})
+    pending = world['flow'].after(data, '交付', 'own-release', target)
+    assert pending.pending
+    checkout = next(p for p in (world['io'].root(target) / 'releases').iterdir() if p.is_dir())
+    assert subprocess.check_output(['/usr/bin/git', '-C', str(checkout), 'rev-parse', 'HEAD'], text=True).strip() == world['sha']
+    assert subprocess.run(['/usr/bin/git', '-C', str(checkout), 'symbolic-ref', '-q', 'HEAD']).returncode == 1
+    # 真正运行的是合并提交里的 fake tag 脚本，其他分支那份会退出 99。
+    assert len([c for c in calls(world) if c[0] == 'tag-release.sh']) == 1
+    assert world['io'].read(data, target)['tag_output']['exit_code'] == 0
+    app = {'status': {'sync': {'status': 'Synced', 'revision': 'e' * 40}, 'health': {'status': 'Healthy'}}}
+    edit(world, app=app, deployed_sha=world['sha'])
+    assert world['flow']._deployed(target, world['sha'])
+    assert before == main_state()
+    fetches = [c for c in calls(world) if c[0] == 'git' and 'fetch' in c]
+    assert fetches and all(c[c.index('-C') + 1] == str(checkout) for c in fetches)
+    assert len([c for c in calls(world) if c[0] == 'git' and 'clone' in c]) == 1
+
+
+def test_delivery_instructions_wait_for_sync_and_do_not_advance_authorization(world):
+    brief = world['flow'].brief(snapshot(world, '交付'), '交付', world['target'])
+    assert '真正 sync 完并确认上线后' in brief
+    assert '还在等授权卡时' in brief and '回执不带 advance' in brief
+    assert '也不带 release_submitted' in brief
+
+
+def test_editing_ordinary_comment_into_rework_is_only_update(world):
+    responses = source_responses(world)
+    endpoint = 'repos/kun-g/workshop/issues/7/comments?per_page=100'
+    responses[endpoint] = [{'id': 9, 'body': '先补一句资料', 'user': {'login': 'kun-g'}}]
+    edit(world, responses=responses)
+    source = GitHubSource(str(world['commands'] / 'gh'))
+    first = source.poll(world['target'], None)
+    responses[endpoint][0]['body'] = '不对'
+    edit(world, responses=responses)
+    changed = source.poll(world['target'], first.cursor)
+    assert len(changed.events) == 1 and changed.events[0].action == 'update'
+    responses[endpoint].append({'id': 10, 'body': '不对', 'user': {'login': 'kun-g'}})
+    edit(world, responses=responses)
+    fresh = source.poll(world['target'], changed.cursor)
+    assert len(fresh.events) == 1 and fresh.events[0].action == 'rework'
+
+
+def test_waiting_for_release_authorization_does_not_advance_or_resubmit(world):
+    cfg = configuration()
+    cfg.pop('taskhome')
+    cfg['targets']['alpha'] = {**world['target'], 'plugin': 'issue_delivery', 'sources': [], 'release': 'tag'}
+    engine = build(world['root'] / 'release-auth', cfg)
+    engine.plugins.register('flow', 'issue_delivery', world['flow'])
+    engine.ingest(Event('github', 'start', 'alpha', '7', 'test', {}))
+    engine.tick()
+    for stage in ['说清楚', '执行', '证据', '审查', '交付']:
+        finish(engine, stage, key='7', evidence=[result(world, checks=[['scripts/check.sh']], must_fix=[], suggestions=[])])
+    finish(engine, '验收', key='7', evidence=[result(world)])
+    assert current(engine, '7')['stage'] == '交付'
+    prior_effects = dict(world['io'].read(item(engine, '7'), world['target'])['effects'])
+    finish(engine, key='7', evidence=[result(world)], later=[{'key': 'authorization', 'at': '+5m', 'about': '等授权卡'}])
+    assert item(engine, '7')['stage'] == '交付' and item(engine, '7')['state'] == '定时'
+    state = world['io'].read(item(engine, '7'), world['target'])
+    assert state['effects'] == prior_effects and not state.get('release_submitted')
+    assert not engine.active()
+    engine.log.close()

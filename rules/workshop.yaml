@@ -6,6 +6,7 @@ targets:
     stage_selectors: {审查: ordered}
     sources: [github]
     repo: kun-g/grant-console
+    # 仅作为证据/审查 clone 的只读来源；发布在插件状态目录 releases/ 的专用检出。
     checkout: ~/workspace/runtime/repos/grant-console
     skill: issue-delivery
     permissions: repository

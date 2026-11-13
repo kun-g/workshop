@@ -41,6 +41,10 @@ elif name == 'git':
         tag = args[-1].removeprefix('refs/tags/')
         state.setdefault('tags', {})[tag] = state['sha']
         save()
+    elif 'clone' in args and any(a.startswith('https://github.com/') for a in args):
+        # 普通远端 clone 的离线替身；复制已录制的本地提交。
+        local = [state['checkout'] if a.startswith('https://github.com/') else a for a in args]
+        sys.exit(subprocess.run(['/usr/bin/git', *local]).returncode)
     elif 'fetch' in args:
         pass  # clone 内已有真实测试提交，不能访问网络。
     else:

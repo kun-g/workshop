@@ -119,6 +119,25 @@ class IO:
             run([self.git, "-C", str(destination), "config", name, value])
         return destination
 
+    @contextmanager
+    def release_checkout(self, target, sha, *, extra_refs=()):
+        """交付对象专用可写检出；保留用户的 git 认证，绝不修改主检出。"""
+        root = self.root(target) / "releases"
+        root.mkdir(parents=True, exist_ok=True)
+        identity = hashlib.sha256((target["name"] + ":" + target["repo"]).encode()).hexdigest()
+        checkout = root / identity
+        # 同目标不同活共享检出，锁覆盖 fetch、切提交及调用仓库脚本全过程。
+        with (root / (identity + ".lock")).open("a") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            if not checkout.exists():
+                with tempfile.TemporaryDirectory(prefix="clone-", dir=root) as directory:
+                    temporary = Path(directory) / "repo"
+                    run([self.git, "clone", "--no-checkout", f'https://github.com/{target["repo"]}.git', str(temporary)])
+                    temporary.rename(checkout)
+            run([self.git, "-C", str(checkout), "fetch", "origin", "--tags", "main", sha, *extra_refs])
+            run([self.git, "-C", str(checkout), "checkout", "--detach", sha])
+            yield checkout
+
     def review_copy(self, item, target, sha):
         root = self.root(target) / "reviews"
         root.mkdir(parents=True, exist_ok=True)
