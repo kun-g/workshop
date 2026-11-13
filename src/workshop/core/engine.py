@@ -302,10 +302,20 @@ class Engine:
 
     def submit(self, token: str, data: dict) -> bool:
         try:
-            receipt = Receipt.parse(data, self.clock())
+            try:
+                receipt = Receipt.parse(data, self.clock())
+            except ValueError as exc:
+                # advance 填错也并进同一次拒绝，执行者一次改全。
+                advance = data.get("advance") if isinstance(data, dict) else None
+                extra = self.advance_error(token, advance) if isinstance(advance, str) else ""
+                if extra and extra not in str(exc):
+                    raise ValueError(f"{exc}；{extra}") from exc
+                raise
             for event in receipt.events:
                 self.rules.target(event["target"])
-            self.check_advance(token, receipt)
+            extra = self.advance_error(token, receipt.advance)
+            if extra:
+                raise ValueError(extra)
         except (ValueError, TypeError, KeyError) as exc:
             # 原因记在这一轮上：执行者没改对就退出时，自动失败的结果里仍看得到。
             self.receipt_rejected(token, exc)
@@ -323,23 +333,21 @@ class Engine:
             return self.fact("receipt", {"token": token, "receipt": data}, row["item"],
                              source="receipt", ext_id=token)
 
-    def check_advance(self, token, receipt):
-        """交回执时就按本阶段核对 advance，执行者能在同一轮看到原因改对重交。"""
-        row = self.log.get("rounds", token)
-        if not row or receipt.advance is None:
-            return
+    def advance_error(self, token, advance) -> str:
+        """交回执时就按本阶段核对 advance，执行者能在同一轮看到原因改对重交；没问题返回空串。"""
+        row = self.log.get("rounds", token) if isinstance(token, str) else None
+        if not row or advance is None:
+            return ""
         item = self.log.get("items", row["item"])
         if not item or item["stage"] != row["stage"]:
-            return
-        target = self.rules.target(item["target"])
+            return ""
         try:
+            target = self.rules.target(item["target"])
             stages = self.plugins.get("flow", target["plugin"]).stages(target)
             validate_stages(stages)
         except Exception:
-            return  # 读不到阶段时留给收轮时的关口判定。
-        problem = advance_problem(item, receipt.advance, stages)
-        if problem:
-            raise ValueError(problem)
+            return ""  # 读不到阶段时留给收轮时的关口判定。
+        return advance_problem(item, advance, stages)
 
     def receipt_rejected(self, token, exc):
         row = self.log.get("rounds", token) if isinstance(token, str) else None

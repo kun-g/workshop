@@ -88,9 +88,11 @@ def test_rejected_receipt_reason_survives_exit_and_reaches_item(engine):
     engine.tick()
     row = current(engine)
     with pytest.raises(ValueError) as rejected:
-        engine.submit(row["token"], {"outcome": "success", "summary": "完成", "head": "abc"})
+        engine.submit(row["token"], {"outcome": "success", "summary": "完成", "advance": "收尾", "head": "abc"})
+    # 字段、取值、本阶段 advance 一次报全。
     assert '回执顶层有不认识的字段 head' in str(rejected.value)
     assert 'outcome 是 "success"，只能是 done、failed、nothing' in str(rejected.value)
+    assert 'advance 是「收尾」；接单之后只能是「说清楚」' in str(rejected.value)
     engine.automatic_failure(row["token"], "执行者已退出但没有交回执")
     engine.tick()
     failure = item(engine)["last_failure"]
@@ -106,7 +108,7 @@ def test_gate_still_names_allowed_advance(engine):
     engine.ingest(event())
     engine.tick()
     row = current(engine)
-    engine.check_advance = lambda token, receipt: None
+    engine.advance_error = lambda token, advance: ""
     engine.submit(row["token"], dict(outcome="done", summary="完成接单", advance="收尾"))
     engine.tick()
     assert item(engine)["stage"] == "接单"
