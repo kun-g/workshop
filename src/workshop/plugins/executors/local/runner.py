@@ -111,7 +111,7 @@ def main(directory: Path):
                 stream.write('\n启动或等待失败: ' + repr(exc))
         real_id = vendor_session(output, spec['kind'])
         if real_id:
-            write(Path(spec['session_file']), {'vendor_id': real_id})
+            write(Path(spec['session_file']), {'vendor_id': real_id, 'model': spec.get('model')})
         if not spec['interactive']:
             receipt = result_receipt(output, spec['kind']) if code == 0 else None
             if receipt is None:
