@@ -411,7 +411,9 @@ class IssueDelivery:
                 return self._assess_rerun(item, data, target, checks)
             pr = self.io.pr(item, target)
             sha = pr["head"]["sha"]
-            paths = [p["filename"] for p in self.io.pages(f'repos/{target["repo"]}/pulls/{pr["number"]}/files?per_page=100')]
+            # 改名的文件新旧路径都算：从冻结或串行路径挪走也是碰到了它们。
+            paths = sorted({path for f in self.io.pages(f'repos/{target["repo"]}/pulls/{pr["number"]}/files?per_page=100')
+                            for path in (f["filename"], f.get("previous_filename")) if path})
             if not self._safe_pr(pr, item):
                 return Evidence(checks, False, reason="PR 标记缺失或带自动关闭 issue 的语句", paths=paths)
             if stage == "验收":

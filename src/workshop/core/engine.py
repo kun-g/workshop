@@ -247,6 +247,25 @@ class Engine:
                 raise ValueError(f"{item_id} 已经跑过轮次或有未了的卡、定时、别名，不能清掉")
             self.fact("item_dropped", {"id": item_id}, item_id)
 
+    def abandon(self, item_id, reason):
+        """Kun 决定不做了：停在当前阶段，状态「放弃」，取消没答的问题，让出串行路径。
+        记录都留着；要再做就返工（可信的「不对」），回到执行重新排队。"""
+        if not isinstance(reason, str) or not reason.strip():
+            raise ValueError("放弃要写原因")
+        with self.log.transaction():
+            item = self.log.get("items", item_id)
+            if not item:
+                raise ValueError(f"找不到活：{item_id}")
+            if item["state"] in ("完成", "放弃"):
+                raise ValueError(f"{item_id} 已经{item['state']}，不用放弃")
+            if any(r["item"] == item_id for r in self.active()):
+                raise ValueError(f"{item_id} 还有一轮没结束，先用 abort 结束那一轮再放弃")
+            self.fact("item_abandoned", {"id": item_id, "reason": reason.strip()}, item_id)
+            self.cancel_questions(item)
+            self.change(item, state="放弃", next=f"已放弃：{reason.strip()}", blocked_by="", serial_hold=False,
+                        pending_advance=None, after_wait=None, wait_for_ready=False, retry_at=None,
+                        leave={"kind": "等你", "about": "已放弃；要再做就返工"})
+
     def pause(self, target):
         self.rules.target(target)
         self.fact("control", {"id": target, "paused": True})
@@ -569,7 +588,7 @@ class Engine:
     def apply_timer(self, timer, item):
         if timer["kind"] == "送回":
             self.card(item, timer["id"], "ask", question(timer["about"]))
-            if item["state"] not in ("跑着", "卡住"):
+            if item["state"] not in ("跑着", "卡住", "放弃"):
                 self.change(item, state="等你", next=timer["about"], blocked_by="Kun",
                             leave={"kind": "等你", "about": timer["about"]})
         elif timer["owner"] != "车间":
@@ -731,14 +750,14 @@ class Engine:
             self.broken(item["target"], port, name, exc)
 
     def serial_holder(self, item):
-        """同一交付对象里占着串行路径的另一件活：进了执行、没收尾完成、不在排队。"""
+        """同一交付对象里占着串行路径的另一件活：进了执行、没收尾完成、没放弃、不在排队。"""
         start = STAGES.index("执行")
         return next((other for other in self.log.all("items")
                      if other["id"] != item["id"] and other["target"] == item["target"] and other.get("serial_hold")
-                     and other["state"] not in ("完成", "排队") and STAGES.index(other["stage"]) >= start), None)
+                     and other["state"] not in ("完成", "放弃", "排队") and STAGES.index(other["stage"]) >= start), None)
 
     def serial_queue(self, item):
-        """规则 serial_paths：碰到的活同一时间只放一件过执行，其余停在当前阶段前排队，前一件收尾完成后自动放下一件。
+        """规则 serial_paths：碰到的活同一时间只放一件过执行，其余停在当前阶段前排队，前一件收尾完成或放弃后自动放下一件。
         按说清楚时登记的路径加之后实际改动判；占位从进执行起，退回执行期间仍占着。"""
         prefixes = self.rules.target(item["target"]).get("serial_paths", [])
         needed = (prefixes and STAGES.index(item["stage"]) >= STAGES.index("执行")

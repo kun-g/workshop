@@ -33,6 +33,9 @@ def parser():
     why_command.add_argument("item")
     why_command.add_argument("--raw", action="store_true", help="每条事件后原样打印原始资料")
     commands.add_parser("drop", help="清掉一件还没跑过轮次的活（例如没放行就被误建的）；活写成 <短名>#<编号> 或 <交付对象>:<对象键>").add_argument("item")
+    abandon = commands.add_parser("abandon", help="放弃一件活：停在当前阶段、让出串行路径，要再做就返工；活写成 <短名>#<编号> 或 <交付对象>:<对象键>")
+    abandon.add_argument("item")
+    abandon.add_argument("--reason", required=True, help="为什么不做了，记进这件活")
     commands.add_parser("pause").add_argument("target")
     resume = commands.add_parser("resume")
     resume.add_argument("target")
@@ -88,6 +91,10 @@ def main(argv=None):
                 item_id = resolve(log, rules.data["targets"], args.item)
                 engine.drop(item_id)
                 print(f"已清掉 {item_id}；同一对象要再放行才会重新建活")
+            elif args.command == "abandon":
+                item_id = resolve(log, rules.data["targets"], args.item)
+                engine.abandon(item_id, args.reason)
+                print(f"已放弃 {item_id}；串行路径已让出，要再做就返工")
             elif args.command == "pause":
                 engine.pause(args.target)
                 print(f"已暂停 {args.target}；当前一轮继续收尾")

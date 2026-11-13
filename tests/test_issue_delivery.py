@@ -842,3 +842,29 @@ def test_clarify_brief_asks_for_paths(world):
     brief = world['flow'].brief(data, '说清楚', world['target'])
     text = brief if isinstance(brief, str) else brief.instructions
     assert '回执 JSON paths' in text and '串行路径' in text
+
+
+def test_renamed_files_count_old_and_new_paths(world):
+    edit(world, files=[{'filename': 'src/moved.yaml', 'previous_filename': 'deploy/a.yaml', 'status': 'renamed'},
+                       {'filename': 'src/b.py'}])
+    data = snapshot(world, '执行')
+    receipt = Receipt('done', '', advance='证据', evidence=[result(world)])
+    assert world['flow'].assess(data, receipt, world['target']).paths == ['deploy/a.yaml', 'src/b.py', 'src/moved.yaml']
+
+
+def test_renaming_out_of_frozen_path_still_stops(world):
+    cfg = configuration()
+    cfg.pop('taskhome')
+    cfg['targets']['alpha'] = {**world['target'], 'plugin': 'issue_delivery', 'sources': [], 'frozen_paths': ['deploy/']}
+    edit(world, files=[{'filename': 'src/moved.yaml', 'previous_filename': 'deploy/a.yaml', 'status': 'renamed'}])
+    engine = build(world['root'] / 'frozen', cfg)
+    engine.plugins.register('flow', 'issue_delivery', world['flow'])
+    engine.ingest(Event('github', 'start', 'alpha', '7', 'test', {}, action='ready'))
+    engine.tick()
+    for stage in ['说清楚', '执行', '证据', '审查']:
+        finish(engine, stage, key='7', evidence=[result(world, checks=[['scripts/check.sh']])])
+    waiting = item(engine, '7')
+    assert waiting['stage'] == '证据' and waiting['state'] == '等你'
+    card = next(c for c in engine.log.all('cards') if c.get('core_approval'))
+    assert card['frozen_files'] == ['deploy/a.yaml']
+    engine.log.close()

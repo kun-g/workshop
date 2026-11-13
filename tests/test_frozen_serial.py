@@ -274,3 +274,71 @@ def test_repository_rules_freeze_grant_console_paths():
     target = Rules.load(Path("rules/workshop.yaml")).target("grant-console")
     assert target["frozen_paths"] == [".github/", "deploy/", "docs/ci.md", "docs/runbooks/release.md"]
     assert any("lark_receiver" in p for p in target["serial_paths"])
+
+
+# ---------- 放弃让出串行路径 ----------
+
+def test_abandoned_holder_releases_next(make):
+    engine = make(serial_paths=["cards/"])
+    flow(engine).paths = {"alpha:one": ["cards/x.py"], "alpha:two": ["cards/x.py"]}
+    start(engine, "one")
+    walk(engine, "one", ["说清楚", "执行"])
+    start(engine, "two")
+    walk(engine, "two", ["说清楚", "执行"])
+    assert item(engine, "two")["state"] == "排队"
+    with pytest.raises(ValueError, match="abort"):
+        engine.abandon("alpha:one", "不做了")  # 还有一轮在跑。
+    engine.abort(current(engine, "one")["token"])
+    engine.tick()
+    with pytest.raises(ValueError, match="原因"):
+        engine.abandon("alpha:one", " ")
+    engine.abandon("alpha:one", "需求取消")
+    gone = item(engine, "one")
+    assert gone["state"] == "放弃" and "需求取消" in gone["next"] and not gone["serial_hold"]
+    assert gone["leave"]["kind"] == "等你"
+    assert any(f["kind"] == "item_abandoned" for f in engine.log.facts("alpha:one"))
+    engine.tick()
+    assert current(engine, "two")["stage"] == "执行"
+    assert not [r for r in engine.active() if r["item"] == "alpha:one"]
+    with pytest.raises(ValueError, match="放弃"):
+        engine.abandon("alpha:one", "再放弃一次")
+
+    # 放弃的活被返工，回到执行，排在现在占着的那件后面。
+    engine.ingest(event("one", ext_id="again", action="rework"))
+    engine.tick()
+    back = item(engine, "one")
+    assert back["stage"] == "执行" and back["state"] == "排队" and back["blocked_by"] == "alpha:two"
+
+
+def test_abandon_cancels_open_questions(make):
+    engine = make(frozen_paths=["deploy/"])
+    reach_evidence(engine, ["deploy/a.yaml"])
+    engine.abandon("alpha:one", "不改冻结路径了")
+    card = next(c for c in engine.log.all("cards") if c.get("core_approval"))
+    assert card["cancelled"] and item(engine, "one")["pending_advance"] is None
+    engine.tick()
+    assert item(engine, "one")["state"] == "放弃" and not engine.active()
+
+
+def test_cli_abandon(make, tmp_path, capsys):
+    from workshop.cli import main
+    engine = make(serial_paths=["cards/"])
+    start(engine, "one")
+    engine.abort(current(engine, "one")["token"])
+    engine.tick()
+    state_dir = engine.log.path.parent
+    rules = tmp_path / "rules.yaml"
+    import yaml
+    rules.write_text(yaml.safe_dump(engine.rules.data, allow_unicode=True))
+    main(["--state-dir", str(state_dir), "--rules", str(rules), "abandon", "alpha:one", "--reason", "重复的活"])
+    assert "已放弃 alpha:one" in capsys.readouterr().out
+    engine.log.db.close()
+    from workshop.core.log import Log
+    engine.log = Log(state_dir / "workshop.db")
+    assert item(engine, "one")["state"] == "放弃"
+
+
+def test_repository_rules_serialize_card_callback():
+    from pathlib import Path
+    target = Rules.load(Path("rules/workshop.yaml")).target("grant-console")
+    assert "services/devops-console/grant_console/app.py" in target["serial_paths"]
