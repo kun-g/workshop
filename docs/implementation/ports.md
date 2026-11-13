@@ -65,7 +65,7 @@ limits: {concurrent: 2, chain_depth: 8, round_timeout_seconds: 7200}
 
 `assess(item, receipt, target) -> Evidence` 必须短时只读，不靠回执 done 自证完成。
 
-Evidence 字段：checks（检查 argv 列表）、passed（布尔）、actions（拟交付动作类别）、reason（判定解释）、paths（本次改动路径列表）、reviewers（1 或 2）。actions 中任何类别不在 `ask_first ∪ skip_ask`，都是插件错误，记事实、卡住这一类并通知，不放行。所有往前推进（含收尾完成）都要求 passed；不通过留在当前阶段走 gate_retry，同一关口连续三次才问 Kun。显式退回执行不受此前进条件阻拦。到过验收（history 里有验收轮）又回到执行的活，执行可以提议直接回验收（advance=验收），表示已交付的结果不用改、重走验收；核心只认「到过验收」这一个阶段事实，流程证据过了才放行，结果没变、能走几次由流程判。没到过验收的活照旧不能越过阶段；执行紧接验收的流程不走这条，照常处理交付授权。执行前必须有能跑的检查；交付前处理授权；验收证据不过无论 done/nothing/failed 都退回执行。
+Evidence 字段：checks（检查 argv 列表）、passed（布尔）、actions（拟交付动作类别）、reason（判定解释）、paths（本次改动路径列表）、reviewers（1 或 2）、done_key（这件活这次完成的标识，字符串，可空；只在最后一个阶段有意义，见下面回执通知）。actions 中任何类别不在 `ask_first ∪ skip_ask`，都是插件错误，记事实、卡住这一类并通知，不放行。所有往前推进（含收尾完成）都要求 passed；不通过留在当前阶段走 gate_retry，同一关口连续三次才问 Kun。显式退回执行不受此前进条件阻拦。到过验收（history 里有验收轮）又回到执行的活，执行可以提议直接回验收（advance=验收），表示已交付的结果不用改、重走验收；核心只认「到过验收」这一个阶段事实，流程证据过了才放行，结果没变、能走几次由流程判。没到过验收的活照旧不能越过阶段；执行紧接验收的流程不走这条，照常处理交付授权。执行前必须有能跑的检查；交付前处理授权；验收证据不过无论 done/nothing/failed 都退回执行。
 
 交付对象的 `two_reviewers` 路径前缀命中 paths，或 Evidence.reviewers=2 时，核心在审查阶段依次找两家不同家族，两家都过才能交付。已通过家族记入活的 reviews；写代码那家仍排除。第一次审查带 ask 时不计作通过，答完接回同一审查会话。返工清空本次审查记录。
 
@@ -142,7 +142,9 @@ outcome=done 表示本轮拿到了供流程核验的结果，核心仍判证据�
 
 这是 Kun 11-13 补定的“无卡等你”：停在原阶段，标等你，只发一次不用回的通知，不起执行者。普通 update 事件仅追加资料；来源明确标记的 `action="ready"` 事件才解开同一件活，从原阶段继续。暂停/插件故障期间收到的放行也按各自恢复规则保留。若有 ask，则等全部问题回答，不把 ready 当作卡片答案。
 
-leave 工序须有 owner、at、about；送回须有 at、about；等你须有 about，并且有 ask 或 notice。notice 的 key 在一件活内去重，ask/later 的 key 在一轮内去重。正常推进自动登记下一工序。回执里有 ask 时不推进，问题解决后接回原阶段。
+leave 工序须有 owner、at、about；送回须有 at、about；等你须有 about，并且有 ask 或 notice。ask/later 的 key 在一轮内去重。
+
+回执里的 notice 只在 Kun 需要知道时发卡（ws#46，11-13 Kun 嫌卡太多）：这一轮 leave 是等你时照发，卡片 key 为 `notice:<回执 key>`，在一件活内去重；这一轮让活完成（最后一个阶段判过并推进）时只发第一条，卡片 key 为 `notice:完成:<Evidence.done_key>`（done_key 空时为 `notice:完成`），所以同一完成标识不论执行者用什么 key、交几次，只出一张卡。其余的不发卡，记 `notice_held` 事实（阶段、key、subject、正文、原因），`workshop why` 显示为「通知没发」。进度在 `workshop status` / `why` 里看，不推送。核心自己发的告警（连续失败、卡住、插件故障、卡发不出去、对账不确定、工序到点、完成钩子的 notice）不受影响。正常推进自动登记下一工序。回执里有 ask 时不推进，问题解决后接回原阶段。
 
 ## 卡片、通道与对账
 

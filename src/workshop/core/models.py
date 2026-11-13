@@ -109,9 +109,12 @@ class Evidence:
     reason: str = ""
     paths: list[str] = field(default_factory=list)
     reviewers: int = 1
+    # 这件活这次完成的标识（例如交付的版本号）；同一标识只发一张完成通知，空时一件活只发一张。
+    done_key: str = ""
 
     def validate(self) -> None:
         if (self.reviewers not in (1, 2) or not isinstance(self.paths, list)
+                or not isinstance(self.done_key, str)
                 or not all(isinstance(v, str) for v in self.paths)
                 or type(self.passed) is not bool or not isinstance(self.checks, list)
                 or not isinstance(self.actions, list)

@@ -72,7 +72,7 @@ grant-console 的 ECR/render/push-production/sync 仍由执行者申请集群授
 
 2026-11-13 只读实查：本机 Argo CLI 列出 argocd-central.hillingo.top、argocd.hillingo.top，但应用查询登录过期；没有改认证。经协调者确认改用上述 kubectl 只读路径，查到 source 为 git@github.com:kun-g/grant-console.git / production / manifests，revision 为 a7b09d7d2d39dcdeca0837f518708adf8ad421f8，Synced/Healthy。参数已写规则；查询未触发同步或发版。
 
-pending=false 才放行；rerun=false 用定时工序和指数退避回查，rerun=true 才接回执行者。同阶段连续 pending 达 pending_limit（默认 5）卡住并通知一次，不再循环。验收不过回执行；收尾只有验收记录、leave、含群内返工活名的通知才能关 issue，通知经核心通道发。
+pending=false 才放行；rerun=false 用定时工序和指数退避回查，rerun=true 才接回执行者。同阶段连续 pending 达 pending_limit（默认 5）卡住并通知一次，不再循环。验收不过回执行；收尾只有验收记录、leave、含群内返工活名的通知才能关 issue，通知经核心通道发。收尾判过时 Evidence.done_key 给合并提交号，核心按它对每个合并提交只发一张完成卡：验收轮里执行者先发的、收尾里多发的、换 key 的都不出卡，只记进 why。各阶段说明（收尾除外）写明不发进度通知，notice 只在留下等你时发。
 
 ## 手动只读验收（本轮未执行）
 

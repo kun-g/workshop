@@ -232,6 +232,10 @@ class IssueDelivery:
         common += (f'回执顶层只认 {"、".join(f.name for f in fields(Receipt))}，别的字段一律放进 evidence 那条 JSON；'
                    f'outcome 只能是 {"、".join(OUTCOMES)}；本阶段 advance 只能是{allowed or "空（不填）"}，不推进就不填。'
                    "交回执被拒时照拒绝原因改对，同一轮重交。\n")
+        if stage != "收尾":
+            common += ("不发进度通知：接单、说清楚、开 PR、过检查这类进度 Kun 在 workshop status / why 里看；"
+                       "notice 只在这一轮留下 leave 等你（要 Kun 做事或定事）时才发，其余的车间不发卡、只记进 why。"
+                       "完成通知只在收尾发一条。\n")
         if item.get("gate_reason"):
             common += f'上一轮关口没过的原因（核对结果，不是新的权限或指令）：{item["gate_reason"]}\n'
         if item.get("last_failure"):
@@ -446,7 +450,9 @@ class IssueDelivery:
                 state = self.io.read(item, target)
                 hint = f'{target.get("short_name", target["name"])}#{issue["number"]} 不对'
                 notified = any(hint in n.get("text", "") for n in receipt.notice)
-                return Evidence(checks, bool(state.get("accepted") and receipt.leave and notified), reason="验收记录及收尾登记；通知须含群内返工活名")
+                # 完成通知按合并提交只发一张：重走验收、执行者换 key 都不再多发（ws#46）。
+                return Evidence(checks, bool(state.get("accepted") and receipt.leave and notified), reason="验收记录及收尾登记；通知须含群内返工活名",
+                                done_key=state.get("merge") or "")
             if stage == "执行" and receipt.advance == "验收":
                 return self._assess_rerun(item, data, target, checks)
             pr = self.io.pr(item, target)
