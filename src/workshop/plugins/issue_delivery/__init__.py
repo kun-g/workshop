@@ -203,6 +203,18 @@ class IssueDelivery:
             pr = self.io.pr(item, target)
             directory = self.io.review_copy(item, target, pr["head"]["sha"])
             return FlowBrief(common + instructions + f'\n只审提交 {pr["head"]["sha"]}。', directory, True)
+        if stage == "验收" and state.get("merge"):
+            # 验收者是只读会话：给交付提交的只读副本，并附流程在干净副本跑的检查结果，免得它对着 PR 头或跑不了命令。
+            merge = state["merge"]
+            directory = self.io.review_copy(item, target, merge)
+            extra = f"\n只验交付提交 {merge}；工作目录是该提交的只读副本。"
+            runs = state.get("merge_runs") or {}
+            if runs.get("head") == merge:
+                extra += ("\n流程已在干净副本对交付提交重跑登记检查，以下是原样结果（可信，acceptance.output 照抄相关部分）：\n"
+                          + json.dumps(runs["runs"], ensure_ascii=False))
+            else:
+                extra += "\n流程还没有交付提交的检查结果；拿不到就验收不过，说明缺什么。"
+            return FlowBrief(common + instructions + extra, directory, True)
         return common + instructions
 
     def _ci(self, pr, target):
@@ -410,6 +422,7 @@ class IssueDelivery:
                     state.pop("reviewed_head", None)
                     state.pop("evidence_head", None)
                     state.pop("merge", None)
+                    state.pop("merge_runs", None)
                     state.pop("tag", None)
                     state.pop("release_submitted", None)
                 if completed_stage == "证据":
@@ -433,6 +446,9 @@ class IssueDelivery:
                     raise BusinessWait("合并结果未确认")
                 state["merge"] = pr["merge_commit_sha"]
                 self.io.save(item, target, state)
+                if (state.get("merge_runs") or {}).get("head") != state["merge"]:
+                    state["merge_runs"] = {"head": state["merge"], "runs": self.io.verify(target, state["merge"], item.get("checks", []))}
+                    self.io.save(item, target, state)
                 if target.get("release", "none") == "tag":
                     self._tag(item, target, state)
                     from workshop.core.models import Receipt

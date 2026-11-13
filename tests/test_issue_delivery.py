@@ -222,6 +222,31 @@ def test_after_merge_close_tag_are_idempotent_and_merge_keeps_issue(world):
     assert merge[merge.index('--match-head-commit') + 1] == world['sha']
 
 
+def test_acceptance_gets_readonly_merge_copy_and_merge_check_output(world):
+    data = snapshot(world, '交付')
+    world['io'].save(data, world['target'], {'effects': {}, 'issue': 7, 'reviewed_head': world['sha']})
+    assert not world['flow'].after(data, '交付', 'deliver', world['target']).pending
+    state = world['io'].read(data, world['target'])
+    assert state['merge'] == world['sha'] and state['merge_runs']['head'] == world['sha']
+    assert state['merge_runs']['runs'][-1]['stdout'] == 'raw check output\n'
+    # 重放同一交付或复查不重跑检查。
+    world['flow'].after(data, '交付', 'deliver', world['target'])
+    world['flow'].after(data, '交付', 'deliver-again', world['target'])
+    assert world['io'].read(data, world['target'])['merge_runs'] == state['merge_runs']
+    brief = world['flow'].brief(snapshot(world, '验收'), '验收', world['target'])
+    assert isinstance(brief, FlowBrief) and brief.readonly
+    assert Path(brief.workdir).stat().st_mode & 0o222 == 0
+    assert subprocess.check_output(['/usr/bin/git', '-C', brief.workdir, 'rev-parse', 'HEAD'], text=True).strip() == world['sha']
+    assert f"只验交付提交 {world['sha']}" in brief.instructions and 'raw check output' in brief.instructions
+
+
+def test_acceptance_without_merge_runs_says_output_missing(world):
+    data = snapshot(world, '验收')
+    world['io'].save(data, world['target'], {'effects': {}, 'issue': 7, 'merge': world['sha']})
+    brief = world['flow'].brief(data, '验收', world['target'])
+    assert isinstance(brief, FlowBrief) and '还没有交付提交的检查结果' in brief.instructions
+
+
 def test_engine_eight_stages_with_real_flow_and_fake_executor(world):
     cfg = configuration()
     cfg.pop('taskhome')
@@ -689,9 +714,11 @@ def test_release_uses_merged_script_in_owned_checkout_without_changing_main(worl
     edit(world, app=app, deployed_sha=world['sha'])
     assert world['flow']._deployed(target, world['sha'])
     assert before == main_state()
-    fetches = [c for c in calls(world) if c[0] == 'git' and 'fetch' in c]
+    # 合并后对交付提交重跑检查用的是临时干净副本，不算发版检出。
+    released = [c for c in calls(world) if c[0] == 'git' and not any('workshop-check-' in str(v) for v in c)]
+    fetches = [c for c in released if 'fetch' in c]
     assert fetches and all(c[c.index('-C') + 1] == str(checkout) for c in fetches)
-    assert len([c for c in calls(world) if c[0] == 'git' and 'clone' in c]) == 1
+    assert len([c for c in released if 'clone' in c]) == 1
 
 
 def test_delivery_instructions_wait_for_sync_and_do_not_advance_authorization(world):
