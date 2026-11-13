@@ -192,11 +192,16 @@ class Engine:
                 continue
             target = self.rules.target(item["target"])
             later = stamp(self.clock() + timedelta(hours=1))
+            # 同一次收回跨拍、跨重启复用结果；延期重试和返工后的收尾必须重新判断。
+            identity = [item["id"], item.get("pending_episode", 0), item["workdir"], item.get("release_at")]
             try:
                 hold = getattr(self.plugins.get("flow", target["plugin"]), "hold_workdir", None)
-                reason = hold(item, target) if hold else ""
+                reason = self.call("flow", target["plugin"], "hold_workdir", item, target,
+                                   identity=identity, item=item["id"]) if hold else ""
                 if not isinstance(reason, str):
                     raise ValueError("流程留工作目录的原因必须是字符串")
+            except Pending:
+                continue
             except Retryable:
                 self.change(item, release_at=later)
                 continue
@@ -210,9 +215,13 @@ class Engine:
             for name in sorted(item.get("sessions") or {}):
                 try:
                     release = getattr(self.plugins.get("executor", name), "release", None)
-                    result = release(item, target) if release else None
+                    result = self.call("executor", name, "release", item, target,
+                                       identity=identity, item=item["id"]) if release else None
                     if result is not None and (not isinstance(result, Release) or not result.released and not result.reason):
                         raise ValueError("执行者收回结果无效；留着时必须写原因")
+                except Pending:
+                    outcome = None
+                    break
                 except Retryable:
                     outcome = None
                     self.change(item, release_at=later)
