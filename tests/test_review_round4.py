@@ -170,11 +170,14 @@ def test_4_invalid_approval_key_stays_waiting_and_deduplicates_failure(engine, i
         engine.tick()
     assert item(engine)["state"] == "等你"
     assert not engine.log.get("cards", card["id"])["answered"] and not item(engine)["approved"]
-    assert len([f for f in engine.log.facts() if f["kind"] == "delivery_failed"]) == 1
+    # 非选项回答不算投递失败，只记一次事实、发一次通知。
+    assert not [f for f in engine.log.facts() if f["kind"] == "delivery_failed"]
+    assert len([f for f in engine.log.facts() if f["kind"] == "invalid_answer"]) == 1
+    assert len([c for c in engine.log.all("cards") if c["key"].startswith("invalid-answer:")]) == 1
     channel.answers = [Answer(card["id"], "yes", False)]
     engine.tick()
     assert current(engine)["stage"] == "交付"
-    assert not engine.control(f"delivery:answer:{card['id']}")["failed"]
+    assert not engine.control(f"delivery:answer:{card['id']}").get("failed")
 
 
 def test_5_cli_event_bad_yaml_exits_two_without_traceback(engine, tmp_path):

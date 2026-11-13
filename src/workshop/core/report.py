@@ -59,6 +59,8 @@ def why(log, item_id):
             detail = f'挑选逻辑起轮失败 {body["reason"]}'
         elif kind in ("card_rejected", "card_cancelled_external"):
             detail = f'卡片{ "拒收" if kind == "card_rejected" else "作废"} {body["id"]}：{body["reason"]}'
+        elif kind == "invalid_answer":
+            detail = f'非选项回答 卡片 {body["card"]}「{body["title"]}」收到「{body["value"]}」，仍等原卡'
         elif kind == "answer":
             detail = f'回答 {body["value"]}'
         elif kind == "work_blocked":
