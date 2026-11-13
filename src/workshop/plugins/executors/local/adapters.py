@@ -103,6 +103,7 @@ class Executor:
                 workdir = result['worktree']['path']
             if not workdir:
                 raise ValueError('执行者没有工作目录；流程应提供 Brief.workdir')
+            trust_workdir = os.path.abspath(workdir)
             workdir = str(Path(workdir).resolve())
             runtime = target['runtime']
             # Persist only trusted per-round additions. Interactive runner inherits its
@@ -119,7 +120,7 @@ class Executor:
             vendor_id = read(session_file)['vendor_id'] if resume and self.kind in ('codex', 'cursor-grok') else session
             argv = self._argv(config, workdir, vendor_id, resume, directory, readonly)
             spec = {'kind': self.kind, 'token': token, 'session': session, 'session_file': str(session_file),
-                    'workdir': workdir,
+                    'workdir': workdir, 'trust_workdir': trust_workdir,
                     'public_workdir': (item.get('workdir') if readonly else workdir),
                     'readonly': readonly, 'gh_config': str(directory / 'gh-config'),
                     'env': env, 'argv': argv, 'prompt': str(prompt_path),

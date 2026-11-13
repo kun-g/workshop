@@ -73,6 +73,8 @@ def main(directory: Path):
         env = session_environment(spec)
         argv = list(spec['argv'])
         if spec['interactive']:
+            from workshop.plugins.executors.local.trust import prepare
+            prepare(spec.get('trust_workdir', spec['workdir']), env, directory)
             prompt = Path(spec['prompt']).read_text()
             if len(prompt.encode()) > 8192:
                 prompt = '请读取派活说明文件 ' + json.dumps(spec['prompt'], ensure_ascii=False) + '，其中说明与资料已分开标注。'
