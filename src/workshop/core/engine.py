@@ -20,6 +20,7 @@ from .models import Evidence, Usage, RoundUsage
 class Engine:
     def __init__(self, log: Log, rules, plugins, clock=utcnow):
         self.log, self.rules, self.plugins, self.clock = log, rules, plugins, clock
+        self.tick_failures = self.control("@tick").get("failures", 0)
         saved = self.log.get("controls", "@rules") or {}
         if saved.get("data") != rules.data or saved.get("path") != rules.path:
             self.fact("control", {"id": "@rules", "data": rules.data, "path": rules.path})
@@ -43,6 +44,8 @@ class Engine:
         return self.log.get("controls", target) or {}
 
     def ingest(self, event: Event, round_token: str | None = None, *, ingress: str = "source") -> bool:
+        if ingress == "external":
+            event = replace(event, source=f"cli:{event.source}")
         if round_token:
             row = self.log.get("rounds", round_token)
             if not row:
@@ -120,8 +123,10 @@ class Engine:
                 self.fact("deferred_resolved", {"id": entry["id"], "replayed": replay})
                 if replay:
                     body = dict(entry["event"])
-                    ingress = body.pop("ingress", "source")
+                    ingress = body.pop("ingress", "unknown")
                     event = Event(**body)
+                    if ingress == "unknown":
+                        event = replace(event, action="update")
                     self.fact("event", {**asdict(event), "ingress": ingress}, event.item_id,
                               source="resume", ext_id=entry["id"])
                     if ingress == "external":
@@ -300,6 +305,10 @@ class Engine:
                     card = self.log.get("cards", answer.card_id)
                     if not card or card["mode"] != "ask" or not card["sent"] or card["answered"] or card.get("cancelled"):
                         continue
+                    if card["payload"]["kind"] == "approval" and answer.value not in [c["key"] for c in card["payload"]["choices"]]:
+                        self.delivery_error(f"answer:{card['id']}", ValueError("审批回答不是选项 key"), card["item"])
+                        continue
+                    self.delivery_ok(f"answer:{card['id']}")
                     approved = answer.value == "yes" if card.get("core_approval") else answer.approved
                     choice_label = next((c["label"] for c in card["payload"]["choices"] if c["key"] == answer.value), answer.value)
                     # 回答单独追加，由 evolve 在最新资料上追加，不回写旧资料快照。
@@ -601,9 +610,11 @@ class Engine:
             changes.update(state="等你", next=reason, blocked_by="Kun", leave={"kind": "等你", "about": reason})
         return changes
 
-    def finish(self, row):
-        if not self.retry_due(f"finish:{row['token']}"):
-            return
+    def settle_executor(self, row):
+        if row.get("stopped") and row.get("usage_checked"):
+            return True
+        if not self.retry_due(f"stop:{row['token']}"):
+            return False
         item = self.log.get("items", row["item"])
         token = row["token"]
         port, name = "executor", row["executor"]
@@ -626,6 +637,25 @@ class Engine:
                 self.fact("round_changed", {"token": token, "usage": asdict(measured.main),
                           "usage_by_model": measured.entries(), "children_reported": measured.children_reported,
                           "usage_checked": True}, item["id"])
+            self.retry_clear(f"stop:{token}")
+            return True
+        except Retryable as exc:
+            self.retry_failure(item["target"], port, name, f"stop:{token}", exc)
+        except Exception as exc:
+            # 关不掉不能假装释放占位；仍按退避重试停止，但立即隔离业务。
+            self.retry_failure(item["target"], port, name, f"stop:{token}", exc)
+            self.broken(item["target"], port, name, exc)
+        return False
+
+    def finish(self, row):
+        if not self.settle_executor(row):
+            return
+        item = self.log.get("items", row["item"])
+        if self.control(item["target"]).get("broken") or not self.retry_due(f"finish:{row['token']}"):
+            return
+        token = row["token"]
+        port, name = "flow", self.rules.target(item["target"])["plugin"]
+        try:
             received_at = datetime.fromisoformat(row["received"])
             receipt = Receipt.parse(row["receipt"], received_at)
             target = self.rules.target(item["target"])
@@ -769,22 +799,27 @@ class Engine:
             try:
                 with self.log.transaction():
                     state = self.control("@tick")
-                    errors = state.get("errors", [])
+                    errors = [f["body"]["error"] for f in self.log.facts()
+                              if f["kind"] == "tick_failed" and f["seq"] >= state.get("since", 0)] if state.get("failures") else []
                     if repr(exc) not in errors:
                         self.fact("tick_failed", {"error": repr(exc)})
-                        errors = [*errors, repr(exc)]
-                    self.fact("control", {"id": "@tick", "errors": errors, "failures": state.get("failures", 0) + 1})
+                    self.tick_failures = min(10, max(self.tick_failures, state["failures"]) + 1) if state.get("failures") else 1
+                    if self.tick_failures in (1, 3, 10) and self.tick_failures != state.get("failures"):
+                        since = state.get("since") if state.get("failures") else self.log.db.execute("SELECT max(seq) FROM facts").fetchone()[0]
+                        self.fact("control", {"id": "@tick", "since": since, "failures": self.tick_failures})
             except Exception as recording_error:
                 print(f"车间 tick 失败且暂时无法记录：{exc!r}; {recording_error!r}", file=sys.stderr)
 
     def heartbeat(self):
-        if self.control("@tick").get("failures"):
-            self.fact("control", {"id": "@tick", "errors": [], "failures": 0})
         now = stamp(self.clock())
         heartbeat = self.log.path.parent / "heartbeat.json"
         temporary = heartbeat.with_suffix(".tmp")
         temporary.write_text(json.dumps({"at": now, "last_ok_at": now, "active": self.occupied()}))
-        temporary.replace(heartbeat)
+        with self.log.transaction():
+            if self.control("@tick").get("failures"):
+                self.fact("control", {"id": "@tick", "failures": 0, "since": None})
+            temporary.replace(heartbeat)
+        self.tick_failures = 0
 
     def _tick(self):
         with self.exclusive():
@@ -794,11 +829,9 @@ class Engine:
             self.timers()
             for row in self.active():
                 item = self.log.get("items", row["item"])
-                if self.control(item["target"]).get("broken"):
-                    continue
                 try:
                     expired = row.get("deadline", "9999") <= stamp(self.clock())
-                    if not row.get("started") and not row.get("abort_requested") and not expired:
+                    if row["status"] == "starting" and not row.get("started") and not row.get("abort_requested") and not expired:
                         if self.control(item["target"]).get("broken"):
                             continue
                         self.launch(row)

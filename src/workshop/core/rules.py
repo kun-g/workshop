@@ -12,7 +12,11 @@ class Rules:
 
     @classmethod
     def load(cls, path: Path) -> "Rules":
-        rule = cls.validate(yaml.safe_load(path.read_text()))
+        try:
+            data = yaml.safe_load(path.read_text())
+        except yaml.YAMLError as exc:
+            raise ValueError(f"规则 YAML 无效：{exc}") from exc
+        rule = cls.validate(data)
         return cls(rule.data, str(path.expanduser().resolve()))
 
     @classmethod

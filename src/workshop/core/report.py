@@ -30,7 +30,8 @@ def why(log, item_id):
         body = fact["body"]
         kind = fact["kind"]
         if kind == "event":
-            detail = f'事件 {fact["source"]} {body["body"]}'
+            entry = "CLI 入口 " if body["source"].startswith("cli:") else ""
+            detail = f'{entry}事件 {body["source"]} {body["body"]}'
         elif kind == "round_reserved":
             detail = (f'{body["stage"]} {body["executor"]} 一轮 {body["token"]} 起因：事实 {body["cause"]} '
                       f'规则模型={display(body.get("requested", {}).get("model"))} 强度={display(body.get("requested", {}).get("effort"))} '

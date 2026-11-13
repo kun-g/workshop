@@ -298,6 +298,7 @@ def test_shutdown_failure_does_not_release_concurrency_slot(engine):
     assert item(engine)["state"] == "卡住"
     assert executor.live
     executor.stop_error = False
+    engine.clock.now += timedelta(minutes=5)
     engine.resume("alpha", [])
     engine.tick()
     assert current(engine)["stage"] == "说清楚"

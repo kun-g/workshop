@@ -20,10 +20,10 @@ class Source(Protocol):
 
 class Flow(Protocol):
     def classify(self, event: Event, item: dict, target: dict) -> Literal["update", "ready", "rework"]:
-        """只对非 agent 的 CLI 入口判定可信来源动作；输入 action 已归 update、depth 已归零。
+        """只对无轮次令牌的 CLI 入口判定可信来源动作；输入 action 已归 update、depth 已归零。
 
-        查来源身份和正文语义，默认 update；异常由核心按流程故障处理。
-        来源 poll 自己的动作已可信，不调用此方法；agent 事件永不调用此方法。
+        回查上游身份与原始内容，不能信正文自称身份，默认 update；异常按流程故障处理。
+        来源 poll、带令牌事件和回执子事件不调用此方法；无令牌输入仍可能来自 agent。
         """
         ...
     def stages(self, target: dict) -> tuple[str, ...]: ...

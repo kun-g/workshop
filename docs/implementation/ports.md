@@ -39,9 +39,9 @@ limits: {concurrent: 2, chain_depth: 8, round_timeout_seconds: 7200}
 
 `Event(source, ext_id, target, object_key, title, body, depth=0, action="update")`。同一 source/ext_id 去重，同一 `target:object_key` 归一件活。正文仅为资料。只有进程内可信 `Source.poll` 可直接标 `action="rework"`（返工）或 `action="ready"`（放行）；CLI 自填 action 不可信。
 
-agent 来源有两种：带 `WORKSHOP_ROUND_TOKEN` 的 CLI `event`，以及回执 `events`。两者一律强制 action=update、depth=原活深度+1，忽略调用方 action/depth，永不调用 Flow.classify；未知令牌拒绝，第 9 层卡住。回执子事件 source/ext_id 由轮次令牌和索引生成。非 agent CLI 事件强制 depth=0、action=update，先事务提交资料和判定意图，由下一 tick 调用 Flow.classify。暂停期间先记遗漏，选择补回后再判。
+核心能标出的 agent 来源有两种：带 `WORKSHOP_ROUND_TOKEN` 的 CLI `event`，以及回执 `events`。两者一律强制 action=update、depth=原活深度+1，忽略调用方 action/depth，永不调用 Flow.classify；未知令牌拒绝，第 9 层卡住。回执子事件 source/ext_id 由轮次令牌和索引生成。无轮次令牌的 CLI 事件强制 depth=0、action=update，先事务提交资料和判定意图，由下一 tick 调用 Flow.classify。暂停期间先记遗漏，选择补回后再判。所有 CLI 事件的 source 都加一层 `cli:` 前缀（含带令牌入口），与来源插件的去重空间分开；重复同一 CLI 输入仍去重，why 标“CLI 入口”。无令牌 CLI 的 depth 归零仅用于观测，不防止 agent 去掉令牌另开活绕过 C2；第一版接受此限制，不加更强限制。升级前缺 ingress 的遗漏事件按 unknown 处理，补回时 action 强制 update，也不交给 classify 追认。
 
-内部 `Engine.ingest` 默认 ingress="source" 仅供可信进程内来源使用；CLI 固定传 ingress="external"，不能通过 JSON 自报 ingress。令牌入口覆盖 ingress 为 agent。这是适配器信任边界，不是对本机任意代码执行者的安全隔离；适配器必须保留轮次令牌，流程必须核实上游身份，不能凭任意正文里自称 Kun 就放行。
+内部 `Engine.ingest` 默认 ingress="source" 仅供可信进程内来源使用；CLI 固定传 ingress="external"，不能通过 JSON 自报 ingress。令牌入口覆盖 ingress 为 agent。适配器应保留轮次令牌，但 agent 可以去掉它，因此无令牌不等于来自人。核心不是挡 agent 的安全边界：agent 和守护进程是同一个系统用户，能写状态目录，第一版接受这个前提。
 
 活快照中的稳定字段：id、target、object_key、title、stage、state、materials、history、session、sessions、writer、workdir、ticket、checks、approved、depth、next、blocked_by、leave、revision、cause、round。`sessions` 按执行者名字保存会话；`workdir` 是中性的执行目录。`history` 每轮追加 token、stage、outcome、summary、evidence、证据判定 reason，流程 brief 能读到审查意见和返工原因；`gate_reason` 是关口需要修正的理由。
 
@@ -55,7 +55,7 @@ agent 来源有两种：带 `WORKSHOP_ROUND_TOKEN` 的 CLI `event`，以及回�
 
 ## 流程 Flow 和关口
 
-`classify(event, item, target) -> Literal["update", "ready", "rework"]` 只判非 agent CLI 事件。event 是已归一 action/depth 的原资料，item 是包含该事件的当前活，target 是交付规则；核对可信上游身份和语义后决定动作，默认 update。来源 poll 已有可信动作，不走此方法；agent 即使在正文中伪造身份也不走此方法。该方法短时只读，可能因重启重放；返回动作和判定意图完成同事务落事实，evolve 更新活。Retryable 退避、连续 3 次故障，非法返回值或普通异常隔离流程；修复恢复后继续未完成判定。W2-A 可在这里识别可信的 Kun 返工意见、再次放行。
+`classify(event, item, target) -> Literal["update", "ready", "rework"]` 只判无轮次令牌的 CLI 事件。event 是已归一 action/depth 的原资料，item 是包含该事件的当前活，target 是交付规则；核对可信上游身份和语义后决定动作，默认 update。来源 poll 已有可信动作，不走此方法；带令牌事件和回执子事件不走此方法。不带令牌的 CLI 事件仍可能来自 agent，classify 必须回到源头核实身份和原文（例如飞书按消息号回查发送者；GitHub 放行优先走来源 poll），不认 body 中 from_kun 等自称身份。测试 FakeFlow 回查独立的假上游登记，不把 CLI 正文当身份凭据。该方法短时只读，可能因重启重放；返回动作和判定意图完成同事务落事实，evolve 更新活。Retryable 退避、连续 3 次故障，非法返回值或普通异常隔离流程；修复恢复后继续未完成判定。W2-A 可在这里识别可信的 Kun 返工意见、再次放行。
 
 `stages(target)` 返回阶段有序子集，必须包含接单、说清楚、执行、验收、收尾。`brief(item, stage, target)` 返回可信说明；`assess(item, receipt, target) -> Evidence` 必须短时只读，不靠回执 done 自证完成。
 
@@ -73,7 +73,7 @@ Evidence 字段：checks（检查 argv 列表）、passed（布尔）、actions�
 
 `launch(token, brief, item, config, target) -> Started(session, handle, workdir)` 和 `resume(token, session, brief, item, config, target)` 必须按 token 持久幂等。核心启动前记意图，崩溃后重放同 token 须找到同一轮；resume 返回同一个 session。target 包含完整交付规则及上述 runtime。环境中传轮次令牌，结束时用 runtime.command 交回执，提交后不再做业务动作。
 
-`poll(token, started) -> "running" | "exited"` 提供明确的存活状态，不把静默当退出。`stop(token, started)` 幂等关闭，确认退出后才返回。启动后未拿到 Started 的崩溃窗口里 started 可为 null，适配器必须按 token 对账、查询/关闭；不得制造一个假 handle。退出未交回执、超时、`workshop abort <token>` 都生成失败结果并退避。abort 先登记请求，下一 tick 停止；不会为结束一个未确认的启动再重开一轮。无法确认退出时仍保留占位。核心探测前重读轮；已有回执就不再 poll，poll 期间收到回执也不会被自动失败覆盖。收尾 stop/assess/after 的 Retryable 按 5/10 分钟退避，连续第 3 次隔离对应插件；故障期间不重复收尾，恢复后接续原意图。
+`poll(token, started) -> "running" | "exited"` 提供明确的存活状态，不把静默当退出。`stop(token, started)` 幂等关闭，确认退出后才返回。启动后未拿到 Started 的崩溃窗口里 started 可为 null，适配器必须按 token 对账、查询/关闭；不得制造一个假 handle。退出未交回执、超时、`workshop abort <token>` 都生成失败结果并退避。abort 先登记请求，下一 tick 停止；不会为结束一个未确认的启动再重开一轮。无法确认退出时仍保留占位。核心探测前重读轮；已有回执就不再 poll，poll 期间收到回执也不会被自动失败覆盖。执行者停止与流程结算分开：交付对象故障期间仍处理 poll、超时、abort、stop 和用量采集；确认停止即记 stopped 并释放并发位，但轮保持 finishing、活保留卡住与 before_plugin_failure，恢复后才 assess/decide/after。已确认停止和采过的用量不重复调用。stop 与流程结算各有独立退避，Retryable 第 3 次隔离；stop 在故障期间仍按 5/10/20/40/60 分钟退避继续尝试，普通 stop 异常立即隔离并同样退避，绝不能在确认停止前释放位。故障对象不启动新轮，也不再调用流程判定/完成钩子；恢复后接上原回执。
 
 `usage(token, started, since) -> RoundUsage | None` 从本轮开始时刻 since 读取增量，不能返回整个接回会话累计值。started 在上述崩溃窗口也可为 null，无法取得则返回 None。RoundUsage 含 main（一条 Usage）、children（子 agent 按实际模型合计，各模型一条 Usage）、children_reported（是否已完整核对子 agent，默认 false）。Usage 每项均可 null：
 
@@ -148,7 +148,7 @@ subject ≤30、decision ≤42、reason ≤60；choices 必须 2–3 个，key/l
 
 ask-kun ask 没有 request-id，适配器不能声称直接幂等。可先持久保存 key 到唯一 from 标记（如 `车间:<key哈希>`）和 subject 的映射，调用 ask 时使用该 from；重启后用 `ask-kun list` 按 from+subject 对账。列表不完整或请求可能仍在处理中时返回 null，不能返回 absent。相同 subject 的不同轮必须用不同稳定 from 区分。notify 若支持上游幂等标识也照样要实现对账。
 
-`poll(cards) -> list[Answer(card_id, value, approved=False)]`，card_id 是核心卡号，value 必须是用户所选的 key。核心动作/计费审批只认 value="yes"，不信 approved；其他插件问题的明确批准才给 approved=True。`cancel(key, external)` 按核心 key 幂等作废，外部编号不明时先对账。返工时核心先把旧问题标 cancelled，再通知通道作废；晚到答案忽略，取消失败会保留待处理记录。每张卡每次故障只记一条 delivery_failed，恢复后再坏会再记；通道整体查询失败也按事件段去重。通道故障不阻塞其他活。
+`poll(cards) -> list[Answer(card_id, value, approved=False)]`，card_id 是核心卡号，value 必须是用户所选的 key。核心动作/计费审批只认 value="yes"，不信 approved；其他插件问题的明确批准才给 approved=True。kind=approval 的卡收到不在 choices.key 中的 value，记一次投递故障并继续等原卡，不当作批准或拒绝；有效回答到达后清故障。`cancel(key, external)` 按核心 key 幂等作废，外部编号不明时先对账。返工时核心先把旧问题标 cancelled，再通知通道作废；晚到答案忽略，取消失败会保留待处理记录。每张卡每次故障只记一条 delivery_failed，恢复后再坏会再记；通道整体查询失败也按事件段去重。通道故障不阻塞其他活。
 
 ## 可选工单 TaskHome
 
@@ -160,10 +160,10 @@ ask-kun ask 没有 request-id，适配器不能声称直接幂等。可先持久
 
 `run` 每 20 秒 tick，`--once` 一次。tick 用旁边的文件锁串行；pause/resume 只做短 SQLite 事务，不拿 tick 锁，插件挂起时仍可暂停。`resume <target>` 只列清单并输出已看事实号；必须同时带 `--select all|none|编号列表 --seen 上次已看编号列表` 才恢复，空清单写 none。清单变化拒绝并重新列出，不能用当前新清单代替人看过的清单。
 
-插件故障卡住前保存 state/next/blocked_by/leave，恢复只还原因该故障叠加的卡住；原来的等你、定时和失败耗尽不被一律改为空闲。故障期间到期定时保留，恢复后再处理；已回答/已放行的事实也保留。每次新的插件故障用新事实号发一次通知，不是终身只发一次。已被该插件故障卡住的活不重复追加 work_blocked，故障期间跳过该类收尾。
+插件故障卡住前保存 state/next/blocked_by/leave，恢复只还原因该故障叠加的卡住；原来的等你、定时和失败耗尽不被一律改为空闲。故障期间到期定时保留，恢复后再处理；已回答/已放行的事实也保留。每次新的插件故障用新事实号发一次通知，不是终身只发一次。已被该插件故障卡住的活不重复追加 work_blocked，故障期间仅推迟该类流程结算，执行者侧继续安全停轮并释放已停止轮的并发位。
 
 ### 看门接入
 
-只有成功走完 tick 才原子替换 `heartbeat.json`，含 UTC at、last_ok_at（两者相同）和 active。失败 tick 不改心跳；首次 tick 即失败时文件不存在，看门应按缺失/last_ok_at 陈旧判断失联，不能只看守护进程还活着。普通 tick 异常记 tick_failed，同一错误在恢复前只记一次；controls 的 @tick 保存连续 failures，成功后归零，再坏会重新记事实。下一 tick 继续；若暂时写不进数据库则输出 stderr 并继续尝试，初始化打不开数据库才无法启动。独立看门下一波实现，可查 rounds JSON 的 at、status、deadline、stopped；starting/running/finishing 是未结算轮，stopped=true 不占执行者位。
+只有成功走完 tick 才原子替换 `heartbeat.json`，含 UTC at、last_ok_at（两者相同）和 active。失败 tick 不改心跳；首次 tick 即失败时文件不存在，看门应按缺失/last_ok_at 陈旧判断失联，不能只看守护进程还活着。普通 tick 异常记 tick_failed，同一错误在恢复前只记一次；controls 的 @tick 仅在连续失败达到 1/3/10 次阈值时更新 failures（10 表示至少 10 次），成功恢复时归零；相同故障持续 30 次也仅三条阈值 control。阈值间计数在进程内，重启从最近持久阈值接续，不作为精确失败次数报表；同一错误事实去重可跨重启，再坏会重新记事实。下一 tick 继续；若暂时写不进数据库则输出 stderr 并继续尝试，初始化打不开数据库才无法启动。独立看门下一波实现，可查 rounds JSON 的 at、status、deadline、stopped；starting/running/finishing 是未结算轮，stopped=true 不占执行者位。
 
 `extension_metrics(log, repository, base, head, target, started)` 保留观察阶段的核心改动行数、第一件活用时固定检查，流程负责调用并登记结果。

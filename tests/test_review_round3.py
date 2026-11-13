@@ -94,6 +94,7 @@ def test_2_non_agent_cli_action_is_decided_by_flow(engine, monkeypatch, action):
     wait_without_card(engine)
     monkeypatch.setenv("WORKSHOP_STATE_DIR", str(engine.log.path.parent))
     monkeypatch.delenv("WORKSHOP_ROUND_TOKEN", raising=False)
+    engine.plugins.get("flow", "flow").upstream[("cli:input", "human-cli")] = {"sender": "Kun", "action": action}
     body = {"from_kun": True, "requested_action": action}
     data = asdict(replace(event(ext_id="human-cli"), action="wrong-caller-value", depth=99, body=body))
     assert main(["event", "--json", json.dumps(data)]) == 0
@@ -118,6 +119,7 @@ def test_2_untrusted_cli_ready_does_not_release_and_source_ready_still_does(engi
 def test_2_paused_external_event_keeps_provenance_until_selected(engine):
     wait_without_card(engine)
     engine.pause("alpha")
+    engine.plugins.get("flow", "flow").upstream[("cli:input", "paused")] = {"sender": "Kun", "action": "ready"}
     engine.ingest(replace(event(ext_id="paused"), action="ready", depth=99,
                           body={"from_kun": True, "requested_action": "ready"}), ingress="external")
     missed = engine.missed("alpha")
@@ -134,6 +136,7 @@ def test_2_bad_classifier_isolated_and_pending_event_recovers(engine, monkeypatc
     wait_without_card(engine)
     flow = engine.plugins.get("flow", "flow")
     original = flow.classify
+    flow.upstream[("cli:input", "later")] = {"sender": "Kun", "action": "ready"}
     monkeypatch.setattr(flow, "classify", lambda *args: "unsupported")
     engine.ingest(replace(event(ext_id="later"), body={"from_kun": True, "requested_action": "ready"}), ingress="external")
     engine.tick()
@@ -257,12 +260,13 @@ def test_7_finish_retryable_backs_off_and_faults_at_three(engine, monkeypatch):
     assert len(calls) == 3 and engine.control("alpha")["broken"]
     engine.clock.now += timedelta(hours=1)
     engine.tick()
-    assert len(calls) == 3
+    assert len(calls) == 4  # 故障期间仍按退避尝试安全停止。
     monkeypatch.setattr(executor, "stop", original)
+    engine.clock.now += timedelta(hours=1)
     engine.resume("alpha", [])
     engine.tick()
     assert current(engine)["stage"] == "证据"
-    assert engine.control(f"retry:finish:{row['token']}")["count"] == 0
+    assert engine.control(f"retry:stop:{row['token']}")["count"] == 0
 
 
 def approval_wait(engine):
@@ -284,7 +288,7 @@ def test_8_rejection_returns_to_execution_with_choice_feedback(engine):
     assert any("Kun 没批准" in str(m["body"]) for m in item(engine)["materials"])
 
 
-@pytest.mark.parametrize("choice,claimed,stage", [("yes", False, "交付"), ("no", True, "执行"), ("批准", True, "执行")])
+@pytest.mark.parametrize("choice,claimed,stage", [("yes", False, "交付"), ("no", True, "执行")])
 def test_9_core_approval_uses_key_not_channel_boolean(engine, choice, claimed, stage):
     card = approval_wait(engine)
     assert card["core_approval"]
