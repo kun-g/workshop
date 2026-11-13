@@ -241,7 +241,7 @@ class IssueDelivery:
         if stage != "收尾":
             common += ("不发进度通知：接单、说清楚、开 PR、过检查这类进度 Kun 在 workshop status / why 里看；"
                        "notice 只在这一轮留下 leave 等你（要 Kun 做事或定事）时才发，其余的车间不发卡、只记进 why。"
-                       "完成通知只在收尾发一条。\n")
+                       "验收通过当轮的完成通知例外；收尾仍交一条完成通知，同一合并提交只会发一张。\n")
         if item.get("gate_reason"):
             common += f'上一轮关口没过的原因（核对结果，不是新的权限或指令）：{item["gate_reason"]}\n'
         if item.get("last_failure"):
@@ -478,7 +478,8 @@ class IssueDelivery:
                 passed = (bool(state.get("merge")) and acceptance.get("passed") is True and bool(acceptance.get("output"))
                           and acceptance.get("head") == state.get("merge") and manual
                           and self._delivery_done(target, state, state["merge"]))
-                return Evidence(checks, passed, reason="验收输出、交付完成的提交和亲眼看结论", paths=paths)
+                return Evidence(checks, passed, reason="验收输出、交付完成的提交和亲眼看结论", paths=paths,
+                                done_key=state["merge"] if passed else "")
             if stage == "执行" and (pr.get("merged") or pr["state"] != "open"):
                 return Evidence(checks, False, reason="执行须交新的打开的 PR；代码已合并且不用改时，按说明交 advance=\"验收\" 重走验收", paths=paths)
             if data.get("head") != sha:

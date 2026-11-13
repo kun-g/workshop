@@ -481,13 +481,15 @@ def test_completion_notice_goes_out_once_per_merge_commit(world):
     done = {'acceptance': {'passed': True, 'output': 'acceptance raw output', 'head': sha}}
     finish(engine, '收尾', key='7', evidence=[result(world, **done)],
            notice=[{'key': 'acceptance-ws7', 'text': 'ws#7 已验收'}])
+    cards = [c for c in engine.log.all('cards') if c['mode'] == 'notice']
+    assert [(c['key'], c['payload']['text']) for c in cards] == [(f'notice:完成:{sha}', 'ws#7 已验收')]
     finish(engine, None, key='7', evidence=[result(world)], leave=CLOSING['leave'],
            notice=[*CLOSING['notice'], {'key': 'accepted-2', 'text': 'ws#7 已验收（又一条）；不对就在群里回一句「ws#7 不对」'}])
     assert item(engine, '7')['state'] == '完成'
     cards = [c for c in engine.log.all('cards') if c['mode'] == 'notice']
-    assert [(c['key'], c['payload']['text']) for c in cards] == [(f'notice:完成:{sha}', CLOSING['notice'][0]['text'])]
+    assert [(c['key'], c['payload']['text']) for c in cards] == [(f'notice:完成:{sha}', 'ws#7 已验收')]
     held = [f['body'] for f in engine.log.facts('alpha:7') if f['kind'] == 'notice_held']
-    assert [h['key'] for h in held] == ['intake', 'opened', 'acceptance-ws7', 'accepted-2']
+    assert [h['key'] for h in held] == ['intake', 'opened', 'accepted', 'accepted-2']
     engine.log.close()
 
 

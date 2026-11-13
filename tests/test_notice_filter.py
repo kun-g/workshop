@@ -1,4 +1,6 @@
 """执行者回执里的通知只在 Kun 需要知道时发（ws#46）：留下等你，或这件活完成；完成通知按完成标识只发一张。"""
+import pytest
+
 from workshop.core.models import Evidence, Receipt
 from workshop.core.report import why
 from conftest import current, finish, item, reach
@@ -50,8 +52,9 @@ def test_completion_notice_is_sent_once_whatever_the_keys(engine):
     flow = engine.plugins.get("flow", "flow")
     flow.assess = lambda item, receipt, target: Evidence(flow.checks, flow.passed, flow.actions, done_key="abc123")
     reach(engine, "验收")
-    finish(engine, "收尾", notice=[{"key": "acceptance-ws37", "text": "ws#37 已验收"}])
-    assert notices(engine) == []
+    finish(engine, "收尾", notice=[{"key": "acceptance-ws37", "text": "ws#37 已验收"},
+                                  {"key": "another", "text": "ws#37 已验收（同轮重复）"}])
+    assert [c["payload"]["text"] for c in notices(engine)] == ["ws#37 已验收"]
     finish(engine, leave={"kind": "送回", "at": "+7d", "about": "复看"},
            notice=[{"key": "accepted", "text": "ws#37 已验收，不对就在群里回一句「ws#37 不对」"},
                    {"key": "accepted-again", "text": "ws#37 已验收（重复）"}])
@@ -59,9 +62,9 @@ def test_completion_notice_is_sent_once_whatever_the_keys(engine):
     assert item(engine)["state"] == "完成"
     cards = notices(engine)
     assert len(cards) == 1 and cards[0]["key"] == "notice:完成:abc123"
-    assert [c["text"] for c in sent(engine)] == ["ws#37 已验收，不对就在群里回一句「ws#37 不对」"]
+    assert [c["text"] for c in sent(engine)] == ["ws#37 已验收"]
     text = why(engine.log, "alpha:one")
-    assert "「ws#37 已验收」：进度通知不发" in text
+    assert "「ws#37 已验收（同轮重复）」：这次完成已发过通知（abc123）" in text
     assert "「ws#37 已验收（重复）」：这次完成已发过通知（abc123）" in text
 
 
@@ -77,3 +80,23 @@ def test_same_done_key_never_sends_a_second_completion_card(engine):
     with engine.log.transaction():
         engine.receipt_notices(work, "收尾", "t3", again, Evidence(done_key="def456"), True)
     assert [c["payload"]["text"] for c in notices(engine)] == ["第一次", "重走验收后"]
+
+
+@pytest.mark.parametrize('passed,outcome,advance', [
+    (False, 'done', '收尾'),
+    (True, 'nothing', '收尾'),
+    (True, 'done', None),
+    (True, 'done', '执行'),
+])
+def test_completion_key_does_not_bypass_the_gate(engine, passed, outcome, advance):
+    reach(engine, '验收')
+    flow = engine.plugins.get('flow', 'flow')
+    flow.assess = lambda item, receipt, target: Evidence(
+        flow.checks, passed, flow.actions, done_key='abc123')
+    engine.submit(current(engine)['token'], {
+        'outcome': outcome, 'summary': '尚未通过并向前推进', 'advance': advance,
+        'notice': [{'key': 'early', 'subject': '过早的完成通知', 'text': '不能发', 'fyi': True}],
+    })
+    engine.tick()
+    assert notices(engine) == [] and sent(engine) == []
+    assert '过早的完成通知' in why(engine.log, 'alpha:one')

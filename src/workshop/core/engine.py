@@ -1233,7 +1233,9 @@ class Engine:
                           item["id"], source="result", ext_id=token)
                 for ask in receipt.ask:
                     self.card(item, f'{token}:{ask["key"]}', "ask", ask)
-                self.receipt_notices(item, row["stage"], token, receipt, evidence, advancing and decision.complete)
+                completed = advancing and (decision.complete or (
+                    bool(evidence.done_key) and STAGES.index(decision.stage) > STAGES.index(row["stage"])))
+                self.receipt_notices(item, row["stage"], token, receipt, evidence, completed)
                 for later in receipt.later:
                     self.timer(item, f'{token}:{later["key"]}', later["at"], later["about"], base=received_at)
                 if receipt.leave and receipt.leave["kind"] in ("工序", "送回"):

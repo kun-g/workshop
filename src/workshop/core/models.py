@@ -116,7 +116,8 @@ class Evidence:
     reason: str = ""
     paths: list[str] = field(default_factory=list)
     reviewers: int = 1
-    # 这件活这次完成的标识（例如交付的版本号）；同一标识只发一张完成通知，空时一件活只发一张。
+    # 流程确认结果已完成时给出的标识；判过并向前推进就可发完成通知，同一标识只发一张。
+    # 空时只在最后阶段完成后发，一件活只发一张。
     done_key: str = ""
 
     def validate(self) -> None:
