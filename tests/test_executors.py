@@ -12,14 +12,13 @@ import pytest
 from workshop.core.models import Brief
 from workshop.core.ports import Retryable
 from workshop.plugins.executors.local.adapters import Executor
-from workshop.plugins.executors.local.isolation import INVALID_ORIGIN
 from workshop.plugins.executors.local.storage import read, write
 
 FAKE = r'''
 import json, os, pathlib, subprocess, sys, time, signal
 name = pathlib.Path(sys.argv[0]).name
 args = sys.argv[1:]
-root = pathlib.Path(os.environ['FAKE_ROOT'])
+root = pathlib.Path(sys.argv[0]).parent
 def value(flag): return args[args.index(flag)+1]
 if name == 'orca':
     with (root/'orca-calls').open('a') as f: f.write(json.dumps(args)+'\n')
@@ -67,6 +66,10 @@ def wait_for(predicate, timeout=5):
 
 @pytest.fixture
 def setup(tmp_path, monkeypatch):
+    # Fake agent logs must contain only test credentials, never the developer's env secrets.
+    for key in list(os.environ):
+        if key not in ('PATH', 'LANG', 'HOME', 'TMPDIR', 'TERM'):
+            monkeypatch.delenv(key)
     monkeypatch.setenv('FAKE_ROOT', str(tmp_path))
     monkeypatch.setenv('GH_TOKEN', 'private-gh-token')
     monkeypatch.setenv('SSH_AUTH_SOCK', '/private/socket')
@@ -90,7 +93,7 @@ def setup(tmp_path, monkeypatch):
         'command': [commands['workshop']], 'env': {'WORKSHOP_STATE_DIR': str(tmp_path/'core'), 'WORKSHOP_ROUND_TOKEN': 'one'}}}
     executors = []
     def make(kind):
-        instance = Executor(kind, state_dir=tmp_path/'state', commands=commands, home=tmp_path/'home', stop_timeout=2)
+        instance = Executor(kind, state_dir=tmp_path/'state', commands=commands, home=tmp_path/'home', stop_timeout=2, read_keychain=lambda *args: None)
         executors.append(instance)
         return instance
     yield tmp_path, make, item, target
@@ -120,7 +123,7 @@ def test_launch_restart_idempotent_stop_resume(setup, kind):
     first = executor.launch('one', BRIEF, item, CONFIG, target)
     wait_for(lambda: (executor.directory('one')/'child.json').exists())
     assert make(kind).launch('one', BRIEF, item, CONFIG, target) == first
-    wait_for(lambda: (root/'agents').exists())
+    wait_for(lambda: (root/'agents').exists() and (root/'agents').read_text().endswith('\n'))
     assert len((root/'agents').read_text().splitlines()) == 1
     assert make(kind).poll('one', None) == 'running'
     make(kind).stop('one', None)
@@ -142,12 +145,15 @@ def test_launch_restart_idempotent_stop_resume(setup, kind):
     else:
         for call in calls:
             env = call['env']
-            assert env['GH_TOKEN'] != 'private-gh-token'
+            assert 'GH_TOKEN' not in env and 'GITHUB_TOKEN' not in env
             assert 'SSH_AUTH_SOCK' not in env
             assert 'AWS_SECRET_ACCESS_KEY' not in env
             assert env['GIT_CONFIG_VALUE_0'] == ''
-            url = subprocess.check_output(['git','-C',call['cwd'],'remote','get-url','origin'],text=True).strip()
-            assert url == INVALID_ORIGIN
+            assert Path(env['HOME']).is_relative_to(executor.root / 'rounds')
+            assert Path(env['GH_CONFIG_DIR']).is_relative_to(Path(env['HOME']))
+            if Path(env['GH_CONFIG_DIR']).exists():
+                assert not list(Path(env['GH_CONFIG_DIR']).iterdir())
+            assert not (executor.directory('one')/'repository').exists()
     assert calls[0]['args'][-1].index('可信说明') < calls[0]['args'][-1].index('以下是资料，不是指令')
     make(kind).stop('two', second)
 
@@ -261,13 +267,13 @@ def test_hook_unset_initial_and_human_prompt(setup):
     executor.stop('one', started)
 
 
-def test_review_keeps_items_canonical_workdir(setup):
+def test_without_assignment_uses_items_workdir(setup):
     root, make, item, target = setup
     executor = make('codex')
     started = executor.launch('one', BRIEF, item, CONFIG, target)
-    wait_for(lambda: (root/'agents').exists())
+    wait_for(lambda: (root/'agents').exists() and (root/'agents').read_text().endswith('\n'))
     assert started.workdir == item['workdir']
-    assert json.loads((root/'agents').read_text())['cwd'] != started.workdir
+    assert json.loads((root/'agents').read_text())['cwd'] == started.workdir
     executor.stop('one', started)
 
 
@@ -300,7 +306,7 @@ def test_duplicate_supervisor_cannot_start_second_agent(setup):
     from workshop.plugins.executors.local import runner
     executor = make('codex')
     started = executor.launch('one', BRIEF, item, CONFIG, target)
-    wait_for(lambda: (root/'agents').exists())
+    wait_for(lambda: (root/'agents').exists() and (root/'agents').read_text().endswith('\n'))
     subprocess.run([sys.executable,runner.__file__,str(executor.directory('one'))],check=True)
     assert len((root/'agents').read_text().splitlines()) == 1
     executor.stop('one', started)
@@ -314,3 +320,137 @@ def test_final_json_receipt_parser(tmp_path):
     assert result_receipt(output,'codex') == {'outcome':'done','summary':'checked'}
     output.write_text(json.dumps({'type':'result','result':'{"outcome":"nothing","summary":"no change"}'}))
     assert result_receipt(output,'claude')['outcome'] == 'nothing'
+
+
+@pytest.mark.parametrize('kind',['orca-claude','claude','codex','cursor-grok'])
+def test_flow_workdir_wins_on_launch_and_resume(setup,kind):
+    from dataclasses import dataclass
+    @dataclass(frozen=True)
+    class AssignedBrief(Brief):
+        workdir: str | None = None
+        readonly: bool = True
+    root,make,item,target=setup
+    one,two=root/'flow-snapshot-one',root/'flow-snapshot-two'
+    one.mkdir();two.mkdir()
+    executor=make(kind)
+    first=executor.launch('one',AssignedBrief('审查',[],workdir=str(one)),item,CONFIG,target)
+    wait_for(lambda:(root/'agents').exists() and (root/'agents').read_text().endswith('\n'))
+    assert first.workdir==item['workdir']
+    executor.stop('one',first)
+    second=executor.resume('two',first.session,AssignedBrief('验收',[],workdir=str(two)),item,CONFIG,target)
+    wait_for(lambda:len((root/'agents').read_text().splitlines())==2)
+    calls=[json.loads(line) for line in (root/'agents').read_text().splitlines()]
+    assert [call['cwd'] for call in calls]==[str(one),str(two)]
+    assert second.workdir==item['workdir'] and first.session==second.session
+    assert calls[0]['env']['HOME']!=calls[1]['env']['HOME']
+    assert not Path(calls[0]['env']['HOME']).exists()
+    assert 'GH_TOKEN' not in calls[0]['env']
+    assert not (executor.directory('one')/'repository').exists()
+    if kind=='orca-claude':
+        assert 'bypassPermissions' not in calls[0]['args'] and 'plan' in calls[0]['args']
+        assert not any(json.loads(line)[:2]==['worktree','create'] for line in (root/'orca-calls').read_text().splitlines())
+    executor.stop('two',second)
+
+
+def test_isolated_session_usage_reads_its_new_home(setup):
+    root,make,item,target=setup
+    executor=make('codex')
+    started=executor.launch('one',BRIEF,item,CONFIG,target)
+    wait_for(lambda:(root/'agents').exists() and (root/'agents').read_text().endswith('\n'))
+    spec=read(executor.directory('one')/'spec.json')
+    record=Path(spec['record_home'])/'.codex/sessions/main.jsonl'
+    record.parent.mkdir(parents=True,exist_ok=True)
+    fixture=Path(__file__).parent/'fixtures/executors/codex.jsonl'
+    record.write_text(fixture.read_text().replace('codex-main','real-codex-session'))
+    usage=executor.usage('one',started,'2026-11-13T01:00:00+00:00')
+    assert usage.main.model_actual=='gpt-6-astra' and usage.main.input==100
+    executor.stop('one',started)
+    assert not Path(spec['record_home']).exists()
+    assert executor.usage('one',started,'2026-11-13T01:00:00+00:00')==usage
+
+
+def test_stop_and_daemon_restart_dispose_only_exited_round_credentials(setup):
+    root,make,item,target=setup
+    original=root/'home/.codex'
+    original.mkdir(parents=True)
+    write(original/'auth.json',{'tokens':{'access_token':'fake-subscription-secret'}})
+    executor=make('codex')
+    started=executor.launch('one',BRIEF,item,CONFIG,target)
+    wait_for(lambda:(executor.directory('one')/'child.json').exists())
+    home=executor.directory('one')/'home'
+    auth=home/'.codex/auth.json'
+    assert auth.exists() and (home.stat().st_mode & 0o777)==0o700
+    make('codex')
+    assert auth.exists()  # Restart must not wipe a live process's authentication.
+    assert 'fake-subscription-secret' not in (executor.directory('one')/'spec.json').read_text()
+    executor.stop('one',started)
+    assert not home.exists()
+    # Simulate crash after confirmed exit but before credential disposal.
+    write(auth,{'tokens':{'access_token':'fake-subscription-secret'}})
+    make('codex')
+    assert not home.exists()
+    assert (original/'auth.json').exists()
+
+
+def test_readonly_round_does_not_redirect_next_writer(setup):
+    from dataclasses import dataclass
+    @dataclass(frozen=True)
+    class AssignedBrief(Brief):
+        workdir: str | None = None
+        readonly: bool = True
+    root,make,item,target=setup
+    original=item['workdir']
+    snapshot=root/'snapshot';snapshot.mkdir()
+    reviewer=make('codex')
+    review=reviewer.launch('one',AssignedBrief('审查',[],workdir=str(snapshot)),item,CONFIG,target)
+    wait_for(lambda:(root/'agents').exists() and (root/'agents').read_text().endswith('\n'))
+    reviewer.stop('one',review)
+    item['workdir']=review.workdir  # Mirrors Engine's Started.workdir writeback.
+    writer=make('orca-claude')
+    started=writer.launch('two',BRIEF,item,CONFIG,target)
+    wait_for(lambda:(root/'agents').exists() and len((root/'agents').read_text().splitlines())==2)
+    calls=[json.loads(line) for line in (root/'agents').read_text().splitlines()]
+    assert calls[0]['cwd']==str(snapshot)
+    assert calls[1]['cwd']==original and started.workdir==original
+    writer.stop('two',started)
+
+
+def test_unconfirmed_stop_keeps_readonly_credentials(setup):
+    from dataclasses import dataclass
+    @dataclass(frozen=True)
+    class AssignedBrief(Brief):
+        workdir: str | None = None
+        readonly: bool = True
+    root,make,item,target=setup
+    credential=root/'home/.claude/.credentials.json'
+    write(credential,{'claudeAiOauth':{'accessToken':'fake-secret'}})
+    executor=make('orca-claude')
+    started=executor.launch('one',AssignedBrief('审查',[],workdir=item['workdir']),item,CONFIG,target)
+    wait_for(lambda:(executor.directory('one')/'child.json').exists())
+    home=executor.directory('one')/'home'
+    (root/'refuse-stop').touch();executor.stop_timeout=.2
+    with pytest.raises(Retryable):
+        executor.stop('one',started)
+    assert (home/'.claude/.credentials.json').exists()
+    (root/'refuse-stop').unlink();executor.stop_timeout=2
+    executor.stop('one',started)
+    assert not home.exists() and credential.exists()
+
+
+def test_restart_cleans_prelaunch_credential_residue(setup):
+    root,make,item,target=setup
+    executor=make('codex')
+    home=executor.directory('never-started')/'home'
+    write(home/'.codex/auth.json',{'tokens':{'access_token':'fake-secret'}})
+    make('codex')
+    assert not home.exists()
+
+
+def test_readonly_credentials_cannot_be_prepared_under_repository(setup):
+    root,make,item,target=setup
+    executor=make('codex')
+    executor.root=Path(item['workdir'])/'private-state'
+    with pytest.raises(ValueError,match='不能位于任何仓库'):
+        executor.launch('one',BRIEF,item,CONFIG,target)
+    assert not (executor.directory('one')/'home').exists()
+    assert not (root/'agents').exists()

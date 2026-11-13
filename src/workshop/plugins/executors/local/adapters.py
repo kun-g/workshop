@@ -14,7 +14,8 @@ import uuid
 
 from workshop.core.models import Started, RoundUsage, Usage
 from workshop.core.ports import Retryable, Unavailable
-from .isolation import copy_repository, environment
+from .isolation import environment, keychain
+from .history import archive_and_remove_home, restore_history
 from .storage import alive, identity, lock, read, write
 from .runner import vendor_session
 
@@ -25,7 +26,7 @@ def executable(name):
 
 
 class Executor:
-    def __init__(self, kind, state_dir=None, commands=None, home=None, stop_timeout=5):
+    def __init__(self, kind, state_dir=None, commands=None, home=None, stop_timeout=5, read_keychain=keychain):
         self.kind = kind
         # Stable locator independent of runtime.state_dir; allows poll(None) after process restart.
         self.root = Path(state_dir or os.environ.get('WORKSHOP_EXECUTOR_STATE_DIR', '~/.local/state/workshop-executors')).expanduser().resolve() / kind
@@ -33,6 +34,22 @@ class Executor:
         self.commands.update(commands or {})
         self.home = Path(home or Path.home())
         self.stop_timeout = stop_timeout
+        self.read_keychain = read_keychain
+        self._cleanup_finished()
+
+    def _cleanup_finished(self):
+        # Never dispose credentials for a live or ambiguous process on daemon restart.
+        for home in self.root.glob('rounds/*/home'):
+            directory = home.parent
+            with lock(directory / 'prepare.lock'):
+                if not (directory / 'spec.json').exists():
+                    archive_and_remove_home(directory, self.kind)
+                    continue
+                records = [read(directory / name) for name in ('child.json', 'claimed.json', 'supervisor.json')
+                           if (directory / name).exists()]
+                known_exit = (directory / 'stopped.json').exists() or (directory / 'exited.json').exists()
+                if (known_exit or (directory / 'child.json').exists()) and not any(alive(r) for r in records):
+                    archive_and_remove_home(directory, self.kind)
 
     def directory(self, token):
         return self.root / 'rounds' / hashlib.sha256(token.encode()).hexdigest()
@@ -82,33 +99,39 @@ class Executor:
             session_dir = self.root / 'sessions' / session
             session_file = session_dir / 'vendor.json'
             session_info = session_dir / 'info.json'
+            assigned = getattr(brief, 'workdir', None)
+            readonly = bool(getattr(brief, 'readonly', False)) or self.kind != 'orca-claude'
+            if assigned and not Path(assigned).is_absolute():
+                raise ValueError('Brief.workdir 必须是绝对路径')
             if resume:
                 previous = read(session_info)
                 if not (self.root / 'rounds' / previous['round'] / 'stopped.json').exists():
                     raise RuntimeError('原轮尚未确认停止，不接回会话')
-                workdir = previous['workdir']
-                # Copy is kept for session history; refresh snapshot when writer changed source.
-                if self.kind != 'orca-claude':
-                    workdir = str(directory / 'repository')
-                    copy_repository(self.commands['git'], Path(item.get('workdir') or target['checkout']).expanduser().resolve(), Path(workdir))
-            elif self.kind == 'orca-claude':
-                workdir = item.get('workdir')
-                if not workdir:
-                    slug = 'ws-' + hashlib.sha256(item['id'].encode()).hexdigest()[:16]
-                    # Journal the intent before the non-idempotent external worktree creation.
-                    intent = directory / 'worktree-intent.json'
-                    if intent.exists():
-                        raise RuntimeError('工作区创建结果不确定，需要对账: ' + str(intent))
-                    write(intent, {'slug': slug})
-                    result = self._orca('worktree', 'create', '--repo', 'path:' + str(Path(target['checkout']).expanduser().resolve()),
-                        '--name', slug, '--base-branch', 'origin/main', '--branch', 'ws/' + slug, '--no-parent', '--setup', 'skip')
-                    workdir = result['worktree']['path']
+                workdir = assigned or item.get('workdir') or previous['workdir']
             else:
-                workdir = str(directory / 'repository')
-                copy_repository(self.commands['git'], Path(item.get('workdir') or target['checkout']).expanduser().resolve(), Path(workdir))
+                workdir = assigned or item.get('workdir')
+            if not workdir and self.kind == 'orca-claude' and not readonly:
+                slug = 'ws-' + hashlib.sha256(item['id'].encode()).hexdigest()[:16]
+                intent = directory / 'worktree-intent.json'
+                if intent.exists():
+                    raise RuntimeError('工作区创建结果不确定，需要对账: ' + str(intent))
+                write(intent, {'slug': slug})
+                result = self._orca('worktree', 'create', '--repo', 'path:' + str(Path(target['checkout']).expanduser().resolve()),
+                    '--name', slug, '--base-branch', 'origin/main', '--branch', 'ws/' + slug, '--no-parent', '--setup', 'skip')
+                workdir = result['worktree']['path']
+            if not workdir:
+                raise ValueError('执行者没有工作目录；流程应提供 Brief.workdir')
             workdir = str(Path(workdir).resolve())
             runtime = target['runtime']
-            env = dict(os.environ) if self.kind == 'orca-claude' else environment()
+            record_home = directory / 'home' if readonly else self.home
+            if readonly:
+                if any((parent / '.git').exists() for parent in (directory, *directory.parents)):
+                    raise ValueError('只读凭据状态目录不能位于任何仓库内')
+                record_home.mkdir(parents=True, exist_ok=True, mode=0o700)
+                record_home.chmod(0o700)
+                if resume:
+                    restore_history(self.root / 'rounds' / previous['round'], record_home, self.kind, previous['workdir'], workdir)
+            env = environment(record_home, self.kind, self.home, read_keychain=self.read_keychain) if readonly else dict(os.environ)
             env.pop('WORKSHOP_RULES', None)
             env.update(runtime['env'])
             env.update(WORKSHOP_ITEM=item['id'], WORKSHOP_EXECUTOR_ROUND=str(directory))
@@ -125,10 +148,11 @@ class Executor:
             prompt_path = directory / 'brief.txt'
             prompt_path.write_text(prompt)
             vendor_id = read(session_file)['vendor_id'] if resume and self.kind in ('codex', 'cursor-grok') else session
-            argv = self._argv(config, workdir, vendor_id, resume, directory)
+            argv = self._argv(config, workdir, vendor_id, resume, directory, readonly)
             spec = {'kind': self.kind, 'token': token, 'session': session, 'session_file': str(session_file),
                     'workdir': workdir,
-                    'public_workdir': workdir if self.kind == 'orca-claude' else str(Path(item.get('workdir') or target['checkout']).expanduser().resolve()),
+                    'public_workdir': (item.get('workdir') if readonly else workdir),
+                    'record_home': str(record_home), 'readonly': readonly,
                     'env': env, 'argv': argv, 'prompt': str(prompt_path),
                     'receipt_command': runtime['command'], 'interactive': self.kind == 'orca-claude',
                     'billing': config.get('billing'), 'item': {k: item[k] for k in ('id', 'target', 'object_key')}}
@@ -149,7 +173,7 @@ class Executor:
                 write(directory / 'supervisor.json', {'pid': proc.pid, 'birth': identity(proc.pid)})
             return self._started(directory, spec)
 
-    def _argv(self, config, workdir, session, resume, directory):
+    def _argv(self, config, workdir, session, resume, directory, readonly):
         model = ['--model', config['model']] if config.get('model') else []
         if self.kind in ('claude', 'orca-claude'):
             argv = [self.commands['claude'], '--resume' if resume else '--session-id', session, *model]
@@ -159,10 +183,14 @@ class Executor:
                 hook = shlex.join([sys.executable, str(Path(__file__).with_name('hook.py'))])
                 settings = {'hooks': {'UserPromptSubmit': [{'hooks': [{'type': 'command', 'command': hook}]}]}}
                 write(directory / 'hooks.json', settings)
-                argv += ['--permission-mode', 'bypassPermissions', '--settings', str(directory / 'hooks.json')]
+                argv += ['--settings', str(directory / 'hooks.json')]
             else:
-                argv += ['-p', '--permission-mode', 'plan', '--tools', 'Read,Glob,Grep',
-                         '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}', '--output-format', 'json']
+                argv += ['-p', '--output-format', 'json']
+            if readonly:
+                argv += ['--permission-mode', 'plan', '--tools', 'Read,Glob,Grep',
+                         '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}']
+            else:
+                argv += ['--permission-mode', 'bypassPermissions']
             return argv
         if self.kind == 'codex':
             argv = [self.commands['codex'], 'exec', '-c', 'sandbox_mode="read-only"', '-c', 'approval_policy="never"',
@@ -212,10 +240,12 @@ class Executor:
             if real_id:
                 write(Path(read(directory / 'spec.json')['session_file']), {'vendor_id': real_id})
         if (directory / 'stopped.json').exists():
+            archive_and_remove_home(directory, self.kind)
             return
         records = [read(directory / name) for name in ('child.json', 'claimed.json', 'supervisor.json') if (directory / name).exists()]
         if records and not any(alive(record) for record in records) and (
                 (directory / 'child.json').exists() or (directory / 'exited.json').exists()):
+            archive_and_remove_home(directory, self.kind)
             write(directory / 'stopped.json', {'confirmed': True})
             return
         if self.kind == 'orca-claude':
@@ -241,6 +271,7 @@ class Executor:
             records = [read(directory / name) for name in ('child.json', 'claimed.json', 'supervisor.json') if (directory / name).exists()]
             if records and not any(alive(record) for record in records):
                 if (directory / 'child.json').exists() or (directory / 'exited.json').exists():
+                    archive_and_remove_home(directory, self.kind)
                     write(directory / 'stopped.json', {'confirmed': True})
                     return
             if time.monotonic() >= deadline:
@@ -260,4 +291,7 @@ class Executor:
             session = vendor_session(directory / 'output.log', self.kind)
             if not session and Path(spec['session_file']).exists():
                 session = read(Path(spec['session_file']))['vendor_id']
-        return collect(self.kind, self.home, session, spec['workdir'], since, spec['billing'])
+        record_home = Path(spec.get('record_home', str(self.home)))
+        if spec.get('readonly') and not record_home.exists():
+            record_home = directory / 'records'
+        return collect(self.kind, record_home, session, spec['workdir'], since, spec['billing'])
