@@ -264,21 +264,37 @@ class IssueDelivery:
     def _reached_acceptance(item):
         return any(entry.get("stage") == "验收" for entry in item.get("history", []))
 
-    def _delivered(self, item, target):
+    def _pull_requests(self, item, target):
         """本活打开的 PR，以及最近一次合并的 PR（没有为 None）。"""
         rows = self.io.item_prs(item, target)
         opened = [row for row in rows if row["state"] == "open"]
         merged = [row for row in rows if row.get("merged_at") and row.get("merge_commit_sha")]
         return opened, max(merged, key=lambda row: (row["merged_at"], row["number"])) if merged else None
 
-    @staticmethod
-    def _rerun_block(state, opened, latest):
-        """不能直接重走验收的原因；None 表示可以走。同一合并提交只给一次。"""
+    def _delivery_done(self, target, state, sha):
+        """这个提交交付完成过没有：after(交付) 走完时按提交号记在 delivered。
+
+        旧版本写的状态没有这份记录：release=none/self 合并即交付；release=tag 当场核对线上包含它。
+        """
+        if "delivered" in state:
+            return sha in state["delivered"]
+        return target.get("release", "none") != "tag" or self._deployed(target, sha)
+
+    def _rerun_block(self, target, state, opened, latest, request=None):
+        """不能直接重走验收的原因；None 表示可以走。
+
+        只认交付完成过的那个合并提交，且是本活最近的合并、和回执请求的一致；同一提交只给一次。
+        """
         if opened:
             return f'本活还有打开的 PR #{opened[0]["number"]}，照常走证据和审查，不能直接重走验收'
         if not latest:
             return "本活还没有合并过的 PR，不能重走验收"
         sha = latest["merge_commit_sha"]
+        if request is not None and request != sha:
+            return f"回执请求的提交 {request} 不是本活最近的合并提交 {sha}，不能重走验收"
+        if not self._delivery_done(target, state, sha):
+            return (f"最近的合并提交 {sha} 还没交付完成（release=tag 时线上还没核对到它），不能重走验收；"
+                    "交 outcome=nothing，summary 写清原因，notice 给 Kun 发一条 fyi，leave={kind:等你,about:原因}，由 Kun 定")
         if state.get("accepted") and state.get("merge") == sha:
             return f"合并提交 {sha} 已验收通过；要改就从最新 main 开新 PR"
         if sha in state.get("acceptance_reruns", []):
@@ -290,15 +306,15 @@ class IssueDelivery:
         """到过验收又回到执行：告诉执行者代码已合并，以及能不能不开 PR 直接回验收。"""
         if not self._reached_acceptance(item):
             return ""
-        opened, latest = self._delivered(item, target)
+        opened, latest = self._pull_requests(item, target)
         if opened or not latest:
             return ""
         sha = latest["merge_commit_sha"]
         hint = (f'\n本活到过验收，代码已合并：PR #{latest["number"]}，合并提交 {sha}。'
                 "先判断验收没过的原因在代码，还是在验收环境或车间流程。要改代码：照常从最新 main 开分支、开新的 PR。")
-        block = self._rerun_block(state, opened, latest)
+        block = self._rerun_block(target, state, opened, latest)
         if block:
-            return hint + f"代码不用改时不能再直接重走验收：{block}。"
+            return hint + f"代码不用改时不能直接重走验收：{block}。"
         return hint + ('代码不用改（例如验收者拿不到合并提交、只读环境跑不了检查）：不开空 PR，回执 outcome=done、advance="验收"，'
                        f'evidence 的 JSON 加 rerun_acceptance={{"merge":"{sha}","reason":"为什么不用改"}}，'
                        "流程直接回到验收重走；同一合并提交只给一次，再不过就问 Kun。")
@@ -376,8 +392,9 @@ class IssueDelivery:
                            and m.get("seq", 0) > state.get("acceptance_after", -1)]
                 manual = not visual or any(a.get("key") == "visual-acceptance" for a in receipt.ask) or bool(answers and answers[-1]["body"] == "yes")
                 passed = (bool(state.get("merge")) and acceptance.get("passed") is True and bool(acceptance.get("output"))
-                          and acceptance.get("head") == state.get("merge") and manual)
-                return Evidence(checks, passed, reason="验收输出、交付提交和亲眼看结论", paths=paths)
+                          and acceptance.get("head") == state.get("merge") and manual
+                          and self._delivery_done(target, state, state["merge"]))
+                return Evidence(checks, passed, reason="验收输出、交付完成的提交和亲眼看结论", paths=paths)
             if stage == "执行" and (pr.get("merged") or pr["state"] != "open"):
                 return Evidence(checks, False, reason="执行须交新的打开的 PR；代码已合并且不用改时，按说明交 advance=\"验收\" 重走验收", paths=paths)
             if data.get("head") != sha:
@@ -399,16 +416,17 @@ class IssueDelivery:
             return Evidence(checks, False, reason=str(exc))
 
     def _assess_rerun(self, item, data, target, checks):
-        """执行确认代码不用改、要求回验收：合并提交不变、没有打开的 PR、这个提交还没重走过。"""
+        """执行确认代码不用改、要求回验收：请求的提交是交付完成过的最近合并提交，没有打开的 PR，还没重走过。"""
         state = self.io.read(item, target)
-        opened, latest = self._delivered(item, target)
-        block = self._rerun_block(state, opened, latest)
+        opened, latest = self._pull_requests(item, target)
         request = data.get("rerun_acceptance")
-        if not block and (not isinstance(request, dict) or request.get("merge") != latest["merge_commit_sha"]):
-            block = f'重走验收须在 evidence 写 rerun_acceptance.merge={latest["merge_commit_sha"]}（本活最近的合并提交）'
+        merge = request.get("merge") if isinstance(request, dict) else None
+        if not isinstance(merge, str) or not merge:
+            return Evidence(checks, False, reason="重走验收须在 evidence 写 rerun_acceptance.merge=本活最近的合并提交")
+        block = self._rerun_block(target, state, opened, latest, merge)
         if block:
             return Evidence(checks, False, reason=block)
-        return Evidence(checks, True, reason=f'代码已合并（PR #{latest["number"]}，合并提交 {latest["merge_commit_sha"]}），'
+        return Evidence(checks, True, reason=f'代码已合并并交付（PR #{latest["number"]}，合并提交 {merge}），'
                                              "执行确认不用改，回到验收重走一次")
 
     def _intake(self, item, target, state):
@@ -527,7 +545,9 @@ class IssueDelivery:
 
         def skipped(why, *, updated=False):
             state["self_update"] = {"merge": sha, "updated": updated, "restart": False, "reason": why}
-            step = ("处理后重启车间守护进程" if updated else
+            prepare = "、".join(" ".join(p["argv"]) for p in target.get("prepare", [])) or "准备命令"
+            step = (f"主检出已经是新代码，环境可能只装了一半；车间要是在这之前因别的原因重启，会用新代码起来。"
+                    f"在主检出重跑 {prepare} 成功后，再重启车间守护进程" if updated else
                     f"处理后在主检出执行 git merge --ff-only {sha}，再重启车间守护进程")
             return After(notice=(f'{target["name"]} 已合并 {sha}，但{why}，车间还在跑合并前的代码。'
                                  f"主检出：{checkout}。{step}（launchctl kickstart -k gui/$(id -u)/com.kun.workshop）。这条不用回。"))
@@ -593,13 +613,16 @@ class IssueDelivery:
                 if not evidence.passed:
                     raise BusinessWait("说清楚阶段还不能放行：" + evidence.reason)
             elif completed_stage == "执行" and item.get("result", {}).get("advance") == "验收":
-                # 重走验收：结算时再查一遍，记下这个合并提交已用过这一次。
-                opened, latest = self._delivered(item, target)
-                block = self._rerun_block(state, opened, latest)
+                # 重走验收：结算时按回执请求的提交再查一遍，不改选别的提交；记下它已用过这一次。
+                from workshop.core.models import Receipt
+                request = report(Receipt(**item["result"])).get("rerun_acceptance")
+                merge = request.get("merge") if isinstance(request, dict) else None
+                opened, latest = self._pull_requests(item, target)
+                block = self._rerun_block(target, state, opened, latest, merge or "")
                 if block:
                     raise BusinessWait(block)
-                state.setdefault("acceptance_reruns", []).append(latest["merge_commit_sha"])
-                state.update(merge=latest["merge_commit_sha"], pr=latest["number"],
+                state.setdefault("acceptance_reruns", []).append(merge)
+                state.update(merge=merge, pr=latest["number"],
                              acceptance_after=max((m.get("seq", 0) for m in item.get("materials", [])), default=0))
                 # 验收重走连同流程在交付提交上的检查一起重跑，环境问题可能就出在那一步。
                 state.pop("accepted", None)
@@ -660,6 +683,9 @@ class IssueDelivery:
                                        reason="线上版本尚未核对通过", next="按发版手册发布" if not state.get("release_submitted") else "定时回查线上版本")
                 elif target.get("release", "none") != "none":
                     raise BusinessWait("未知 release 类型")
+                if not result.pending and state["merge"] not in state.setdefault("delivered", []):
+                    # 交付完成的事实按提交号记下；release=tag 要上线核对过才走到这里。重走验收只认这里的提交。
+                    state["delivered"].append(state["merge"])
             elif completed_stage == "验收":
                 state["accepted"] = True
             elif completed_stage == "收尾":

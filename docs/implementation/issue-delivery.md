@@ -28,13 +28,15 @@ Orca 插话钩子去掉轮次令牌后以 `cli:orca` 进入：流程用核心已
 
 已合并的活验收没过、回到执行后，执行者判断问题不在代码（例如验收者拿不到合并提交、只读环境跑不了检查），可以不开 PR 直接回验收，同一合并提交只给一次。
 
-- 什么时候给这条路：活到过验收（`item.history` 里有验收轮），本活没有打开的 PR，最近一次合并的带活标记 PR 存在。合并提交取 GitHub 上该 PR 的 `merge_commit_sha`，不只靠插件状态：执行阶段开新 PR 时会清掉状态里的 `merge`，新 PR 后来被关掉时（11-13 的 ws#18 和 #23）仍能找回上一次交付。
+- 什么时候给这条路：活到过验收（`item.history` 里有验收轮），本活没有打开的 PR，最近一次合并的带活标记 PR 存在，而且这个合并提交交付完成过。合并提交取 GitHub 上该 PR 的 `merge_commit_sha`，不只靠插件状态：执行阶段开新 PR 时会清掉状态里的 `merge`，新 PR 后来被关掉时（11-13 的 ws#18 和 #23）仍能找回上一次交付。
 - 执行说明：满足上面的条件时写出 PR 号、合并提交，以及两条路：要改代码照常开新 PR；不用改就交下面的回执。这个合并提交已经重走过时，改写成「不能再走，交 nothing、notice、leave 等你」。
 - 回执：`outcome=done`、`advance="验收"`，evidence 里 issue-delivery/v1 的 JSON 加 `rerun_acceptance={"merge": "<合并提交>", "reason": "为什么不用改"}`。
-- assess(执行)：有打开的 PR、没有合并过、`merge` 不是最近的合并提交、这个提交已验收通过、或已在 `acceptance_reruns` 里，都判不过，理由写清原因和下一步。
+- 交付完成按提交号记：after(交付) 返回不 pending 的结果时，把合并提交加进插件状态 `delivered`。release=none/self 合并后就算；release=tag 要线上核对通过（`_deployed`）才走到这一步，合并了没上线不算。旧版本写的状态没有 `delivered`：none/self 按合并算，tag 当场核对线上是否包含该提交（ws#5、ws#18 是 release=none 时合并的，按合并算）。
+- assess(执行)：回执没写 `merge`、有打开的 PR、没有合并过、`merge` 不是最近的合并提交、最近的合并提交没交付完成、这个提交已验收通过、或已在 `acceptance_reruns` 里，都判不过，理由写清原因和下一步。审查 PR #25 时复现过的反例：A 上线后验收没过，执行者改出 B 合并了但还没上线，交付轮退回执行后请求重走 B——现在判「还没交付完成」，请求 A 判「不是最近的合并提交」，都进不了验收。
+- assess(验收)：除了验收输出和交付提交一致，还要求这个提交交付完成过，防止别的路把没上线的提交送进验收。
 - 核心关口：执行提议直接到验收，只有活到过验收、且流程证据过了才放行（核心改动，见 [ports.md](ports.md)）；没到过验收照旧「不能越过流程阶段和关口」。
-- after(执行)：结算时再查一遍，把合并提交记进 `acceptance_reruns`，`merge`/`pr` 改成该 PR，`acceptance_after` 移到当前最新资料，清掉 `accepted` 和 `merge_runs`（流程在交付提交上的检查也重跑一次，环境问题可能就出在那一步）。返回空的 `After()`，核心把活推到验收。
-- 第二次再不过：说明里已写明交 nothing + notice + leave 等你，由 Kun 放行或说「不对」；执行者若还提议回验收，assess 每次判不过，同一理由连拦 3 次核心发问卡。都不会无限循环。
+- after(执行)：结算时按回执请求的提交再查一遍（不改选别的提交），把它记进 `acceptance_reruns`，`merge`/`pr` 改成该 PR，`acceptance_after` 移到当前最新资料，清掉 `accepted` 和 `merge_runs`（流程在交付提交上的检查也重跑一次，环境问题可能就出在那一步）。返回空的 `After()`，核心把活推到验收。
+- 第二次再不过：说明里已写明交 nothing + notice + leave 等你，由 Kun 重打标签放行，或在 issue 下评论「不对」（workshop 规则还没配 feishu_chat_id 和 kun_feishu_open_id，群里的「ws#X 不对」认不出来，配上之前只能走 GitHub）；执行者若还提议回验收，assess 每次判不过，同一理由连拦 3 次核心发问卡。都不会无限循环。
 
 ## 交付和崩溃恢复
 
@@ -59,7 +61,7 @@ after 遇到缺 PR、头提交变化、未验收等业务不满足时返回 pend
 需要 bot 批准的目标配置 bot_review.login/signer。after(审查) 回查同一 head 的该 bot APPROVED review，已存在不再发；否则调用规则中的 agent_gh_token.py 签发，只在内存中用 token POST commit_id 绑定的 APPROVE，不落 token、不记录响应中的凭据。grant-console 配置 lambdatheory-agent[bot]，供主分支规则集的一票批准使用。
 
 - `release: none`：合并后进入验收。
-- `release: self`：交付对象就是车间自己（规则里 workshop 用这个，不按仓库名判断）。合并后在规则 `checkout`（主检出）里：`git status --porcelain` 为空（含未跟踪文件）且当前分支是 main 时，从 `https://github.com/<repo>.git` 取 main 到 `origin/main`，`git merge --ff-only <合并提交>`（已包含就跳过），再在主检出跑规则 `prepare`（workshop 是 `uv sync --locked`，依赖或入口点变了不装好，拉起后起不来）。都成功才返回 `After(restart=True)`：核心记下重启请求，这一拍照常结算并推进到验收，`workshop run` 在这一拍结束后正常退出，launchd 的 KeepAlive 拉起新代码。执行者会话是独立进程组（`start_new_session`），守护进程退出不影响它们，重启后按 token 接回。主检出不干净、不在 main、快进不了或准备命令失败时不动它、不重启，返回 `After(notice=…)`：核心经通道给 Kun 发一条不用回的通知（同一个完成钩子只发一次），写明合并提交、原因和要跑的命令，活照常进验收（验收在合并提交的只读副本上做，不依赖守护进程跑的版本）。取 main 失败是网络故障，抛 Retryable。结果记在插件状态 `self_update`。
+- `release: self`：交付对象就是车间自己（规则里 workshop 用这个，不按仓库名判断）。合并后在规则 `checkout`（主检出）里：`git status --porcelain` 为空（含未跟踪文件）且当前分支是 main 时，从 `https://github.com/<repo>.git` 取 main 到 `origin/main`，`git merge --ff-only <合并提交>`（已包含就跳过），再在主检出跑规则 `prepare`（workshop 是 `uv sync --locked`，依赖或入口点变了不装好，拉起后起不来）。都成功才返回 `After(restart=True)`：核心记下重启请求，这一拍照常结算并推进到验收，`workshop run` 在这一拍结束后正常退出，launchd 的 KeepAlive 拉起新代码。执行者会话是独立进程组（`start_new_session`），守护进程退出不影响它们，重启后按 token 接回。主检出不干净、不在 main 或快进不了（例如主检出 main 上有本地提交、和合并提交分叉）时不动它、不重启；准备命令失败或没跑成时，主检出已经快进到新代码、环境可能只装了一半，同样不重启。两种都返回 `After(notice=…)`：核心经通道给 Kun 发一条不用回的通知（同一个完成钩子只发一次），写明合并提交、原因和要跑的命令；准备命令失败的那条会说主检出已是新代码、要重跑准备命令再重启，而且在那之前车间因别的原因重启会用新代码起来。活照常进验收（验收在合并提交的只读副本上做，不依赖守护进程跑的版本），合并提交也记为交付完成。取 main 失败是网络故障，抛 Retryable。结果记在插件状态 `self_update`。
 - `release: tag`：在插件状态目录 `issue_delivery_state_dir/releases/<目标及仓库的哈希>` 建普通专用 clone，沿用 Kun 的 git 凭据；fetch 后 detached 到合并 SHA，运行该提交里的 tag_command（grant-console 的 scripts/tag-release.sh）并传合并 SHA。checkout 规则仍只供读取主检出，发布操作不在该目录做。专用检出按目标加锁，避免两件活同时切 HEAD；首次 clone 在临时目录完成后原子就位。先查远端已有 tag，恢复不重复打 tag；不从去凭据的副本推送。tag 推完后 rerun=true，执行者照目标仓库 docs/runbooks/release.md 完成发布。
 
 grant-console 的 ECR/render/push-production/sync 仍由执行者申请集群授权后做；只用仓库 scripts/request_grant.py，requested-by 带活 id，保存申请号，不复用过期授权、不换身份。真正 sync 完且确认上线后才给 release_submitted=true；还在等授权卡的回执只给 later，不带 advance 或 release_submitted，之后转 rerun=false，只定时核对线上状态。

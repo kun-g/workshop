@@ -6,6 +6,8 @@ import subprocess
 import pytest
 
 from workshop.core.cards import notice
+from workshop.core.engine import Engine
+from workshop.core.log import Log
 from workshop.core.models import Event, Receipt
 from workshop.core.ports import Retryable
 from workshop.plugins.issue_delivery.io import run
@@ -180,10 +182,74 @@ def test_rerun_refused_with_open_pr_wrong_commit_or_accepted_commit(world):
     pr = remote(world)['pr']
     pr.update(state='closed', merged=True, merge_commit_sha=world['sha'], merged_at='2026-11-13T08:00:00Z')
     edit(world, pr=pr)
+    # 旧版本写的状态没有 delivered：release=none 合并即交付（ws#5、ws#18 就是这样）。
     assert world['flow'].assess(data, receipt(world['sha']), target).passed
-    assert 'rerun_acceptance.merge' in world['flow'].assess(data, receipt('f' * 40), target).reason
+    assert '不是本活最近的合并提交' in world['flow'].assess(data, receipt('f' * 40), target).reason
+    assert 'rerun_acceptance.merge' in world['flow'].assess(
+        data, Receipt('done', '', advance='验收', evidence=[result(world)]), target).reason
+    world['io'].save(data, target, {'effects': {}, 'issue': 7, 'delivered': ['e' * 40]})
+    assert '还没交付完成' in world['flow'].assess(data, receipt(world['sha']), target).reason
+    world['io'].save(data, target, {'effects': {}, 'issue': 7, 'delivered': [world['sha']]})
+    assert world['flow'].assess(data, receipt(world['sha']), target).passed
     world['io'].save(data, target, {'effects': {}, 'issue': 7, 'merge': world['sha'], 'accepted': True})
     assert '已验收通过' in world['flow'].assess(data, receipt(world['sha']), target).reason
+
+
+def test_legacy_tag_state_checks_production_before_rerun(world):
+    """旧状态没有交付记录、release=tag：当场核对线上是否包含这个合并提交。"""
+    target = {**world['target'], 'release': 'tag'}
+    data = snapshot(world, '执行')
+    data['history'] = [{'stage': '验收', 'outcome': 'failed'}]
+    world['io'].save(data, target, {'effects': {}, 'issue': 7})
+    pr = remote(world)['pr']
+    pr.update(state='closed', merged=True, merge_commit_sha=world['sha'], merged_at='2026-11-13T08:00:00Z')
+    app = {'status': {'sync': {'status': 'Synced', 'revision': 'e' * 40}, 'health': {'status': 'Healthy'}}}
+    edit(world, pr=pr, app=app, deployed_sha='e' * 40)
+    receipt = Receipt('done', '', advance='验收', evidence=[result(world, rerun_acceptance={'merge': world['sha']})])
+    assert '还没交付完成' in world['flow'].assess(data, receipt, target).reason
+    edit(world, deployed_sha=world['sha'])
+    assert world['flow'].assess(data, receipt, target).passed
+
+
+def test_rerun_refuses_merged_commit_whose_release_did_not_finish(world):
+    """审查 PR #25 的反例：A 上线后验收没过；B 合并了还没上线，交付退回执行后请求重走 B，不能进验收、不能关 issue。"""
+    repo, a = world['target']['checkout'], world['sha']
+    git(repo, 'checkout', '-qB', 'main')
+    git(repo, 'checkout', '-qb', 'new-fix')
+    b = commit(repo, 'fix.txt', 'new fix\n')
+    git(repo, 'checkout', '-q', 'main')
+    edit(world, app={'status': {'sync': {'status': 'Synced', 'revision': 'e' * 40}, 'health': {'status': 'Healthy'}}}, deployed_sha=a)
+    engine = engine_for(world, 'a-then-b', release='tag')
+    walk(engine, world, ['说清楚', '执行', '证据', '审查', '交付', '验收'])
+    assert world['io'].read(item(engine, '7'), world['target'])['delivered'] == [a]
+    first = remote(world)['pr']
+    fail_acceptance(engine, world, a)
+    edit(world, prs=[first], sha=b, merged_at='2026-11-13T09:00:00Z',
+         pr={'number': 12, 'body': '<!-- workshop-item: alpha:7 -->', 'head': {'sha': b}, 'state': 'open', 'merged': False})
+    walk(engine, world, ['证据', '审查', '交付'], head=b)
+    finish(engine, '验收', key='7', evidence=[result(world, head=b)])
+    assert current(engine, '7')['stage'] == '交付' and item(engine, '7')['gate_reason'] == '线上版本尚未核对通过'
+    finish(engine, '执行', key='7', evidence=[result(world, head=b)])
+    assert current(engine, '7')['stage'] == '执行'
+    assert f'最近的合并提交 {b} 还没交付完成' in brief(engine) and 'rerun_acceptance=' not in brief(engine)
+    rerun(engine, world, b)
+    assert current(engine, '7')['stage'] == '执行' and '还没交付完成' in item(engine, '7')['gate_reason']
+    rerun(engine, world, a)
+    assert current(engine, '7')['stage'] == '执行' and '不是本活最近的合并提交' in item(engine, '7')['gate_reason']
+    state = world['io'].read(item(engine, '7'), world['target'])
+    assert state['delivered'] == [a] and 'acceptance_reruns' not in state
+    assert remote(world)['issue']['state'] == 'open' and remote(world)['deployed_sha'] == a
+    engine.log.close()
+
+
+def test_acceptance_needs_the_commit_to_have_finished_delivery(world):
+    data = snapshot(world, '验收')
+    target = {**world['target'], 'release': 'tag'}
+    receipt = Receipt('done', '', evidence=[result(world, acceptance={'passed': True, 'head': world['sha'], 'output': 'raw'})])
+    world['io'].save(data, target, {'effects': {}, 'issue': 7, 'merge': world['sha'], 'delivered': ['e' * 40]})
+    assert not world['flow'].assess(data, receipt, target).passed
+    world['io'].save(data, target, {'effects': {}, 'issue': 7, 'merge': world['sha'], 'delivered': [world['sha']]})
+    assert world['flow'].assess(data, receipt, target).passed
 
 
 # 3. 车间合并自己后自更新
@@ -223,15 +289,22 @@ def test_self_release_asks_core_to_restart_after_this_tick(world, main_checkout)
     engine.log.close()
 
 
-@pytest.mark.parametrize('problem', ['dirty', 'untracked', 'branch'])
+UNCLEAN = {'dirty': '未提交的改动或未跟踪的文件', 'untracked': '未提交的改动或未跟踪的文件',
+           'branch': '不在 main', 'forked': '不能快进到合并提交'}
+
+
+@pytest.mark.parametrize('problem', UNCLEAN)
 def test_self_release_leaves_unclean_main_alone_and_notifies_once(world, main_checkout, problem):
     repo, merged = main_checkout
     if problem == 'dirty':
         Path(repo, 'scripts/check.sh').write_text('#!/bin/sh\necho Kun 正在改\n')
     elif problem == 'untracked':
         Path(repo, 'notes.txt').write_text('scratch\n')
-    else:
+    elif problem == 'branch':
         git(repo, 'checkout', '-qb', 'kuns-work')
+    else:
+        # 主检出 main 上有本地提交，和合并提交分叉：快进不了。
+        commit(repo, 'local.txt', 'Kun 本地的提交\n')
     before = git(repo, 'rev-parse', 'HEAD')
     engine = engine_for(world, 'self-' + problem, release='self')
     walk(engine, world, ['说清楚', '执行', '证据', '审查', '交付'])
@@ -244,10 +317,51 @@ def test_self_release_leaves_unclean_main_alone_and_notifies_once(world, main_ch
     assert len(notices) == 1
     text = notices[0]['payload']['text']
     assert merged in text and 'git merge --ff-only' in text and 'kickstart' in text
-    assert ('不在 main' if problem == 'branch' else '未提交的改动或未跟踪的文件') in text
+    assert UNCLEAN[problem] in text
     engine.tick()
     assert len([c for c in engine.log.all('cards') if c['key'].startswith('after-notice:')]) == 1
     engine.log.close()
+
+
+def test_self_release_prepare_failure_leaves_new_code_without_restart(world, main_checkout):
+    """准备命令失败：主检出已经快进了，不重启，通知说清要重跑准备命令；活照常进验收。"""
+    repo, merged = main_checkout
+    # 只在主检出里失败；证据阶段在干净副本里跑同一组准备命令要成功。
+    failing = f'[ "$(pwd -P)" != "{Path(repo).resolve()}" ] || {{ echo 依赖装不上 >&2; exit 1; }}'
+    engine = engine_for(world, 'self-prepare', release='self', prepare=[{'argv': ['/bin/sh', '-c', failing]}])
+    walk(engine, world, ['说清楚', '执行', '证据', '审查', '交付'])
+    finish(engine, '验收', key='7', evidence=[result(world)])
+    assert current(engine, '7')['stage'] == '验收' and not engine.restart_requested
+    assert git(repo, 'rev-parse', 'HEAD') == merged
+    state = world['io'].read(item(engine, '7'), world['target'])
+    assert state['self_update']['updated'] and not state['self_update']['restart'] and state['delivered'] == [merged]
+    [card] = [c for c in engine.log.all('cards') if c['key'].startswith('after-notice:')]
+    text = card['payload']['text']
+    assert '已快进主检出' in text and '依赖装不上' in text and '重跑' in text and '会用新代码起来' in text
+    assert 'git merge --ff-only' not in text
+    engine.log.close()
+
+
+def test_round_started_in_the_restart_tick_survives_the_new_daemon(world, main_checkout):
+    """请求重启的那一拍派出的验收轮，守护进程换了新进程后接着跑，不重派、只读副本不被清掉。"""
+    repo, merged = main_checkout
+    engine = engine_for(world, 'self-restart', release='self')
+    walk(engine, world, ['说清楚', '执行', '证据', '审查', '交付'])
+    finish(engine, '验收', key='7', evidence=[result(world)])
+    row = current(engine, '7')
+    assert engine.restart_requested and row['stage'] == '验收' and Path(row['brief']['workdir']).is_dir()
+    # 守护进程退出；launchd 拉起的新进程用同一份事实库建引擎。执行者会话是独立进程组，还活着（同一批执行者替身）。
+    path, rules, plugins, clock = engine.log.path, engine.rules, engine.plugins, engine.clock
+    engine.log.close()
+    revived = Engine(Log(path), rules, plugins, clock)
+    assert not revived.restart_requested
+    revived.tick()
+    assert current(revived, '7')['token'] == row['token'] and Path(row['brief']['workdir']).is_dir()
+    acceptor = plugins.get('executor', row['executor'])
+    assert [c[1] for c in acceptor.calls if c[0] == 'launch'].count(row['token']) == 1
+    pass_acceptance_and_close(revived, world, merged)
+    assert not revived.restart_requested
+    revived.log.close()
 
 
 def test_run_loop_exits_after_the_tick_that_requested_restart(tmp_path, monkeypatch):
@@ -290,7 +404,7 @@ def quarantine(engine):
 
 @pytest.mark.parametrize('release', ['ready', 'rework'])
 def test_recover_ws5_waiting_after_nothing(world, release):
-    """ws#5：已合并、验收两次没过，执行交 nothing 等你，又被插件隔离。重打标签或「不对」都能重走验收收尾。"""
+    """ws#5：已合并、验收两次没过，执行交 nothing 等你，又被插件隔离。重打标签或在 issue 下评论「不对」都能重走验收收尾。"""
     engine = engine_for(world, 'ws5-' + release)
     walk(engine, world, ['说清楚', '执行', '证据', '审查', '交付', '验收'])
     sha = remote(world)['pr']['merge_commit_sha']
@@ -336,6 +450,7 @@ def test_recover_ws18_delivery_stuck_on_closed_duplicate_pr(world, release):
     edit(world, pr={**remote(world)['pr'], 'state': 'closed'})
     engine.resume('alpha', [])
     if release == 'rework':
+        # Kun 在 issue 下评论「不对」：GitHub 来源核对是 kun-g 后给 rework。workshop 没绑飞书群，群里说认不出来。
         engine.ingest(Event('github', 'kun-says-wrong', 'alpha', '7', '不对', {}, action='rework'))
     engine.tick()
     assert not engine.control('alpha').get('broken')
