@@ -147,6 +147,8 @@ def why(log, item_id, rules=None, plugins=None, raw=False):
             detail = f'{"关口拦住" if kind == "gate_blocked" else "过关口"} {body.get("gate_reason", "")}'
         elif kind == "selection_failed":
             detail = f'挑选逻辑起轮失败 {body["reason"]}'
+        elif kind == "selection_none":
+            detail = f'挑选逻辑没选出执行者 {body["reason"]}'
         elif kind in ("card_rejected", "card_cancelled_external"):
             detail = f'卡片{ "拒收" if kind == "card_rejected" else "作废"} {body["id"]}：{body["reason"]}'
         elif kind == "invalid_answer":

@@ -7,7 +7,7 @@
 - 用词：[GLOSSARY.md](GLOSSARY.md)
 - 给 agent 的规矩：[AGENTS.md](AGENTS.md)
 
-核心与命令行已实现；随包提供 ordered 挑选逻辑、GitHub 来源和 issue 交付流程；执行者与通道另行接入。Kun 11-13 定：第一版不接工单系统，TaskHome 端口保留为可选。
+核心与命令行已实现；随包提供 ordered、quota 挑选逻辑、GitHub 来源和 issue 交付流程；执行者与通道另行接入。Kun 11-13 定：第一版不接工单系统，TaskHome 端口保留为可选。
 
 ```sh
 uv sync
@@ -16,7 +16,7 @@ uv run workshop status
 uv run workshop --rules /absolute/path/to/rules/workshop.yaml run --once
 ```
 
-运行需要规则引用的插件入口点已安装；当前仓库提供 ordered、github、issue_delivery，其余端口需安装对应插件，直接 run 会将缺少插件的交付对象登记为故障。查看状态、历史和用量不要求插件存在。
+运行需要规则引用的插件入口点已安装；当前仓库提供 ordered、quota、github、issue_delivery，其余端口需安装对应插件，直接 run 会将缺少插件的交付对象登记为故障。查看状态、历史和用量不要求插件存在。
 
 - [插件接入契约](docs/implementation/ports.md)：五类端口、回执、幂等、恢复和看门读取方式。
 - 状态目录：默认 `~/.local/state/workshop/`，用 `WORKSHOP_STATE_DIR` 改。
