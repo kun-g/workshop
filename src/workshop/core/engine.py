@@ -15,7 +15,7 @@ from .log import Log
 from .models import Brief, Event, Receipt, STAGES, Started, due, stamp, utcnow
 from .ports import Unavailable, Retryable, ChannelRejected
 from .cards import frozen_question, question, notice, validate_question, validate_notice
-from .models import After, FlowBrief, Classification, Evidence, Usage, RoundUsage
+from .models import After, Answer, FlowBrief, Classification, Evidence, Usage, RoundUsage
 
 
 def gate(ingress):
@@ -562,20 +562,7 @@ class Engine:
                     if card["payload"]["kind"] == "approval" and answer.value not in [c["key"] for c in card["payload"]["choices"]]:
                         self.invalid_answer(card, answer.value)
                         continue
-                    approved = answer.value == "yes" if card.get("core_approval") else answer.approved
-                    choice_label = next((c["label"] for c in card["payload"]["choices"] if c["key"] == answer.value), answer.value)
-                    # 回答单独追加，由 evolve 在最新资料上追加，不回写旧资料快照。
-                    self.fact("answer", {**asdict(answer), "approved": approved, "choice_label": choice_label, "key": card["payload"].get("key", card["key"]),
-                              "title": card["payload"]["decision"], "actions": card.get("actions", []), "billing_configs": card.get("billing_configs", []),
-                              "frozen_files": card.get("frozen_files", [])},
-                              card["item"], source="answer", ext_id=card["id"])
-                    self.fact("card_changed", {"id": card["id"], "answered": True, "answer": answer.value, "choice_label": choice_label, "approved": approved}, card["item"])
-                    item = self.log.get("items", card["item"])
-                    if card.get("billing_configs") and not approved:
-                        self.change(item, state="等你", wait_for_ready=True, next="按量计费未获批准，等待放行", blocked_by="Kun",
-                                    leave={"kind": "等你", "about": "调整执行者或授权后放行"})
-                    elif item["state"] == "等你" and not item.get("wait_for_ready") and not self.waiting(item):
-                        self.change(item, state="空闲", next="按回答继续", blocked_by="")
+                    self.record_answer(card, answer)
             self.delivery_ok(f"channel:{name}")
         except Exception as exc:
             self.delivery_error(f"channel:{name}", exc)
@@ -601,6 +588,23 @@ class Engine:
                                   item["title"], timer["about"], item["depth"]))
                 if not self.control(item["target"]).get("paused"):
                     self.apply_timer(timer, item)
+
+    def record_answer(self, card, answer, provenance=None):
+        """记下 Kun 对一张卡的回答。provenance 记回答从哪个渠道来（飞书卡片不写；会话转录写会话号和原话）。"""
+        approved = answer.value == "yes" if card.get("core_approval") else answer.approved
+        choice_label = next((c["label"] for c in card["payload"]["choices"] if c["key"] == answer.value), answer.value)
+        # 回答单独追加，由 evolve 在最新资料上追加，不回写旧资料快照。
+        self.fact("answer", {**asdict(answer), "approved": approved, "choice_label": choice_label, "key": card["payload"].get("key", card["key"]),
+                  "title": card["payload"]["decision"], "actions": card.get("actions", []), "billing_configs": card.get("billing_configs", []),
+                  "frozen_files": card.get("frozen_files", []), **({"via": provenance} if provenance else {})},
+                  card["item"], source="answer", ext_id=card["id"])
+        self.fact("card_changed", {"id": card["id"], "answered": True, "answer": answer.value, "choice_label": choice_label, "approved": approved}, card["item"])
+        item = self.log.get("items", card["item"])
+        if card.get("billing_configs") and not approved:
+            self.change(item, state="等你", wait_for_ready=True, next="按量计费未获批准，等待放行", blocked_by="Kun",
+                        leave={"kind": "等你", "about": "调整执行者或授权后放行"})
+        elif item["state"] == "等你" and not item.get("wait_for_ready") and not self.waiting(item):
+            self.change(item, state="空闲", next="按回答继续", blocked_by="")
 
     def apply_timer(self, timer, item):
         if item["state"] == "放弃":
@@ -841,6 +845,27 @@ class Engine:
             self.change(item, state="定时", round=None, next=at, retry_at=at,
                         leave={"kind": "工序", "owner": "车间", "at": at, "about": "重试启动"})
             self.retry_failure(item["target"], port, name, f"start:{item['target']}:{name}", exc)
+
+    def answer_here(self, ref, value, quote, session):
+        """Kun 在会话里回答一张卡（渠道由 Kun 选）：按卡号或飞书 Q 号找卡，记下会话号和 Kun 的原话，和卡片回答同样生效。"""
+        if not quote.strip() or not session.strip():
+            raise ValueError("要写 Kun 的原话和会话号")
+        with self.log.transaction():
+            cards = [c for c in self.log.all("cards") if c["mode"] == "ask" and ref in (c["id"], c.get("external"))]
+            if len(cards) != 1:
+                raise ValueError(f"找不到唯一一张问卡：{ref}")
+            card = cards[0]
+            if card["answered"] or card.get("cancelled"):
+                raise ValueError("这张卡已经答过或作废")
+            keys = [c["key"] for c in card["payload"]["choices"]]
+            if keys and value not in keys:
+                raise ValueError(f"回答须是选项之一：{', '.join(keys)}")
+            payload = card["payload"]
+            # 批准与否和卡片通道同一判法：只有审批卡答 yes 才算批准。
+            approved = payload["kind"] == "approval" and value == "yes" and "yes" in keys
+            self.record_answer(card, Answer(card["id"], value, approved),
+                               provenance={"channel": "session", "session": session, "quote": quote})
+        return card
 
     def abort(self, token, reason="人手动结束这一轮"):
         with self.log.transaction():

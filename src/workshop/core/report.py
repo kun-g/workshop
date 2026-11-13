@@ -151,6 +151,9 @@ def why(log, item_id, rules=None, plugins=None, raw=False):
             detail = f'非选项回答 卡片 {body["card"]}「{body["title"]}」收到「{body["value"]}」，仍等原卡'
         elif kind == "answer":
             detail = f'回答 {body["value"]}'
+            via = body.get("via")
+            if isinstance(via, dict) and via.get("channel") == "session":
+                detail += f'（会话 {via.get("session")} 转录，Kun 原话：「{via.get("quote")}」）'
         elif kind == "work_blocked":
             detail = f'卡住 {body["blocked_by"]}'
         else:

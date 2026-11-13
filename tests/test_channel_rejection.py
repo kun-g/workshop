@@ -177,3 +177,22 @@ def test_delivery_failure_heartbeat_recovers_after_success(engine):
     engine.heartbeat()
     data = json.loads(engine.log.path.with_name("heartbeat.json").read_text())
     assert data["delivery_failed_count"] == 0 and data["delivery_failed_since"] is None
+
+
+def test_kun_answer_given_in_a_session_counts_like_a_card_answer(engine):
+    engine.ingest(event())
+    engine.change(item(engine), state="等你")
+    cid = engine.card(item(engine), "pick", "ask", question("选哪个"))
+    engine.channels()
+    with pytest.raises(ValueError):
+        engine.answer_here(cid, "other", "可以加载", "s1")
+    with pytest.raises(ValueError):
+        engine.answer_here(cid, "yes", "", "s1")
+    engine.answer_here(cid, "yes", "车间用 Codex 写代码时，可以加载我的 Codex 配置", "session-123")
+    card = engine.log.get("cards", cid)
+    assert card["answered"] and card["answer"] == "yes"
+    assert item(engine)["state"] == "空闲"
+    text = why(engine.log, "alpha:one")
+    assert "session-123" in text and "可以加载我的 Codex 配置" in text
+    with pytest.raises(ValueError):
+        engine.answer_here(cid, "yes", "再答一次", "session-123")
