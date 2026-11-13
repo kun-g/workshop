@@ -201,7 +201,7 @@ def main(directory: Path):
         code = run(argv, spec['prompt'])
         real_id = vendor_session(output, spec['kind'])
         if real_id:
-            write(Path(spec['session_file']), {'vendor_id': real_id})
+            write(Path(spec['session_file']), {'vendor_id': real_id, 'model': spec.get('model')})
         if not spec['interactive']:
             code, submitted = proxy_receipt(directory, spec, env, output, code, run)
             write(directory / 'receipt-result.json', submitted)

@@ -109,6 +109,9 @@ class Executor:
                 recorded = recorded_model(self.root / 'rounds' / previous['round'] / 'spec.json')
                 if self.kind in PROXIED and recorded != self.model(config):
                     fresh = True
+                # 没记下厂商会话号的（启动后没读到）也接不回，开新会话。
+                if self.kind in ('codex', 'cursor-grok') and not session_file.exists():
+                    fresh = True
             else:
                 workdir = assigned or item.get('workdir')
             if not workdir and self.kind == 'orca-claude' and not readonly:
@@ -161,7 +164,7 @@ class Executor:
                     'env': env, 'argv': argv, 'retry_argv': retry_argv, 'vendor_id': vendor_id,
                     'fresh_session': fresh, 'prompt': str(prompt_path),
                     'receipt_command': runtime['command'], 'interactive': self.kind == 'orca-claude',
-                    'billing': config.get('billing'), 'item': {k: item[k] for k in ('id', 'target', 'object_key')}}
+                    'billing': config.get('billing'), 'model': config.get('model'), 'item': {k: item[k] for k in ('id', 'target', 'object_key')}}
             write(session_info, {'workdir': workdir, 'round': directory.name})
             write(directory / 'spec.json', spec)
             command = [sys.executable, str(Path(__file__).with_name('runner.py')), str(directory)]
@@ -250,7 +253,8 @@ class Executor:
         if (directory / 'spec.json').exists() and self.kind in ('codex', 'cursor-grok'):
             real_id = vendor_session(directory / 'output.log', self.kind)
             if real_id:
-                write(Path(read(directory / 'spec.json')['session_file']), {'vendor_id': real_id})
+                spec = read(directory / 'spec.json')
+                write(Path(spec['session_file']), {'vendor_id': real_id, 'model': spec.get('model')})
         def close_terminal():
             handle = self._terminal(directory)
             if self.kind == 'orca-claude' and handle:

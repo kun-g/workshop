@@ -670,3 +670,25 @@ def test_claude_fresh_session_usage_uses_vendor_session(setup, monkeypatch):
     for token, started in (('one', first), ('two', second), ('three', third)):
         executor.usage(token, started, '2026-11-13T00:00:00+00:00')
     assert asked == [first.session, spec['vendor_id'], spec['vendor_id']]
+
+
+def test_codex_starts_fresh_session_when_rule_model_changes(setup):
+    root, make, item, target = setup
+    executor = make('codex')
+    first = executor.launch('one', BRIEF, item, CONFIG, target)
+    wait_for(lambda: (executor.directory('one')/'child.json').exists())
+    wait_for(lambda: (root/'agents').exists() and (root/'agents').read_text().endswith('\n'))
+    executor.stop('one', None)
+    assert executor.poll('one', first) == 'exited'
+    target['runtime']['env']['WORKSHOP_ROUND_TOKEN'] = 'two'
+    make('codex').resume('two', first.session, BRIEF, item, CONFIG, target)
+    wait_for(lambda: len((root/'agents').read_text().splitlines()) == 2)
+    make('codex').stop('two', None)
+    make('codex').poll('two', None)
+    target['runtime']['env']['WORKSHOP_ROUND_TOKEN'] = 'three'
+    changed = dict(CONFIG, model='another-model')
+    make('codex').resume('three', first.session, BRIEF, item, changed, target)
+    wait_for(lambda: len((root/'agents').read_text().splitlines()) == 3)
+    calls = [json.loads(row)['args'] for row in (root/'agents').read_text().splitlines()]
+    assert 'resume' in calls[1] and 'real-codex-session' in calls[1]
+    assert 'resume' not in calls[2] and '--sandbox' in calls[2]
