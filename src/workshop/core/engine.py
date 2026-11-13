@@ -497,6 +497,25 @@ class Engine:
                       payload=payload, sent=False, answered=False, sending=False, cancelled=False, key=key, **extra), item["id"])
         return card_id
 
+    def receipt_notices(self, item, stage, token, receipt, evidence, closing):
+        """执行者回执里的通知只在 Kun 需要知道时发：这一轮留下等你，或这件活完成。
+
+        完成通知按 Evidence.done_key 只发一张，不看执行者用什么 key；其余的不发卡，记 notice_held 供 why 查看。
+        """
+        waiting = bool(receipt.leave and receipt.leave.get("kind") == "等你")
+        done = f'notice:完成:{evidence.done_key}' if evidence.done_key else "notice:完成"
+        for entry in receipt.notice:
+            if waiting:
+                self.card(item, f'notice:{entry["key"]}', "notice", entry)
+                continue
+            if closing and not self.log.get("cards", f'{item["id"]}:{done}'):
+                self.card(item, done, "notice", entry)
+                continue
+            reason = (f'这次完成已发过通知（{evidence.done_key or "这件活"}）' if closing
+                      else "进度通知不发：只在留下等你或完成时发")
+            self.fact("notice_held", {"token": token, "stage": stage, "key": entry["key"],
+                      "subject": entry["subject"], "text": entry["text"], "reason": reason}, item["id"])
+
     def timer(self, item, key, at, about, kind="工序", owner="车间", base=None):
         timer_id = f'{item["id"]}:{key}'
         self.fact("timer_created", dict(id=timer_id, item=item["id"], target=item["target"],
@@ -1214,8 +1233,9 @@ class Engine:
                           item["id"], source="result", ext_id=token)
                 for ask in receipt.ask:
                     self.card(item, f'{token}:{ask["key"]}', "ask", ask)
-                for entry in receipt.notice:
-                    self.card(item, f'notice:{entry["key"]}', "notice", entry)
+                completed = advancing and (decision.complete or (
+                    bool(evidence.done_key) and STAGES.index(decision.stage) > STAGES.index(row["stage"])))
+                self.receipt_notices(item, row["stage"], token, receipt, evidence, completed)
                 for later in receipt.later:
                     self.timer(item, f'{token}:{later["key"]}', later["at"], later["about"], base=received_at)
                 if receipt.leave and receipt.leave["kind"] in ("工序", "送回"):
