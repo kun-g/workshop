@@ -81,25 +81,60 @@ targets:
     label: Ready for Agent
     # 交付对象就是车间自己：合并后快进 checkout（主检出）并让守护进程这一拍后退出，由 launchd 拉起。
     release: self
+# 配置档集中定义；use 是持久身份，不随 driver 或运行方式改变。
+executor_profiles:
+  orca-codex:
+    driver: codex
+    transport: orca
+    family: codex
+    billing: subscription
+    model: gpt-6-astra
+    effort: high
+    sandbox: danger-full-access
+    permission_mode: never
+    model_provider: openai
+    quota: {provider: codex, window: Weekly, min_remaining: 15, label: Codex 周额度}
+  orca-claude:
+    driver: claude
+    transport: orca
+    family: claude
+    billing: subscription
+    model: claude-opus-5-5
+    effort: high
+    permission_mode: bypassPermissions
+  # 只读审查：沿用旧 use 名，以便在途会话照常接回。
+  codex:
+    driver: codex
+    transport: headless
+    family: codex
+    billing: subscription
+    model: gpt-6.1-sol
+    effort: high
+    sandbox: read-only
+    permission_mode: never
+    ignore_user_config: true
+    ignore_rules: true
+  cursor-grok:
+    driver: cursor
+    transport: headless
+    family: grok
+    billing: subscription
+    permission_mode: plan
+  claude:
+    driver: claude
+    transport: headless
+    family: claude
+    billing: subscription
+    permission_mode: plan
+    restricted: true
+    tools: [Read, Glob, Grep]
+    strict_mcp_config: true
+    mcp_config: {mcpServers: {}}
+    first_when_writer: [codex]
 executors:
-  # quota 挑选逻辑按顺序取第一个额度够的；quota.min_remaining 是门槛（剩余百分比），没写门槛的候选不看额度。
-  # 11-13 Kun：Codex 周额度剩 15% 以上派 Codex 写代码，不够仍派 Claude Code。
-  # orca-codex 的 model、effort 必须写明（缺了拒绝启动）；取值是开工负责会话 11-13 派 Codex 写代码（W1、W2）用的。
-  # orca-codex 每件活开自己的会话，不接回 codex 审查的会话，所以和审查用的 gpt-6.1-sol 不同不会被 resume 拒绝。
-  writer:
-    - {use: orca-codex, family: codex, billing: subscription, model: gpt-6-astra, effort: high,
-       quota: {provider: codex, window: Weekly, min_remaining: 15, label: Codex 周额度}}
-    - {use: orca-claude, family: claude, billing: subscription, model: claude-opus-5-5, effort: high}
-  reviewer:
-    # 11-13：cursor-grok 11 轮里 7 轮进程正常退出却没交回执，先让 codex 打头，查清后再换回。
-    # 11-13 实测 24 轮（Sol/Astra × medium/high/xhigh × 4 份材料）：high 回执格式全对、埋的缺陷都抓到；不写强度时默认档会交错格式。已有会话是 gpt-6.1-sol 开的，换模型 resume 会被 codex 拒绝，所以用 gpt-6.1-sol。
-    - {use: codex, family: codex, billing: subscription, model: gpt-6.1-sol, effort: high}
-    - {use: cursor-grok, family: grok, billing: subscription}
-    # 写和审不同家：写代码的是 codex 家时核心已排除 codex，claude 排第一。
-    - {use: claude, family: claude, billing: subscription, first_when_writer: [codex]}
-  acceptor:
-    - {use: codex, family: codex, billing: subscription, model: gpt-6.1-sol, effort: high}
-    - {use: claude, family: claude, billing: subscription, first_when_writer: [codex]}
+  writer: [{use: orca-codex}, {use: orca-claude}]
+  reviewer: [{use: codex}, {use: cursor-grok}, {use: claude}]
+  acceptor: [{use: codex}, {use: claude}]
 limits: {concurrent: 5, chain_depth: 8, round_timeout_seconds: 7200}
 # 所有阶段默认用 quota；没有额度门槛时它和 ordered 一样按顺序取第一个。
 selector: quota

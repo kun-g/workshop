@@ -8,6 +8,11 @@ import sys
 import uuid
 
 
+if __package__ in (None, ''):
+    sys.path.insert(0, str(Path(__file__).resolve().parents[4]))
+from workshop.plugins.executors.local.drivers import for_spec
+
+
 def main():
     item = os.environ.get('WORKSHOP_ITEM')
     if not item:
@@ -18,11 +23,12 @@ def main():
         spec = json.loads((directory / 'spec.json').read_text())
         if data.get('hook_event_name') == 'SessionStart':
             # Codex 不接受预先指定的会话号；开会话时记下它，下一轮按它接回、按它记用量。
-            if spec['kind'] == 'orca-codex' and data.get('session_id'):
+            session = for_spec(spec).hook_session(data, spec)
+            if session:
                 path = Path(spec['session_file'])
                 path.parent.mkdir(parents=True, exist_ok=True)
                 temporary = path.with_name(path.name + '.tmp')
-                temporary.write_text(json.dumps({'vendor_id': data['session_id'], 'model': spec.get('model')}))
+                temporary.write_text(json.dumps({'vendor_id': session, 'model': spec.get('model')}))
                 os.replace(temporary, path)
             return 0
         prompt = data.get('prompt', '')

@@ -3,7 +3,9 @@ from pathlib import Path
 import shutil
 
 import pytest
-from workshop.plugins.executors.local.usage import collect, claude_entries, codex_entries
+from workshop.plugins.executors.local.usage import collect
+from workshop.plugins.executors.local.drivers.claude import claude_entries
+from workshop.plugins.executors.local.drivers.codex import codex_entries
 
 FIXTURES = Path(__file__).parent/'fixtures'/'executors'
 SINCE = '2026-11-13T01:00:00+00:00'
