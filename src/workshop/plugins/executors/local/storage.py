@@ -56,4 +56,5 @@ def alive(record):
 
 
 def me():
-    return {'pid': os.getpid(), 'birth': identity(os.getpid())}
+    return {'pid': os.getpid(), 'birth': identity(os.getpid()),
+            'group': {'pid': os.getpgrp(), 'birth': identity(os.getpgrp())}}

@@ -50,7 +50,12 @@ def claude_entries(records, since, billing):
         if row.get('type') != 'assistant' or not after(row, since):
             continue
         msg = row.get('message', {})
+        if msg.get('model') == '<synthetic>':
+            continue
         if not isinstance(msg.get('usage'), dict):
+            continue
+        if not msg.get('model') and all(msg['usage'].get(key) == 0 for key in
+                ('input_tokens', 'cache_read_input_tokens', 'cache_creation_input_tokens', 'output_tokens')):
             continue
         # Streaming content blocks can repeat one API message; use its final cumulative usage.
         key = msg.get('id') or row.get('uuid')

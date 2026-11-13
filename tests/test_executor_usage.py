@@ -88,3 +88,57 @@ def test_missing_referenced_child_not_hidden_by_old_child(tmp_path):
     with (root/'main.jsonl').open('a') as stream:
         stream.write(json.dumps({'type':'user','timestamp':SINCE,'toolUseResult':{'agentId':'missing'}})+'\n')
     assert not collect('claude',tmp_path,'main','/repo',SINCE,'subscription').children_reported
+
+
+def test_real_synthetic_record_does_not_poison_actual_usage(tmp_path):
+    root = tmp_path/'.claude/projects/-repo'
+    fixture('claude.jsonl', root/'main.jsonl')
+    before = collect('claude', tmp_path, 'main', '/repo', SINCE, 'subscription')
+    with (root/'main.jsonl').open('a') as stream:
+        stream.write((FIXTURES/'claude-synthetic.jsonl').read_text())
+    after = collect('claude', tmp_path, 'main', '/repo', SINCE, 'subscription')
+    assert after.main == before.main
+    assert after.main.model_actual == 'claude-opus-5-5'
+    assert after.main.cost_usd is not None
+
+
+def test_missing_model_zero_placeholder_is_skipped():
+    import json
+    record = json.loads((FIXTURES/'claude-synthetic.jsonl').read_text())
+    record['message'].pop('model')
+    assert claude_entries([record], SINCE, 'subscription') == []
+
+
+def test_haiku_tier_is_per_message_and_counts_both_caches():
+    records = []
+    for i, ordinary in enumerate((20_000, 20_001)):
+        records.append({'type': 'assistant', 'timestamp': SINCE, 'message': {
+            'id': str(i), 'model': 'claude-haiku-5-5', 'usage': {
+                'input_tokens': ordinary, 'cache_read_input_tokens': 70_000,
+                'cache_creation_input_tokens': 10_000, 'output_tokens': 100,
+                'cache_creation': {'ephemeral_5m_input_tokens': 6_000, 'ephemeral_1h_input_tokens': 4_000}}}})
+    entries = claude_entries(records, SINCE, 'subscription')
+    assert entries[0].cost_usd == pytest.approx((20_000*.1+70_000*.01+6_000*.125+4_000*.2+100*.5)/1e6)
+    assert entries[1].cost_usd == pytest.approx((20_001*.5+70_000*.05+6_000*.625+4_000*1+100*2.5)/1e6)
+    from workshop.plugins.executors.local.usage import aggregate
+    assert aggregate(entries, 'subscription').cost_usd == pytest.approx(sum(e.cost_usd for e in entries))
+
+
+@pytest.mark.parametrize('model,rates', [
+    ('claude-opus-5', (5, .5, 6.25, 10, 25)),
+    ('claude-sonnet-5', (2, .2, 2.5, 4, 10)),
+    ('claude-fable-5', (10, 1, 12.5, 20, 50)),
+    ('claude-fable-5-1', (10, .25, 12.5, 20, 50)),
+    ('claude-fable-5-2', (8, .2, 10, 16, 40)),
+    ('gpt-6-astra', (10, 1, 12.5, 25, 50)),
+    ('gpt-6.1-sol', (2, .1, 2.5, 5, 10)),
+    ('gpt-6.1-terra', (1, .05, 1.25, 2.5, 5)),
+    ('gpt-6-luna', (.1, .01, .125, .25, .5)),
+])
+def test_dated_current_price_rows(model, rates):
+    from workshop.plugins.executors.local.pricing import PRICES, cost, ANTHROPIC, OPENAI
+    assert cost(model, 11, 13, 17, 19, 23) == pytest.approx(sum(a*b for a,b in zip((11,13,17,19,23), rates))/1e6)
+    for row in PRICES.values():
+        assert row.checked == '2026-11-13'
+        assert row.source in (ANTHROPIC, OPENAI)
+    assert cost('unknown-model', 1, 2, 3, 4, 5) is None

@@ -26,7 +26,7 @@ if name == 'orca':
         print(json.dumps({'ok':True,'result':{'worktree':{'path':str(root/'repo')}}}))
     elif args[:2] == ['terminal','create']:
         handle = 'term-' + str(time.time_ns())
-        env = dict(os.environ, ORCA_TERMINAL_HANDLE=handle)
+        env = dict(os.environ, ORCA_TERMINAL_HANDLE=handle, LOGIN_ONLY='from-terminal-shell')
         p = subprocess.Popen(value('--command'), shell=True, env=env, start_new_session=True,
                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         (root/handle).write_text(str(p.pid))
@@ -40,8 +40,13 @@ if name == 'orca':
 if name == 'workshop':
     with (root/'receipts').open('a') as f: f.write(json.dumps(args)+'\n')
     sys.exit(0)
+prompt = args[-1] if name == 'claude' and '-p' not in args else sys.stdin.read()
+if (root/'ignore-term').exists(): signal.signal(signal.SIGTERM, signal.SIG_IGN)
+if (root/'spawn-descendant').exists():
+    descendant = subprocess.Popen([sys.executable, '-c', 'import signal,time; signal.signal(signal.SIGTERM,signal.SIG_IGN); time.sleep(120)'])
+    (root/'descendant-pid').write_text(str(descendant.pid))
 with (root/'agents').open('a') as f:
-    f.write(json.dumps({'name':name,'args':args,'env':dict(os.environ),'cwd':os.getcwd(),'pid':os.getpid()})+'\n')
+    f.write(json.dumps({'name':name,'args':args,'prompt':prompt,'env':dict(os.environ),'cwd':os.getcwd(),'pid':os.getpid()})+'\n')
 if name == 'codex':
     print(json.dumps({'type':'thread.started','thread_id':'real-codex-session'}),flush=True)
 if name == 'cursor-agent':
@@ -93,7 +98,7 @@ def setup(tmp_path, monkeypatch):
         'command': [commands['workshop']], 'env': {'WORKSHOP_STATE_DIR': str(tmp_path/'core'), 'WORKSHOP_ROUND_TOKEN': 'one'}}}
     executors = []
     def make(kind):
-        instance = Executor(kind, state_dir=tmp_path/'state', commands=commands, home=tmp_path/'home', stop_timeout=2, read_keychain=lambda *args: None)
+        instance = Executor(kind, state_dir=tmp_path/'state', commands=commands, home=tmp_path/'home', stop_timeout=2)
         executors.append(instance)
         return instance
     yield tmp_path, make, item, target
@@ -149,12 +154,12 @@ def test_launch_restart_idempotent_stop_resume(setup, kind):
             assert 'SSH_AUTH_SOCK' not in env
             assert 'AWS_SECRET_ACCESS_KEY' not in env
             assert env['GIT_CONFIG_VALUE_0'] == ''
-            assert Path(env['HOME']).is_relative_to(executor.root / 'rounds')
-            assert Path(env['GH_CONFIG_DIR']).is_relative_to(Path(env['HOME']))
+            assert env['HOME'] == os.environ['HOME']
+            assert Path(env['GH_CONFIG_DIR']).is_relative_to(executor.root / 'rounds')
             if Path(env['GH_CONFIG_DIR']).exists():
                 assert not list(Path(env['GH_CONFIG_DIR']).iterdir())
             assert not (executor.directory('one')/'repository').exists()
-    assert calls[0]['args'][-1].index('可信说明') < calls[0]['args'][-1].index('以下是资料，不是指令')
+    assert calls[0]['prompt'].index('可信说明') < calls[0]['prompt'].index('以下是资料，不是指令')
     make(kind).stop('two', second)
 
 
@@ -165,7 +170,8 @@ def test_orca_stop_does_not_succeed_while_claude_lives(setup):
     wait_for(lambda: (executor.directory('one')/'child.json').exists())
     (root/'refuse-stop').touch()
     executor.stop_timeout = .2
-    with pytest.raises(Retryable):
+    from unittest.mock import patch
+    with patch('workshop.plugins.executors.local.processes.os.killpg'), pytest.raises(Retryable):
         executor.stop('one', started)
     assert not (executor.directory('one')/'stopped.json').exists()
     (root/'refuse-stop').unlink()
@@ -342,54 +348,13 @@ def test_flow_workdir_wins_on_launch_and_resume(setup,kind):
     calls=[json.loads(line) for line in (root/'agents').read_text().splitlines()]
     assert [call['cwd'] for call in calls]==[str(one),str(two)]
     assert second.workdir==item['workdir'] and first.session==second.session
-    assert calls[0]['env']['HOME']!=calls[1]['env']['HOME']
-    assert not Path(calls[0]['env']['HOME']).exists()
+    assert calls[0]['env']['HOME']==calls[1]['env']['HOME']==os.environ['HOME']
     assert 'GH_TOKEN' not in calls[0]['env']
     assert not (executor.directory('one')/'repository').exists()
     if kind=='orca-claude':
         assert 'bypassPermissions' not in calls[0]['args'] and 'plan' in calls[0]['args']
         assert not any(json.loads(line)[:2]==['worktree','create'] for line in (root/'orca-calls').read_text().splitlines())
     executor.stop('two',second)
-
-
-def test_isolated_session_usage_reads_its_new_home(setup):
-    root,make,item,target=setup
-    executor=make('codex')
-    started=executor.launch('one',BRIEF,item,CONFIG,target)
-    wait_for(lambda:(root/'agents').exists() and (root/'agents').read_text().endswith('\n'))
-    spec=read(executor.directory('one')/'spec.json')
-    record=Path(spec['record_home'])/'.codex/sessions/main.jsonl'
-    record.parent.mkdir(parents=True,exist_ok=True)
-    fixture=Path(__file__).parent/'fixtures/executors/codex.jsonl'
-    record.write_text(fixture.read_text().replace('codex-main','real-codex-session'))
-    usage=executor.usage('one',started,'2026-11-13T01:00:00+00:00')
-    assert usage.main.model_actual=='gpt-6-astra' and usage.main.input==100
-    executor.stop('one',started)
-    assert not Path(spec['record_home']).exists()
-    assert executor.usage('one',started,'2026-11-13T01:00:00+00:00')==usage
-
-
-def test_stop_and_daemon_restart_dispose_only_exited_round_credentials(setup):
-    root,make,item,target=setup
-    original=root/'home/.codex'
-    original.mkdir(parents=True)
-    write(original/'auth.json',{'tokens':{'access_token':'fake-subscription-secret'}})
-    executor=make('codex')
-    started=executor.launch('one',BRIEF,item,CONFIG,target)
-    wait_for(lambda:(executor.directory('one')/'child.json').exists())
-    home=executor.directory('one')/'home'
-    auth=home/'.codex/auth.json'
-    assert auth.exists() and (home.stat().st_mode & 0o777)==0o700
-    make('codex')
-    assert auth.exists()  # Restart must not wipe a live process's authentication.
-    assert 'fake-subscription-secret' not in (executor.directory('one')/'spec.json').read_text()
-    executor.stop('one',started)
-    assert not home.exists()
-    # Simulate crash after confirmed exit but before credential disposal.
-    write(auth,{'tokens':{'access_token':'fake-subscription-secret'}})
-    make('codex')
-    assert not home.exists()
-    assert (original/'auth.json').exists()
 
 
 def test_readonly_round_does_not_redirect_next_writer(setup):
@@ -415,42 +380,140 @@ def test_readonly_round_does_not_redirect_next_writer(setup):
     writer.stop('two',started)
 
 
-def test_unconfirmed_stop_keeps_readonly_credentials(setup):
-    from dataclasses import dataclass
-    @dataclass(frozen=True)
-    class AssignedBrief(Brief):
-        workdir: str | None = None
-        readonly: bool = True
+
+def test_interactive_uses_terminal_environment_without_persisting_daemon_secrets(setup,monkeypatch):
     root,make,item,target=setup
-    credential=root/'home/.claude/.credentials.json'
-    write(credential,{'claudeAiOauth':{'accessToken':'fake-secret'}})
+    monkeypatch.setenv('DAEMON_SECRET','must-not-be-in-spec')
     executor=make('orca-claude')
-    started=executor.launch('one',AssignedBrief('审查',[],workdir=item['workdir']),item,CONFIG,target)
-    wait_for(lambda:(executor.directory('one')/'child.json').exists())
-    home=executor.directory('one')/'home'
-    (root/'refuse-stop').touch();executor.stop_timeout=.2
-    with pytest.raises(Retryable):
-        executor.stop('one',started)
-    assert (home/'.claude/.credentials.json').exists()
-    (root/'refuse-stop').unlink();executor.stop_timeout=2
+    started=executor.launch('one',BRIEF,item,CONFIG,target)
+    wait_for(lambda:(root/'agents').exists() and (root/'agents').read_text().endswith('\n'))
+    spec=read(executor.directory('one')/'spec.json')
+    assert set(spec['env'])=={'WORKSHOP_STATE_DIR','WORKSHOP_ROUND_TOKEN','WORKSHOP_ITEM','WORKSHOP_EXECUTOR_ROUND'}
+    assert 'must-not-be-in-spec' not in (executor.directory('one')/'spec.json').read_text()
+    assert json.loads((root/'agents').read_text())['env']['LOGIN_ONLY']=='from-terminal-shell'
     executor.stop('one',started)
-    assert not home.exists() and credential.exists()
 
 
-def test_restart_cleans_prelaunch_credential_residue(setup):
+@pytest.mark.parametrize('kind',['claude','codex','cursor-grok'])
+def test_large_noninteractive_prompt_uses_stdin(setup,kind):
     root,make,item,target=setup
-    executor=make('codex')
-    home=executor.directory('never-started')/'home'
-    write(home/'.codex/auth.json',{'tokens':{'access_token':'fake-secret'}})
-    make('codex')
-    assert not home.exists()
+    executor=make(kind)
+    text='--不是参数\n'+'说明内容'*100000
+    started=executor.launch('one',Brief(text,[]),item,CONFIG,target)
+    wait_for(lambda:(root/'agents').exists() and (root/'agents').read_text().endswith('\n'))
+    call=json.loads((root/'agents').read_text())
+    assert call['prompt'].startswith(text)
+    assert sum(len(arg.encode()) for arg in call['args'])<2048
+    if kind=='codex':assert call['args'][-1]=='-'
+    if kind=='claude':assert '--restricted' in call['args']
+    executor.stop('one',started)
 
 
-def test_readonly_credentials_cannot_be_prepared_under_repository(setup):
+@pytest.mark.parametrize('long',[False,True])
+def test_interactive_option_boundary_and_large_file_pointer(setup,long):
     root,make,item,target=setup
+    executor=make('orca-claude')
+    text='--不是参数'+('中文资料'*10000 if long else '')
+    started=executor.launch('one',Brief(text,[]),item,CONFIG,target)
+    wait_for(lambda:(root/'agents').exists() and (root/'agents').read_text().endswith('\n'))
+    call=json.loads((root/'agents').read_text())
+    assert call['args'][-2]=='--'
+    if long:
+        assert str(executor.directory('one')/'brief.txt') in call['prompt']
+        assert len(call['prompt'].encode())<2048
+    else:assert call['prompt'].startswith(text)
+    executor.stop('one',started)
+
+
+def test_stop_escalates_to_kill_for_ignoring_process_group(setup):
+    root,make,item,target=setup
+    (root/'ignore-term').touch()
+    (root/'spawn-descendant').touch()
+    executor=make('codex');executor.stop_timeout=.2
+    started=executor.launch('one',BRIEF,item,CONFIG,target)
+    wait_for(lambda:(root/'agents').exists() and (root/'agents').read_text().endswith('\n'))
+    executor.stop('one',started)
+    assert executor.poll('one',started)=='exited'
+    from workshop.plugins.executors.local.processes import members
+    assert not members(read(executor.directory('one')/'supervisor.json')['group'])
+    from workshop.plugins.executors.local.storage import identity
+    assert identity(int((root/'descendant-pid').read_text())) is None
+
+
+def test_stop_fences_runner_that_has_not_started(setup):
+    root,make,item,target=setup
+    from unittest.mock import patch
+    from workshop.plugins.executors.local import runner
     executor=make('codex')
-    executor.root=Path(item['workdir'])/'private-state'
-    with pytest.raises(ValueError,match='不能位于任何仓库'):
+    original=subprocess.Popen
+    def fail(*args,**kwargs):
+        if isinstance(args[0],list) and any('runner.py' in str(v) for v in args[0]):
+            raise OSError('not started')
+        return original(*args,**kwargs)
+    with patch('subprocess.Popen',side_effect=fail),pytest.raises(OSError):
         executor.launch('one',BRIEF,item,CONFIG,target)
-    assert not (executor.directory('one')/'home').exists()
+    from workshop.plugins.executors.local import processes
+    import fcntl
+    actual_write = processes.write
+    def locked_write(path, data):
+        if path.name == 'stopped.json':
+            with (path.parent/'run.lock').open('a') as probe:
+                with pytest.raises(BlockingIOError):
+                    fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        actual_write(path, data)
+    with patch.object(processes, 'write', side_effect=locked_write):
+        executor.stop('one',None)
+    assert executor.poll('one',None)=='exited'
+    subprocess.run([sys.executable,runner.__file__,str(executor.directory('one'))],check=True)
     assert not (root/'agents').exists()
+    assert (executor.directory('one')/'stopped.json').exists()
+
+
+def test_hook_and_fallback_receipt_use_real_cli_without_depth_growth(setup):
+    from conftest import build, event, current, item as core_item
+    from workshop.plugins.executors.local import hook
+    root, make, _, target = setup
+    state = root/'real-core'
+    engine = build(state)
+    try:
+        engine.ingest(event())
+        engine.tick()
+        active = current(engine)
+        token = active['token']
+        item = core_item(engine)
+        target['runtime'] = {'state_dir': str(state),
+            'command': [sys.executable, '-m', 'workshop.cli', '--state-dir', str(state)],
+            'env': {'WORKSHOP_STATE_DIR': str(state), 'WORKSHOP_ROUND_TOKEN': token}}
+        item['workdir'] = str(root/'repo')
+        executor = make('codex')
+        (root/'finish').touch()
+        executor.launch(token, BRIEF, item, CONFIG, target)
+        directory = executor.directory(token)
+        wait_for(lambda: (directory/'receipt-result.json').exists())
+        assert read(directory/'receipt-result.json')['code'] == 0
+        receipt = engine.log.get('rounds', token)['receipt']
+        assert receipt['outcome'] == 'failed'
+        assert 'last output from fake codex' in receipt['summary']
+        # Leave the active round pending while a human steers it more than chain_depth times.
+        env = dict(os.environ, WORKSHOP_ITEM=item['id'], WORKSHOP_EXECUTOR_ROUND=str(directory),
+                   WORKSHOP_ROUND_TOKEN=token)
+        for index in range(10):
+            prompt = f'人类插话 {index}，保留原话 --flag'
+            result = subprocess.run([sys.executable, hook.__file__], env=env, text=True,
+                input=json.dumps({'prompt': prompt, 'uuid': str(index)}), capture_output=True)
+            assert result.returncode == 0 and not result.stderr
+            latest = [f for f in engine.log.facts() if f['source'] == 'cli:orca'][-1]
+            assert latest['body']['depth'] == 0
+            assert latest['body']['ingress'] == 'external'
+            assert latest['body']['body'] == {'item_id': item['id'], 'text': prompt}
+            engine.classify_events()
+            assert current(engine)['token'] == token
+            assert core_item(engine)['depth'] == 0
+        events = [f for f in engine.log.facts() if f['source'] == 'cli:orca']
+        assert len(events) == 10
+        classifications = [f for f in engine.log.facts() if f['kind'] == 'event_classified']
+        assert len(classifications) == 10
+        assert all(f['body']['action'] == 'update' for f in classifications)
+        executor.stop(token, None)
+    finally:
+        engine.log.close()

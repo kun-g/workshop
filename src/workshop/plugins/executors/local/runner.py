@@ -11,6 +11,7 @@ import sys
 if __package__ in (None, ''):
     sys.path.insert(0, str(Path(__file__).resolve().parents[4]))
 from workshop.plugins.executors.local.storage import me, read, write
+from workshop.plugins.executors.local.isolation import session_environment
 
 
 def vendor_session(output: Path, kind: str):
@@ -66,10 +67,21 @@ def main(directory: Path):
         except BlockingIOError:
             return
         # Permanent fence closes the fork-before-journal crash window. Ambiguity never respawns.
-        if (directory / 'claimed.json').exists() or (directory / 'stopped.json').exists():
+        if any((directory / name).exists() for name in ('claimed.json', 'stopping.json', 'stopped.json')):
             return
         write(directory / 'claimed.json', {**me(), 'terminal': os.environ.get('ORCA_TERMINAL_HANDLE')})
-        argv = spec['argv'] + [Path(spec['prompt']).read_text()]
+        env = session_environment(spec)
+        argv = list(spec['argv'])
+        if spec['interactive']:
+            prompt = Path(spec['prompt']).read_text()
+            if len(prompt.encode()) > 8192:
+                prompt = '请读取派活说明文件 ' + json.dumps(spec['prompt'], ensure_ascii=False) + '，其中说明与资料已分开标注。'
+                if spec['readonly']:
+                    argv += ['--add-dir', str(directory)]
+            (directory / 'initial-prompt.txt').write_text(prompt)
+            argv += ['--', prompt]
+        elif spec['kind'] == 'codex':
+            argv += ['-']
         output = directory / 'output.log'
         child = None
         def forward(signum, frame):
@@ -83,13 +95,13 @@ def main(directory: Path):
         for sig in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT):
             signal.signal(sig, forward)
         try:
-            with output.open('a') as stream:
-                child = subprocess.Popen(argv, cwd=spec['workdir'], env=spec['env'],
-                    stdin=None if spec['interactive'] else subprocess.DEVNULL,
+            with output.open('a') as stream, Path(spec['prompt']).open('rb') as prompt_input:
+                child = subprocess.Popen(argv, cwd=spec['workdir'], env=env,
+                    stdin=None if spec['interactive'] else prompt_input,
                     stdout=None if spec['interactive'] else stream,
                     stderr=None if spec['interactive'] else subprocess.STDOUT)
                 from workshop.plugins.executors.local.storage import identity
-                write(directory / 'child.json', {'pid': child.pid, 'birth': identity(child.pid)})
+                write(directory / 'child.json', {'pid': child.pid, 'birth': identity(child.pid), 'group': me()['group']})
                 code = child.wait()
         except Exception as exc:
             code = -1
@@ -107,7 +119,7 @@ def main(directory: Path):
             # Existing receipts are immutable in the core: a direct receipt wins this race.
             try:
                 result = subprocess.run(spec['receipt_command'] + ['receipt', spec['token'], '--file',
-                    str(directory / 'fallback-receipt.json')], env=spec['env'], capture_output=True, text=True, timeout=30)
+                    str(directory / 'fallback-receipt.json')], env=env, capture_output=True, text=True, timeout=30)
                 submitted = {'code': result.returncode, 'stdout': result.stdout, 'stderr': result.stderr}
             except (OSError, subprocess.TimeoutExpired) as exc:
                 submitted = {'code': -1, 'stdout': '', 'stderr': str(exc)}

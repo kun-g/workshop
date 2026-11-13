@@ -6,18 +6,16 @@ from pathlib import Path
 import re
 import shlex
 import shutil
-import signal
 import subprocess
 import sys
 import time
 import uuid
 
 from workshop.core.models import Started, RoundUsage, Usage
-from workshop.core.ports import Retryable, Unavailable
-from .isolation import environment, keychain
-from .history import archive_and_remove_home, restore_history
+from workshop.core.ports import Unavailable
 from .storage import alive, identity, lock, read, write
 from .runner import vendor_session
+from .processes import stop_round
 
 
 def executable(name):
@@ -26,7 +24,7 @@ def executable(name):
 
 
 class Executor:
-    def __init__(self, kind, state_dir=None, commands=None, home=None, stop_timeout=5, read_keychain=keychain):
+    def __init__(self, kind, state_dir=None, commands=None, home=None, stop_timeout=5):
         self.kind = kind
         # Stable locator independent of runtime.state_dir; allows poll(None) after process restart.
         self.root = Path(state_dir or os.environ.get('WORKSHOP_EXECUTOR_STATE_DIR', '~/.local/state/workshop-executors')).expanduser().resolve() / kind
@@ -34,22 +32,6 @@ class Executor:
         self.commands.update(commands or {})
         self.home = Path(home or Path.home())
         self.stop_timeout = stop_timeout
-        self.read_keychain = read_keychain
-        self._cleanup_finished()
-
-    def _cleanup_finished(self):
-        # Never dispose credentials for a live or ambiguous process on daemon restart.
-        for home in self.root.glob('rounds/*/home'):
-            directory = home.parent
-            with lock(directory / 'prepare.lock'):
-                if not (directory / 'spec.json').exists():
-                    archive_and_remove_home(directory, self.kind)
-                    continue
-                records = [read(directory / name) for name in ('child.json', 'claimed.json', 'supervisor.json')
-                           if (directory / name).exists()]
-                known_exit = (directory / 'stopped.json').exists() or (directory / 'exited.json').exists()
-                if (known_exit or (directory / 'child.json').exists()) and not any(alive(r) for r in records):
-                    archive_and_remove_home(directory, self.kind)
 
     def directory(self, token):
         return self.root / 'rounds' / hashlib.sha256(token.encode()).hexdigest()
@@ -123,23 +105,10 @@ class Executor:
                 raise ValueError('执行者没有工作目录；流程应提供 Brief.workdir')
             workdir = str(Path(workdir).resolve())
             runtime = target['runtime']
-            record_home = directory / 'home' if readonly else self.home
-            if readonly:
-                if any((parent / '.git').exists() for parent in (directory, *directory.parents)):
-                    raise ValueError('只读凭据状态目录不能位于任何仓库内')
-                record_home.mkdir(parents=True, exist_ok=True, mode=0o700)
-                record_home.chmod(0o700)
-                if resume:
-                    restore_history(self.root / 'rounds' / previous['round'], record_home, self.kind, previous['workdir'], workdir)
-            env = environment(record_home, self.kind, self.home, read_keychain=self.read_keychain) if readonly else dict(os.environ)
-            env.pop('WORKSHOP_RULES', None)
-            env.update(runtime['env'])
+            # Persist only trusted per-round additions. Interactive runner inherits its
+            # own login shell environment; headless runner inherits the launch environment.
+            env = dict(runtime['env'])
             env.update(WORKSHOP_ITEM=item['id'], WORKSHOP_EXECUTOR_ROUND=str(directory))
-            env.pop('CLAUDECODE', None)
-            env.pop('ORCA_TERMINAL_HANDLE', None)
-            if config.get('billing') == 'subscription':
-                for key in ('ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'CURSOR_API_KEY'):
-                    env.pop(key, None)
             prompt = brief.instructions + '\n\n回执：结束时执行 ' + shlex.join(runtime['command'] + ['receipt', token, '--file', '<回执 JSON 文件>'])
             if self.kind != 'orca-claude':
                 prompt += '\n只读会话无法交文件时，最后只输出回执 JSON（outcome、summary 必填），包装进程会代交。'
@@ -152,7 +121,7 @@ class Executor:
             spec = {'kind': self.kind, 'token': token, 'session': session, 'session_file': str(session_file),
                     'workdir': workdir,
                     'public_workdir': (item.get('workdir') if readonly else workdir),
-                    'record_home': str(record_home), 'readonly': readonly,
+                    'readonly': readonly, 'gh_config': str(directory / 'gh-config'),
                     'env': env, 'argv': argv, 'prompt': str(prompt_path),
                     'receipt_command': runtime['command'], 'interactive': self.kind == 'orca-claude',
                     'billing': config.get('billing'), 'item': {k: item[k] for k in ('id', 'target', 'object_key')}}
@@ -170,7 +139,9 @@ class Executor:
             else:
                 with (directory / 'supervisor.log').open('a') as log:
                     proc = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True)
-                write(directory / 'supervisor.json', {'pid': proc.pid, 'birth': identity(proc.pid)})
+                birth = identity(proc.pid)
+                write(directory / 'supervisor.json', {'pid': proc.pid, 'birth': birth,
+                                                     'group': {'pid': proc.pid, 'birth': birth}})
             return self._started(directory, spec)
 
     def _argv(self, config, workdir, session, resume, directory, readonly):
@@ -187,7 +158,7 @@ class Executor:
             else:
                 argv += ['-p', '--output-format', 'json']
             if readonly:
-                argv += ['--permission-mode', 'plan', '--tools', 'Read,Glob,Grep',
+                argv += ['--restricted', '--permission-mode', 'plan', '--tools', 'Read,Glob,Grep',
                          '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}']
             else:
                 argv += ['--permission-mode', 'bypassPermissions']
@@ -239,44 +210,11 @@ class Executor:
             real_id = vendor_session(directory / 'output.log', self.kind)
             if real_id:
                 write(Path(read(directory / 'spec.json')['session_file']), {'vendor_id': real_id})
-        if (directory / 'stopped.json').exists():
-            archive_and_remove_home(directory, self.kind)
-            return
-        records = [read(directory / name) for name in ('child.json', 'claimed.json', 'supervisor.json') if (directory / name).exists()]
-        if records and not any(alive(record) for record in records) and (
-                (directory / 'child.json').exists() or (directory / 'exited.json').exists()):
-            archive_and_remove_home(directory, self.kind)
-            write(directory / 'stopped.json', {'confirmed': True})
-            return
-        if self.kind == 'orca-claude':
+        def close_terminal():
             handle = self._terminal(directory)
-            if handle:
-                # If already exited, an old/stale terminal handle must not block settlement.
-                if not (directory / 'exited.json').exists():
-                    self._orca('terminal', 'close', '--terminal', handle)
-            elif not (directory / 'exited.json').exists():
-                raise RuntimeError('无终端身份，不能确认停止')
-        else:
-            for name in ('child.json', 'claimed.json', 'supervisor.json'):
-                path = directory / name
-                if path.exists():
-                    record = read(path)
-                    if alive(record):
-                        try:
-                            os.kill(record['pid'], signal.SIGTERM)
-                        except ProcessLookupError:
-                            pass
-        deadline = time.monotonic() + self.stop_timeout
-        while True:
-            records = [read(directory / name) for name in ('child.json', 'claimed.json', 'supervisor.json') if (directory / name).exists()]
-            if records and not any(alive(record) for record in records):
-                if (directory / 'child.json').exists() or (directory / 'exited.json').exists():
-                    archive_and_remove_home(directory, self.kind)
-                    write(directory / 'stopped.json', {'confirmed': True})
-                    return
-            if time.monotonic() >= deadline:
-                raise Retryable('尚未确认进程退出，不能释放本轮')
-            time.sleep(.05)
+            if self.kind == 'orca-claude' and handle:
+                self._orca('terminal', 'close', '--terminal', handle)
+        stop_round(directory, close_terminal, self.stop_timeout)
 
     def usage(self, token, started, since):
         from .usage import collect
@@ -291,7 +229,4 @@ class Executor:
             session = vendor_session(directory / 'output.log', self.kind)
             if not session and Path(spec['session_file']).exists():
                 session = read(Path(spec['session_file']))['vendor_id']
-        record_home = Path(spec.get('record_home', str(self.home)))
-        if spec.get('readonly') and not record_home.exists():
-            record_home = directory / 'records'
-        return collect(self.kind, record_home, session, spec['workdir'], since, spec['billing'])
+        return collect(self.kind, self.home, session, spec['workdir'], since, spec['billing'])
