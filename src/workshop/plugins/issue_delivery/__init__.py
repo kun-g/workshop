@@ -60,6 +60,42 @@ class IssueDelivery:
     def stages(self, target):
         return STAGES[:-1]
 
+    def describe(self, event, target):
+        """why 用的一句话；只读事件本身，不回查上游。认不出的事件交回核心退回种类。"""
+        body = event.body if isinstance(event.body, dict) else {}
+        data = body.get("data") if isinstance(body.get("data"), dict) else {}
+        kind, number = body.get("kind"), body.get("number")
+        if event.source == "github" and kind and number is not None:
+            def who(value):
+                login = (value or {}).get("login") if isinstance(value, dict) else None
+                return f"，来自 {login}" if login else ""
+            if kind == "issue":
+                return f'issue #{number}（{data.get("state", "未知状态")}）正文「{data.get("title", "")}」{who(data.get("user"))}'
+            if kind == "label":
+                verb = {"labeled": "打上", "unlabeled": "去掉"}.get(data.get("event"), data.get("event", "改动标签"))
+                return f'issue #{number} {verb} {(data.get("label") or {}).get("name", "标签")}{who(data.get("actor"))}'
+            if kind in ("issue-comment", "pr-comment", "pr-review-comment"):
+                place = {"issue-comment": "issue", "pr-comment": "PR", "pr-review-comment": "PR 行内"}[kind]
+                return f'{place} #{number} 评论{who(data.get("user"))}'
+            if kind == "pr-review":
+                return f'PR #{number} 审查 {data.get("state", "未知结论")}{who(data.get("user"))}'
+            if kind == "pr-head":
+                return f'PR #{number}（{data.get("state", "未知状态")}）头提交 {str(data.get("sha", ""))[:12]}'
+            if kind == "pr-ci":
+                runs = (data.get("checks") or {}).get("check_runs") or []
+                counts = {}
+                for check in runs:
+                    result = check.get("conclusion") if check.get("status") == "completed" else "pending"
+                    counts[result or "pending"] = counts.get(result or "pending", 0) + 1
+                summary = "，".join(f"{k} {v}" for k, v in sorted(counts.items())) or "无检查"
+                state = (data.get("status") or {}).get("state", "未知")
+                return f'PR #{number} CI {str(data.get("sha", ""))[:12]}：{summary}；提交状态 {state}'
+        if event.source == "cli:feishu":
+            return f"飞书消息 {event.ext_id}（CLI 入口，身份由接单回查）"
+        if event.source == "cli:orca":
+            return "Orca 插话"
+        return None
+
     def _message(self, message_id, target):
         if not self.io.lark or not re.fullmatch(r"om_[A-Za-z0-9_]+", message_id):
             return None

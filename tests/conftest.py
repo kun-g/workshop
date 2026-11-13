@@ -179,6 +179,13 @@ def build(path, config=None):
     return Engine(log, Rules.validate(config or configuration()), registry, Clock())
 
 
+@pytest.fixture(autouse=True)
+def outside_round(monkeypatch):
+    # 执行者在一轮里跑检查时环境带轮次令牌；测试按需自己设，不继承调用方的。
+    monkeypatch.delenv("WORKSHOP_ROUND_TOKEN", raising=False)
+    monkeypatch.delenv("WORKSHOP_STATE_DIR", raising=False)
+
+
 @pytest.fixture
 def engine(tmp_path):
     engine = build(tmp_path)
