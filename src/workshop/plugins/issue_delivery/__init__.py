@@ -4,6 +4,7 @@ import base64
 import json
 from pathlib import Path
 import re
+import shlex
 from urllib.parse import quote
 
 from workshop.core.models import After, Classification, Evidence, FlowBrief, STAGES
@@ -23,6 +24,11 @@ def report(receipt):
         if isinstance(value, dict) and value.get("schema") == "issue-delivery/v1":
             return value
     return {}
+
+
+def tail(text, limit=4000):
+    text = text or ""
+    return text if len(text) <= limit else f"…（前 {len(text) - limit} 字省略）\n" + text[-limit:]
 
 
 def checks_from(body):
@@ -223,7 +229,9 @@ class IssueDelivery:
             ),
             "验收": (
                 "由另一家照 issue 的验收步骤逐项验，回执 JSON acceptance={passed:布尔,output:原样输出,head:交付提交号}。"
-                "不过退回执行。只有 issue 明写亲眼看=是时才发 key=visual-acceptance 的 ask 验收卡，选项 yes/no，不能自填批准；答复 no 退回执行。"
+                "工作目录是合并提交的只读副本；登记检查已由流程在同一提交的干净副本上跑过，输出附在下面。"
+                "只读环境里跑不了要写文件的命令时不要重试 uv 或改环境：对照代码、测试和这份输出逐项判，output 写清哪项靠哪段输出或哪个测试。"
+                "检查输出非 0 即不过。不过退回执行。只有 issue 明写亲眼看=是时才发 key=visual-acceptance 的 ask 验收卡，选项 yes/no，不能自填批准；答复 no 退回执行。"
             ),
             "收尾": (
                 "登记后面的事到 leave（工序含 owner/at/about，或送回含 at/about，或等你）；无后续则留七天后的送回复看。"
@@ -239,7 +247,24 @@ class IssueDelivery:
             pr = self.io.pr(item, target)
             directory = self.io.review_copy(item, target, pr["head"]["sha"])
             return FlowBrief(common + instructions + f'\n只审提交 {pr["head"]["sha"]}。', directory, True)
+        if stage == "验收" and state.get("merge"):
+            merge = state["merge"]
+            runs = self._merge_runs(item, target, merge)
+            shown = "\n".join(f'$ {shlex.join(r["argv"])}（{r.get("kind", "check")}）\nexit_code={r["exit_code"]}\n'
+                              f'--- stdout ---\n{tail(r["stdout"])}\n--- stderr ---\n{tail(r["stderr"])}' for r in runs)
+            directory = self.io.review_copy(item, target, merge)
+            return FlowBrief(common + instructions + f'\n验收提交 {merge}。流程在该提交上跑的登记检查（可信，原样，过长只留结尾）：\n{shown}', directory, True)
         return common + instructions
+
+    def _merge_runs(self, item, target, merge):
+        """只读验收者跑不了要写文件的检查；流程在合并提交的干净副本上跑一次，按提交缓存。"""
+        with self.io.locked(item, target) as state:
+            cached = state.get("acceptance_runs") or {}
+            if cached.get("head") != merge:
+                cached = {"head": merge, "runs": self.io.verify(target, merge, item.get("checks") or [])}
+                state["acceptance_runs"] = cached
+                self.io.save(item, target, state)
+            return cached["runs"]
 
     def _ci(self, pr, target):
         required = target["ci"]

@@ -737,3 +737,21 @@ def test_waiting_for_release_authorization_does_not_advance_or_resubmit(world):
     assert state['effects'] == prior_effects and not state.get('release_submitted')
     assert not engine.active()
     engine.log.close()
+
+
+def test_acceptance_gets_readonly_merge_copy_and_flow_run_checks(world):
+    # 只读验收者跑不了 uv/测试；流程在合并提交上跑一次登记检查交给它（ws#18 验收第一轮失败的原因）。
+    data = snapshot(world, '验收')
+    world['io'].save(data, world['target'], {'effects': {}, 'issue': 7, 'merge': world['sha']})
+    brief = world['flow'].brief(data, '验收', world['target'])
+    assert isinstance(brief, FlowBrief) and brief.readonly
+    assert Path(brief.workdir).stat().st_mode & 0o222 == 0
+    assert subprocess.check_output(['/usr/bin/git', '-C', brief.workdir, 'rev-parse', 'HEAD'], text=True).strip() == world['sha']
+    assert f'验收提交 {world["sha"]}' in brief.instructions
+    assert '$ scripts/check.sh（check）\nexit_code=0\n--- stdout ---\nraw check output\n' in brief.instructions
+    clones = len([c for c in calls(world) if c[:1] == ['git'] and 'clone' in c])
+    assert clones == 2  # 一次检查副本、一次只读副本
+    again = world['flow'].brief(data, '验收', world['target'])
+    assert again.instructions == brief.instructions and again.workdir == brief.workdir
+    assert len([c for c in calls(world) if c[:1] == ['git'] and 'clone' in c]) == clones
+    assert world['io'].read(data, world['target'])['acceptance_runs']['head'] == world['sha']
