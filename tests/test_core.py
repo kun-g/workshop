@@ -438,6 +438,9 @@ def test_ask_does_not_advance_or_run_completed_stage_hook(engine):
 
 def test_rework_cannot_escape_chain_limit(engine):
     engine.ingest(event(depth=9, action="rework"))
+    assert item(engine) is None  # 没放行的对象只记事实，不因连锁上限出错。
+    engine.ingest(event(ext_id="ready"))
+    engine.ingest(event(ext_id="2", depth=9, action="rework"))
     engine.tick()
     assert item(engine)["state"] == "卡住"
     assert not engine.active()

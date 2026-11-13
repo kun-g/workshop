@@ -41,7 +41,7 @@ def engine_for(world, name, **target):
     cfg['targets']['alpha'] = {**world['target'], 'plugin': 'issue_delivery', 'sources': [], **target}
     engine = build(world['root'] / name, cfg)
     engine.plugins.register('flow', 'issue_delivery', world['flow'])
-    engine.ingest(Event('github', 'start', 'alpha', '7', 'test', {}))
+    engine.ingest(Event('github', 'start', 'alpha', '7', 'test', {}, action='ready'))
     engine.tick()
     return engine
 

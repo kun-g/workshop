@@ -248,7 +248,7 @@ def test_engine_eight_stages_with_real_flow_and_fake_executor(world):
     cfg['targets']['alpha'] = {**world['target'], 'plugin': 'issue_delivery', 'sources': []}
     engine = build(world['root'] / 'engine', cfg)
     engine.plugins.register('flow', 'issue_delivery', world['flow'])
-    engine.ingest(Event('github', 'labeled', 'alpha', '7', 'test', {}))
+    engine.ingest(Event('github', 'labeled', 'alpha', '7', 'test', {}, action='ready'))
     engine.tick()
     stages = list(world['flow'].stages(world['target']))
     for stage in stages:
@@ -331,7 +331,7 @@ def test_relabel_after_unclear_resumes_same_item(world):
     cfg['targets']['alpha'] = {**world['target'], 'plugin': 'issue_delivery', 'sources': []}
     engine = build(world['root'] / 'unclear', cfg)
     engine.plugins.register('flow', 'issue_delivery', world['flow'])
-    engine.ingest(Event('github', 'start', 'alpha', '7', 'test', {}))
+    engine.ingest(Event('github', 'start', 'alpha', '7', 'test', {}, action='ready'))
     engine.tick()
     finish(engine, '说清楚', key='7')
     finish(engine, key='7', notice=[{'key': 'clarify', 'text': '先聊清楚标准'}], leave={'kind': '等你', 'about': '改 issue 后重打标签'})
@@ -353,7 +353,7 @@ def test_sensitive_paths_require_two_reviewers_before_delivery(world):
     edit(world, files=[{'filename': 'deploy/config.yaml'}])
     engine = build(world['root'] / 'two', cfg)
     engine.plugins.register('flow', 'issue_delivery', world['flow'])
-    engine.ingest(Event('github', 'start', 'alpha', '7', 'test', {}))
+    engine.ingest(Event('github', 'start', 'alpha', '7', 'test', {}, action='ready'))
     engine.tick()
     for stage in ['说清楚', '执行', '证据', '审查']:
         finish(engine, stage, key='7', evidence=[result(world, checks=[['scripts/check.sh']])])
@@ -430,7 +430,7 @@ def test_orca_steering_records_existing_item_without_action_depth_or_dispatch(wo
     cfg['targets']['alpha'] = {**world['target'], 'plugin': 'issue_delivery', 'sources': []}
     engine = build(world['root'] / 'orca-steering', cfg)
     engine.plugins.register('flow', 'issue_delivery', world['flow'])
-    engine.ingest(Event('github', 'start', 'alpha', '7', 'test', {}, depth=2))
+    engine.ingest(Event('github', 'start', 'alpha', '7', 'test', {}, depth=2, action='ready'))
     engine.tick()
     token = current(engine, '7')['token']
     # 与 W2-B 钩子一致：事件携带对象键及活 id，不传 round_token。
@@ -597,7 +597,7 @@ def test_delivery_ci_pending_does_not_isolate_flow_or_launch_executor(world):
     cfg['targets']['alpha'] = {**world['target'], 'plugin': 'issue_delivery', 'sources': []}
     engine = build(world['root'] / 'pending', cfg)
     engine.plugins.register('flow', 'issue_delivery', world['flow'])
-    engine.ingest(Event('github', 'start', 'alpha', '7', 'test', {}))
+    engine.ingest(Event('github', 'start', 'alpha', '7', 'test', {}, action='ready'))
     engine.tick()
     for stage in ['说清楚', '执行', '证据', '审查', '交付']:
         finish(engine, stage, key='7', evidence=[result(world, checks=[['scripts/check.sh']], must_fix=[], suggestions=[])])
@@ -646,7 +646,7 @@ def test_gate_feedback_sends_failed_work_back_to_execution_without_card(world, f
     cfg['targets']['alpha'] = {**world['target'], 'plugin': 'issue_delivery', 'sources': []}
     engine = build(world['root'] / ('gate-' + failure), cfg)
     engine.plugins.register('flow', 'issue_delivery', world['flow'])
-    engine.ingest(Event('github', 'start', 'alpha', '7', 'test', {}))
+    engine.ingest(Event('github', 'start', 'alpha', '7', 'test', {}, action='ready'))
     engine.tick()
     for stage in ['说清楚', '执行', '证据']:
         finish(engine, stage, key='7', evidence=[result(world, checks=[['scripts/check.sh']])])
@@ -744,7 +744,7 @@ def test_waiting_for_release_authorization_does_not_advance_or_resubmit(world):
     cfg['targets']['alpha'] = {**world['target'], 'plugin': 'issue_delivery', 'sources': [], 'release': 'tag'}
     engine = build(world['root'] / 'release-auth', cfg)
     engine.plugins.register('flow', 'issue_delivery', world['flow'])
-    engine.ingest(Event('github', 'start', 'alpha', '7', 'test', {}))
+    engine.ingest(Event('github', 'start', 'alpha', '7', 'test', {}, action='ready'))
     engine.tick()
     for stage in ['说清楚', '执行', '证据', '审查', '交付']:
         finish(engine, stage, key='7', evidence=[result(world, checks=[['scripts/check.sh']], must_fix=[], suggestions=[])])

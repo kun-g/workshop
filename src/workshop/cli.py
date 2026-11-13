@@ -9,7 +9,7 @@ import time
 from .core.engine import Engine
 from .core.log import Log
 from .core.models import Event
-from .core.report import status, usage, why
+from .core.report import resolve, status, usage, why
 from .core.rules import Rules
 from .registry import Registry
 
@@ -32,6 +32,7 @@ def parser():
     why_command = commands.add_parser("why", help="列出一件活每一轮的起因和结果；活写成 <短名>#<编号> 或 <交付对象>:<对象键>")
     why_command.add_argument("item")
     why_command.add_argument("--raw", action="store_true", help="每条事件后原样打印原始资料")
+    commands.add_parser("drop", help="清掉一件还没跑过轮次的活（例如没放行就被误建的）；活写成 <短名>#<编号> 或 <交付对象>:<对象键>").add_argument("item")
     commands.add_parser("pause").add_argument("target")
     resume = commands.add_parser("resume")
     resume.add_argument("target")
@@ -83,6 +84,10 @@ def main(argv=None):
             elif args.command == "abort":
                 engine.abort(args.token)
                 print("已登记结束请求，下一 tick 确认退出并记失败")
+            elif args.command == "drop":
+                item_id = resolve(log, rules.data["targets"], args.item)
+                engine.drop(item_id)
+                print(f"已清掉 {item_id}；同一对象要再放行才会重新建活")
             elif args.command == "pause":
                 engine.pause(args.target)
                 print(f"已暂停 {args.target}；当前一轮继续收尾")
