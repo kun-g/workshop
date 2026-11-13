@@ -83,6 +83,9 @@ class SlowChannel:
         return f"external:{key}"
 
     def reconcile(self, key, card):
+        note("reconcile", key)
+        if "reconcile_result" in config():
+            return config()["reconcile_result"]
         return f"external:{key}" if any(r[1] == key for r in calls("sent")) else "absent"
 
     def cancel(self, key, external):
