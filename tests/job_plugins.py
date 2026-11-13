@@ -10,7 +10,7 @@ from pathlib import Path
 import shutil
 import time
 
-from workshop.core.models import Evidence, Poll, STAGES, Started
+from workshop.core.models import Evidence, Poll, Release, STAGES, Started
 from workshop.plugins.issue_delivery import IssueDelivery
 from workshop.plugins.issue_delivery.io import IO
 from workshop.plugins.selectors.ordered import OrderedSelector
@@ -39,6 +39,12 @@ def calls(kind=None):
 
 
 class SlowFlow:
+    def hold_workdir(self, item, target):
+        note("hold-start", item["id"])
+        time.sleep(config().get("hold_seconds", 0))
+        note("hold-end", item["id"])
+        return config().get("hold_reason", "")
+
     def stages(self, target):
         return STAGES[:-1]
 
@@ -92,6 +98,13 @@ class QuickExecutor:
 
     def available(self, config):
         return True
+
+    def release(self, item, target):
+        note("release-start", item["id"])
+        time.sleep(config().get("release_seconds", 0))
+        note("release-end", item["id"])
+        reason = config().get("release_reason", "")
+        return Release(not reason, reason)
 
     def launch(self, token, brief, item, config, target):
         note("launch", self.name, item["id"], token)
