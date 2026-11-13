@@ -793,9 +793,15 @@ class Engine:
                     self.fact("selection_failed", {"reason": reason, "selector": selector_name}, item["id"])
                     raise Retryable(reason)
             if chosen is None:
-                self.card(item, f'capacity:{item["revision"]}', "ask", question("现有订阅没有可用执行者"))
+                # 挑选逻辑可用 Selection(None, 理由) 说明为什么一个都没选；理由进事实和卡片，why 能看到。
+                why_none = choice.reason.strip() if choice is not None and isinstance(choice.reason, str) else ""
+                payload = question("现有订阅没有可用执行者")
+                if why_none:
+                    self.fact("selection_none", {"reason": why_none, "selector": selector_name}, item["id"])
+                    payload["context"] = "挑选逻辑没有选出执行者：" + why_none
+                self.card(item, f'capacity:{item["revision"]}', "ask", payload)
                 self.change(item, state="等你", next="等现有订阅恢复", blocked_by="Kun",
-                            leave={"kind": "等你", "about": "执行者不可用"})
+                            leave={"kind": "等你", "about": "执行者不可用" + (f"：{why_none}" if why_none else "")})
                 return
             port, name = "executor", chosen["use"]
             token = str(uuid.uuid4())

@@ -160,12 +160,14 @@ def main(directory: Path):
         env = session_environment(spec)
         argv = list(spec['argv'])
         if spec['interactive']:
-            from workshop.plugins.executors.local.trust import prepare
-            prepare(spec.get('trust_workdir', spec['workdir']), env, directory)
+            if spec['kind'] == 'orca-claude':
+                # Codex 的目录信任在启动参数里给，不写配置文件。
+                from workshop.plugins.executors.local.trust import prepare
+                prepare(spec.get('trust_workdir', spec['workdir']), env, directory)
             prompt = Path(spec['prompt']).read_text()
             if len(prompt.encode()) > 8192:
                 prompt = '请读取派活说明文件 ' + json.dumps(spec['prompt'], ensure_ascii=False) + '，其中说明与资料已分开标注。'
-                if spec['readonly']:
+                if spec['readonly'] and spec['kind'] == 'orca-claude':
                     argv += ['--add-dir', str(directory)]
             (directory / 'initial-prompt.txt').write_text(prompt)
             argv += ['--', prompt]

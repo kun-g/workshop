@@ -1,6 +1,6 @@
 # 核心与插件接入契约（W1、W2-A）
 
-类型以 `core/ports.py`、`models.py`、`cards.py` 为准。Kun 11-13 决定：第一版不接工单系统，issue 就是活的登记；`TaskHome` 保留为可选端口。第一版只带 `ordered` 挑选逻辑，业务流程、来源、执行者、通道和独立看门程序由下一波实现。
+类型以 `core/ports.py`、`models.py`、`cards.py` 为准。Kun 11-13 决定：第一版不接工单系统，issue 就是活的登记；`TaskHome` 保留为可选端口。挑选逻辑有 `ordered` 和 `quota` 两段，业务流程、来源、执行者、通道和独立看门程序由下一波实现。
 
 ## 注册、规则和运行入口
 
@@ -9,11 +9,12 @@
 ```toml
 [project.entry-points."workshop.selector"]
 ordered = "workshop.plugins.selectors.ordered:make_selector"
+quota = "workshop.plugins.selectors.quota:make_selector"
 [project.entry-points."workshop.flow"]
 issue_delivery = "workshop.plugins.issue_delivery:make_flow"
 ```
 
-规则中 `selector: ordered` 指定默认挑选逻辑；`stage_selectors` 可按阶段覆盖，交付对象也可设置 selector 和 stage_selectors。优先级：对象的阶段覆盖 > 对象默认 > 全局阶段覆盖 > 全局默认。第一版这些名字均为 ordered。`channel` 必填，`taskhome` 可省略。`limits.round_timeout_seconds` 是每轮期限，默认/示例为 7200 秒。`stage_executors` 可按中文阶段给候选，交付对象自己的同名配置优先；省略时接单/说清楚/执行/证据/交付/收尾/观察沿用 writer，审查沿用 reviewer，验收沿用 acceptor。例如：
+规则中 `selector: ordered` 指定默认挑选逻辑；`stage_selectors` 可按阶段覆盖，交付对象也可设置 selector 和 stage_selectors。优先级：对象的阶段覆盖 > 对象默认 > 全局阶段覆盖 > 全局默认。现行规则全局和各交付对象都用 quota。`channel` 必填，`taskhome` 可省略。`limits.round_timeout_seconds` 是每轮期限，默认/示例为 7200 秒。`stage_executors` 可按中文阶段给候选，交付对象自己的同名配置优先；省略时接单/说清楚/执行/证据/交付/收尾/观察沿用 writer，审查沿用 reviewer，验收沿用 acceptor。例如：
 
 ```yaml
 selector: ordered
@@ -119,9 +120,11 @@ rounds 同时保存规则要求的 executor/model/effort、挑选理由、开始
 
 ## 挑选逻辑 Selector
 
-`select(target, stage, round_number, history, candidates) -> Selection(config, reason) | None`。history 是这件活之前所有轮的快照，包括执行者、规则模型、实际主/子用量和结果；candidates 依唯一规则的阶段候选顺序排列，每项含 config、available=true。核心已调用 available，并筛掉写代码家族（审查/验收）、无额度候选、尚未批准的按量候选，也落实两家审和关口重试的家族/执行者限制。target.selection 仍提供 writer、reviewed、retry_executor、excluded 背景供解释；硬规矩不委托插件。
+`select(target, stage, round_number, history, candidates) -> Selection(config, reason) | None`。`Selection(None, reason)` 表示一个都没选并说明原因：核心记 `selection_none` 事实（why 显示「挑选逻辑没选出执行者 …」），把原因写进「没有可用执行者」卡的 context 和 leave.about；返回 None 时照旧只发通用卡。history 是这件活之前所有轮的快照，包括执行者、规则模型、实际主/子用量和结果；candidates 依唯一规则的阶段候选顺序排列，每项含 config、available=true。核心已调用 available，并筛掉写代码家族（审查/验收）、无额度候选、尚未批准的按量候选，也落实两家审和关口重试的家族/执行者限制。target.selection 仍提供 writer、reviewed、retry_executor、excluded 背景供解释；硬规矩不委托插件。
 
-第一版唯一实现 `workshop.plugins.selectors.ordered` 只返回获准候选的第一项和理由。核心校验输出仍属于候选，违例记 selection_failed，why 能看到原因，按暂时起轮失败退避，连续 3 次升级故障；不会调用违例执行者。挑选逻辑可以全局/对象/阶段配置，但本版不带其他逻辑。
+`workshop.plugins.selectors.ordered` 只返回获准候选的第一项和理由。
+
+`workshop.plugins.selectors.quota` 按候选顺序取第一个额度够的。候选上 `quota: {provider, window, min_remaining, label}` 是门槛（剩余百分比 ≥ min_remaining 才选），没写门槛的候选不看额度，所以全无门槛时结果和 ordered 一样。额度只读本机 ai_quota 快照库（交付对象上 `quota_snapshot: {path, max_age_minutes}`，默认 `~/.local/state/ai_quota/quota.db`、45 分钟），取该家最近一次成功采集；库读不到、缺窗口或超过过期线时跳过有门槛的候选并写进理由。候选上 `first_when_writer: [家]` 表示写代码的是这些家时把它排到最前（核心已排除写代码那家，这里只调顺序）。理由例：「Codex 周额度剩 50%（门槛 15%），选 orca-codex；阶段 执行，第 1 轮」。所有候选都被跳过时返回 `Selection(None, 理由)`，理由列出每个候选为什么被跳过。核心校验输出仍属于候选，违例记 selection_failed，why 能看到原因，按暂时起轮失败退避，连续 3 次升级故障；不会调用违例执行者。挑选逻辑可以全局/对象/阶段配置。
 
 `workshop usage` 仅统计 status=ended 的轮，在跑、启动中、收尾中的轮不计入未上报或未知模型。保留今天、最近 7 天、按活，并按实际模型分组，未知模型单列。组内列轮数、审查/验收一次过、平均耗时、四种 token、API 折合花费和缓存命中率。一次过的统计单位为“活、阶段、执行者家族”的首次尝试；后续重试不把首次失败改成成功，两家审分别计各自首次尝试。缺判定的首次尝试排除并显示缺失数。平均耗时只取有起止数据的轮；缓存命中率只取输入/缓存读/缓存写三项完整的轮，公式为缓存读总和 ÷ 三项总和，分母 0 显示未知。每项只累加已知值，全部缺失显示未知；模型行同时列未上报轮数，各比率另外列缺失数。主会话和子 agent 的 token/花费按实际模型分别汇总，同一模型在同一轮出现两处，轮数与耗时只计一次。模型耗时是它参与的车间整轮耗时，不冒充子 agent 独立执行时长；审查/验收一次过只归因主执行模型，子 agent 贡献只算用量。各行另列「子 agent 未计 N 轮」。
 

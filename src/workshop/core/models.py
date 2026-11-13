@@ -131,7 +131,8 @@ class Started:
 
 @dataclass(frozen=True)
 class Selection:
-    config: dict
+    # config 为 None 表示一个都没选，reason 说明原因。
+    config: dict | None
     reason: str
 
 
