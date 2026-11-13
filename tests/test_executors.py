@@ -744,7 +744,7 @@ def test_orca_codex_round_terminal_receipt_close_usage_and_resume(setup):
     assert executor.available(CONFIG)
     first = executor.launch('one', BRIEF, item, CONFIG, target)
     directory = executor.directory('one')
-    wait_for(lambda: (root/'receipts').exists())
+    wait_for(lambda: (root/'receipts').exists() and (root/'receipts').read_text().endswith('\n'))
     orca = [json.loads(line) for line in (root/'orca-calls').read_text().splitlines()]
     assert orca[0][:2] == ['worktree', 'create'] and orca[1][:2] == ['terminal', 'create']
     call = json.loads((root/'agents').read_text())
