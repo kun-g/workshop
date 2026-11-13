@@ -1,0 +1,181 @@
+{
+  "baseline": "f4193a965c803aa10c3c1da4ed50899fb74620b6",
+  "argv": {
+    "orca-codex": {
+      "launch": [
+        "/cli/codex",
+        "-m",
+        "gpt-6-astra",
+        "-c",
+        "model_reasoning_effort=\"high\"",
+        "-s",
+        "danger-full-access",
+        "-a",
+        "never",
+        "-C",
+        "/repo",
+        "-c",
+        "model_provider=\"openai\"",
+        "-c",
+        "projects={\"/repo\"={trust_level=\"trusted\"}}",
+        "--dangerously-bypass-hook-trust",
+        "-c",
+        "hooks.SessionStart=[{hooks=[{type=\"command\",command=\"<python> <hook>\"}]}]",
+        "-c",
+        "hooks.UserPromptSubmit=[{hooks=[{type=\"command\",command=\"<python> <hook>\"}]}]"
+      ],
+      "resume": [
+        "/cli/codex",
+        "resume",
+        "-m",
+        "gpt-6-astra",
+        "-c",
+        "model_reasoning_effort=\"high\"",
+        "-s",
+        "danger-full-access",
+        "-a",
+        "never",
+        "-C",
+        "/repo",
+        "-c",
+        "model_provider=\"openai\"",
+        "-c",
+        "projects={\"/repo\"={trust_level=\"trusted\"}}",
+        "--dangerously-bypass-hook-trust",
+        "-c",
+        "hooks.SessionStart=[{hooks=[{type=\"command\",command=\"<python> <hook>\"}]}]",
+        "-c",
+        "hooks.UserPromptSubmit=[{hooks=[{type=\"command\",command=\"<python> <hook>\"}]}]",
+        "01234567-89ab-4cde-8fab-0123456789ab"
+      ]
+    },
+    "orca-claude": {
+      "launch": [
+        "/cli/claude",
+        "--session-id",
+        "01234567-89ab-4cde-8fab-0123456789ab",
+        "--model",
+        "claude-opus-5-5",
+        "--effort",
+        "high",
+        "--settings",
+        "<round>/hooks.json",
+        "--permission-mode",
+        "bypassPermissions"
+      ],
+      "resume": [
+        "/cli/claude",
+        "--resume",
+        "01234567-89ab-4cde-8fab-0123456789ab",
+        "--model",
+        "claude-opus-5-5",
+        "--effort",
+        "high",
+        "--settings",
+        "<round>/hooks.json",
+        "--permission-mode",
+        "bypassPermissions"
+      ]
+    },
+    "codex": {
+      "launch": [
+        "/cli/codex",
+        "exec",
+        "-c",
+        "sandbox_mode=\"read-only\"",
+        "-c",
+        "approval_policy=\"never\"",
+        "--ignore-user-config",
+        "--ignore-rules",
+        "--json",
+        "--model",
+        "gpt-6.1-sol",
+        "-c",
+        "model_reasoning_effort=\"high\"",
+        "--sandbox",
+        "read-only"
+      ],
+      "resume": [
+        "/cli/codex",
+        "exec",
+        "-c",
+        "sandbox_mode=\"read-only\"",
+        "-c",
+        "approval_policy=\"never\"",
+        "--ignore-user-config",
+        "--ignore-rules",
+        "--json",
+        "--model",
+        "gpt-6.1-sol",
+        "-c",
+        "model_reasoning_effort=\"high\"",
+        "resume",
+        "01234567-89ab-4cde-8fab-0123456789ab"
+      ]
+    },
+    "cursor-grok": {
+      "launch": [
+        "/cli/cursor-agent",
+        "-p",
+        "--mode",
+        "plan",
+        "--trust",
+        "--model",
+        "grok-4.7-high",
+        "--workspace",
+        "/repo",
+        "--output-format",
+        "stream-json"
+      ],
+      "resume": [
+        "/cli/cursor-agent",
+        "-p",
+        "--mode",
+        "plan",
+        "--trust",
+        "--model",
+        "grok-4.7-high",
+        "--workspace",
+        "/repo",
+        "--output-format",
+        "stream-json",
+        "--resume",
+        "01234567-89ab-4cde-8fab-0123456789ab"
+      ]
+    },
+    "claude": {
+      "launch": [
+        "/cli/claude",
+        "--session-id",
+        "01234567-89ab-4cde-8fab-0123456789ab",
+        "-p",
+        "--output-format",
+        "json",
+        "--restricted",
+        "--permission-mode",
+        "plan",
+        "--tools",
+        "Read,Glob,Grep",
+        "--strict-mcp-config",
+        "--mcp-config",
+        "{\"mcpServers\":{}}"
+      ],
+      "resume": [
+        "/cli/claude",
+        "--resume",
+        "01234567-89ab-4cde-8fab-0123456789ab",
+        "-p",
+        "--output-format",
+        "json",
+        "--restricted",
+        "--permission-mode",
+        "plan",
+        "--tools",
+        "Read,Glob,Grep",
+        "--strict-mcp-config",
+        "--mcp-config",
+        "{\"mcpServers\":{}}"
+      ]
+    }
+  }
+}
