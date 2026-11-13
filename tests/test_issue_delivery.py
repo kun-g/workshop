@@ -905,3 +905,84 @@ def test_feishu_classify_summaries(world):
     assert flow.classify(event, None, target, lookup).summary == '飞书 Kun：「ws#999 不对」；ws#999 找不到活'
     edit(world, message=message('x' * 100, chat='oc_other'))
     assert flow.classify(event, None, target, lookup).summary == f'飞书 Kun：「{"x" * 80}…」；不在交付对象的群，也没回复车间的卡片或通知'
+
+
+NO_REVIEW = ['接单', '说清楚', '执行', '证据', '交付', '验收', '收尾']
+
+
+def test_stages_switch_in_rules_only_drops_review(world):
+    flow = world['flow']
+    assert '审查' in flow.stages(world['target'])
+    assert list(flow.stages({**world['target'], 'stages': NO_REVIEW})) == NO_REVIEW
+    for bad in (['接单', '说清楚', '执行', '交付', '验收', '收尾'],   # 去掉证据
+                list(reversed(NO_REVIEW)), NO_REVIEW + ['观察']):
+        with pytest.raises(ValueError):
+            flow.stages({**world['target'], 'stages': bad})
+
+
+def test_engine_without_review_merges_evidence_head(world):
+    cfg = configuration()
+    cfg.pop('taskhome')
+    cfg['targets']['alpha'] = {**world['target'], 'plugin': 'issue_delivery', 'sources': [], 'stages': NO_REVIEW}
+    engine = build(world['root'] / 'engine', cfg)
+    engine.plugins.register('flow', 'issue_delivery', world['flow'])
+    engine.ingest(Event('github', 'labeled', 'alpha', '7', 'test', {}, action='ready'))
+    engine.tick()
+    for stage in NO_REVIEW:
+        assert current(engine, '7')['stage'] == stage
+        payload = {'head': world['sha'], 'checks': [['scripts/check.sh']], 'must_fix': [], 'suggestions': [],
+                   'acceptance': {'passed': True, 'output': 'acceptance raw output', 'head': world['sha']}}
+        extra = {}
+        if stage == '收尾':
+            extra = {'leave': {'kind': '送回', 'at': '+7d', 'about': '复看'}, 'notice': [{'key': 'accepted', 'text': '验收通过；不对就在群里回一句「ws#7 不对」'}]}
+        advance = NO_REVIEW[NO_REVIEW.index(stage) + 1] if stage != '收尾' else None
+        finish(engine, advance, key='7', evidence=[result(world, **payload)], **extra)
+    assert item(engine, '7')['state'] == '完成'
+    assert any(c[1:3] == ['pr', 'merge'] and world['sha'] in c for c in calls(world))
+    engine.log.close()
+
+
+def test_item_waiting_in_review_moves_on_when_rules_drop_review(world):
+    cfg = configuration()
+    cfg.pop('taskhome')
+    cfg['targets']['alpha'] = {**world['target'], 'plugin': 'issue_delivery', 'sources': []}
+    engine = build(world['root'] / 'engine', cfg)
+    engine.plugins.register('flow', 'issue_delivery', world['flow'])
+    engine.ingest(Event('github', 'labeled', 'alpha', '7', 'test', {}, action='ready'))
+    engine.tick()
+    payload = {'head': world['sha'], 'checks': [['scripts/check.sh']], 'must_fix': [], 'suggestions': []}
+    for stage, advance in (('接单', '说清楚'), ('说清楚', '执行'), ('执行', '证据'), ('证据', '审查')):
+        assert current(engine, '7')['stage'] == stage
+        finish(engine, advance, key='7', evidence=[result(world, **payload)])
+    assert current(engine, '7')['stage'] == '审查'
+    # 审查这一轮在跑时规则关掉审查：它交回的回执仍能推进到交付。
+    engine.rules.data['targets']['alpha']['stages'] = NO_REVIEW
+    finish(engine, '交付', key='7', evidence=[result(world, **payload)])
+    assert item(engine, '7')['stage'] == '交付'
+    engine.log.close()
+
+
+def test_item_retrying_review_skips_it_without_a_round_when_rules_drop_review(world):
+    cfg = configuration()
+    cfg.pop('taskhome')
+    cfg['targets']['alpha'] = {**world['target'], 'plugin': 'issue_delivery', 'sources': []}
+    engine = build(world['root'] / 'engine', cfg)
+    engine.plugins.register('flow', 'issue_delivery', world['flow'])
+    engine.ingest(Event('github', 'labeled', 'alpha', '7', 'test', {}, action='ready'))
+    engine.tick()
+    payload = {'head': world['sha'], 'checks': [['scripts/check.sh']], 'must_fix': [], 'suggestions': []}
+    for advance in ('说清楚', '执行', '证据', '审查'):
+        finish(engine, advance, key='7', evidence=[result(world, **payload)])
+    review = current(engine, '7')
+    engine.submit(review['token'], {'outcome': 'failed', 'summary': '审查者没交回执'})
+    engine.tick()
+    assert item(engine, '7')['retry_at']
+    engine.rules.data['targets']['alpha']['stages'] = NO_REVIEW
+    from datetime import timedelta
+    engine.clock.now += timedelta(minutes=6)
+    engine.tick()
+    engine.tick()
+    assert current(engine, '7')['stage'] == '交付'
+    reviews = [r for r in engine.log.all('rounds') if r['item'] == 'alpha:7' and r['stage'] == '审查']
+    assert len(reviews) == 1
+    engine.log.close()
