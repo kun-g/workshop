@@ -1,4 +1,4 @@
-"""同步短时端口；不等待人或一轮结束。字段和恢复时序见接入文档。"""
+"""同步短时端口；不等待人或一轮结束。守护进程把每次调用放进独立的作业进程（jobs.py），一拍不等它。字段和恢复时序见接入文档。"""
 from typing import Callable, Literal, Protocol
 from .cards import Question, Notice
 from .models import After, Answer, Brief, FlowBrief, Classification, Evidence, Event, Poll, Receipt, Started, RoundUsage, Selection
