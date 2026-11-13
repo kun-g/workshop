@@ -1,11 +1,13 @@
 """端口共享的值类型。所有时间为带时区的 ISO 8601，金额为 USD。"""
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, fields
 from datetime import datetime, timedelta, timezone
+import json
 import re
 from typing import Any
 from .cards import validate_question, validate_notice
 
 STAGES = ("接单", "说清楚", "执行", "证据", "审查", "交付", "验收", "收尾", "观察")
+OUTCOMES = ("done", "failed", "nothing")
 
 
 def utcnow() -> datetime:
@@ -203,11 +205,24 @@ class Receipt:
     def parse(cls, data: dict, now: datetime) -> "Receipt":
         if not isinstance(data, dict):
             raise ValueError("回执必须是 JSON 对象")
+        # 原因要具体到字段和合法取值，并一次报全：执行者看到后要能在同一轮一次改对重交。
+        names = [f.name for f in fields(cls)]
+        problems = []
+        unknown = [key for key in data if key not in names]
+        if unknown:
+            problems.append(f"回执顶层有不认识的字段 {'、'.join(map(str, unknown))}；顶层只认 {'、'.join(names)}，其他内容放进 evidence")
+        missing = [key for key in ("outcome", "summary") if key not in data]
+        if missing:
+            problems.append(f"回执缺 {'、'.join(missing)}")
+        if "outcome" in data and data["outcome"] not in OUTCOMES:
+            problems.append(f"outcome 是 {json.dumps(data['outcome'], ensure_ascii=False)}，只能是 {'、'.join(OUTCOMES)}")
+        if "summary" in data and not isinstance(data["summary"], str):
+            problems.append("summary 必须是字符串")
+        if data.get("advance") is not None and data["advance"] not in STAGES:
+            problems.append(f"advance 是 {json.dumps(data['advance'], ensure_ascii=False)}，不是阶段名；阶段只有 {'、'.join(STAGES)}")
+        if problems:
+            raise ValueError("；".join(problems))
         receipt = cls(**data)
-        if receipt.outcome not in ("done", "nothing", "failed") or not isinstance(receipt.summary, str):
-            raise ValueError("回执 outcome 或 summary 无效")
-        if receipt.advance is not None and receipt.advance not in STAGES:
-            raise ValueError("未知阶段")
         if not isinstance(receipt.evidence, list) or not all(isinstance(x, str) for x in receipt.evidence):
             raise ValueError("evidence 必须是字符串列表")
         for name in ("ask", "notice", "later"):

@@ -20,6 +20,28 @@ def validate_stages(stages):
         raise ValueError("阶段必须有序且包含四道关口需要的阶段")
 
 
+def allowed_advances(item: dict, stages) -> list[str]:
+    """本阶段回执 advance 能填的阶段：下一段；证据到验收可退回执行；到过验收的执行可直接回验收。"""
+    current = item["stage"]
+    index = stages.index(current)
+    allowed = [stages[index + 1]] if index + 1 < len(stages) else []
+    if current in ("证据", "审查", "交付", "验收") and "执行" not in allowed:
+        allowed.append("执行")
+    if (current == "执行" and "验收" in stages and stages.index("验收") > index + 1
+            and any(entry.get("stage") == "验收" for entry in item.get("history", []))):
+        allowed.append("验收")
+    return allowed
+
+
+def advance_problem(item: dict, advance, stages) -> str:
+    """advance 不合法时给出具体原因（填了什么、能填什么）；合法或没填时返回空串。"""
+    if advance is None or advance in allowed_advances(item, stages):
+        return ""
+    allowed = allowed_advances(item, stages)
+    choices = "、".join(f"「{s}」" for s in allowed) or "（没有下一段，不填）"
+    return f"advance 是「{advance}」；{item['stage']}之后只能是{choices}，不推进就不填"
+
+
 def decide(item: dict, receipt: Receipt, evidence: Evidence, stages, rules: Rules) -> Decision:
     validate_stages(stages)
     unknown = set(evidence.actions) - set(rules.data["ask_first"]) - set(rules.data["skip_ask"])
@@ -43,7 +65,7 @@ def decide(item: dict, receipt: Receipt, evidence: Evidence, stages, rules: Rule
         return Decision(current, complete, "完成" if complete else "未提议下一阶段", complete=complete)
     index = stages.index(current)
     if index + 1 >= len(stages) or requested != stages[index + 1]:
-        return Decision(current, False, "不能越过流程阶段和关口")
+        return Decision(current, False, "不能越过流程阶段和关口：" + advance_problem(item, requested, stages))
     checks = evidence.checks or item.get("checks", [])
     if requested == "执行" and not (checks and all(
             isinstance(argv, list) and argv and all(isinstance(v, str) and v.strip() for v in argv)

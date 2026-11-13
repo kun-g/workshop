@@ -69,12 +69,48 @@ def test_runnable_check_gate_and_no_skipping(engine):
     assert not engine.active()
 
 
-def test_jump_to_close_is_blocked(engine):
+def test_jump_to_close_is_rejected_when_submitted(engine):
+    """越级的 advance 交回执时就被拒，原因写清能填什么；这一轮还开着，可以改对重交。"""
     engine.ingest(event())
     engine.tick()
-    finish(engine, "收尾")
+    row = current(engine)
+    with pytest.raises(ValueError, match="advance 是「收尾」；接单之后只能是「说清楚」"):
+        engine.submit(row["token"], dict(outcome="done", summary="完成接单", advance="收尾"))
+    assert current(engine)["receipt"] is None
+    assert "接单之后只能是「说清楚」" in current(engine)["receipt_rejected"]
+    finish(engine, "说清楚")
+    assert item(engine)["stage"] == "说清楚"
+
+
+def test_rejected_receipt_reason_survives_exit_and_reaches_item(engine):
+    """执行者交错了回执又没改对就退出：自动失败的结果里带着被拒原因，活上留着给下一轮说明。"""
+    engine.ingest(event())
+    engine.tick()
+    row = current(engine)
+    with pytest.raises(ValueError) as rejected:
+        engine.submit(row["token"], {"outcome": "success", "summary": "完成", "head": "abc"})
+    assert '回执顶层有不认识的字段 head' in str(rejected.value)
+    assert 'outcome 是 "success"，只能是 done、failed、nothing' in str(rejected.value)
+    engine.automatic_failure(row["token"], "执行者已退出但没有交回执")
+    engine.tick()
+    failure = item(engine)["last_failure"]
+    assert failure.startswith("执行者已退出但没有交回执；最后一次交的回执被拒：回执顶层有不认识的字段 head")
+    engine.clock.now += timedelta(hours=1)
+    engine.tick()
+    finish(engine, "说清楚")
+    assert item(engine)["stage"] == "说清楚" and item(engine)["last_failure"] is None
+
+
+def test_gate_still_names_allowed_advance(engine):
+    """交回执时没核对上的（例如读不到阶段），收轮时关口照样拦，原因同样具体。"""
+    engine.ingest(event())
+    engine.tick()
+    row = current(engine)
+    engine.check_advance = lambda token, receipt: None
+    engine.submit(row["token"], dict(outcome="done", summary="完成接单", advance="收尾"))
+    engine.tick()
     assert item(engine)["stage"] == "接单"
-    assert "不能越过" in item(engine)["gate_reason"]
+    assert "不能越过" in item(engine)["gate_reason"] and "只能是「说清楚」" in item(engine)["gate_reason"]
 
 
 def test_approval_gate_and_explicit_answer(engine):

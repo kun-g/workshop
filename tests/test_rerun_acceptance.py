@@ -158,8 +158,9 @@ def test_core_returns_to_acceptance_only_for_items_that_reached_it(engine):
     """核心只认阶段：没到过验收不能从执行跳过去；到过的，流程证据过了才回验收。"""
     flow = engine.plugins.get('flow', 'flow')
     reach(engine, '执行')
-    finish(engine, '验收')
-    assert current(engine)['stage'] == '执行' and item(engine)['gate_reason'] == '不能越过流程阶段和关口'
+    with pytest.raises(ValueError, match='advance 是「验收」；执行之后只能是「证据」'):
+        finish(engine, '验收')
+    assert current(engine)['stage'] == '执行' and current(engine)['receipt'] is None
     for stage in ('证据', '审查', '交付', '验收'):
         finish(engine, stage)
     flow.passed = False

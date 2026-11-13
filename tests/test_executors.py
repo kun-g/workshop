@@ -188,10 +188,16 @@ def test_exit_without_receipt_submits_failed_with_tail(setup, kind):
     executor = make(kind)
     started = executor.launch('one', BRIEF, item, CONFIG, target)
     wait_for(lambda: (executor.directory('one')/'exited.json').exists())
-    receipt = read(executor.directory('one')/'fallback-receipt.json')
+    receipt = read(executor.directory('one')/'failed-receipt.json')
     assert receipt['outcome'] == 'failed'
-    assert 'last output from fake' in receipt['summary']
+    # 原因在 summary（下一轮说明会带上），输出末尾放 evidence。
+    assert '没有回执 JSON 对象' in receipt['summary']
+    assert 'last output from fake' in receipt['evidence'][0]
     assert json.loads((root/'receipts').read_text().splitlines()[0])[:2] == ['receipt','one']
+    # 同一轮里接回会话要过一次回执，仍没有才代交 failed。
+    calls = [json.loads(row) for row in (root/'agents').read_text().splitlines()]
+    assert len(calls) == 2 and '车间没收下这一轮的回执' in calls[1]['prompt']
+    assert (executor.directory('one')/'receipt-rejected.json').exists()
     executor.stop('one', started)
 
 
@@ -496,7 +502,8 @@ def test_hook_and_fallback_receipt_use_real_cli_without_depth_growth(setup):
         assert read(directory/'receipt-result.json')['code'] == 0
         receipt = engine.log.get('rounds', token)['receipt']
         assert receipt['outcome'] == 'failed'
-        assert 'last output from fake codex' in receipt['summary']
+        assert '没有回执 JSON 对象' in receipt['summary']
+        assert 'last output from fake codex' in receipt['evidence'][0]
         # Leave the active round pending while a human steers it more than chain_depth times.
         env = dict(os.environ, WORKSHOP_ITEM=item['id'], WORKSHOP_EXECUTOR_ROUND=str(directory),
                    WORKSHOP_ROUND_TOKEN=token)
