@@ -1,7 +1,7 @@
 """同步短时端口；不等待人或一轮结束。字段和恢复时序见接入文档。"""
-from typing import Literal, Protocol
+from typing import Callable, Literal, Protocol
 from .cards import Question, Notice
-from .models import Answer, Brief, Evidence, Event, Poll, Receipt, Started, RoundUsage, Selection
+from .models import After, Answer, Brief, FlowBrief, Classification, Evidence, Event, Poll, Receipt, Started, RoundUsage, Selection
 
 
 class ChannelRejected(Exception):
@@ -23,22 +23,25 @@ class Source(Protocol):
 
 
 class Flow(Protocol):
-    def classify(self, event: Event, item: dict, target: dict) -> Literal["update", "ready", "rework"]:
-        """只对无轮次令牌的 CLI 入口判定可信来源动作；输入 action 已归 update、depth 已归零。
+    def classify(self, event: Event, item: dict | None, target: dict,
+                 find_external: Callable[..., dict | None]) -> Classification | Literal["update", "ready", "rework"]:
+        """只对无轮次令牌的 CLI 入口判定动作和归件；尚未创建活，输入 action=update。
 
-        回查上游身份与原始内容，不能信正文自称身份，默认 update；异常按流程故障处理。
+        回查上游身份与原始内容，不能信正文自称身份；find_external 只读返回同目标的卡和活。
+        Classification 可指定既有对象键，discard=True 记事实后丢弃；返回 None 是协议错误。
+        find_external(object_key=...) 可查同目标既有活（先解析别名）。异常按流程故障处理。
         来源 poll、带令牌事件和回执子事件不调用此方法；无令牌输入仍可能来自 agent。
         """
         ...
     def stages(self, target: dict) -> tuple[str, ...]: ...
-    def brief(self, item: dict, stage: str, target: dict) -> str:
+    def brief(self, item: dict, stage: str, target: dict) -> str | FlowBrief:
         """可信说明；item.history 含每轮结论，gate_reason 含需要修正的关口理由。"""
         ...
     def assess(self, item: dict, receipt: Receipt, target: dict) -> Evidence:
         """短时只读核对证据；paths/reviewers 决定需要几家审；未知动作类别是插件错误。"""
         ...
-    def after(self, item: dict, completed_stage: str, key: str, target: dict) -> None:
-        """准许推进后调用，key 必须持久幂等；不得越过核心推进。"""
+    def after(self, item: dict, completed_stage: str, key: str, target: dict) -> After | list[str] | None:
+        """准许推进后调用，item.result 含本轮回执，key 必须持久幂等；After 可绑定别名或仍留本阶段。"""
         ...
 
 

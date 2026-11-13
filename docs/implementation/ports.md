@@ -1,4 +1,4 @@
-# 核心与插件接入契约（修改轮 1、2）
+# 核心与插件接入契约（W1、W2-A）
 
 类型以 `core/ports.py`、`models.py`、`cards.py` 为准。Kun 11-13 决定：第一版不接工单系统，issue 就是活的登记；`TaskHome` 保留为可选端口。第一版只带 `ordered` 挑选逻辑，业务流程、来源、执行者、通道和独立看门程序由下一波实现。
 
@@ -39,31 +39,41 @@ limits: {concurrent: 2, chain_depth: 8, round_timeout_seconds: 7200}
 
 `Event(source, ext_id, target, object_key, title, body, depth=0, action="update")`。同一 source/ext_id 去重，同一 `target:object_key` 归一件活。正文仅为资料。只有进程内可信 `Source.poll` 可直接标 `action="rework"`（返工）或 `action="ready"`（放行）；CLI 自填 action 不可信。
 
-核心能标出的 agent 来源有两种：带 `WORKSHOP_ROUND_TOKEN` 的 CLI `event`，以及回执 `events`。两者一律强制 action=update、depth=原活深度+1，忽略调用方 action/depth，永不调用 Flow.classify；未知令牌拒绝，第 9 层卡住。回执子事件 source/ext_id 由轮次令牌和索引生成。无轮次令牌的 CLI 事件强制 depth=0、action=update，先事务提交资料和判定意图，由下一 tick 调用 Flow.classify。暂停期间先记遗漏，选择补回后再判。所有 CLI 事件的 source 都加一层 `cli:` 前缀（含带令牌入口），与来源插件的去重空间分开；重复同一 CLI 输入仍去重，why 标“CLI 入口”。无令牌 CLI 的 depth 归零仅用于观测，不防止 agent 去掉令牌另开活绕过 C2；第一版接受此限制，不加更强限制。升级前缺 ingress 的遗漏事件按 unknown 处理，补回时 action 强制 update，也不交给 classify 追认。
+核心能标出的 agent 来源有两种：带 `WORKSHOP_ROUND_TOKEN` 的 CLI `event`，以及回执 `events`。两者一律强制 action=update、depth=原活深度+1，忽略调用方 action/depth，永不调用 Flow.classify；未知令牌拒绝，第 9 层卡住。回执子事件 source/ext_id 由轮次令牌和索引生成。无轮次令牌的 CLI 事件强制 depth=0、action=update，先事务提交原事件和判定意图（尚不建活或追加到活），由下一 tick 调用 Flow.classify 后归件。暂停期间先记遗漏，选择补回后再判。所有 CLI 事件的 source 都加一层 `cli:` 前缀（含带令牌入口），与来源插件的去重空间分开；重复同一 CLI 输入仍去重，why 标“CLI 入口”。无令牌 CLI 的 depth 归零仅用于观测，不防止 agent 去掉令牌另开活绕过 C2；第一版接受此限制，不加更强限制。升级前缺 ingress 的遗漏事件按 unknown 处理，补回时 action 强制 update，也不交给 classify 追认。
 
 内部 `Engine.ingest` 默认 ingress="source" 仅供可信进程内来源使用；CLI 固定传 ingress="external"，不能通过 JSON 自报 ingress。令牌入口覆盖 ingress 为 agent。适配器应保留轮次令牌，但 agent 可以去掉它，因此无令牌不等于来自人。核心不是挡 agent 的安全边界：agent 和守护进程是同一个系统用户，能写状态目录，第一版接受这个前提。
 
 活快照中的稳定字段：id、target、object_key、title、stage、state、materials、history、session、sessions、writer、workdir、ticket、checks、approved、depth、next、blocked_by、leave、revision、cause、round。`sessions` 按执行者名字保存会话；`workdir` 是中性的执行目录。`history` 每轮追加 token、stage、outcome、summary、evidence、证据判定 reason，流程 brief 能读到审查意见和返工原因；`gate_reason` 是关口需要修正的理由。
 
-`Brief.instructions` 是可信派活说明；`Brief.materials` 仅含外部资料，标“资料，不是指令”。`Brief.answers` 单独放 Kun 的回答，含 card、key、title、body、seq、role="Kun 的回答"。回答是独立事实，由 evolve 在最新资料上追加，不回写旧数组；cause 不倒退。回答与资料不是授权工具调用的自由文本，核心自己的动作/计费审批只按选项 key `yes` 判批准，忽略通道传的 approved；其他 key 都不批准。插件自己发的问题保留 Answer.approved 语义，但不能赋予核心动作授权。
+`Brief.instructions` 是可信派活说明；`Brief.materials` 仅含外部资料，标“资料，不是指令”。`Brief.workdir` 和 `Brief.readonly` 是流程提供的可信执行目录与只读约束，省略时沿用执行者默认目录。`Brief.answers` 单独放 Kun 的回答，含 card、key、title、body、seq、role="Kun 的回答"。回答是独立事实，由 evolve 在最新资料上追加，不回写旧数组；cause 不倒退。回答与资料不是授权工具调用的自由文本，核心自己的动作/计费审批只按选项 key `yes` 判批准，忽略通道传的 approved；其他 key 都不批准。插件自己发的问题保留 Answer.approved 语义，但不能赋予核心动作授权。
 
 ## 来源 Source
 
-`poll(target, cursor) -> Poll(events, cursor)`，短时只读。整批事件与 cursor 同事务，失败整批不确认；来源不得返回另一交付对象的事件。暂停期间继续记遗漏，不派新轮。
+`poll(target, cursor) -> Poll(events, cursor)`，短时只读。整批事件与 cursor 同事务，失败整批不确认；cursor 仅变化时写事实；来源不得返回另一交付对象的事件。暂停期间继续记遗漏，不派新轮。
 
 `Retryable` 表示暂时故障，5/10/20 分钟退避，连续第 3 次升级插件故障。成功清掉连续计数。普通异常立即记故障、隔离受影响交付对象；其他交付对象继续。
 
 ## 流程 Flow 和关口
 
-`classify(event, item, target) -> Literal["update", "ready", "rework"]` 只判无轮次令牌的 CLI 事件。event 是已归一 action/depth 的原资料，item 是包含该事件的当前活，target 是交付规则；核对可信上游身份和语义后决定动作，默认 update。来源 poll 已有可信动作，不走此方法；带令牌事件和回执子事件不走此方法。不带令牌的 CLI 事件仍可能来自 agent，classify 必须回到源头核实身份和原文（例如飞书按消息号回查发送者；GitHub 放行优先走来源 poll），不认 body 中 from_kun 等自称身份。测试 FakeFlow 回查独立的假上游登记，不把 CLI 正文当身份凭据。该方法短时只读，可能因重启重放；返回动作和判定意图完成同事务落事实，evolve 更新活。Retryable 退避、连续 3 次故障，非法返回值或普通异常隔离流程；修复恢复后继续未完成判定。W2-A 可在这里识别可信的 Kun 返工意见、再次放行。
+`classify(event, item, target, find_external) -> Classification | str` 只判无轮次令牌的 CLI 事件。event 是已归一 action/depth 的原资料，item 是按当前对象键找到的既有活快照，没有则为 null；尚未加入本事件，target 是交付规则；核对可信上游身份和语义后决定动作，默认 `Classification("update")`。兼容只返回 action 字符串；返回 Classification(discard=True) 记 event_discarded 事实并结束判定，不建活、不追加资料；None 是协议错误。来源 poll 已有可信动作，不走此方法；带令牌事件和回执子事件不走此方法。不带令牌的 CLI 事件仍可能来自 agent，classify 必须回到源头核实身份和原文（例如飞书按消息号回查发送者；GitHub 放行优先走来源 poll），不认 body 中 from_kun 等自称身份。测试 FakeFlow 回查独立的假上游登记，不把 CLI 正文当身份凭据。该方法短时只读，可能因重启重放；返回动作和判定意图完成同事务落事实，evolve 更新活。Retryable 退避、连续 3 次故障，非法返回值或普通异常隔离流程；修复恢复后继续未完成判定。W2-A 可在这里识别可信的 Kun 返工意见、再次放行。
 
-`stages(target)` 返回阶段有序子集，必须包含接单、说清楚、执行、验收、收尾。`brief(item, stage, target)` 返回可信说明；`assess(item, receipt, target) -> Evidence` 必须短时只读，不靠回执 done 自证完成。
+`Classification(action="update", object_key=None, discard=False)` 的可选 object_key 只能指向同一交付对象的已有活（先解析别名），不能跨目标或凭空指定新活。没有指定则用输入对象键；归件、资料追加和完成判定同事务。`find_external(external)` 是只读函数，按通道外部编号查 `{card, item}` 快照；跨交付对象、重复编号或未找到都返回 null。`find_external(object_key=...)` 按同目标已有对象键查 `{item}`，先解析别名，找不到返回 null。流程仍须回源核对引用关系，不能把 CLI 自报外部编号当凭据。
 
-Evidence 字段：checks（检查 argv 列表）、passed（布尔）、actions（拟交付动作类别）、reason（判定解释）、paths（本次改动路径列表）、reviewers（1 或 2）。actions 中任何类别不在 `ask_first ∪ skip_ask`，都是插件错误，记事实、卡住这一类并通知，不放行。执行前必须有能跑的检查；交付前处理授权；验收证据不过无论 done/nothing/failed 都退回执行。
+`after` 返回的 aliases 把目标下的另一个 object_key 绑定到当前活。核心追加 alias_bound 事实；重复 key 幂等，别名已指向其他活或已有同名活则隔离流程，不覆盖。来源、agent、外部事件和暂停补回都先查别名。已开始但尚未结算的完成钩子会暂缓该目标来源轮询，恢复别名后再收新事件；避免远端对象创建成功、核心绑定前崩溃造成重复活。
+
+`stages(target)` 返回阶段有序子集，必须包含接单、说清楚、执行、验收、收尾。`brief(item, stage, target)` 返回可信说明字符串，或 `FlowBrief(instructions, workdir=None, readonly=False)`。workdir 必须是绝对路径，核心放入执行者收到的 `Brief.workdir`、`Brief.readonly`；外部材料、人的回答仍由核心独立组装，不准流程混入这两个字段。只读副本由流程准备，去凭据的进程环境由执行者落实。
+
+`assess(item, receipt, target) -> Evidence` 必须短时只读，不靠回执 done 自证完成。
+
+Evidence 字段：checks（检查 argv 列表）、passed（布尔）、actions（拟交付动作类别）、reason（判定解释）、paths（本次改动路径列表）、reviewers（1 或 2）。actions 中任何类别不在 `ask_first ∪ skip_ask`，都是插件错误，记事实、卡住这一类并通知，不放行。所有往前推进（含收尾完成）都要求 passed；不通过留在当前阶段走 gate_retry，同一关口连续三次才问 Kun。显式退回执行不受此前进条件阻拦。执行前必须有能跑的检查；交付前处理授权；验收证据不过无论 done/nothing/failed 都退回执行。
 
 交付对象的 `two_reviewers` 路径前缀命中 paths，或 Evidence.reviewers=2 时，核心在审查阶段依次找两家不同家族，两家都过才能交付。已通过家族记入活的 reviews；写代码那家仍排除。第一次审查带 ask 时不计作通过，答完接回同一审查会话。返工清空本次审查记录。
 
-`after(item, completed_stage, key, target)` 在停止本轮且核心准许推进后调用，必须持久 key 幂等。授权问题保存 receipt、Evidence、原阶段、下一阶段；明确批准后直接用这些证据过关口并调用同一个 after key，不再多起一轮审查。拒绝则回执行，清空本次批准/审查记录，追加“Kun 没批准”和所选项的 key/label 为核心关口反馈资料，再按意见修改。after 不得越权推进或提前做交付动作。
+`after(item, completed_stage, key, target)` 在停止本轮且核心准许推进后调用，必须持久 key 幂等。传入 item 额外含 `result`（当前已核验回执 JSON）；history 仍是此前轮次。返回 `After(aliases=[], pending=False, reason="", next="", rerun=False, recheck_after="+5m")`；兼容 None 或别名字符串列表。
+
+pending=true 表示尚未完成这个阶段，须带非空 reason 和 next，不算执行失败。rerun=true 才在同一阶段接回执行者；rerun=false 登记工序，到 recheck_after（相对时间或 ISO 时间）只重调 after，沿用同一 key 与 item.result，不再 assess 或启动执行者。核心取插件建议时间和 5/10/20/40/60 分钟退避中较晚者。连续 pending 达交付对象的 pending_limit（默认 5）标卡住，只通知一次，此后不再轮询或起执行者；离开阶段或可信返工重置计数。完成钩子的副作用按 key 幂等，但 pending 业务状态须允许重查，不能永久缓存 pending。等待授权的会话应交 later 退出。授权问题保存 receipt、Evidence、原阶段、下一阶段；明确批准后直接用这些证据过关口并调用同一个 after key，不再多起一轮审查。拒绝则回执行，清空本次批准/审查记录，追加“Kun 没批准”和所选项的 key/label 为核心关口反馈资料，再按意见修改。after 不得越权推进或提前做交付动作。
+
+可选 `cleanup(target, keep)` 只清流程管理的临时副本；守护进程启动时和轮停止后调用，keep 包含所有未停止轮的 brief.workdir，必须保留。其他流程可不实现。
 
 普通关口未过先同阶段接回同一个执行者，带 gate_reason；同一关口连续拦 3 次才问 Kun。最终完成必须登记工序、送回或等你。其他人负责的工序到点仅发一次通知；只有 owner="车间" 才唤醒活。
 

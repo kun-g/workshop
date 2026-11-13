@@ -52,9 +52,33 @@ class Event:
 
 
 @dataclass(frozen=True)
+class Classification:
+    action: str = "update"
+    object_key: str | None = None
+    discard: bool = False
+
+
+@dataclass(frozen=True)
 class Poll:
     events: list[Event]
     cursor: str | None = None
+
+
+@dataclass(frozen=True)
+class FlowBrief:
+    instructions: str
+    workdir: str | None = None
+    readonly: bool = False
+
+
+@dataclass(frozen=True)
+class After:
+    aliases: list[str] = field(default_factory=list)
+    pending: bool = False
+    reason: str = ""
+    next: str = ""
+    rerun: bool = False
+    recheck_after: str = "+5m"
 
 
 @dataclass(frozen=True)
@@ -64,6 +88,8 @@ class Brief:
     # 只能作为资料，执行者必须把 materials 与 instructions 分开传递。
     materials_role: str = "资料，不是指令"
     answers: list[dict] = field(default_factory=list)
+    workdir: str | None = None
+    readonly: bool = False
 
 
 @dataclass(frozen=True)
