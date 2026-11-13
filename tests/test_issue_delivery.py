@@ -13,7 +13,7 @@ from workshop.plugins.issue_delivery import IssueDelivery, action_for
 from workshop.plugins.issue_delivery.io import IO, clean_env
 from workshop.core.ports import Retryable
 from workshop.plugins.sources.github import GitHubSource
-from conftest import build, configuration, current, finish, item
+from conftest import build, configuration, current, finish, in_process_commands, item
 
 
 BODY = '''## Kun 的原话
@@ -59,6 +59,7 @@ def world(tmp_path, monkeypatch):
     store.write_text(json.dumps(state))
     monkeypatch.setenv('WORKSHOP_FAKE_STATE', str(store))
     monkeypatch.setenv('PATH', str(commands) + os.pathsep + os.environ['PATH'])
+    in_process_commands(monkeypatch, commands)
     target = {'name': 'alpha', 'repo': 'kun-g/workshop', 'checkout': str(repo), 'release': 'none',
               'ci': ['check'], 'short_name': 'ws', 'github_cache_dir': str(tmp_path / 'cache'),
               'tag_command': ['scripts/tag-release.sh'], 'delivery_action': '自己的交付', 'feishu_chat_id': 'oc_group', 'kun_feishu_open_id': 'ou_kun',
@@ -207,7 +208,11 @@ def test_evidence_reruns_checks_review_is_readonly(world):
     brief = world['flow'].brief(data, '审查', world['target'])
     assert isinstance(brief, FlowBrief) and brief.readonly
     assert Path(brief.workdir).stat().st_mode & 0o222 == 0
-    assert subprocess.check_output(['/usr/bin/git', '-C', brief.workdir, 'remote', 'get-url', 'origin'], text=True).strip() == 'https://invalid.invalid/read-only'
+    # 副本是主检出上的 detached worktree，停在该提交（Kun 11-13 13:37：不另建仓库，不再改 origin）。
+    assert Path(brief.workdir, '.git').is_file()
+    assert subprocess.check_output(['/usr/bin/git', '-C', brief.workdir, 'rev-parse', 'HEAD'], text=True).strip() == world['sha']
+    assert subprocess.run(['/usr/bin/git', '-C', brief.workdir, 'symbolic-ref', '-q', 'HEAD'], capture_output=True).returncode == 1
+    assert brief.workdir in subprocess.check_output(['/usr/bin/git', '-C', world['target']['checkout'], 'worktree', 'list'], text=True)
     assert 'AWS_ACCESS_KEY_ID' not in clean_env(Path('/tmp/home'))
     assert not world['flow'].assess(data, Receipt('done', 'lying', evidence=[result(world, head='f' * 40)]), world['target']).passed
 
@@ -251,9 +256,9 @@ def test_acceptance_gets_readonly_merge_copy_and_merge_check_output(world):
     state = world['io'].read(data, world['target'])
     assert state['merge_runs']['head'] == world['sha'] and state['merge_runs']['runs'][-1]['stdout'] == 'raw check output\n'
     # 同一交付提交再生成说明不重跑检查。
-    clones = len([c for c in calls(world) if c[0] == 'git' and 'clone' in c])
+    copies = len([c for c in calls(world) if c[0] == 'git' and 'worktree' in c and 'add' in c])
     world['flow'].brief(snapshot(world, '验收'), '验收', world['target'])
-    assert len([c for c in calls(world) if c[0] == 'git' and 'clone' in c]) == clones
+    assert len([c for c in calls(world) if c[0] == 'git' and 'worktree' in c and 'add' in c]) == copies
     assert world['io'].read(data, world['target'])['merge_runs'] == state['merge_runs']
 
 

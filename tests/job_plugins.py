@@ -7,6 +7,7 @@ JOBTEST_DIR 指向测试目录，config.json 控制各个替身睡多久、交�
 import json
 import os
 from pathlib import Path
+import shutil
 import time
 
 from workshop.core.models import Evidence, Poll, STAGES, Started
@@ -129,6 +130,10 @@ class LocalIO(IO):
     def copy(self, target, sha, destination):
         Path(destination).mkdir(parents=True)
         return Path(destination)
+
+    def drop(self, target, path):
+        # 和 copy 配套：替身副本只是个空目录，直接删。
+        shutil.rmtree(path, ignore_errors=True)
 
 
 def registry():

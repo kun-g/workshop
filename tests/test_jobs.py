@@ -137,7 +137,8 @@ def wait(world, engine, monkeypatch, done, seconds=40):
 
 
 def test_slow_check_source_and_channel_do_not_hold_the_tick(world, monkeypatch):
-    configure(world["path"], check_seconds=10, source_seconds=10, channel_seconds=10, checks=[["/bin/sleep", "5"]])
+    # 慢插件只要比一拍（100 毫秒）长得多，就足以看出一拍不被它挡住；3 秒够派出另一件活。
+    configure(world["path"], check_seconds=3, source_seconds=3, channel_seconds=3, checks=[["/bin/sleep", "5"]])
     engine = world["engine"]()
     log = engine.log
     seen = {"label": False, "dispatched_during_check": False}

@@ -48,7 +48,24 @@ def run(argv, *, cwd=None, env=None, timeout=20, check=True):
     return result
 
 
-def clean_env(home):
+CACHE_KEEP = 5
+STALE_COPY_SECONDS = 6 * 3600
+
+
+def writable(path):
+    """恢复目录树的属主读写执行位（不追随文件链接），以便删除只读副本。"""
+    for entry in [path, *path.rglob("*")]:
+        if not entry.is_symlink():
+            entry.chmod(entry.stat().st_mode | 0o700)
+
+
+def readonly(path):
+    for entry in [*path.rglob("*"), path]:
+        if not entry.is_symlink():
+            entry.chmod(entry.stat().st_mode & ~0o222)
+
+
+def clean_env(home, cache=None):
     # 白名单环境；不能让检查脚本继承守护进程的 GitHub、SSH、AWS 等凭据。
     return {"PATH": os.environ.get("PATH", "/opt/homebrew/bin:/usr/bin:/bin"),
             "HOME": str(home), "LANG": "en_US.UTF-8", "TMPDIR": str(home),
@@ -56,7 +73,10 @@ def clean_env(home):
             "GIT_TERMINAL_PROMPT": "0", "GH_CONFIG_DIR": str(home / "gh"),
             "GH_TOKEN": "disabled-in-review", "GITHUB_TOKEN": "disabled-in-review",
             "AWS_CONFIG_FILE": "/dev/null", "AWS_SHARED_CREDENTIALS_FILE": "/dev/null",
-            "KUBECONFIG": "/dev/null"}
+            "KUBECONFIG": "/dev/null",
+            # 副本是主检出的 worktree，共用它的钩子目录；检查里跑的 git 一律不执行钩子。
+            "GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "core.hooksPath", "GIT_CONFIG_VALUE_0": "/dev/null",
+            **({"UV_CACHE_DIR": str(cache)} if cache else {})}
 
 
 class IO:
@@ -125,20 +145,63 @@ class IO:
         chosen = opened[0] if opened else max(matches, key=lambda row: row["number"])
         return self.api(f'repos/{target["repo"]}/pulls/{chosen["number"]}')
 
+    def _checkout_git(self, target):
+        checkout = Path(target["checkout"]).expanduser().resolve()
+        return [self.git, "-C", str(checkout), "-c", "core.hooksPath=/dev/null"]
+
+    @contextmanager
+    def _copies_locked(self, target):
+        """同一主检出上的 fetch、worktree add/remove/prune 串行；跑检查不持锁。"""
+        root = self.root(target) / "copies"
+        root.mkdir(parents=True, exist_ok=True)
+        checkout = str(Path(target["checkout"]).expanduser().resolve())
+        with (root / (hashlib.sha256(checkout.encode()).hexdigest()[:16] + ".lock")).open("a") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            yield
+
     def copy(self, target, sha, destination):
+        """在交付对象主检出上开 detached worktree：只含该提交的受跟踪文件，耗时只随文件数涨，不随历史涨。
+
+        钩子关掉；需要时只增量 fetch 这一个提交，且不写主检出的 FETCH_HEAD、不动它的分支和工作区。
+        """
         if not isinstance(sha, str) or len(sha) != 40 or any(c not in "0123456789abcdef" for c in sha):
             raise ValueError("必须用完整提交号")
         destination = Path(destination)
-        # 不共享 objects/config/hooks，也不从交付对象工作区拷贝未跟踪文件。
-        run([self.git, "-c", "core.hooksPath=/dev/null", "clone", "--no-checkout", "--no-local",
-             str(Path(target["checkout"]).expanduser()), str(destination)])
-        run([self.git, "-C", str(destination), "-c", "core.hooksPath=/dev/null", "fetch",
-             f'https://github.com/{target["repo"]}.git', sha])
-        run([self.git, "-C", str(destination), "-c", "core.hooksPath=/dev/null", "checkout", "--detach", sha])
-        run([self.git, "-C", str(destination), "remote", "set-url", "origin", "https://invalid.invalid/read-only"])
-        for name, value in (("core.hooksPath", "/dev/null"), ("credential.helper", "")):
-            run([self.git, "-C", str(destination), "config", name, value])
+        git = self._checkout_git(target)
+        with self._copies_locked(target):
+            if run(git + ["cat-file", "-e", sha + "^{commit}"], check=False).returncode:
+                run(git + ["fetch", "--no-tags", "--no-write-fetch-head",
+                           f'https://github.com/{target["repo"]}.git', sha], timeout=120)
+            run(git + ["worktree", "add", "--detach", str(destination), sha], timeout=120)
         return destination
+
+    def drop(self, target, path):
+        """收回 copy() 开的副本；只读副本先恢复写权限。目录已不在时只清登记。"""
+        path = Path(path)
+        git = self._checkout_git(target)
+        with self._copies_locked(target):
+            if path.exists() and run(git + ["worktree", "remove", "--force", str(path)], check=False, timeout=120).returncode:
+                writable(path)
+                shutil.rmtree(path)
+            run(git + ["worktree", "prune"])
+
+    def dependency_cache(self, target, copy):
+        """按 uv.lock 内容分的 uv 缓存；同一锁文件的检查复用已下载的包，换锁文件就用新目录。"""
+        lock = Path(copy) / "uv.lock"
+        if not lock.is_file():
+            return None
+        root = self.root(target) / "uv-cache"
+        cache = root / hashlib.sha256(lock.read_bytes()).hexdigest()[:16]
+        cache.mkdir(parents=True, exist_ok=True)
+        os.utime(cache)
+        # 只留最近用过的几份；一天内用过的不删，免得删掉别的检查正在用的。
+        stale = sorted((d for d in root.iterdir() if d.is_dir() and not d.is_symlink()),
+                       key=lambda d: d.stat().st_mtime, reverse=True)[CACHE_KEEP:]
+        for directory in stale:
+            if time.time() - directory.stat().st_mtime > 86400:
+                writable(directory)
+                shutil.rmtree(directory, ignore_errors=True)
+        return cache
 
     @contextmanager
     def release_checkout(self, target, sha, *, extra_refs=()):
@@ -165,17 +228,18 @@ class IO:
         identity = hashlib.sha256(item["id"].encode()).hexdigest()[:16]
         final = root / f"{identity}-{sha}"
         if final.exists():
-            final.chmod(final.stat().st_mode & ~0o222)
+            # 去写权限最后才动顶层目录；顶层还可写说明上次没做完，补做一遍。
+            if final.stat().st_mode & 0o222:
+                readonly(final)
             os.utime(final)
             return str(final)
         destination = Path(tempfile.mkdtemp(prefix="review-", dir=root)) / "repo"
         self.copy(target, sha, destination)
-        for path in destination.rglob("*"):
-            if not path.is_symlink():
-                path.chmod(path.stat().st_mode & ~0o222)
-        destination.rename(final)
-        final.chmod(final.stat().st_mode & ~0o222)
+        with self._copies_locked(target):
+            # worktree 不能直接改名，否则主检出里的登记指向旧路径。
+            run(self._checkout_git(target) + ["worktree", "move", str(destination), str(final)])
         destination.parent.rmdir()
+        readonly(final)
         return str(final)
 
     def cleanup_reviews(self, target, keep):
@@ -188,11 +252,9 @@ class IO:
                 continue
             if time.time() - directory.stat().st_mtime < REVIEW_GRACE_SECONDS:
                 continue
-            # 只清理由本插件管理的目录；先解开只读位，不追随文件链接。
-            for path in [directory, *directory.rglob("*")]:
-                if not path.is_symlink():
-                    path.chmod(path.stat().st_mode | 0o700)
-            shutil.rmtree(directory)
+            # 只清理由本插件管理的目录；先解开只读位，不追随文件链接，再收回主检出上的登记。
+            writable(directory)
+            self.drop(target, directory)
 
     def bot_review(self, item, target, pr, body="已按此提交审查"):
         config = target.get("bot_review")
@@ -219,31 +281,52 @@ class IO:
         except (OSError, ValueError) as exc:
             raise Retryable("bot 批准结果未确认，重试前回查提交号") from None
 
+    def cleanup_copies(self, target, older_than=STALE_COPY_SECONDS):
+        """进程中途被杀留下的检查副本：超过期限的删掉并收回登记。正在跑的检查远短于这个期限。"""
+        root = self.root(target) / "copies"
+        if not root.exists():
+            return
+        for directory in root.iterdir():
+            if (directory.is_dir() and not directory.is_symlink() and directory.name.startswith("check-")
+                    and time.time() - directory.stat().st_mtime > older_than):
+                writable(directory)
+                self.drop(target, directory / "repo")
+                shutil.rmtree(directory, ignore_errors=True)
+
     def verify(self, target, sha, checks):
-        with tempfile.TemporaryDirectory(prefix="workshop-check-") as directory:
+        parent = self.root(target) / "copies"
+        parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix="check-", dir=parent) as directory:
             root = Path(directory)
             copy = self.copy(target, sha, root / "repo")
-            home = root / "home"
-            home.mkdir()
-            output = []
-            steps = [(p["argv"], copy / p.get("cwd", "."), "prepare") for p in target.get("prepare", [])]
-            steps += [(argv, copy, "check") for argv in checks]
-            for argv, cwd, kind in steps:
-                if not cwd.resolve().is_relative_to(copy.resolve()):
-                    raise ValueError("准备命令目录须在干净副本内")
-                command = list(argv)
-                if "/" not in command[0]:
-                    command[0] = executable(command[0])
-                try:
-                    result = subprocess.run(command, cwd=cwd, env=clean_env(home),
-                        timeout=target.get("check_timeout", 60), text=True, capture_output=True)
-                    entry = {"argv": argv, "exit_code": result.returncode, "stdout": result.stdout, "stderr": result.stderr, "kind": kind}
-                except subprocess.TimeoutExpired as exc:
-                    def decoded(value):
-                        return value.decode(errors="replace") if isinstance(value, bytes) else value or ""
-                    entry = {"argv": argv, "exit_code": 124, "stdout": decoded(exc.stdout),
-                             "stderr": decoded(exc.stderr), "kind": kind, "timed_out": True}
-                output.append(entry)
-                if entry["exit_code"]:
-                    break
-            return output
+            try:
+                return self._run_checks(target, copy, root, checks)
+            finally:
+                self.drop(target, copy)
+
+    def _run_checks(self, target, copy, root, checks):
+        home = root / "home"
+        home.mkdir()
+        cache = self.dependency_cache(target, copy)
+        output = []
+        steps = [(p["argv"], copy / p.get("cwd", "."), "prepare") for p in target.get("prepare", [])]
+        steps += [(argv, copy, "check") for argv in checks]
+        for argv, cwd, kind in steps:
+            if not cwd.resolve().is_relative_to(copy.resolve()):
+                raise ValueError("准备命令目录须在干净副本内")
+            command = list(argv)
+            if "/" not in command[0]:
+                command[0] = executable(command[0])
+            try:
+                result = subprocess.run(command, cwd=cwd, env=clean_env(home, cache),
+                    timeout=target.get("check_timeout", 60), text=True, capture_output=True)
+                entry = {"argv": argv, "exit_code": result.returncode, "stdout": result.stdout, "stderr": result.stderr, "kind": kind}
+            except subprocess.TimeoutExpired as exc:
+                def decoded(value):
+                    return value.decode(errors="replace") if isinstance(value, bytes) else value or ""
+                entry = {"argv": argv, "exit_code": 124, "stdout": decoded(exc.stdout),
+                         "stderr": decoded(exc.stderr), "kind": kind, "timed_out": True}
+            output.append(entry)
+            if entry["exit_code"]:
+                break
+        return output

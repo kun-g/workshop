@@ -66,8 +66,14 @@ class IssueDelivery:
     def __init__(self, io=None):
         self.io = io or IO()
 
+    def hold_workdir(self, item, target):
+        """收尾后还有打开的 PR，执行者的 worktree 和分支先留着。"""
+        opened = [row["number"] for row in self.io.item_prs(item, target) if row["state"] == "open"]
+        return f'PR #{opened[0]} 还开着' if opened else ""
+
     def cleanup(self, target, keep):
         self.io.cleanup_reviews(target, keep)
+        self.io.cleanup_copies(target)
 
     def stages(self, target):
         """阶段由规则的 stages 开关（Kun 11-13：流程用配置文件开关节点）；不写就是全部。
