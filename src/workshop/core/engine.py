@@ -262,8 +262,10 @@ class Engine:
                 raise ValueError(f"{item_id} 还有一轮没结束，先用 abort 结束那一轮再放弃")
             self.fact("item_abandoned", {"id": item_id, "reason": reason.strip()}, item_id)
             self.cancel_questions(item)
+            # 放弃前收到的返工、插件故障的恢复快照都作废：只有放弃之后的新返工才让它回来。
             self.change(item, state="放弃", next=f"已放弃：{reason.strip()}", blocked_by="", serial_hold=False,
                         pending_advance=None, after_wait=None, wait_for_ready=False, retry_at=None,
+                        pending_rework=False, plugin_blocked=False, before_plugin_failure=None,
                         leave={"kind": "等你", "about": "已放弃；要再做就返工"})
 
     def pause(self, target):
@@ -376,7 +378,7 @@ class Engine:
                     pseudo = {"id": f"@{affected}"}
                     self.card(pseudo, f"plugin:{port}:{name}:{incident}", "notice", notice(f"{affected} 插件故障：{exc}"))
                 for item in self.log.all("items"):
-                    if item["target"] == affected and item["state"] != "完成" and not item.get("plugin_blocked"):
+                    if item["target"] == affected and item["state"] not in ("完成", "放弃") and not item.get("plugin_blocked"):
                         self.block(item, f"{port}/{name}: {exc}", plugin=True)
 
     def waiting(self, item):
@@ -586,9 +588,11 @@ class Engine:
                     self.apply_timer(timer, item)
 
     def apply_timer(self, timer, item):
+        if item["state"] == "放弃":
+            return  # 放弃前约的工序和送回不再打扰；到点只记事实。
         if timer["kind"] == "送回":
             self.card(item, timer["id"], "ask", question(timer["about"]))
-            if item["state"] not in ("跑着", "卡住", "放弃"):
+            if item["state"] not in ("跑着", "卡住"):
                 self.change(item, state="等你", next=timer["about"], blocked_by="Kun",
                             leave={"kind": "等你", "about": timer["about"]})
         elif timer["owner"] != "车间":

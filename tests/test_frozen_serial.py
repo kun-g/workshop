@@ -342,3 +342,50 @@ def test_repository_rules_serialize_card_callback():
     from pathlib import Path
     target = Rules.load(Path("rules/workshop.yaml")).target("grant-console")
     assert "services/devops-console/grant_console/app.py" in target["serial_paths"]
+
+
+def stopped(engine, key="one"):
+    start(engine, key)
+    engine.abort(current(engine, key)["token"])
+    engine.tick()
+
+
+def test_abandon_drops_rework_received_before(make):
+    engine = make()
+    stopped(engine)
+    engine.ingest(event("one", ext_id="before", action="rework"))  # 收到了，还没处理。
+    assert item(engine, "one")["pending_rework"]
+    engine.abandon("alpha:one", "不做了")
+    engine.tick()
+    assert item(engine, "one")["state"] == "放弃" and not engine.active()
+    engine.ingest(event("one", ext_id="after", action="rework"))
+    engine.tick()
+    assert item(engine, "one")["state"] == "跑着"  # 放弃之后的新返工才让它回来。
+
+
+def test_abandon_survives_plugin_recovery(make):
+    engine = make()
+    stopped(engine)
+    engine.plugins.get("flow", "flow").crash = True
+    engine.broken("alpha", "flow", "flow", RuntimeError("插件坏了"))
+    assert item(engine, "one")["state"] == "卡住" and item(engine, "one")["plugin_blocked"]
+    engine.abandon("alpha:one", "不做了")
+    engine.plugins.get("flow", "flow").crash = False
+    engine.resume("alpha", [])
+    engine.tick()
+    assert item(engine, "one")["state"] == "放弃" and not engine.active()
+    engine.broken("alpha", "flow", "flow", RuntimeError("又坏了"))
+    assert item(engine, "one")["state"] == "放弃"
+
+
+def test_old_timers_do_not_bother_after_abandon(make):
+    engine = make()
+    stopped(engine)
+    engine.timer(item(engine, "one"), "send-back", "+1h", "一小时后问一下", kind="送回", owner="Kun")
+    engine.timer(item(engine, "one"), "other", "+1h", "别人的工序", owner="别人")
+    engine.abandon("alpha:one", "不做了")
+    from datetime import timedelta
+    engine.clock.now += timedelta(hours=2)
+    engine.tick()
+    cards = [c for c in engine.log.all("cards") if c["item"] == "alpha:one" and ("send-back" in c["id"] or "other" in c["id"])]
+    assert not cards and item(engine, "one")["state"] == "放弃"
