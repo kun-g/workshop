@@ -125,7 +125,8 @@ def world(tmp_path, monkeypatch):
 
 def tick(world, engine, monkeypatch):
     """跑一拍：期间禁止等子进程和网络；返回墙钟毫秒和心跳。"""
-    world["clock"].now += timedelta(seconds=1)
+    # 轮询从 100ms 缩到 10ms，模拟时钟同比缩小，避免凭空增加周期作业。
+    world["clock"].now += timedelta(seconds=0.1)
     began = time.monotonic()
     with no_waiting_or_network(monkeypatch):
         engine.tick()
