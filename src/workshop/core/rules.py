@@ -60,12 +60,35 @@ class Rules:
         for entry in [data] + list(data["targets"].values()):
             if "selector" in entry and (not isinstance(entry["selector"], str) or not entry["selector"]):
                 raise ValueError("挑选逻辑名字不能为空")
+        profiles = data.get("executor_profiles", {})
+        if not isinstance(profiles, dict):
+            raise ValueError("executor_profiles 必须是对象")
+        for name, profile in profiles.items():
+            if not isinstance(name, str) or not name or "/" in name or name in (".", ".."):
+                raise ValueError(f"配置档名 {name!r} 无效")
+            if not isinstance(profile, dict):
+                raise ValueError(f"配置档 {name} 必须是对象")
+            for field in ("driver", "transport", "billing"):
+                if not isinstance(profile.get(field), str) or not profile[field]:
+                    raise ValueError(f"配置档 {name} 的 {field} 必须写明")
         configs = []
         for entries in data["executors"].values():
             configs.extend(entries if isinstance(entries, list) else [entries])
         for mapping in mappings:
             for entries in mapping.values():
                 configs.extend(entries if isinstance(entries, list) else [entries])
+        if profiles:
+            resolved = []
+            for config in configs:
+                ref = {"use": config} if isinstance(config, str) else config
+                name = ref.get("use")
+                if name not in profiles:
+                    raise ValueError(f"配置档 {name} 未定义")
+                extra = set(ref) - {"use"}
+                if extra:
+                    raise ValueError(f"配置档 {name} 的候选重复配置 {'、'.join(sorted(extra))}；只在 executor_profiles 定义")
+                resolved.append(profiles[name])
+            configs = resolved
         if any(not isinstance(c, dict) or c.get("billing") not in ("subscription", "metered") for c in configs):
             raise ValueError("每个执行者必须写明 billing=subscription 或 metered")
         for name in ("ask_first", "skip_ask"):
@@ -84,7 +107,10 @@ class Rules:
         result = []
         for entry in entries:
             config = {"use": entry} if isinstance(entry, str) else dict(entry)
-            config.setdefault("family", config["use"])
+            profile = self.data.get("executor_profiles", {}).get(config["use"])
+            if profile is not None:
+                config = {**profile, **config}
+            config.setdefault("family", config.get("driver", config["use"]))
             if stage in ("审查", "验收") and config["family"] == writer:
                 continue
             result.append(config)

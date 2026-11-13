@@ -107,8 +107,8 @@ def setup(tmp_path, monkeypatch):
     target = {'checkout': str(repo), 'runtime': {'state_dir': str(tmp_path/'core'),
         'command': [commands['workshop']], 'env': {'WORKSHOP_STATE_DIR': str(tmp_path/'core'), 'WORKSHOP_ROUND_TOKEN': 'one'}}}
     executors = []
-    def make(kind):
-        instance = Executor(kind, state_dir=tmp_path/'state', commands=commands, home=tmp_path/'home', stop_timeout=2)
+    def make(kind, profile=None):
+        instance = Executor(kind, profile=profile, state_dir=tmp_path/'state', commands=commands, home=tmp_path/'home', stop_timeout=2)
         executors.append(instance)
         return instance
     yield tmp_path, make, item, target
@@ -368,7 +368,8 @@ def test_flow_workdir_wins_on_launch_and_resume(setup,kind):
     assert 'GH_TOKEN' not in calls[0]['env']
     assert not (executor.directory('one')/'repository').exists()
     if kind=='orca-claude':
-        assert 'bypassPermissions' not in calls[0]['args'] and 'plan' in calls[0]['args']
+        # A readonly brief strips credentials; CLI permissions now come solely from the profile.
+        assert 'bypassPermissions' in calls[0]['args'] and 'plan' not in calls[0]['args']
         assert not any(json.loads(line)[:2]==['worktree','create'] for line in (root/'orca-calls').read_text().splitlines())
     executor.stop('two',second)
 
@@ -646,7 +647,7 @@ def test_model_change_starts_fresh_session_instead_of_resume(setup, kind):
     calls = [json.loads(row)['args'] for row in (root/'agents').read_text().splitlines()]
     resumed = lambda args: any(flag in args for flag in ('resume', '--resume'))
     assert [resumed(args) for args in calls] == [False, True, False]
-    assert calls[2][calls[2].index('--model') + 1] == 'gpt-6-astra'
+    assert calls[2][calls[2].index('--model') + 1] == executor.model({**CONFIG, 'model': 'gpt-6-astra'})
     assert read(executor.directory('three')/'spec.json')['fresh_session'] is True
     assert third.session == first.session  # 车间这边还是同一件活的会话，只是厂商会话换了新的
     make(kind).stop('three', third)
@@ -654,10 +655,10 @@ def test_model_change_starts_fresh_session_instead_of_resume(setup, kind):
 
 def test_claude_fresh_session_usage_uses_vendor_session(setup, monkeypatch):
     """ws#30（PR #47 审查）：claude 无头换了新会话，用量按实际启动的会话号查，之后接回的轮也一样。"""
-    from workshop.plugins.executors.local import usage as usage_module
+    from workshop.plugins.executors.local.drivers import claude as usage_module
     root, make, item, target = setup
     asked = []
-    monkeypatch.setattr(usage_module, 'collect', lambda kind, home, session, *rest: asked.append(session))
+    monkeypatch.setattr(usage_module, 'collect', lambda home, session, *rest: asked.append(session))
     (root/'finish').touch()  # 不交回执：同一轮重交一次仍没有，下一轮换新会话
     executor = make('claude')
     first = executor.launch('one', BRIEF, item, CONFIG, target)
@@ -724,7 +725,7 @@ def test_failed_fresh_launch_after_model_change_never_resumes_old_session(setup,
     calls = [json.loads(row)['args'] for row in (root/'agents').read_text().splitlines()]
     last = calls[-1]
     assert not any(flag in last for flag in ('resume', '--resume')), last
-    assert last[last.index('--model') + 1] == 'new-model'
+    assert last[last.index('--model') + 1] == executor.model(new)
     make(kind).stop('three', third)
 
 
@@ -799,19 +800,21 @@ def test_orca_codex_refuses_to_start_without_model_or_effort(setup, missing):
     root, make, item, target = setup
     config = {k: v for k, v in CONFIG.items() if k not in missing}
     executor = make('orca-codex')
-    with pytest.raises(ValueError, match='缺 ' + '、'.join(missing)):
+    for field in missing:
+        executor.profile.pop(field, None)
+    with pytest.raises(ValueError, match=missing[0]):
         executor.launch('one', BRIEF, item, config, target)
     assert not (root/'orca-calls').exists() and not (root/'agents').exists()
     assert not (executor.directory('one')/'spec.json').exists()
 
 
-def test_orca_codex_readonly_brief_uses_readonly_sandbox(setup):
+def test_orca_codex_readonly_brief_strips_credentials_without_changing_profile(setup):
     root, make, item, target = setup
     executor = make('orca-codex')
     started = executor.launch('one', Brief('只读说明', [], workdir=item['workdir'], readonly=True), item, CONFIG, target)
     wait_for(lambda: (root/'agents').exists() and (root/'agents').read_text().endswith('\n'))
     call = json.loads((root/'agents').read_text())
-    assert call['args'][call['args'].index('-s')+1] == 'read-only'
+    assert call['args'][call['args'].index('-s')+1] == 'danger-full-access'
     assert 'GH_TOKEN' not in call['env'] and '--add-dir' not in call['args']
     executor.stop('one', started)
 

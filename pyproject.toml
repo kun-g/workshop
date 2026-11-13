@@ -32,6 +32,11 @@ codex = "workshop.plugins.executors.local:make_codex"
 cursor-grok = "workshop.plugins.executors.local:make_cursor_grok"
 claude = "workshop.plugins.executors.local:make_claude"
 
+[project.entry-points."workshop.driver"]
+claude = "workshop.plugins.executors.local.drivers.claude:Driver"
+codex = "workshop.plugins.executors.local.drivers.codex:Driver"
+cursor = "workshop.plugins.executors.local.drivers.cursor:Driver"
+
 [dependency-groups]
 dev = [
     "pytest>=8.3,<10",

@@ -21,9 +21,9 @@ def environment(gh_config: Path, source=None):
 def session_environment(spec, base=None):
     """Called in the actual terminal/runner, never serialize the daemon's environment."""
     env = dict(os.environ if base is None else base)
+    env.update(spec['env'])
     if spec['readonly']:
         env = environment(Path(spec['gh_config']), env)
-    env.update(spec['env'])
     for key in ('CLAUDECODE', 'WORKSHOP_RULES'):
         env.pop(key, None)
     if spec.get('billing') == 'subscription':

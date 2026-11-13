@@ -12,7 +12,7 @@ from .core.log import Log
 from .core.models import Event
 from .core.report import resolve, status, unfiled, usage, why
 from .core.rules import Rules
-from .registry import Registry
+from .registry import Registry, load_rules
 
 
 def parser():
@@ -58,12 +58,12 @@ def parser():
 
 def current_rules(args, saved):
     if args.rules:
-        return Rules.load(args.rules)
+        return load_rules(args.rules)
     if saved and args.command == "run" and saved.get("path"):
-        return Rules.load(Path(saved["path"]))
+        return load_rules(Path(saved["path"]))
     if saved:
         return Rules(Rules.validate(saved["data"]).data, saved.get("path"))
-    return Rules.load(Path(__file__).resolve().parents[2] / "rules/workshop.yaml")
+    return load_rules(Path(__file__).resolve().parents[2] / "rules/workshop.yaml")
 
 
 def main(argv=None):
@@ -73,7 +73,8 @@ def main(argv=None):
         if args.command == "status":
             print(status(log))
         elif args.command == "job":
-            execute(args.directory, Registry(), lambda target: finder(log, target))
+            saved = log.get("controls", "@rules") or {}
+            execute(args.directory, Registry(saved.get('data', {}).get('executor_profiles')), lambda target: finder(log, target))
         elif args.command == "why":
             try:
                 rules = current_rules(args, log.get("controls", "@rules")).data

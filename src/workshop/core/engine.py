@@ -47,6 +47,8 @@ def finder(log, target):
 class Engine:
     def __init__(self, log: Log, rules, plugins, clock=utcnow, jobs=None):
         """jobs 为空时插件调用就地进行（测试和单次命令）；守护进程传入作业，一拍里不等任何外部调用。"""
+        if hasattr(plugins, "configure"):
+            rules = plugins.configure(rules)
         self.log, self.rules, self.plugins, self.clock, self.jobs = log, rules, plugins, clock, jobs
         self.restart_requested = False
         self.tick_failures = self.control("@tick").get("failures", 0)

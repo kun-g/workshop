@@ -12,43 +12,18 @@ if __package__ in (None, ''):
     sys.path.insert(0, str(Path(__file__).resolve().parents[4]))
 from workshop.plugins.executors.local.storage import me, read, write
 from workshop.plugins.executors.local.isolation import session_environment
+from workshop.plugins.executors.local.drivers import for_spec
 
 
-def vendor_session(output: Path, kind: str):
-    if not output.exists():
-        return None
-    for line in output.read_text(errors='replace').splitlines():
-        try:
-            row = json.loads(line)
-        except ValueError:
-            continue
-        if kind == 'codex' and row.get('type') == 'thread.started':
-            return row.get('thread_id')
-        if kind == 'cursor-grok' and row.get('session_id'):
-            return row['session_id']
-    return None
+def vendor_session(output: Path, kind):
+    spec = kind if isinstance(kind, dict) else {'kind': kind}
+    return for_spec(spec).session_from_output(output)
 
 
-def final_message(output: Path, start: int = 0):
-    """The agent's last answer text (codex agent_message / stream-json result); None if it never answered."""
-    if not output.exists():
-        return None
-    with output.open('rb') as stream:
-        stream.seek(start)
-        text = stream.read().decode(errors='replace')
-    final = None
-    for line in text.splitlines():
-        try:
-            row = json.loads(line)
-        except ValueError:
-            continue
-        if not isinstance(row, dict):
-            continue
-        if row.get('type') == 'item.completed' and row.get('item', {}).get('type') == 'agent_message':
-            final = row['item'].get('text', '')
-        elif row.get('type') == 'result' and isinstance(row.get('result'), str):
-            final = row['result']
-    return final if final is not None else text
+def final_message(output: Path, start: int = 0, spec=None):
+    from workshop.plugins.executors.local.drivers.base import Driver
+    driver = for_spec(spec) if spec else Driver()
+    return driver.final_message(output, start)
 
 
 def result_receipt(output: Path, kind: str, start: int = 0):
@@ -58,7 +33,7 @@ def result_receipt(output: Path, kind: str, start: int = 0):
     final answer that has an outcome. Field values are not judged here: the core's own
     validation decides and its reason goes back to the agent.
     """
-    text = final_message(output, start)
+    text = final_message(output, start, kind if isinstance(kind, dict) else {'kind': kind})
     if not isinstance(text, str):
         return None
     decoder = json.JSONDecoder()
@@ -100,7 +75,7 @@ def rejection(submitted):
 
 def retry_argv(spec, output):
     template = spec.get('retry_argv')
-    vendor = vendor_session(output, spec['kind']) or spec.get('vendor_id')
+    vendor = vendor_session(output, spec) or spec.get('vendor_id')
     if not template or not vendor:
         return None
     return [vendor if part == VENDOR_SESSION else part for part in template]
@@ -111,7 +86,7 @@ def proxy_receipt(directory, spec, env, output, code, run):
     problems = []
     start = 0
     for attempt in range(RETRIES + 1):
-        receipt = result_receipt(output, spec['kind'], start) if code == 0 else None
+        receipt = result_receipt(output, spec, start) if code == 0 else None
         if receipt is None:
             problem = (f'进程退出 ({code})，未交回执' if code != 0 else
                        '最后一条消息里没有回执 JSON 对象（要有 outcome、summary）')
@@ -138,7 +113,7 @@ def proxy_receipt(directory, spec, env, output, code, run):
         # 会话答了话却连着交不出合格回执：下一轮换新会话，不再接回。
         write(directory / RECEIPT_REJECTED, {'problems': problems})
     tail = output.read_text(errors='replace')[-8000:] if output.exists() else ''
-    final = final_message(output, start)
+    final = final_message(output, start, spec)
     summary = problems[0] if len(problems) == 1 else '；'.join(
         f'第 {index} 次：{problem}' for index, problem in enumerate(problems, 1))
     failed = {'outcome': 'failed', 'summary': summary,
@@ -158,21 +133,15 @@ def main(directory: Path):
             return
         write(directory / 'claimed.json', {**me(), 'terminal': os.environ.get('ORCA_TERMINAL_HANDLE')})
         env = session_environment(spec)
-        argv = list(spec['argv'])
+        driver = for_spec(spec)
+        driver.prepare(spec, env, directory)
+        prompt = Path(spec['prompt']).read_text()
+        external = spec['interactive'] and len(prompt.encode()) > 8192
+        if external:
+            prompt = '请读取派活说明文件 ' + json.dumps(spec['prompt'], ensure_ascii=False) + '，其中说明与资料已分开标注。'
         if spec['interactive']:
-            if spec['kind'] == 'orca-claude':
-                # Codex 的目录信任在启动参数里给，不写配置文件。
-                from workshop.plugins.executors.local.trust import prepare
-                prepare(spec.get('trust_workdir', spec['workdir']), env, directory)
-            prompt = Path(spec['prompt']).read_text()
-            if len(prompt.encode()) > 8192:
-                prompt = '请读取派活说明文件 ' + json.dumps(spec['prompt'], ensure_ascii=False) + '，其中说明与资料已分开标注。'
-                if spec['readonly'] and spec['kind'] == 'orca-claude':
-                    argv += ['--add-dir', str(directory)]
             (directory / 'initial-prompt.txt').write_text(prompt)
-            argv += ['--', prompt]
-        elif spec['kind'] == 'codex':
-            argv += ['-']
+        argv = driver.initial_argv(spec, directory, prompt, external)
         output = directory / 'output.log'
         child = None
         def forward(signum, frame):
@@ -201,7 +170,7 @@ def main(directory: Path):
                     stream.write('\n启动或等待失败: ' + repr(exc))
                 return -1
         code = run(argv, spec['prompt'])
-        real_id = vendor_session(output, spec['kind'])
+        real_id = vendor_session(output, spec)
         if real_id:
             write(Path(spec['session_file']), {'vendor_id': real_id, 'model': spec.get('model')})
         if not spec['interactive']:
