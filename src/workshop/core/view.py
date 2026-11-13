@@ -77,6 +77,11 @@ def evolve(db, fact: dict) -> None:
         item["cause"] = fact["seq"]
         apply_action(item, body["action"])
         put("items", item_id, item)
+    elif kind == "item_abandoned":
+        # 放弃的事实序号：之前收到的返工、放行即使之后才分类或补放，也不再让它回来。
+        item = get("items", item_id)
+        item["abandoned_seq"] = fact["seq"]
+        put("items", item_id, item)
     elif kind == "item_dropped":
         db.execute("DELETE FROM items WHERE id=?", (item_id,))
     elif kind == "event_discarded":

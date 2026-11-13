@@ -389,3 +389,41 @@ def test_old_timers_do_not_bother_after_abandon(make):
     engine.tick()
     cards = [c for c in engine.log.all("cards") if c["item"] == "alpha:one" and ("send-back" in c["id"] or "other" in c["id"])]
     assert not cards and item(engine, "one")["state"] == "放弃"
+
+
+def kun_says(engine, ext_id, action="rework"):
+    flow(engine).upstream[("cli:input", ext_id)] = {"sender": "Kun", "action": action}
+    engine.ingest(event("one", ext_id=ext_id, action="update"), ingress="external")
+
+
+def test_external_rework_received_before_abandon_does_not_revive(make):
+    engine = make()
+    stopped(engine)
+    kun_says(engine, "before")  # 外部入口先记下，等分类。
+    assert [e for e in engine.log.all("effects") if e.get("kind") == "classify" and not e["done"]]
+    engine.abandon("alpha:one", "不做了")
+    engine.tick()
+    engine.tick()
+    gone = item(engine, "one")
+    assert gone["state"] == "放弃" and not gone["pending_rework"] and not engine.active()
+    assert any(m.get("ext_id") == "before" for m in gone["materials"])  # 仍记成资料。
+
+    kun_says(engine, "after")  # 放弃之后的新返工照常生效。
+    engine.tick()
+    engine.tick()
+    assert item(engine, "one")["state"] == "跑着"
+    before = {t: engine.log.all(t) for t in ("items", "effects")}
+    engine.log.rebuild()
+    assert before == {t: engine.log.all(t) for t in ("items", "effects")}
+
+
+def test_paused_rework_replayed_after_abandon_does_not_revive(make):
+    engine = make()
+    stopped(engine)
+    engine.pause("alpha")
+    engine.ingest(event("one", ext_id="held", action="rework"))
+    engine.abandon("alpha:one", "不做了")
+    missed = [e["id"] for e in engine.missed("alpha")]
+    engine.resume("alpha", missed, expected=missed)
+    engine.tick()
+    assert item(engine, "one")["state"] == "放弃" and not engine.active()

@@ -225,6 +225,7 @@ class Engine:
                     event = replace(event, object_key=self.resolve_key(event.target, event.object_key))
                 if action not in ("update", "ready", "rework"):
                     raise ValueError("流程返回了未知事件动作")
+                action = self.after_abandon(event.item_id, entry["event_seq"], action)
                 with self.log.transaction():
                     self.fact("event_classified", {"id": entry["id"], "action": action,
                               "event_seq": entry["event_seq"], **note,
@@ -234,6 +235,13 @@ class Engine:
                 self.retry_failure(event.target, "flow", target["plugin"], entry["id"], exc)
             except Exception as exc:
                 self.broken(event.target, "flow", target["plugin"], exc)
+
+    def after_abandon(self, item_id, seq, action):
+        """放弃之前收到的事件，晚到的分类或补放只当资料：返工、放行降为普通更新。"""
+        item = self.log.get("items", item_id)
+        if action in ("rework", "ready") and item and seq < item.get("abandoned_seq", 0):
+            return "update"
+        return action
 
     def drop(self, item_id):
         """清掉一件还没跑过轮次的活；之后同一对象要再放行才重新建活。"""
@@ -299,6 +307,7 @@ class Engine:
                     if ingress == "unknown":
                         event = replace(event, action="update")
                     event = replace(event, object_key=self.resolve_key(event.target, event.object_key))
+                    event = replace(event, action=self.after_abandon(event.item_id, int(entry["id"]), event.action))
                     self.fact("event", {**asdict(event), "ingress": ingress, "pending_classification": ingress == "external",
                                         **gate(ingress)}, event.item_id, source="resume", ext_id=entry["id"])
                     if ingress == "external":
