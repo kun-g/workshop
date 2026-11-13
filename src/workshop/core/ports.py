@@ -4,6 +4,10 @@ from .cards import Question, Notice
 from .models import Answer, Brief, Evidence, Event, Poll, Receipt, Started, RoundUsage, Selection
 
 
+class ChannelRejected(Exception):
+    """发送命令明确拒收卡片；启动或查询故障不得使用此异常。"""
+
+
 class Unavailable(Exception):
     """现有订阅不可用，且没有启动副作用，可换下一候选。"""
 

@@ -1,0 +1,29 @@
+--- a/runtime/tools/workspace_setup/install.py
++++ b/runtime/tools/workspace_setup/install.py
+@@ -401,7 +401,25 @@
+     for label, spec in manifest.get("launch_agents", {}).items():
+         if not re.fullmatch(r"com\.kun\.[a-z0-9-]+", label):
+             raise ValueError(f"invalid launch agent label: {label}")
+-        if label == "com.kun.telemetry-receiver":
++        if label in ("com.kun.workshop", "com.kun.workshop-watch"):
++            repository = os.path.join(CANON, "runtime/repos/workshop")
++            generator = os.path.join(repository, "scripts/launch_agents.py")
++            required = [generator, os.path.join(repository, "src/workshop/watch/__init__.py")]
++            if label == "com.kun.workshop":
++                required += [os.path.join(repository, ".venv/bin/python"),
++                             os.path.join(repository, "rules/workshop.yaml")]
++            if not all(os.path.isfile(p) for p in required):
++                plan.skipped.append(f"{label}（车间文件不齐；守护进程还须先 uv sync --frozen）")
++                continue
++            payload = subprocess.run(
++                ["/usr/bin/python3", generator, label, "--spec", json.dumps(spec),
++                 "--home", HOME, "--repository", repository],
++                check=True, capture_output=True).stdout
++            state_dir = os.path.join(HOME, ".local/state/workshop")
++            if not os.path.isdir(state_dir):
++                plan.change(f"+ {short(state_dir)}（车间状态与日志）",
++                            lambda p=state_dir: os.makedirs(p, exist_ok=True))
++        elif label == "com.kun.telemetry-receiver":
+             if spec != {"keep_alive": True}:
+                 raise ValueError("invalid telemetry receiver spec")
+             if not os.path.isfile(os.path.join(live_root, TELEMETRY_RECEIVER)):
