@@ -305,4 +305,3 @@ def collect(home, session, workdir, since, billing, config_dir=None):
             if spawned and spawned not in descendants:
                 complete = False
     return RoundUsage(aggregate(entries, billing), grouped(children, billing), complete and bool(entries))
-
