@@ -577,6 +577,14 @@ def test_preparation_cwd_and_check_timeout_are_evidence(world):
     assert output[0]['exit_code'] == 124 and output[0]['timed_out']
 
 
+def test_missing_check_tool_is_a_failed_check_not_a_plugin_failure(world):
+    output = world['io'].verify(world['target'], world['sha'],
+                                [['/bin/sh', '-c', 'true'], ['no-such-tool-for-workshop-test', 'check']])
+    assert output[0]['exit_code'] == 0
+    assert output[1]['exit_code'] == 127 and output[1]['missing_tool'] == 'no-such-tool-for-workshop-test'
+    assert '找不到 no-such-tool-for-workshop-test' in output[1]['stderr']
+
+
 def test_review_cleanup_preserves_active_and_removes_finished(world):
     data = snapshot(world, '审查')
     path = Path(world['flow'].brief(data, '审查', world['target']).workdir)
