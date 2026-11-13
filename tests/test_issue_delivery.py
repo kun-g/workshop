@@ -395,3 +395,39 @@ def test_source_bounded_ticks_finish_large_sweep_without_losing_events(world):
         pytest.fail('scan starved instead of continuing across ticks')
     assert {e.body['kind'] for e in events} == {'issue', 'label'}
     assert len({e.ext_id for e in events}) == len(events)
+
+
+@pytest.mark.parametrize('text', ['不对，先换这个做法', '继续'])
+def test_orca_steering_records_existing_item_without_action_depth_or_dispatch(world, text):
+    cfg = configuration()
+    cfg.pop('taskhome')
+    cfg['targets']['alpha'] = {**world['target'], 'plugin': 'issue_delivery', 'sources': []}
+    engine = build(world['root'] / 'orca-steering', cfg)
+    engine.plugins.register('flow', 'issue_delivery', world['flow'])
+    engine.ingest(Event('github', 'start', 'alpha', '7', 'test', {}, depth=2))
+    engine.tick()
+    token = current(engine, '7')['token']
+    # 与 W2-B 钩子一致：事件携带对象键及活 id，不传 round_token。
+    steering = Event('orca', 'prompt-1', 'alpha', '7', 'Orca 插话',
+                     {'item_id': 'alpha:7', 'text': text}, depth=8, action='rework')
+    assert engine.ingest(steering, ingress='external')
+    engine.tick()
+    recorded = item(engine, '7')
+    assert len(engine.log.all('items')) == 1
+    assert recorded['depth'] == 2 and not recorded['pending_rework']
+    assert recorded['stage'] == '接单' and current(engine, '7')['token'] == token
+    assert recorded['materials'][-1]['source'] == 'cli:orca'
+    assert recorded['materials'][-1]['body'] == steering.body
+    classification = [f for f in engine.log.facts() if f['kind'] == 'event_classified'][-1]
+    assert classification['body']['action'] == 'update'
+    assert classification['body']['event']['object_key'] == '7'
+    assert classification['body']['event']['depth'] == 0
+    # 正文自称别的活、未知活或跨目标都不能提供新的归件依据。
+    lookup = lambda _: pytest.fail('Orca 插话不查卡片或授予动作')
+    known = Event('cli:orca', 'known', 'alpha', '7', 'Orca 插话', steering.body)
+    assert world['flow'].classify(known, recorded, world['target'], lookup) == Classification('update', '7')
+    event = Event('cli:orca', 'other', 'alpha', '7', 'Orca 插话', {'item_id': 'alpha:other', 'text': '不对'})
+    assert world['flow'].classify(event, recorded, world['target'], lookup) == Classification()
+    assert world['flow'].classify(event, None, world['target'], lookup) == Classification()
+    assert world['flow'].classify(event, {**recorded, 'target': 'beta'}, world['target'], lookup) == Classification()
+    engine.log.close()

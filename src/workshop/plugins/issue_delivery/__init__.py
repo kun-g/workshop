@@ -77,6 +77,13 @@ class IssueDelivery:
             return None
 
     def classify(self, event, item, target, find_external):
+        if event.source == "cli:orca":
+            # 核心已按事件对象键回查；正文只用来核对归件，不赋予动作权限。
+            if (isinstance(event.body, dict) and item is not None
+                    and item["target"] == event.target == target["name"]
+                    and event.body.get("item_id") == item["id"]):
+                return Classification("update", item["object_key"])
+            return Classification()
         if event.source != "cli:feishu":
             return Classification()
         message = self._message(event.ext_id, target)
