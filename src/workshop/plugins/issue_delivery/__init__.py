@@ -204,6 +204,7 @@ class IssueDelivery:
             "说清楚": (
                 "按 docs/issue写法.md 把同一个 issue 写清：Kun 的原话、可判定的验收标准、验收步骤、能跑的检查、要不要亲眼看。"
                 "检查使用 workshop-checks 代码块里的 JSON argv 列表，至少 scripts/check.sh 或仓库等价检查；回执 JSON checks 交回完全相同命令。"
+                "回执 JSON paths 登记这件活预计会改的路径（仓库根起的相对路径，目录以 / 结尾）；碰到规则串行路径的活由流程排队，一件一件过执行。"
                 "一张带推荐的卡能问清才用 ask；否则 notice 发一条 fyi 通知说卡在哪、先聊清什么，leave={kind:等你,about:等 Kun 改好同一 issue 并重打 Ready for Agent}。不猜标准，不连发卡。"
             ),
             "执行": (
@@ -396,7 +397,11 @@ class IssueDelivery:
                 if (not clear or not checks or data.get("checks") != checks
                         or not all(c in checks for c in target.get("required_checks", [["scripts/check.sh"]]))):
                     return Evidence(reason="issue 五项或回执检查未写清")
-                return Evidence(checks, True, reason="issue 五项和检查命令已回查")
+                declared = data.get("paths", [])
+                if not isinstance(declared, list) or not all(isinstance(p, str) and p.strip() for p in declared):
+                    return Evidence(reason="回执 paths 须是非空路径字符串列表")
+                # 预计会改的路径交给核心，串行路径在执行前按它排队。
+                return Evidence(checks, True, reason="issue 五项和检查命令已回查", paths=[p.strip() for p in declared])
             if stage == "收尾":
                 state = self.io.read(item, target)
                 hint = f'{target.get("short_name", target["name"])}#{issue["number"]} 不对'

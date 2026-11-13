@@ -820,3 +820,25 @@ def test_waiting_for_release_authorization_does_not_advance_or_resubmit(world):
     assert state['effects'] == prior_effects and not state.get('release_submitted')
     assert not engine.active()
     engine.log.close()
+
+
+def test_clarify_hands_declared_paths_to_core(world):
+    data = snapshot(world, '说清楚')
+    receipt = Receipt('done', '', evidence=[result(world, checks=[['scripts/check.sh']], paths=['cards/', ' src/a.py '])])
+    evidence = world['flow'].assess(data, receipt, world['target'])
+    assert evidence.passed and evidence.paths == ['cards/', 'src/a.py']
+    receipt = Receipt('done', '', evidence=[result(world, checks=[['scripts/check.sh']])])
+    evidence = world['flow'].assess(data, receipt, world['target'])
+    assert evidence.passed and evidence.paths == []
+    for bad in ('cards/', [''], [3]):
+        receipt = Receipt('done', '', evidence=[result(world, checks=[['scripts/check.sh']], paths=bad)])
+        evidence = world['flow'].assess(data, receipt, world['target'])
+        assert not evidence.passed and 'paths' in evidence.reason
+
+
+def test_clarify_brief_asks_for_paths(world):
+    data = snapshot(world, '说清楚')
+    world['io'].save(data, world['target'], {'effects': {}, 'issue': 7})
+    brief = world['flow'].brief(data, '说清楚', world['target'])
+    text = brief if isinstance(brief, str) else brief.instructions
+    assert '回执 JSON paths' in text and '串行路径' in text

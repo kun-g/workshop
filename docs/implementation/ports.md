@@ -69,6 +69,10 @@ Evidence 字段：checks（检查 argv 列表）、passed（布尔）、actions�
 
 交付对象的 `two_reviewers` 路径前缀命中 paths，或 Evidence.reviewers=2 时，核心在审查阶段依次找两家不同家族，两家都过才能交付。已通过家族记入活的 reviews；写代码那家仍排除。第一次审查带 ask 时不计作通过，答完接回同一审查会话。返工清空本次审查记录。
 
+交付对象的 `frozen_paths`（前缀匹配，同 two_reviewers）：执行之后的阶段往前推进时，paths 里命中冻结前缀、Kun 还没放行过的文件让关口停下（状态等你），发一张核心审批卡列出这些文件，推荐不放行。放行后用原证据过关口，文件记入活的 frozen_approved，以后不再问；不放行回执行，同授权问题的拒绝。同一关口还有交付动作要授权时合成一张卡，批一次两样都放行。
+
+交付对象的 `serial_paths`（前缀；登记的路径可以是目录，和规则前缀互为前缀就算碰到）：核心把每轮 Evidence.paths 并进活的 paths——说清楚时流程交预计会改的路径，之后交实际改动。到了执行及以后的阶段、paths 碰到串行前缀的活，同一交付对象同一时间只有一件占着（serial_hold）：别的活占着时停在当前阶段前，状态「排队」，下一步写在等哪件，卡在谁手里写那件的 id；占着的那件收尾完成（状态完成）后，按活的登记顺序自动放下一件。占位从进执行起，退回执行期间仍占着；回到说清楚时让出。说清楚漏登记的，在执行交回实际改动后、证据轮开始前同样排队。
+
 `after(item, completed_stage, key, target)` 在停止本轮且核心准许推进后调用，必须持久 key 幂等。传入 item 额外含 `result`（当前已核验回执 JSON）；history 仍是此前轮次。返回 `After(aliases=[], pending=False, reason="", next="", rerun=False, recheck_after="+5m")`；兼容 None 或别名字符串列表。
 
 `restart=True` 表示交付改了车间自己正在跑的代码：核心在内存里记下重启请求，这一拍照常结算、推进、派下一轮，`workshop run` 在这一拍结束后正常退出（exit 0），由外部守护（launchd KeepAlive）拉起新代码；不写状态，崩溃重放同一 key 时最多多重启一次。`notice` 非空时核心经通道给 Kun 发一条不用回的通知，卡片 key 为 `after-notice:<after key>`，同一个完成钩子只发一次（重查沿用同一 key）。两个字段只能是布尔值和字符串，否则按插件错误隔离。

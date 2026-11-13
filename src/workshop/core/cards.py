@@ -54,6 +54,18 @@ def validate_notice(data):
         raise ValueError("通知必须 fyi=true")
 
 
+def frozen_question(item, files, actions=()):
+    """改动碰到冻结路径：列出文件，问 Kun 放不放行；推荐不放行，冻结本来就是默认不让改。"""
+    lines = "\n".join(f"- {f}" for f in files)
+    extra = f"\n同时要授权的交付动作：{'、'.join(actions)}；放行一并授权。" if actions else ""
+    context = (f'{item["id"]}（{item.get("title", "")}）的改动碰到规则里的冻结路径，下面这些文件要你单独放行：\n'
+               f"{lines}{extra}\n放行：照常往下走，这些文件以后不再问；不放行：退回执行。")
+    return dict(subject="改动碰到冻结路径，放行吗", decision="放行这件活对冻结路径的改动吗？", context=context,
+                choices=[dict(key="yes", label="放行", effect="照常往下走；卡上这些文件以后不再问"),
+                         dict(key="no", label="不放行", effect="退回执行，改掉对冻结路径的改动")],
+                recommend="no", reason="规则把这些路径列为冻结，改动要你单独授权", kind="approval")
+
+
 def question(text, *, approval=False):
     text = text or "请补充下一步安排"
     return dict(subject=text[:30], decision=text[:42], context=text,

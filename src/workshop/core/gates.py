@@ -11,6 +11,18 @@ class Decision:
     reason: str = ""
     needs_approval: tuple[str, ...] = ()
     complete: bool = False
+    # 碰到规则冻结路径、Kun 还没放行的文件；非空时停下发卡问放不放行。
+    frozen: tuple[str, ...] = ()
+
+
+def touched(paths, prefixes):
+    """前缀匹配，同 two_reviewers：路径以规则里某个前缀开头。"""
+    return sorted({path for path in paths for prefix in prefixes if path.startswith(prefix)})
+
+
+def overlaps(paths, prefixes):
+    """登记的路径可以是目录前缀：和规则前缀互为前缀就算碰到。"""
+    return any(path.startswith(prefix) or prefix.startswith(path) for path in paths for prefix in prefixes)
 
 
 def validate_stages(stages):
@@ -51,9 +63,16 @@ def decide(item: dict, receipt: Receipt, evidence: Evidence, stages, rules: Rule
         return Decision(current, False, "说清楚阶段尚未写出能跑的检查")
     if not evidence.passed:
         return Decision(current, False, evidence.reason or "本阶段证据未通过")
+    frozen = ()
+    if stages.index(current) > stages.index("执行"):
+        # 执行之后按实际改动查冻结路径；放行过的文件不再问，退回执行后碰到新的冻结文件再问。
+        prefixes = rules.data["targets"].get(item.get("target"), {}).get("frozen_paths", [])
+        frozen = tuple(p for p in touched(evidence.paths, prefixes) if p not in item.get("frozen_approved", []))
+    pending = ()
     if requested == "交付" or ("交付" not in stages and requested == "验收"):
         pending = tuple(sorted(set(evidence.actions) & set(rules.data["ask_first"])
                                - set(rules.data["skip_ask"]) - set(item.get("approved", []))))
-        if pending:
-            return Decision(current, False, "交付动作等待授权", pending)
+    if frozen or pending:
+        # 两道同时要批时合成一张卡：批一次两样都放行，不批退回执行。
+        return Decision(current, False, "改动碰到冻结路径，等 Kun 放行" if frozen else "交付动作等待授权", pending, frozen=frozen)
     return Decision(requested, True)

@@ -106,6 +106,7 @@ def evolve(db, fact: dict) -> None:
         if body["approved"]:
             item["approved"] = sorted(set(item["approved"] + body.get("actions", [])))
             item["billing_approved"] = sorted(set(item.get("billing_approved", []) + body.get("billing_configs", [])))
+            item["frozen_approved"] = sorted(set(item.get("frozen_approved", []) + body.get("frozen_files", [])))
         put("items", item_id, item)
     elif kind == "round_result":
         item = get("items", item_id)

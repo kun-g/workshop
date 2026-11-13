@@ -9,11 +9,11 @@ import uuid
 import sys
 import hashlib
 
-from .gates import decide, validate_stages
+from .gates import decide, overlaps, validate_stages
 from .log import Log
-from .models import Brief, Event, Receipt, Started, due, stamp, utcnow
+from .models import Brief, Event, Receipt, STAGES, Started, due, stamp, utcnow
 from .ports import Unavailable, Retryable, ChannelRejected
-from .cards import question, notice, validate_question, validate_notice
+from .cards import frozen_question, question, notice, validate_question, validate_notice
 from .models import After, FlowBrief, Classification, Evidence, Usage, RoundUsage
 
 
@@ -530,7 +530,8 @@ class Engine:
                     choice_label = next((c["label"] for c in card["payload"]["choices"] if c["key"] == answer.value), answer.value)
                     # 回答单独追加，由 evolve 在最新资料上追加，不回写旧资料快照。
                     self.fact("answer", {**asdict(answer), "approved": approved, "choice_label": choice_label, "key": card["payload"].get("key", card["key"]),
-                              "title": card["payload"]["decision"], "actions": card.get("actions", []), "billing_configs": card.get("billing_configs", [])},
+                              "title": card["payload"]["decision"], "actions": card.get("actions", []), "billing_configs": card.get("billing_configs", []),
+                              "frozen_files": card.get("frozen_files", [])},
                               card["item"], source="answer", ext_id=card["id"])
                     self.fact("card_changed", {"id": card["id"], "answered": True, "answer": answer.value, "choice_label": choice_label, "approved": approved}, card["item"])
                     item = self.log.get("items", card["item"])
@@ -728,6 +729,37 @@ class Engine:
             self.start_retry(item, locals().get("row"), port, name, exc)
         except Exception as exc:
             self.broken(item["target"], port, name, exc)
+
+    def serial_holder(self, item):
+        """同一交付对象里占着串行路径的另一件活：进了执行、没收尾完成、不在排队。"""
+        start = STAGES.index("执行")
+        return next((other for other in self.log.all("items")
+                     if other["id"] != item["id"] and other["target"] == item["target"] and other.get("serial_hold")
+                     and other["state"] not in ("完成", "排队") and STAGES.index(other["stage"]) >= start), None)
+
+    def serial_queue(self, item):
+        """规则 serial_paths：碰到的活同一时间只放一件过执行，其余停在当前阶段前排队，前一件收尾完成后自动放下一件。
+        按说清楚时登记的路径加之后实际改动判；占位从进执行起，退回执行期间仍占着。"""
+        prefixes = self.rules.target(item["target"]).get("serial_paths", [])
+        needed = (prefixes and STAGES.index(item["stage"]) >= STAGES.index("执行")
+                  and overlaps(item.get("paths", []), prefixes))
+        if not needed:
+            if item["state"] == "排队":
+                self.change(item, state="空闲", next=item["stage"], blocked_by="", serial_hold=False)
+            return self.log.get("items", item["id"])
+        holder = self.serial_holder(item)
+        if holder:
+            about = f'排队：等 {holder["id"]} 收尾让出串行路径'
+            if item["state"] != "排队" or item.get("blocked_by") != holder["id"] or item.get("serial_hold"):
+                self.change(item, state="排队", next=about, blocked_by=holder["id"], serial_hold=False,
+                            leave={"kind": "工序", "owner": "车间", "at": stamp(self.clock()), "about": about})
+        elif item["state"] == "排队" or not item.get("serial_hold"):
+            changes = dict(serial_hold=True)
+            if item["state"] == "排队":
+                changes.update(state="空闲", next=item["stage"], blocked_by="",
+                               leave={"kind": "工序", "owner": "车间", "at": stamp(self.clock()), "about": item["stage"]})
+            self.change(item, **changes)
+        return self.log.get("items", item["id"])
 
     def runtime(self, token):
         state_dir = str(self.log.path.parent.resolve())
@@ -927,6 +959,9 @@ class Engine:
                                retry_executor=None, review_required=required, reviews=reviews)
                 if evidence.checks:
                     changes["checks"] = evidence.checks
+                if evidence.paths:
+                    # 说清楚时登记的预计路径和之后实际改动的并集，串行路径排队按它判。
+                    changes["paths"] = sorted(set(item.get("paths", [])) | set(evidence.paths))
                 if after_result.pending:
                     changes.update(self.pending_changes(item, after_result, target,
                         {"key": key, "receipt": receipt.json(), "to": decision.stage, "complete": decision.complete}))
@@ -952,10 +987,13 @@ class Engine:
                     if decision.stage == "执行" and item["stage"] != "说清楚":
                         changes.update(approved=[], reviews=[], review_required=1)
                     self.fact("gate_passed", {"gate_reason": decision.reason}, item["id"])
-                elif decision.needs_approval and receipt.outcome == "done" and not receipt.ask:
-                    self.card(item, f"approval:{token}", "ask", question(decision.reason, approval=True), actions=list(decision.needs_approval), core_approval=True)
+                elif (decision.needs_approval or decision.frozen) and receipt.outcome == "done" and not receipt.ask:
+                    payload = (frozen_question(item, decision.frozen, decision.needs_approval) if decision.frozen
+                               else question(decision.reason, approval=True))
+                    card_id = self.card(item, f"approval:{token}", "ask", payload, actions=list(decision.needs_approval),
+                                        frozen_files=list(decision.frozen), core_approval=True)
                     changes.update(state="等你", next=decision.reason, blocked_by="Kun", leave={"kind": "等你", "about": decision.reason},
-                                   pending_advance={"token": token, "card": f'{item["id"]}:approval:{token}', "from": item["stage"], "to": receipt.advance,
+                                   pending_advance={"token": token, "card": card_id, "from": item["stage"], "to": receipt.advance,
                                                     "evidence": asdict(evidence), "receipt": row["receipt"], "stages": list(stages)})
                     self.fact("gate_blocked", {"gate_reason": decision.reason}, item["id"])
                 elif receipt.ask or receipt.later or receipt.leave:
@@ -1104,6 +1142,7 @@ class Engine:
                     with self.log.transaction():
                         self.cancel_questions(item)
                         self.change(item, stage="执行" if item["checks"] else "说清楚", state="空闲",
+                                    **({} if item["checks"] else {"serial_hold": False}),
                                     pending_rework=False, approved=[], pending_advance=None, reviews=[], review_required=1,
                                     after_pending_count=0, after_wait=None, pending_episode=item.get("pending_episode", 0) + 1,
                                     wait_for_ready=False, retry_executor=None, gate_count=0, next="按新事件返工")
@@ -1115,6 +1154,8 @@ class Engine:
                 if not self.taskhome(item):
                     continue
                 item = self.log.get("items", item["id"])
+                if item["state"] in ("空闲", "排队") and not item.get("after_wait"):
+                    item = self.serial_queue(item)
                 if item["state"] == "空闲" and not item.get("after_wait") and self.occupied() < self.rules.data["limits"]["concurrent"]:
                     self.reserve(item)
             self.channels()
