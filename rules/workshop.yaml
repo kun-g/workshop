@@ -72,7 +72,7 @@ executors:
   acceptor:
     - {use: codex, family: codex, billing: subscription, model: gpt-6-astra, effort: high}
     - {use: claude, family: claude, billing: subscription}
-limits: {concurrent: 3, chain_depth: 8, round_timeout_seconds: 7200}
+limits: {concurrent: 5, chain_depth: 8, round_timeout_seconds: 7200}
 selector: ordered
 stage_selectors: {执行: ordered}
 channel: ask_kun
