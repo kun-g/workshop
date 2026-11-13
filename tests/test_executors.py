@@ -75,6 +75,9 @@ def setup(tmp_path, monkeypatch):
     for key in list(os.environ):
         if key not in ('PATH', 'LANG', 'HOME', 'TMPDIR', 'TERM'):
             monkeypatch.delenv(key)
+    test_home = tmp_path/'home'
+    test_home.mkdir()
+    monkeypatch.setenv('HOME', str(test_home))
     monkeypatch.setenv('FAKE_ROOT', str(tmp_path))
     monkeypatch.setenv('GH_TOKEN', 'private-gh-token')
     monkeypatch.setenv('SSH_AUTH_SOCK', '/private/socket')
@@ -561,3 +564,49 @@ def test_poll_terminal_created_before_runner_claim_is_retryable(setup):
     assert not (root/'agents').exists()
     write(executor.directory('one')/'exited.json', {'code': 0})
     assert executor.poll('one', started) == 'exited'
+
+
+@pytest.mark.parametrize('condition', ['new', 'locked', 'invalid', 'missing'])
+def test_interactive_trust_is_best_effort_before_launch(setup, condition):
+    root, make, item, target = setup
+    path = Path(os.environ['HOME'])/'.claude.json'
+    if condition != 'missing':
+        path.write_text('[]' if condition == 'invalid' else '{}')
+    if condition == 'locked':
+        Path(str(path)+'.lock').mkdir()
+    alias = root/'alias'
+    alias.symlink_to(item['workdir'], target_is_directory=True)
+    item['workdir'] = str(alias)
+    executor = make('orca-claude')
+    started = executor.launch('one', BRIEF, item, CONFIG, target)
+    wait_for(lambda: (root/'agents').exists() and (root/'agents').read_text().endswith('\n'))
+    warning = executor.directory('one')/'trust-warning.json'
+    if condition == 'new':
+        entries = json.loads(path.read_text())['projects']
+        assert entries[str(alias)]['hasTrustDialogAccepted']
+        assert entries[str(alias.resolve())]['hasTrustDialogAccepted']
+        assert not warning.exists()
+    else:
+        assert read(warning)['message'] == '没能预先信任目录'
+        if condition != 'missing':
+            assert path.read_text() == ('[]' if condition == 'invalid' else '{}')
+        else:
+            assert not path.exists()
+    assert executor.poll('one', started) == 'running'
+    executor.stop('one', started)
+
+
+@pytest.mark.parametrize('kind', ['claude', 'codex', 'cursor-grok'])
+def test_headless_does_not_write_folder_trust(setup, kind):
+    root, make, item, target = setup
+    path = Path(os.environ['HOME'])/'.claude.json'
+    path.write_text('{}')
+    before = path.stat()
+    executor = make(kind)
+    started = executor.launch('one', BRIEF, item, CONFIG, target)
+    wait_for(lambda: (root/'agents').exists() and (root/'agents').read_text().endswith('\n'))
+    after = path.stat()
+    assert path.read_text() == '{}'
+    assert (after.st_ino, after.st_mtime_ns, after.st_ctime_ns) == (before.st_ino, before.st_mtime_ns, before.st_ctime_ns)
+    assert not (executor.directory('one')/'trust-warning.json').exists()
+    executor.stop('one', started)
