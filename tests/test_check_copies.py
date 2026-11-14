@@ -79,7 +79,7 @@ def test_no_separate_clone_in_source():
 @pytest.mark.parametrize('case', ['pass', 'fail', 'timeout', 'prepare-raises'])
 def test_copy_is_removed_after_every_outcome(tmp_path, checkout, case):
     # B2：通过、失败、超时、准备命令抛异常，结束后主检出的 worktree 登记与准备前相同。
-    script = {'pass': 'echo ok', 'fail': 'echo bad >&2; exit 3', 'timeout': 'sleep 5', 'prepare-raises': 'echo ok'}[case]
+    script = {'pass': 'echo ok', 'fail': 'echo bad >&2; exit 3', 'timeout': 'mkfifo gate; read line < gate', 'prepare-raises': 'echo ok'}[case]
     sha = commit(checkout, {'scripts/check.sh': f'#!/bin/sh\n{script}\n'})
     before = worktrees(checkout)
     extra = {'check_timeout': 0.5} if case == 'timeout' else {}
@@ -192,13 +192,19 @@ def test_main_checkout_hooks_do_not_run_and_main_is_untouched(tmp_path, checkout
     assert state(checkout) == before
 
 
-def test_parallel_checks_on_one_checkout_each_see_their_own_commit(tmp_path, checkout):
+def test_parallel_checks_on_one_checkout_each_see_their_own_commit(tmp_path, checkout, monkeypatch):
     # B6：同一交付对象两件活并发准备副本、跑检查，各自拿到自己提交的内容。
-    first = commit(checkout, {'scripts/check.sh': '#!/bin/sh\nsleep 0.3; cat VERSION\n', 'VERSION': 'one\n'})
+    first = commit(checkout, {'scripts/check.sh': '#!/bin/sh\ncat VERSION\n', 'VERSION': 'one\n'})
     second = commit(checkout, {'VERSION': 'two\n'})
     before = worktrees(checkout)
     flow = io(tmp_path)
     results = {}
+    barrier = threading.Barrier(2, timeout=20)
+    run_checks = flow._run_checks
+    def together(*args, **kwargs):
+        barrier.wait()  # 两个副本都准备好才同时进入检查。
+        return run_checks(*args, **kwargs)
+    monkeypatch.setattr(flow, "_run_checks", together)
 
     def check(sha):
         results[sha] = flow.verify(target(checkout), sha, [['scripts/check.sh']])

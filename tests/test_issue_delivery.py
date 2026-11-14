@@ -2,6 +2,7 @@ import base64
 from dataclasses import asdict
 import json
 import os
+import sys
 from pathlib import Path
 import shutil
 import subprocess
@@ -565,7 +566,7 @@ def test_preparation_cwd_and_check_timeout_are_evidence(world):
     assert output[0]['kind'] == 'prepare' and output[0]['stdout'].strip().endswith('/repo/scripts')
     assert output[1]['stdout'] == 'prepared\n'
     target = {**world['target'], 'check_timeout': 0.02}
-    output = world['io'].verify(target, world['sha'], [['/bin/sleep', '1']])
+    output = world['io'].verify(target, world['sha'], [[sys.executable, '-c', 'import signal; signal.pause()']])
     assert output[0]['exit_code'] == 124 and output[0]['timed_out']
 
 

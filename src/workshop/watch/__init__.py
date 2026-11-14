@@ -4,6 +4,7 @@ from datetime import datetime, timezone, timedelta
 import fcntl
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import shutil
@@ -80,6 +81,28 @@ class Watch:
             faults["database"] = {"anchor": "unreadable", "text": "车间 workshop.db 无法读取，请看 heartbeat.json 和守护进程日志，需要你检查状态目录。"}
         return faults
 
+    def tick_fault(self, state, now, awake):
+        """连续三次观测到不同的慢心跳才告警；同一心跳重读不累计。"""
+        sample = state.get("tick_observation", {}) if awake else {}
+        try:
+            heartbeat = json.loads((self.directory / "heartbeat.json").read_text())
+            at, elapsed = heartbeat["at"], heartbeat["tick_ms"]
+            age = (now - timestamp(at)).total_seconds()
+            if type(elapsed) not in (int, float) or not math.isfinite(elapsed) or not 0 <= age <= 180:
+                raise ValueError("心跳耗时或时间无效")
+            if sample.get("at") != at:
+                # 时间倒退也不能接着上一次累计。
+                count = sample.get("count", 0) if not sample.get("at") or timestamp(at) > timestamp(sample["at"]) else 0
+                sample = {"at": at, "count": count + 1 if elapsed > 100 else 0,
+                          "since": sample.get("since", at) if count and elapsed > 100 else at}
+            state["tick_observation"] = sample
+            if sample.get("count", 0) >= 3:
+                return {"anchor": sample["since"],
+                        "text": "车间 heartbeat.json 连续三次观测到不同心跳的 tick_ms 超过 100 毫秒，需要你检查主循环，详见 watch.json。"}
+        except (OSError, ValueError, KeyError, TypeError):
+            state.pop("tick_observation", None)
+        return None
+
     @contextmanager
     def _locked(self):
         self.directory.mkdir(parents=True, exist_ok=True)
@@ -137,6 +160,9 @@ class Watch:
             awake = previous is not None and 0 <= (now - timestamp(previous)).total_seconds() <= 90
             state["last_run"] = now.isoformat()
             faults = self.faults(now)
+            tick_fault = self.tick_fault(state, now, awake)
+            if tick_fault:
+                faults["tick"] = tick_fault
             active = state["active"]
             for key in list(active):
                 if key not in faults:

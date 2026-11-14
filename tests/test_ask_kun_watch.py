@@ -684,3 +684,70 @@ def test_recovered_send_keeps_upstream_send_time(fake, tmp_path):
     assert c.reconcile("lost", {"mode": "ask"}) == "Q1"
     upstream = json.loads((fake.parent / "questions.json").read_text())[0]
     assert c._read("lost")["sent_at"] == upstream["sent_at"]
+
+
+def write_tick(watch, at, elapsed):
+    (watch.directory / "heartbeat.json").write_text(json.dumps(
+        {"at": at.isoformat(), "last_ok_at": at.isoformat(), "tick_ms": elapsed}))
+
+
+def test_tick_alert_after_three_distinct_samples_once_across_restart_and_recovery(fake, tmp_path):
+    watch = setup_watch(fake, tmp_path)
+    for n in range(6):
+        at = NOW + timedelta(minutes=n)
+        write_tick(watch, at, 101)
+        state = Watch(watch.directory, ask_kun=fake).run(at)
+        assert len(calls(fake, "notify")) == (0 if n < 2 else 1)
+    first_id = state["active"]["tick"]["id"]
+    write_tick(watch, NOW + timedelta(minutes=6), 100)
+    assert "tick" not in watch.run(NOW + timedelta(minutes=6))["active"]
+    for n in range(7, 10):
+        at = NOW + timedelta(minutes=n)
+        write_tick(watch, at, 101)
+        state = watch.run(at)
+    assert len(calls(fake, "notify")) == 2
+    assert state["active"]["tick"]["id"] != first_id
+
+
+@pytest.mark.parametrize("reset", [100, 0, None, "101", True, float("nan"), float("inf")])
+def test_tick_good_or_invalid_sample_breaks_streak(fake, tmp_path, reset):
+    watch = setup_watch(fake, tmp_path)
+    for n, elapsed in enumerate([101, 101, reset, 101, 101]):
+        at = NOW + timedelta(minutes=n)
+        write_tick(watch, at, elapsed)
+        watch.run(at)
+    assert not calls(fake, "notify")
+    write_tick(watch, NOW + timedelta(minutes=5), 101)
+    assert "tick" in watch.run(NOW + timedelta(minutes=5))["active"]
+    assert len(calls(fake, "notify")) == 1
+
+
+def test_tick_same_heartbeat_and_long_gap_do_not_accumulate(fake, tmp_path):
+    watch = setup_watch(fake, tmp_path)
+    write_tick(watch, NOW, 101)
+    for n in range(3):
+        state = watch.run(NOW + timedelta(seconds=n * 30))
+    assert state["tick_observation"]["count"] == 1
+    assert not calls(fake, "notify")
+    write_tick(watch, NOW + timedelta(minutes=1), 101)
+    watch.run(NOW + timedelta(minutes=1))
+    write_tick(watch, NOW + timedelta(hours=8), 101)
+    state = watch.run(NOW + timedelta(hours=8))
+    assert state["tick_observation"]["count"] == 1
+    assert not calls(fake, "notify")
+
+
+def test_tick_alert_retries_same_incident_after_delivery_failure(fake, tmp_path):
+    watch = setup_watch(fake, tmp_path)
+    configure(fake, notify_exit=1)
+    for n in range(3):
+        at = NOW + timedelta(minutes=n)
+        write_tick(watch, at, 101)
+        state = watch.run(at)
+    assert not state["active"]["tick"]["reported"]
+    assert state["active"]["tick"]["via"] == "attention"
+    configure(fake)
+    write_tick(watch, NOW + timedelta(minutes=3), 101)
+    state = watch.run(NOW + timedelta(minutes=3))
+    assert state["active"]["tick"]["reported"]
+    assert calls(fake, "notify")[0] == calls(fake, "notify")[1]

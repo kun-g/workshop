@@ -47,7 +47,7 @@ if name == 'codex' and args[:2] == ['login', 'status']:
 prompt = args[-1] if name == 'claude' and '-p' not in args else sys.stdin.read()
 if (root/'ignore-term').exists(): signal.signal(signal.SIGTERM, signal.SIG_IGN)
 if (root/'spawn-descendant').exists():
-    descendant = subprocess.Popen([sys.executable, '-c', 'import signal,time; signal.signal(signal.SIGTERM,signal.SIG_IGN); time.sleep(120)'])
+    descendant = subprocess.Popen([sys.executable, '-c', 'import signal; signal.signal(signal.SIGTERM,signal.SIG_IGN); signal.pause()'])
     (root/'descendant-pid').write_text(str(descendant.pid))
 with (root/'agents').open('a') as f:
     f.write(json.dumps({'name':name,'args':args,'prompt':prompt,'env':dict(os.environ),'cwd':os.getcwd(),'pid':os.getpid()})+'\n')
@@ -64,7 +64,7 @@ if (root/'finish').exists():
     if (root/'success').exists():
         print(json.dumps({'outcome':'done','summary':'checked'}),flush=True)
     sys.exit(0)
-while True: time.sleep(.05)
+signal.pause()
 '''
 
 
@@ -73,7 +73,6 @@ def wait_for(predicate, timeout=5):
     while time.monotonic() < deadline:
         if predicate():
             return
-        time.sleep(.001)
     raise AssertionError('timed out')
 
 
@@ -544,7 +543,7 @@ def test_stop_treats_reused_group_leader_as_exited(tmp_path, has_exit_record):
     from workshop.plugins.executors.local.storage import identity
     executor = Executor('codex', state_dir=tmp_path/'state')
     directory = executor.directory('old-round')
-    unrelated = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(120)'], start_new_session=True)
+    unrelated = subprocess.Popen([sys.executable, '-c', 'import signal; signal.pause()'], start_new_session=True)
     try:
         assert identity(unrelated.pid)
         # Persisted identity belongs to the former owner of this now-reused PID/PGID.
