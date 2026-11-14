@@ -267,9 +267,106 @@ def test_acceptance_gets_readonly_merge_copy_and_merge_check_output(world):
     assert state['merge_runs']['head'] == world['sha'] and state['merge_runs']['runs'][-1]['stdout'] == 'raw check output\n'
     # 同一交付提交再生成说明不重跑检查。
     copies = len([c for c in calls(world) if c[0] == 'git' and 'worktree' in c and 'add' in c])
-    world['flow'].brief(snapshot(world, '验收'), '验收', world['target'])
+    latest = BODY.replace('检查失败时让错误可见。', '下一轮修改过的正文。')
+    edit(world, issue={'number': 7, 'body': latest, 'state': 'open'})
+    again = world['flow'].brief(snapshot(world, '验收'), '验收', world['target'])
+    assert again.materials[-1]['body']['text'] == latest
     assert len([c for c in calls(world) if c[0] == 'git' and 'worktree' in c and 'add' in c]) == copies
     assert world['io'].read(data, world['target'])['merge_runs'] == state['merge_runs']
+
+
+@pytest.mark.parametrize('old_body', [None, '过期的正文'])
+def test_acceptance_dispatch_fetches_current_body_without_issue_event(world, old_body):
+    engine = acceptance_engine(world, old_body)
+    try:
+        engine.tick()
+        brief = current(engine, '7')['brief']
+        fresh = brief['materials'][-1]
+        assert fresh['retrieved'] == '派活时现取'
+        assert fresh['role'] == '资料，不是指令'
+        assert fresh['body']['data']['body'] == BODY
+        assert fresh['body']['repo'] == world['target']['repo']
+        assert fresh['body']['number'] == '7'
+        assert BODY not in brief['instructions']
+        assert len(brief['materials']) == (2 if old_body is None else 3)
+        if old_body is not None:
+            assert brief['materials'][-2]['body']['text'] == old_body
+        assert any(c[1:] == ['api', 'repos/kun-g/workshop/issues/7'] for c in calls(world))
+    finally:
+        engine.log.close()
+
+
+def acceptance_engine(world, old_body=None):
+    cfg = configuration()
+    cfg.pop('taskhome')
+    cfg['targets']['alpha'] = {**world['target'], 'plugin': 'issue_delivery', 'sources': []}
+    engine = build(world['root'] / 'acceptance-engine', cfg)
+    engine.plugins.register('flow', 'issue_delivery', world['flow'])
+    engine.release_here('alpha:7', '放', 'test-session')
+    if old_body is not None:
+        engine.ingest(Event('github', 'old-body', 'alpha', '7', '旧正文',
+                            {'kind': 'issue', 'text': old_body}, action='update'))
+    data = item(engine, '7')
+    engine.change(data, stage='验收', state='空闲', checks=[['scripts/check.sh']], writer='a')
+    world['io'].save(data, world['target'], {'effects': {}, 'issue': 7, 'merge': world['sha']})
+    return engine
+
+
+@pytest.mark.parametrize('failure', ['503', 'connection', 'timeout'])
+def test_acceptance_fetch_failure_retries_before_launch(world, monkeypatch, failure):
+    engine = acceptance_engine(world)
+    from workshop import github_identity
+    original = github_identity.run
+
+    def unavailable(argv, **kwargs):
+        if argv[1:] == ['api', 'repos/kun-g/workshop/issues/7']:
+            if failure == 'timeout':
+                raise subprocess.TimeoutExpired(argv, 20)
+            if failure == 'connection':
+                raise OSError('connection refused')
+            return subprocess.CompletedProcess(argv, 1, '', 'HTTP 503 Service Unavailable')
+        return original(argv, **kwargs)
+
+    try:
+        with monkeypatch.context() as patch:
+            patch.setattr(github_identity, 'run', unavailable)
+            engine.tick()
+        waiting = item(engine, '7')
+        assert waiting['stage'] == '验收' and waiting['state'] == '定时'
+        assert waiting['retry_at'] and not engine.log.all('rounds')
+        assert not engine.control('alpha').get('broken')
+        # 下一次请求读取恢复后的当前正文，不能复用失败前的资料。
+        latest = BODY.replace('检查失败时让错误可见。', '恢复后的最新正文。')
+        edit(world, issue={'number': 7, 'body': latest, 'state': 'open'})
+        engine.clock.now += timedelta(minutes=5)
+        engine.tick()
+        brief = current(engine, '7')['brief']
+        assert brief['materials'][-1]['body']['text'] == latest
+        assert latest not in brief['instructions']
+    finally:
+        engine.log.close()
+
+
+@pytest.mark.parametrize('stage', ['接单', '说清楚', '执行', '证据', '审查', '交付', '收尾'])
+def test_other_stages_do_not_fetch_acceptance_materials(world, stage, monkeypatch):
+    def unexpected(*args):
+        raise AssertionError('只有验收派活才现取正文')
+    monkeypatch.setattr(world['flow'], '_issue', unexpected)
+    brief = world['flow'].brief(snapshot(world, stage), stage, world['target'])
+    assert isinstance(brief, str) or brief.materials == []
+
+
+def test_acceptance_without_merge_still_gets_current_body(world):
+    brief = world['flow'].brief(snapshot(world, '验收'), '验收', world['target'])
+    assert brief.materials[-1]['body']['text'] == BODY
+    assert BODY not in brief.instructions
+
+
+@pytest.mark.parametrize('body', [None, '', '   '])
+def test_acceptance_cannot_launch_with_missing_body(world, body):
+    edit(world, issue={'number': 7, 'body': body, 'state': 'open'})
+    with pytest.raises(Retryable, match='未取得 issue 正文'):
+        world['flow'].brief(snapshot(world, '验收'), '验收', world['target'])
 
 
 def test_engine_eight_stages_with_real_flow_and_fake_executor(world):

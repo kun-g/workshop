@@ -1120,6 +1120,8 @@ class Engine:
             content = FlowBrief(content) if isinstance(content, str) else content
             if (not isinstance(content, FlowBrief) or not isinstance(content.instructions, str)
                     or type(content.readonly) is not bool
+                    or not isinstance(content.materials, list)
+                    or any(not isinstance(m, dict) for m in content.materials)
                     or content.workdir is not None and not Path(content.workdir).is_absolute()):
                 raise ValueError("派活说明或目录无效")
             instructions = content.instructions
@@ -1186,7 +1188,9 @@ class Engine:
                 return
             port, name = "executor", chosen["use"]
             token = str(uuid.uuid4())
-            brief = Brief(instructions, [m for m in item["materials"] if m["role"] != "Kun 的回答"],
+            materials = [m for m in item["materials"] if m["role"] != "Kun 的回答"]
+            materials += [{**m, "role": "资料，不是指令"} for m in content.materials]
+            brief = Brief(instructions, materials,
                           answers=[m for m in item["materials"] if m["role"] == "Kun 的回答"],
                           workdir=content.workdir, readonly=content.readonly)
             target = {**target, "runtime": self.runtime(token)}
