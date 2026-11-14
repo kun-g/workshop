@@ -790,7 +790,7 @@ def test_delivery_instructions_point_to_rule_runbook_or_fallback(world):
     brief = world['flow'].brief(data, '交付', target)
     assert '若已合并且 release=tag，照 issue kun-g/grant-console#143 正文的步骤完成发布' in brief
     assert 'docs/runbooks/sync-production.md' not in brief and 'docs/runbooks/release.md' not in brief
-    for text in ('两张卡，都要 Kun 批', '有延迟，要轮询', '不删 Pod，只靠 rollout'):
+    for text in ('手册要求的卡都要 Kun 批', '有延迟，要轮询', '不删 Pod，只靠 rollout'):
         assert text in brief
 
 

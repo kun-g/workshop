@@ -100,3 +100,31 @@ def test_completion_key_does_not_bypass_the_gate(engine, passed, outcome, advanc
     engine.tick()
     assert notices(engine) == [] and sent(engine) == []
     assert '过早的完成通知' in why(engine.log, 'alpha:one')
+
+
+def test_rules_hold_keeps_every_notice_off_the_channel_but_asks_still_go(tmp_path):
+    from conftest import build, configuration
+    from workshop.core.cards import notice
+    config = configuration()
+    config["notices"] = "hold"
+    engine = build(tmp_path, config)
+    try:
+        reach(engine, "说清楚")
+        finish(engine, notice=[{"key": "stuck", "text": "卡在验收标准"}],
+               leave={"kind": "等你", "about": "等 Kun"})
+        engine.card({"id": "alpha:one"}, "plugin:flow:x:1", "notice", notice("alpha 插件故障：boom"))
+        engine.tick()
+        assert notices(engine) == [] and sent(engine) == []
+        text = why(engine.log, "alpha:one")
+        assert "「卡在验收标准」" in text and "插件故障" in text and "notices: hold" in text
+    finally:
+        engine.log.close()
+
+
+def test_rules_reject_unknown_notices_value():
+    from conftest import configuration
+    from workshop.core.rules import Rules
+    config = configuration()
+    config["notices"] = "quiet"
+    with pytest.raises(ValueError):
+        Rules.validate(config)

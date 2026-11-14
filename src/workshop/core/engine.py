@@ -503,6 +503,12 @@ class Engine:
         else:
             validate_notice(payload)
         card_id = f'{item["id"]}:{key}'
+        if mode == "notice" and self.rules.data.get("notices") == "hold":
+            # 规则 notices: hold（Kun 11-14：通知全是垃圾消息）：通知不发，只记一条供 why 查看；要 Kun 定的仍用问卡。
+            if not self.log.get("cards", card_id):
+                self.fact("notice_held", {"stage": item.get("stage", ""), "key": key, "subject": payload.get("subject", ""),
+                          "text": payload.get("text", ""), "reason": "规则 notices: hold，通知只记不发"}, item["id"])
+            return card_id
         if not self.log.get("cards", card_id):
             self.fact("card_created", dict(id=card_id, item=item["id"], mode=mode,
                       payload=payload, sent=False, answered=False, sending=False, cancelled=False, key=key, **extra), item["id"])

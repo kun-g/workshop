@@ -278,7 +278,7 @@ class IssueDelivery:
                 "release=self（交付对象是车间自己）时，合并后由流程快进主检出并重启车间，本轮不要动主检出、不要重启。"
                 f"若已合并且 release=tag，{self._runbook(target, state) if stage == '交付' else '照规则 release_runbook 指向的发版手册'}完成发布；集群授权只用 "
                 "~/workspace/runtime/repos/grant-console/scripts/request_grant.py，--requested-by 带本活 id。"
-                "上线批准卡和集群授权卡是两张卡，都要 Kun 批，一张都不能代批或跳过。"
+                "要发哪些卡以发版手册为准；手册要求的卡都要 Kun 批，一张都不能代批或跳过。"
                 "还在等授权卡时交 later 退出，回执不带 advance，也不带 release_submitted；不换身份、不复用过期授权、不绕过授权卡；留住申请号并用 status 回查，不重复申请。"
                 "卡批了到权限或同步真正生效有延迟，要轮询到生效再做下一步（授权看 request_grant 的 status/wait 和 kubectl auth can-i）。"
                 "换版不删 Pod，只靠 rollout，等 rollout 完成。"
