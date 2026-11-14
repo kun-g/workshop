@@ -1,5 +1,6 @@
 """每小时比较一次主检出与远端；持久游标由核心随事件一起提交。"""
 from datetime import datetime, timezone
+import json
 from pathlib import Path
 import re
 import subprocess
@@ -36,6 +37,21 @@ class MainBranchSource:
         if len(rows) != 2 or rows[1] != 'refs/heads/main' or not re.fullmatch('[0-9a-f]{40}', rows[0]):
             raise Retryable('远端 main 没有返回完整提交号')
         to = rows[0]
+        # 来源拿到的是对象默认流程配置；发版目录可能只配置在对应流程下。
+        configs = [{**target, **local} for flow, local in target.get('flows', {}).items()
+                   if local.get('plugin', flow) == 'scheduled_release']
+        config = configs[0] if len(configs) == 1 else target
+        root = Path(config.get('scheduled_release_state_dir', '~/.local/state/workshop')).expanduser().resolve()
+        try:
+            release = json.loads((root / 'release.json').read_text())
+        except FileNotFoundError:
+            release = {}
+        except (OSError, ValueError) as exc:
+            raise Retryable('无法读取发版记录，未确认是否应跳过失败提交') from exc
+        if not isinstance(release, dict):
+            raise Retryable('发版记录须为对象')
+        if release.get('status') == 'rolled_back' and release.get('to') == to:
+            return Poll([], slot)
         events = [] if head == to else [Event('main_branch', slot, target['name'], to,
             f'定时发版 {to[:12]}', {'kind': 'ahead', 'from': head, 'to': to})]
         return Poll(events, slot)
