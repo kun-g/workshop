@@ -154,6 +154,11 @@ def why(log, item_id, rules=None, plugins=None, raw=False):
         elif kind == "receipt":
             receipt = body["receipt"]
             detail = f'回执 {receipt["outcome"]} {receipt["summary"]}'
+        elif kind == "program_result":
+            detail = f'程序完成 {body["stage"]}：{body.get("reason", "")}'
+        elif kind == "program_after":
+            result = body["result"]
+            detail = f'程序阶段 {body["stage"]} after：{json.dumps(result, ensure_ascii=False)}'
         elif kind == "round_result" and body.get("reason"):
             detail = f'流程核对 {body["stage"]}：{body["reason"]}'
         elif kind in ("gate_blocked", "gate_passed"):

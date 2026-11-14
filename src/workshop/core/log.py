@@ -64,7 +64,7 @@ class Log:
                     self.db.execute("UPDATE rounds SET body=? WHERE id=?",
                                     (json.dumps(compact(row, origins[key]), ensure_ascii=False), key))
             ranges = {key: (first, through) for key, first, through in self.db.execute(
-                "SELECT item,min(seq),max(seq) FROM facts WHERE kind='round_result' GROUP BY item")}
+                "SELECT item,min(seq),max(seq) FROM facts WHERE kind IN ('round_result', 'program_result') GROUP BY item")}
             for key, raw in self.db.execute("SELECT id,body FROM items").fetchall():
                 item = json.loads(raw)
                 if item.get("history"):

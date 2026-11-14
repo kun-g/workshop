@@ -147,7 +147,6 @@ def test_requirement_answer_controls_stage_and_leave(world, answer):
 
     body_with(world, CHANGE)
     engine = engine_for(world, 'requirements-no')
-    finish(engine, '说清楚', key='7', evidence=[result(world)])
     ask = dict(key='requirement-change', **question('同意这条需求变更吗', approval=True))
     ask['context'] = CHANGE
     finish(engine, None, key='7', evidence=[result(world, checks=[['scripts/check.sh']])], ask=[ask])

@@ -114,7 +114,7 @@ def evolve(db, fact: dict) -> None:
             item["billing_approved"] = sorted(set(item.get("billing_approved", []) + body.get("billing_configs", [])))
             item["frozen_approved"] = sorted(set(item.get("frozen_approved", []) + body.get("frozen_files", [])))
         put("items", item_id, item)
-    elif kind == "round_result":
+    elif kind in ("round_result", "program_result"):
         item = get("items", item_id)
         item.setdefault("history", []).append(body)
         first = item.get("history_ref", {}).get("first", fact["seq"])

@@ -78,7 +78,7 @@ class ResultHistory:
     def load(self):
         with closing(connect(self.database)) as db:
             return [json.loads(raw) for (raw,) in db.execute(
-                "SELECT body FROM facts WHERE item=? AND kind='round_result' AND seq>=? AND seq<=? ORDER BY seq",
+                "SELECT body FROM facts WHERE item=? AND kind IN ('round_result', 'program_result') AND seq>=? AND seq<=? ORDER BY seq",
                 (self.item, self.first, self.through))]
 
 

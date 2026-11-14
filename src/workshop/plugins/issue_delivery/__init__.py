@@ -77,6 +77,9 @@ class IssueDelivery:
         self.io.cleanup_reviews(target, keep)
         self.io.cleanup_copies(target)
 
+    def automatic(self, item, stage, target):
+        return stage == "接单"
+
     def stages(self, target):
         """阶段由规则的 stages 开关（Kun 11-13：流程用配置文件开关节点）；不写就是全部。
         本流程只允许关掉审查：证据给合并提供检查过的提交，交付负责合并上线，都不能少。"""

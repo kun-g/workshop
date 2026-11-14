@@ -149,7 +149,7 @@ def test_cli_recover_rework_requires_quote_and_reason(tmp_path, monkeypatch, cap
 
 def exhaust(world):
     engine = engine_for(world, 'exhaust')
-    walk(engine, world, ['说清楚', '执行', '证据', '审查', '交付', '验收'])
+    walk(engine, world, ['执行', '证据', '审查', '交付', '验收'])
     sha = remote(world)['pr']['merge_commit_sha']
     fail_acceptance(engine, world, sha)
     rerun(engine, world, sha)
