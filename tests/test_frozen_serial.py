@@ -65,7 +65,7 @@ def answer(engine, value):
 
 # ---------- 串行路径 ----------
 
-def test_second_item_waits_before_execution_until_first_closes(make):
+def test_second_item_runs_when_first_enters_acceptance(make):
     engine = make(serial_paths=["cards/"])
     flow(engine).paths = {"alpha:one": ["cards/x.py"], "alpha:two": ["cards/"]}
     start(engine, "one")
@@ -87,14 +87,76 @@ def test_second_item_waits_before_execution_until_first_closes(make):
     assert current(engine, "one")["stage"] == "执行"
     assert item(engine, "two")["state"] == "排队"
 
-    walk(engine, "one", ["证据", "审查", "交付", "验收", "收尾"])
+    for stage in ("证据", "审查", "交付"):
+        finish(engine, stage, key="one")
+        assert item(engine, "one")["serial_hold"]
+        assert item(engine, "two")["state"] == "排队"
+        assert "收尾" not in item(engine, "two")["next"]
+        assert not [r for r in engine.active() if r["item"] == "alpha:two"]
+    finish(engine, "验收", key="one")
     engine.tick()
-    assert item(engine, "two")["state"] == "排队"
-    close(engine, "one")
-    assert item(engine, "one")["state"] == "完成"
+    assert not item(engine, "one")["serial_hold"]
     running = current(engine, "two")
     assert running["stage"] == "执行"
     assert item(engine, "two")["serial_hold"] and item(engine, "two")["blocked_by"] == ""
+    # 后件占位不能把前件的验收或收尾反过来排队。
+    assert current(engine, "one")["stage"] == "验收"
+    finish(engine, "收尾", key="one")
+    assert current(engine, "one")["stage"] == "收尾"
+    close(engine, "one")
+    assert item(engine, "one")["state"] == "完成"
+
+
+@pytest.mark.parametrize("occupied", [False, True])
+@pytest.mark.parametrize("legacy_hold", [False, True])
+def test_acceptance_rejection_reacquires_or_queues(make, occupied, legacy_hold):
+    engine = make(serial_paths=["cards/"])
+    flow(engine).paths = {f"alpha:{k}": ["cards/x.py"] for k in ("one", "two")}
+    start(engine, "one")
+    walk(engine, "one", ["说清楚", "执行", "证据", "审查", "交付", "验收"])
+    if occupied:
+        start(engine, "two")
+        walk(engine, "two", ["说清楚", "执行"])
+        assert current(engine, "two")["stage"] == "执行"
+    if legacy_hold:
+        # 模拟旧版本留下的事实，不能经新的状态变更方法提前清掉。
+        engine.fact("item_changed", {"serial_hold": True}, "alpha:one")
+    flow(engine).passed = False
+    finish(engine, "执行", key="one")
+    flow(engine).passed = True
+    if occupied:
+        queued = item(engine, "one")
+        assert queued["stage"] == "执行" and queued["state"] == "排队"
+        assert not queued["serial_hold"]
+        assert queued["blocked_by"] == "alpha:two" and "alpha:two" in queued["next"]
+        assert not [r for r in engine.active() if r["item"] == "alpha:one"]
+        walk(engine, "two", ["证据", "审查", "交付", "验收"])
+        engine.tick()
+    assert current(engine, "one")["stage"] == "执行"
+    assert item(engine, "one")["serial_hold"] and not item(engine, "one")["blocked_by"]
+
+
+@pytest.mark.parametrize("stage", ["说清楚", "验收", "收尾", "观察"])
+@pytest.mark.parametrize("state", ["空闲", "排队"])
+def test_old_hold_outside_execution_to_delivery_is_released(make, stage, state):
+    engine = make(serial_paths=["cards/"])
+    flow(engine).path = (*flow(engine).path, "观察")
+    flow(engine).paths = {f"alpha:{k}": ["cards/x.py"] for k in ("one", "two")}
+    start(engine, "one")
+    walk(engine, "one", ["说清楚", "执行"])
+    # 先结束活动轮，再放入旧版本的停留/排队状态。
+    engine.abort(current(engine, "one")["token"])
+    engine.tick()
+    engine.fact("item_changed", {"stage": stage, "state": state, "serial_hold": True,
+                "blocked_by": "alpha:two" if state == "排队" else "",
+                "next": "排队：等 alpha:two 收尾让出串行路径" if state == "排队" else stage}, "alpha:one")
+    start(engine, "two")
+    walk(engine, "two", ["说清楚", "执行"])
+    assert current(engine, "two")["stage"] == "执行"
+    assert current(engine, "one")["stage"] == stage
+    assert not item(engine, "one")["serial_hold"]
+    assert not item(engine, "one")["blocked_by"]
+    assert "收尾让出" not in item(engine, "one")["next"]
 
 
 def test_undeclared_paths_queue_before_evidence(make):
@@ -111,8 +173,7 @@ def test_undeclared_paths_queue_before_evidence(make):
     assert "cards/y.py" in held["paths"]
     assert not [r for r in engine.active() if r["item"] == "alpha:three"]
 
-    walk(engine, "one", ["证据", "审查", "交付", "验收", "收尾"])
-    close(engine, "one")
+    walk(engine, "one", ["证据", "审查", "交付", "验收"])
     assert current(engine, "three")["stage"] == "证据"
 
 
@@ -155,8 +216,8 @@ def test_three_items_released_one_by_one_in_order(make):
         start(engine, key)
         walk(engine, key, ["说清楚", "执行"])
     assert item(engine, "two")["state"] == item(engine, "three")["state"] == "排队"
-    walk(engine, "one", ["证据", "审查", "交付", "验收", "收尾"])
-    close(engine, "one")
+    walk(engine, "one", ["证据", "审查", "交付", "验收"])
+    engine.tick()
     assert current(engine, "two")["stage"] == "执行"
     three = item(engine, "three")
     assert three["state"] == "排队" and three["blocked_by"] == "alpha:two"
