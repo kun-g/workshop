@@ -1,4 +1,5 @@
 """End-to-end adapters use fake agent/Orca executables, real OS processes, no network."""
+import errno
 import json
 import os
 from pathlib import Path
@@ -458,6 +459,52 @@ def test_stop_escalates_to_kill_for_ignoring_process_group(setup):
     assert identity(int((root/'descendant-pid').read_text())) is None
 
 
+@pytest.mark.parametrize('exit_on', [signal.SIGTERM, signal.SIGKILL, None])
+def test_stop_rechecks_members_after_eperm(tmp_path, monkeypatch, exit_on):
+    from types import SimpleNamespace
+    from workshop.plugins.executors.local import processes
+
+    executor = Executor('codex', state_dir=tmp_path/'state', stop_timeout=.06)
+    directory = executor.directory('eperm-round')
+    group = {'pid': 99999999, 'birth': 'fake process start time'}
+    write(directory/'supervisor.json', {**group, 'group': group})
+    live = [group['pid']]
+    calls = []
+    clock = [0.0]
+
+    def denied(pgid, sig):
+        assert pgid == group['pid']
+        calls.append(sig)
+        if sig == exit_on:
+            # The last live member exits between enumeration and signalling.
+            live.clear()
+        raise PermissionError(errno.EPERM, 'Operation not permitted')
+
+    def sleep(seconds):
+        clock[0] += seconds
+
+    monkeypatch.setattr(processes.os, 'killpg', denied)
+    monkeypatch.setattr(processes, 'members', lambda group: list(live))
+    monkeypatch.setattr(processes, 'alive', lambda record: bool(live))
+    monkeypatch.setattr(processes, 'time', SimpleNamespace(monotonic=lambda: clock[0], sleep=sleep))
+
+    if exit_on is None:
+        with pytest.raises(Retryable, match='TERM/KILL 后仍不能确认进程组退出'):
+            executor.stop('eperm-round', None)
+        assert not (directory/'stopped.json').exists()
+        assert calls.count(signal.SIGKILL) >= 2
+        assert clock[0] >= 2 * executor.stop_timeout
+    else:
+        executor.stop('eperm-round', None)
+        assert read(directory/'stopped.json')['confirmed'] is True
+        assert executor.poll('eperm-round', None) == 'exited'
+        assert calls[-1] == exit_on
+    if exit_on != signal.SIGTERM:
+        assert calls.count(signal.SIGTERM) >= 2
+    else:
+        assert calls == [signal.SIGTERM]
+
+
 def test_stop_fences_runner_that_has_not_started(setup):
     root,make,item,target=setup
     from unittest.mock import patch
@@ -563,39 +610,6 @@ def test_stop_treats_reused_group_leader_as_exited(tmp_path, has_exit_record):
     finally:
         unrelated.terminate()
         unrelated.wait(timeout=5)
-
-
-@pytest.mark.parametrize('denied_signal', [signal.SIGTERM, signal.SIGKILL])
-@pytest.mark.parametrize('still_live', [False, True])
-def test_stop_rechecks_group_after_permission_error(tmp_path, monkeypatch, denied_signal, still_live):
-    from workshop.plugins.executors.local import processes
-
-    group = {'pid': 123456789, 'birth': 'owned process'}
-    write(tmp_path/'supervisor.json', {**group, 'group': group})
-    denied = False
-    signals = []
-
-    def killpg(pid, sig):
-        nonlocal denied
-        assert pid == group['pid']
-        signals.append(sig)
-        if sig == denied_signal:
-            denied = True
-            raise PermissionError(1, 'Operation not permitted')
-
-    # macOS can return EPERM when the group exits between ps and killpg.
-    monkeypatch.setattr(processes, 'members', lambda g: [g['pid']] if not denied or still_live else [])
-    monkeypatch.setattr(processes, 'alive', lambda record: False)
-    monkeypatch.setattr(processes.os, 'killpg', killpg)
-    if still_live:
-        with pytest.raises(Retryable, match='保留占位'):
-            processes.stop_round(tmp_path, lambda: None, timeout=0)
-        assert not (tmp_path/'stopped.json').exists()
-    else:
-        processes.stop_round(tmp_path, lambda: None, timeout=0)
-        assert read(tmp_path/'stopped.json')['confirmed']
-    assert signals == ([signal.SIGTERM] if denied_signal == signal.SIGTERM else [signal.SIGTERM, signal.SIGKILL])
-    assert read(tmp_path/'stopping.json')['requested']
 
 
 def test_poll_terminal_created_before_runner_claim_is_retryable(setup):

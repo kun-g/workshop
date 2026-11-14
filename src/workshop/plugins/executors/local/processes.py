@@ -65,11 +65,10 @@ def stop_round(directory: Path, close_terminal, timeout):
                             os.killpg(pgid, sig)
                         except ProcessLookupError:
                             pass
-                        except PermissionError as exc:
-                            # macOS may report EPERM for a group that just exited.
-                            # Only an empty group can proceed to stop confirmation.
-                            if members(known[pgid]):
-                                raise Retryable('无权停止仍存活的进程组；保留占位') from exc
+                        except PermissionError:
+                            # A group containing only zombies can return EPERM.
+                            # Recheck below; live members must still be retried.
+                            continue
                         signalled.add(pgid)
                     try:
                         fcntl.flock(guard, fcntl.LOCK_EX | fcntl.LOCK_NB)
