@@ -16,21 +16,34 @@ from workshop.registry import Registry
 from workshop.plugins.selectors.ordered import OrderedSelector
 
 
-@pytest.hookimpl(optionalhook=True)
-def pytest_xdist_make_scheduler(config, log):
-    """真实作业测试共用一个 worker；其余测试仍逐条并行分配。
+@pytest.fixture(scope="session")
+def git_template(tmp_path_factory):
+    """每个 worker 只造一次相同的起始提交；调用方复制全部文件后独立使用。
 
-    pytest 9.2 的 nodeid 改读 _id，xdist 3.8 的 loadgroup 仍写 _nodeid，
-    分组标记不生效。按收集到的公开 nodeid 分组，不改 pytest 的内部字段。
+    只复用测试准备，不替代被测的 git 命令；副本的对象、索引和 refs 不共享。
     """
-    from xdist.scheduler import LoadScopeScheduling
+    templates = {}
 
-    class JobScheduling(LoadScopeScheduling):
-        def _split_scope(self, nodeid):
-            path = nodeid.split("::", 1)[0]
-            return path if path == "tests/test_jobs.py" else nodeid
+    def prepare(files):
+        key = tuple(sorted(files.items()))
+        if key not in templates:
+            repo = tmp_path_factory.mktemp("git-template")
+            for name, text in files.items():
+                path = repo / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(text)
+                if name.endswith(".sh"):
+                    path.chmod(0o755)
+            def git(*args):
+                return subprocess.run(["/usr/bin/git", "-C", str(repo), *args],
+                                      check=True, capture_output=True, text=True).stdout.strip()
+            git("init", "-q")
+            git("add", ".")
+            git("-c", "user.name=Test", "-c", "user.email=t@localhost", "commit", "-qm", "fixture")
+            templates[key] = repo, git("rev-parse", "HEAD")
+        return templates[key]
 
-    return JobScheduling(config, log)
+    return prepare
 
 
 class Clock:

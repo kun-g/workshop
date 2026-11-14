@@ -1,6 +1,9 @@
 from datetime import datetime, timedelta, timezone
+from contextlib import redirect_stdout, redirect_stderr
 import importlib.util
+import io
 import json
+import os
 from pathlib import Path
 import plistlib
 import sqlite3
@@ -15,7 +18,7 @@ from workshop.watch import Watch
 
 
 @pytest.fixture
-def fake(tmp_path):
+def fake(tmp_path, monkeypatch, request):
     directory = tmp_path / "fake"
     directory.mkdir()
     command = directory / "ask-kun"
@@ -31,6 +34,30 @@ with (root / "attention.jsonl").open("a") as f:
     f.write(json.dumps(sys.argv[1:]) + "\\n")
 raise SystemExit(json.loads((root / "config.json").read_text()).get("attention_exit", 0))
 ''')
+    if getattr(request, "param", "in_process") == "in_process":
+        # 状态转换测试运行同一份 CLI 替身代码，省掉重复启动解释器。
+        # 下方边界用例另外以真实子进程跑一份；改写过的脚本仍走真实子进程。
+        original = command.read_text()
+        code = compile(original, str(command), "exec")
+        run = subprocess.run
+
+        def inline(argv, *args, **kwargs):
+            if (args or not isinstance(argv, (list, tuple)) or not argv or str(argv[0]) != str(command)
+                    or kwargs.get("env") is not None or kwargs.get("cwd") is not None
+                    or not os.access(command, os.X_OK) or command.read_text() != original):
+                return run(argv, *args, **kwargs)
+            out, err = io.StringIO(), io.StringIO()
+            status = 0
+            with monkeypatch.context() as patch, redirect_stdout(out), redirect_stderr(err):
+                patch.setattr(sys, "argv", list(argv))
+                patch.setattr(sys, "stdin", io.StringIO(kwargs.get("input") or ""))
+                try:
+                    exec(code, {"__name__": "__main__", "__file__": str(command)})
+                except SystemExit as exc:
+                    status = exc.code or 0
+            return subprocess.CompletedProcess(argv, status, out.getvalue(), err.getvalue())
+
+        monkeypatch.setattr(subprocess, "run", inline)
     return command
 
 
@@ -52,6 +79,7 @@ def card(external="Q1", payload=None, **fields):
     return {"id": "core-card", "external": external, "payload": payload or question("批准发布", approval=True), **fields}
 
 
+@pytest.mark.parametrize("fake", ["process", "in_process"], indirect=True)
 def test_ask_maps_key_and_persists_external(fake, tmp_path):
     q = question("批准发布", approval=True)
     q["context"] = "长资料" * 3000
@@ -68,6 +96,7 @@ def test_ask_maps_key_and_persists_external(fake, tmp_path):
     assert "完整背景" in json.loads((fake.parent / "questions.json").read_text())[0]["details"]
 
 
+@pytest.mark.parametrize("fake", ["process", "in_process"], indirect=True)
 def test_lost_reply_reconciles_original_and_does_not_resend(fake, tmp_path):
     configure(fake, drop_ask_reply=True)
     q = question("批准发布", approval=True)
@@ -124,6 +153,7 @@ def test_pending_cancellation_and_failure_are_not_answers(fake, tmp_path):
     assert c.poll([card(cancelled=True), card(answered=True)]) == []
 
 
+@pytest.mark.parametrize("fake", ["process", "in_process"], indirect=True)
 def test_notify_idempotent_and_reconcile_reuses_key(fake, tmp_path):
     c = channel(fake, tmp_path)
     n = {"subject": "已完成", "text": "长通知" * 200, "fyi": True}
@@ -654,3 +684,70 @@ def test_recovered_send_keeps_upstream_send_time(fake, tmp_path):
     assert c.reconcile("lost", {"mode": "ask"}) == "Q1"
     upstream = json.loads((fake.parent / "questions.json").read_text())[0]
     assert c._read("lost")["sent_at"] == upstream["sent_at"]
+
+
+def write_tick(watch, at, elapsed):
+    (watch.directory / "heartbeat.json").write_text(json.dumps(
+        {"at": at.isoformat(), "last_ok_at": at.isoformat(), "tick_ms": elapsed}))
+
+
+def test_tick_alert_after_three_distinct_samples_once_across_restart_and_recovery(fake, tmp_path):
+    watch = setup_watch(fake, tmp_path)
+    for n in range(6):
+        at = NOW + timedelta(minutes=n)
+        write_tick(watch, at, 101)
+        state = Watch(watch.directory, ask_kun=fake).run(at)
+        assert len(calls(fake, "notify")) == (0 if n < 2 else 1)
+    first_id = state["active"]["tick"]["id"]
+    write_tick(watch, NOW + timedelta(minutes=6), 100)
+    assert "tick" not in watch.run(NOW + timedelta(minutes=6))["active"]
+    for n in range(7, 10):
+        at = NOW + timedelta(minutes=n)
+        write_tick(watch, at, 101)
+        state = watch.run(at)
+    assert len(calls(fake, "notify")) == 2
+    assert state["active"]["tick"]["id"] != first_id
+
+
+@pytest.mark.parametrize("reset", [100, 0, None, "101", True, float("nan"), float("inf")])
+def test_tick_good_or_invalid_sample_breaks_streak(fake, tmp_path, reset):
+    watch = setup_watch(fake, tmp_path)
+    for n, elapsed in enumerate([101, 101, reset, 101, 101]):
+        at = NOW + timedelta(minutes=n)
+        write_tick(watch, at, elapsed)
+        watch.run(at)
+    assert not calls(fake, "notify")
+    write_tick(watch, NOW + timedelta(minutes=5), 101)
+    assert "tick" in watch.run(NOW + timedelta(minutes=5))["active"]
+    assert len(calls(fake, "notify")) == 1
+
+
+def test_tick_same_heartbeat_and_long_gap_do_not_accumulate(fake, tmp_path):
+    watch = setup_watch(fake, tmp_path)
+    write_tick(watch, NOW, 101)
+    for n in range(3):
+        state = watch.run(NOW + timedelta(seconds=n * 30))
+    assert state["tick_observation"]["count"] == 1
+    assert not calls(fake, "notify")
+    write_tick(watch, NOW + timedelta(minutes=1), 101)
+    watch.run(NOW + timedelta(minutes=1))
+    write_tick(watch, NOW + timedelta(hours=8), 101)
+    state = watch.run(NOW + timedelta(hours=8))
+    assert state["tick_observation"]["count"] == 1
+    assert not calls(fake, "notify")
+
+
+def test_tick_alert_retries_same_incident_after_delivery_failure(fake, tmp_path):
+    watch = setup_watch(fake, tmp_path)
+    configure(fake, notify_exit=1)
+    for n in range(3):
+        at = NOW + timedelta(minutes=n)
+        write_tick(watch, at, 101)
+        state = watch.run(at)
+    assert not state["active"]["tick"]["reported"]
+    assert state["active"]["tick"]["via"] == "attention"
+    configure(fake)
+    write_tick(watch, NOW + timedelta(minutes=3), 101)
+    state = watch.run(NOW + timedelta(minutes=3))
+    assert state["active"]["tick"]["reported"]
+    assert calls(fake, "notify")[0] == calls(fake, "notify")[1]
