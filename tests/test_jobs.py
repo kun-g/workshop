@@ -441,26 +441,36 @@ def completed_item(world):
 @pytest.mark.parametrize("restart_at", ["hold-start", "release-start"])
 @pytest.mark.parametrize("reason", ["", "仍有未交出的改动"])
 def test_release_jobs_do_not_block_and_survive_restart(world, monkeypatch, restart_at, reason):
-    configure(world["path"], hold_seconds=0.5, release_seconds=0.5, release_reason=reason)
+    pending = restart_at.removesuffix("-start")
+    continuation = world["path"] / f"{pending}-continue"
+    configure(world["path"], hold_seconds=0.5, release_seconds=0.5, release_reason=reason,
+              **{f"{pending}_wait": True})
     completed_item(world)
     engine = world["engine"]()
-    beats = wait(world, engine, monkeypatch, lambda: bool(job_plugins.calls(restart_at)))
-    assert item(engine.log, "9")["workdir"] == "/fake/completed"
-    engine.log.close()
-    revived = world["engine"]()
-    beats += wait(world, revived, monkeypatch, lambda: bool(item(revived.log, "9").get("workdir_released")))
-    assert all(elapsed <= LIMIT_MS and beat["tick_ms"] <= LIMIT_MS for elapsed, beat in beats), [
-        {"wall_ms": round(elapsed, 2), "tick_ms": beat["tick_ms"]} for elapsed, beat in beats]
-    assert len(job_plugins.calls("hold-start")) == len(job_plugins.calls("release-start")) == 1
-    assert rounds(revived.log, "8")  # 其他活仍能派出。
-    row = item(revived.log, "9")
-    assert row["workdir"] == ("/fake/completed" if reason else None)
-    assert row["workdir_released"] == ("留着：" + reason if reason else "已收回")
-    tick(world, revived, monkeypatch)
-    cards = [c for c in revived.log.all("cards") if "workdir-kept" in c["id"]]
-    assert len(cards) == bool(reason)
-    assert len(job_plugins.calls("release-start")) == 1
-    revived.log.close()
+    try:
+        beats = wait(world, engine, monkeypatch, lambda: bool(job_plugins.calls(restart_at)))
+        assert item(engine.log, "9")["workdir"] == "/fake/completed"
+        engine.jobs.launcher.shutdown()
+        engine.log.close()
+        engine = world["engine"]()
+        # 收回明确阻塞到其他活已启动；不假定简报/派活一定比两个 0.5 秒睡眠快。
+        beats += wait(world, engine, monkeypatch, lambda: any(r.get("started") for r in rounds(engine.log, "8")))
+        assert not job_plugins.calls(f"{pending}-end")
+        continuation.touch()
+        beats += wait(world, engine, monkeypatch, lambda: bool(item(engine.log, "9").get("workdir_released")))
+        beats.append(tick(world, engine, monkeypatch))
+        assert all(elapsed <= LIMIT_MS and beat["tick_ms"] <= LIMIT_MS for elapsed, beat in beats), [
+            {"wall_ms": round(elapsed, 2), "tick_ms": beat["tick_ms"]} for elapsed, beat in beats]
+        assert len(job_plugins.calls("hold-start")) == len(job_plugins.calls("release-start")) == 1
+        row = item(engine.log, "9")
+        assert row["workdir"] == ("/fake/completed" if reason else None)
+        assert row["workdir_released"] == ("留着：" + reason if reason else "已收回")
+        cards = [c for c in engine.log.all("cards") if "workdir-kept" in c["id"]]
+        assert len(cards) == bool(reason)
+    finally:
+        continuation.touch()
+        engine.jobs.launcher.shutdown()
+        engine.log.close()
 
 
 def test_release_hold_is_rechecked_after_delay_and_new_completion(world, monkeypatch):

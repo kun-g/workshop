@@ -565,6 +565,39 @@ def test_stop_treats_reused_group_leader_as_exited(tmp_path, has_exit_record):
         unrelated.wait(timeout=5)
 
 
+@pytest.mark.parametrize('denied_signal', [signal.SIGTERM, signal.SIGKILL])
+@pytest.mark.parametrize('still_live', [False, True])
+def test_stop_rechecks_group_after_permission_error(tmp_path, monkeypatch, denied_signal, still_live):
+    from workshop.plugins.executors.local import processes
+
+    group = {'pid': 123456789, 'birth': 'owned process'}
+    write(tmp_path/'supervisor.json', {**group, 'group': group})
+    denied = False
+    signals = []
+
+    def killpg(pid, sig):
+        nonlocal denied
+        assert pid == group['pid']
+        signals.append(sig)
+        if sig == denied_signal:
+            denied = True
+            raise PermissionError(1, 'Operation not permitted')
+
+    # macOS can return EPERM when the group exits between ps and killpg.
+    monkeypatch.setattr(processes, 'members', lambda g: [g['pid']] if not denied or still_live else [])
+    monkeypatch.setattr(processes, 'alive', lambda record: False)
+    monkeypatch.setattr(processes.os, 'killpg', killpg)
+    if still_live:
+        with pytest.raises(Retryable, match='保留占位'):
+            processes.stop_round(tmp_path, lambda: None, timeout=0)
+        assert not (tmp_path/'stopped.json').exists()
+    else:
+        processes.stop_round(tmp_path, lambda: None, timeout=0)
+        assert read(tmp_path/'stopped.json')['confirmed']
+    assert signals == ([signal.SIGTERM] if denied_signal == signal.SIGTERM else [signal.SIGTERM, signal.SIGKILL])
+    assert read(tmp_path/'stopping.json')['requested']
+
+
 def test_poll_terminal_created_before_runner_claim_is_retryable(setup):
     from unittest.mock import patch
     root, make, item, target = setup
