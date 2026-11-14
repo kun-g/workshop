@@ -21,6 +21,7 @@ from pathlib import Path
 from queue import SimpleQueue, Empty
 import shutil
 import signal
+from subprocess import DEVNULL, Popen
 import sys
 import time
 import traceback
@@ -153,7 +154,7 @@ class Jobs:
         self.command = list(command)
         self.deadline = deadline
         self.clock = clock
-        self.children = set()
+        self.children = {}
         self.spawned = 0
         self.swept = 0.0
         self.launcher = ThreadPoolExecutor(max_workers=1, thread_name_prefix="workshop-start")
@@ -235,14 +236,13 @@ class Jobs:
         try:
             if (path / "cancelled").exists():
                 return
-            # 锁随文件描述交给作业进程，作业进程活着锁就一直被持有。
-            os.set_inheritable(lock, True)
-            # posix_spawn 在系统繁忙时也可能耗时上百毫秒，所以不在一拍里调用。
-            pid = os.posix_spawnp(self.command[0], [*self.command, str(path)], os.environ,
-                                  file_actions=[(os.POSIX_SPAWN_OPEN, 0, os.devnull, os.O_RDONLY, 0),
-                                                (os.POSIX_SPAWN_DUP2, output, 1), (os.POSIX_SPAWN_DUP2, output, 2)],
-                                  setsid=True)
-            self.launched.put(pid)
+            # os.posix_spawnp 创建期间持有 GIL，放在线程中仍会卡住主循环。
+            # Popen 的独立会话路径在父进程读 exec 确认管道时释放 GIL。
+            # 只传本作业的锁；子进程活着，锁就一直被持有。
+            child = Popen([*self.command, str(path)], stdin=DEVNULL, stdout=output, stderr=output,
+                          start_new_session=True, pass_fds=(lock,))
+            pid = child.pid
+            self.launched.put(child)
             write(path / "pid", pid)
             if (path / "cancelled").exists():
                 try:
@@ -283,16 +283,13 @@ class Jobs:
         self.spawned = 0
         while True:
             try:
-                self.children.add(self.launched.get_nowait())
+                child = self.launched.get_nowait()
+                self.children[child.pid] = child
             except Empty:
                 break
-        for pid in list(self.children):
-            try:
-                done, _ = os.waitpid(pid, os.WNOHANG)
-            except ChildProcessError:
-                done = pid
-            if done:
-                self.children.discard(pid)
+        for pid, child in list(self.children.items()):
+            if child.poll() is not None:  # 内部 waitpid(WNOHANG)，不等。
+                del self.children[pid]
         now = self.clock()
         if now - self.swept < SWEEP_SECONDS or not self.directory.is_dir():
             return

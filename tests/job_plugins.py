@@ -47,9 +47,19 @@ def delay(kind):
         note("delay-end", kind, time.monotonic() - began)
 
 
+def wait_for_continue(kind):
+    if config().get(f"{kind}_wait"):
+        deadline = time.monotonic() + 40
+        while not (home() / f"{kind}-continue").exists():
+            if time.monotonic() >= deadline:
+                raise TimeoutError(f"没有放行 {kind}")
+            time.sleep(0.02)
+
+
 class SlowFlow:
     def hold_workdir(self, item, target):
         note("hold-start", item["id"])
+        wait_for_continue("hold")
         time.sleep(config().get("hold_seconds", 0))
         note("hold-end", item["id"])
         return config().get("hold_reason", "")
@@ -113,6 +123,7 @@ class FakeExecutor:
 
     def release(self, item, target):
         note("release-start", item["id"])
+        wait_for_continue("release")
         time.sleep(config().get("release_seconds", 0))
         note("release-end", item["id"])
         reason = config().get("release_reason", "")
