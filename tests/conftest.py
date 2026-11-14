@@ -233,13 +233,14 @@ def event(key="one", target="alpha", ext_id="1", **extra):
 
 
 def item(engine, key="one", target="alpha"):
-    return engine.log.get("items", f"{target}:{key}")
+    return engine.log.full_item(engine.log.get("items", f"{target}:{key}"))
 
 
 def current(engine, key="one", target="alpha"):
     rows = [r for r in engine.active() if r["item"] == f"{target}:{key}"]
     assert len(rows) == 1
-    return rows[0]
+    # 测试调用方看完整说明，存储视图本身只留引用。
+    return {**rows[0], "brief": engine.log.brief(rows[0])}
 
 
 def finish(engine, advance=None, key="one", target="alpha", **extra):

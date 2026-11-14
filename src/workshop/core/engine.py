@@ -18,6 +18,7 @@ from .ports import Unavailable, Retryable, ChannelRejected
 from .cards import frozen_question, question, notice, validate_question, validate_notice
 from .models import After, Answer, FlowBrief, Classification, Evidence, Release, Usage, RoundUsage
 from .jobs import Pending
+from .records import StoredBrief, defer_items, materialize
 
 
 def gate(ingress):
@@ -35,12 +36,12 @@ def finder(log, target):
     def find(external=None, *, object_key=None):
         if object_key is not None:
             found = log.get("items", f"{target}:{resolve(object_key)}")
-            return {"item": found} if found else None
+            return {"item": log.full_item(found)} if found else None
         matches = [c for c in log.all("cards") if c.get("external") == external]
         if len(matches) != 1:
             return None
         item = log.get("items", matches[0]["item"])
-        return {"card": matches[0], "item": item} if item and item["target"] == target else None
+        return {"card": matches[0], "item": log.full_item(item)} if item and item["target"] == target else None
     return find
 
 
@@ -76,7 +77,9 @@ class Engine:
 
     def call(self, port, name, method, *args, identity=None, item=None, lookup=None):
         """调一次插件。有作业时：结果已出就返回，没出就登记或认回作业并抛 Pending，下一拍再来取。"""
+        args = defer_items(args, self.log.path.resolve())
         if self.jobs is None:
+            args = materialize(args)
             if lookup is not None:
                 args = (*args, finder(self.log, lookup))
             return getattr(self.plugins.get(port, name), method)(*args)
@@ -164,7 +167,7 @@ class Engine:
             self.broken(item["target"], "flow", target["plugin"], exc)
 
     def cleanup_flows(self):
-        keep = [r["brief"].get("workdir") for r in self.active() if not r.get("stopped")]
+        keep = [r.get("workdir") for r in self.active() if not r.get("stopped")]
         for name in self.rules.data["targets"]:
             target = self.rules.target(name)
             if self.control(name).get("broken"):
@@ -844,7 +847,8 @@ class Engine:
     def launch(self, row):
         item = self.log.get("items", row["item"])
         self.plugins.get("executor", row["executor"])
-        brief = Brief(**row["brief"])
+        brief = (StoredBrief(str(self.log.path.resolve()), row["brief_ref"])
+                 if "brief_ref" in row else Brief(**row["brief"]))
         if row["session"]:
             started = self.call("executor", row["executor"], "resume", row["token"], row["session"], brief, item,
                                 row["config"], row["target"], identity=[row["token"]], item=item["id"])
@@ -926,13 +930,13 @@ class Engine:
                 self.card(item, f'billing:{item["revision"]}', "ask", payload, billing_configs=[k for k, _ in metered], core_approval=True)
                 self.change(item, state="等你", next="按量计费先授权", blocked_by="Kun", leave={"kind": "等你", "about": "按量计费授权"})
                 return
-            history = self.log.all("rounds", where=("item", item["id"]))
+            history = self.log.history(item["id"])
             selection_target = {**target, "selection": {"writer": item["writer"], "reviewed": item.get("reviews", []),
                                 "retry_executor": item.get("retry_executor"), "excluded": list(unavailable)}}
             selector_name = self.rules.selector(item["stage"], item["target"])
             port, name = "selector", selector_name
             self.plugins.get(port, name)
-            choice = self.call(port, name, "select", selection_target, item["stage"], len(history) + 1, history, candidates)
+            choice = self.call(port, name, "select", selection_target, item["stage"], history.count + 1, history, candidates)
             chosen = choice.config if choice is not None else None
             if chosen is not None:
                 # 校验输出权限边界，不在核心另写挑选策略。
@@ -972,6 +976,7 @@ class Engine:
                         or self.occupied() >= self.rules.data["limits"]["concurrent"]):
                     return
                 self.fact("round_reserved", row, item["id"])
+                row = self.log.get("rounds", token)
             try:
                 self.launch(row)
             except Unavailable:
@@ -987,7 +992,7 @@ class Engine:
         """这件活最近几轮启动时说没法用的执行者；启动作业晚一拍才出结果，重新挑时要避开它们。"""
         since = stamp(self.clock() - timedelta(minutes=minutes))
         names = []
-        for row in reversed(self.log.all("rounds", where=("item", item["id"]))):
+        for row in self.log.recent_rounds(item["id"]):
             if row.get("outcome") != "unavailable" or row["stage"] != item["stage"] or (row.get("ended") or "") < since:
                 break
             names.append(row["executor"])

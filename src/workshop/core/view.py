@@ -1,6 +1,7 @@
 """唯一写视图的函数；每条事实有确定性的投影，可随时从日志重建。"""
 import json
 from datetime import datetime
+from .records import compact, compact_history
 
 TABLES = ("items", "rounds", "cards", "timers", "controls", "cursors", "deferred", "effects", "aliases")
 
@@ -116,7 +117,8 @@ def evolve(db, fact: dict) -> None:
     elif kind == "round_result":
         item = get("items", item_id)
         item.setdefault("history", []).append(body)
-        put("items", item_id, item)
+        first = item.get("history_ref", {}).get("first", fact["seq"])
+        put("items", item_id, compact_history(item, first, fact["seq"]))
     elif kind == "deferred_event":
         put("deferred", str(fact["seq"]), {"id": str(fact["seq"]), "event": body,
                                           "at": fact["at"], "resolved": False})
@@ -128,7 +130,7 @@ def evolve(db, fact: dict) -> None:
         item["revision"] += 1
         put("items", item_id, item)
     elif kind == "round_reserved":
-        put("rounds", body["token"], body)
+        put("rounds", body["token"], compact(body, fact["seq"]))
         item = get("items", item_id)
         item.update(state="跑着", next="等回执", blocked_by="", round=body["token"])
         item["revision"] += 1

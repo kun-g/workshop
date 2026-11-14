@@ -28,6 +28,7 @@ import traceback
 
 from .models import After, Answer, Brief, Classification, Event, Evidence, FlowBrief, Poll, Receipt, Release, RoundUsage, Selection, Started, Usage
 from .ports import ChannelRejected, Retryable, Unavailable
+from .records import StoredBrief, RoundHistory, ResultHistory, materialize
 
 
 class Pending(BaseException):
@@ -70,7 +71,7 @@ LABELS = {
 
 ERRORS = {"Retryable": Retryable, "Unavailable": Unavailable, "ChannelRejected": ChannelRejected}
 TYPES = {cls.__name__: cls for cls in (After, Answer, Brief, Classification, Event, Evidence, FlowBrief, Poll,
-                                        Receipt, Release, RoundUsage, Selection, Started, Usage)}
+                                        Receipt, Release, RoundUsage, Selection, Started, Usage, StoredBrief, RoundHistory, ResultHistory)}
 KEEP_SECONDS = 86400
 SWEEP_SECONDS = 600
 # 一拍最多登记几个新作业；进程创建交给后台，避免系统调用拖住一拍。
@@ -312,7 +313,7 @@ def execute(path, plugins, lookup=None):
     spec = json.loads((path / "spec.json").read_text())
     try:
         plugin = plugins.get(spec["port"], spec["name"])
-        args = decode(spec["args"])
+        args = materialize(decode(spec["args"]))
         if spec.get("lookup"):
             args.append(lookup(spec["lookup"]))
         result = {"ok": encode(getattr(plugin, spec["method"])(*args))}
