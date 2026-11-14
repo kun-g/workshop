@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import signal
+import shutil
 import subprocess
 import sys
 import time
@@ -47,7 +48,7 @@ if name == 'codex' and args[:2] == ['login', 'status']:
 prompt = args[-1] if name == 'claude' and '-p' not in args else sys.stdin.read()
 if (root/'ignore-term').exists(): signal.signal(signal.SIGTERM, signal.SIG_IGN)
 if (root/'spawn-descendant').exists():
-    descendant = subprocess.Popen([sys.executable, '-c', 'import signal,time; signal.signal(signal.SIGTERM,signal.SIG_IGN); time.sleep(120)'])
+    descendant = subprocess.Popen([sys.executable, '-c', 'import signal; signal.signal(signal.SIGTERM,signal.SIG_IGN); signal.pause()'])
     (root/'descendant-pid').write_text(str(descendant.pid))
 with (root/'agents').open('a') as f:
     f.write(json.dumps({'name':name,'args':args,'prompt':prompt,'env':dict(os.environ),'cwd':os.getcwd(),'pid':os.getpid()})+'\n')
@@ -64,7 +65,7 @@ if (root/'finish').exists():
     if (root/'success').exists():
         print(json.dumps({'outcome':'done','summary':'checked'}),flush=True)
     sys.exit(0)
-while True: time.sleep(.05)
+signal.pause()
 '''
 
 
@@ -73,12 +74,11 @@ def wait_for(predicate, timeout=5):
     while time.monotonic() < deadline:
         if predicate():
             return
-        time.sleep(.02)
     raise AssertionError('timed out')
 
 
 @pytest.fixture
-def setup(tmp_path, monkeypatch):
+def setup(tmp_path, monkeypatch, git_template):
     # Fake agent logs must contain only test credentials, never the developer's env secrets.
     for key in list(os.environ):
         if key not in ('PATH', 'LANG', 'HOME', 'TMPDIR', 'TERM'):
@@ -100,10 +100,8 @@ def setup(tmp_path, monkeypatch):
         path.chmod(0o755)
         commands[name] = str(path)
     repo = tmp_path / 'repo'
-    subprocess.run(['git', 'init', '-q', str(repo)], check=True)
-    (repo / 'hello.py').write_text('print(1)\n')
-    subprocess.run(['git', '-C', str(repo), 'add', '.'], check=True)
-    subprocess.run(['git', '-C', str(repo), '-c', 'user.name=test', '-c', 'user.email=test@example.invalid', 'commit', '-qm', 'initial'], check=True)
+    template, _ = git_template({'hello.py': 'print(1)\n'})
+    shutil.copytree(template, repo)
     item = {'id': 'test:1', 'target': 'test', 'object_key': '1', 'workdir': str(repo)}
     target = {'checkout': str(repo), 'runtime': {'state_dir': str(tmp_path/'core'),
         'command': [commands['workshop']], 'env': {'WORKSHOP_STATE_DIR': str(tmp_path/'core'), 'WORKSHOP_ROUND_TOKEN': 'one'}}}
@@ -592,7 +590,7 @@ def test_stop_treats_reused_group_leader_as_exited(tmp_path, has_exit_record):
     from workshop.plugins.executors.local.storage import identity
     executor = Executor('codex', state_dir=tmp_path/'state')
     directory = executor.directory('old-round')
-    unrelated = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(120)'], start_new_session=True)
+    unrelated = subprocess.Popen([sys.executable, '-c', 'import signal; signal.pause()'], start_new_session=True)
     try:
         assert identity(unrelated.pid)
         # Persisted identity belongs to the former owner of this now-reused PID/PGID.
@@ -792,7 +790,7 @@ def test_orca_codex_round_terminal_receipt_close_usage_and_resume(setup):
     assert executor.available(CONFIG)
     first = executor.launch('one', BRIEF, item, CONFIG, target)
     directory = executor.directory('one')
-    wait_for(lambda: (root/'receipts').exists())
+    wait_for(lambda: (root/'receipts').exists() and (root/'receipts').read_text().endswith('\n'))
     orca = [json.loads(line) for line in (root/'orca-calls').read_text().splitlines()]
     assert orca[0][:2] == ['worktree', 'create'] and orca[1][:2] == ['terminal', 'create']
     call = json.loads((root/'agents').read_text())

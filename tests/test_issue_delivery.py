@@ -2,7 +2,9 @@ import base64
 from dataclasses import asdict
 import json
 import os
+import sys
 from pathlib import Path
+import shutil
 import subprocess
 import time
 
@@ -32,7 +34,7 @@ BODY = '''## Kun 的原话
 
 
 @pytest.fixture
-def world(tmp_path, monkeypatch):
+def world(tmp_path, monkeypatch, git_template):
     commands = tmp_path / 'bin'
     commands.mkdir()
     script = Path(__file__).parent / 'fixtures/issue_delivery/fake_command.py'
@@ -41,18 +43,9 @@ def world(tmp_path, monkeypatch):
         file.write_text(script.read_text())
         file.chmod(0o755)
     repo = tmp_path / 'checkout'
-    repo.mkdir()
-    (repo / 'scripts').mkdir()
-    check = repo / 'scripts/check.sh'
-    check.write_text('#!/bin/sh\nprintf "raw check output\\n"\n')
-    check.chmod(0o755)
-    tag = repo / 'scripts/tag-release.sh'
-    tag.write_text(script.read_text())
-    tag.chmod(0o755)
-    subprocess.run(['/usr/bin/git', 'init', '-q', str(repo)], check=True)
-    subprocess.run(['/usr/bin/git', '-C', str(repo), 'add', '.'], check=True)
-    subprocess.run(['/usr/bin/git', '-C', str(repo), '-c', 'user.name=Test', '-c', 'user.email=t@localhost', 'commit', '-qm', 'fixture'], check=True)
-    sha = subprocess.check_output(['/usr/bin/git', '-C', str(repo), 'rev-parse', 'HEAD'], text=True).strip()
+    template, sha = git_template({'scripts/check.sh': '#!/bin/sh\nprintf "raw check output\\n"\n',
+                                  'scripts/tag-release.sh': script.read_text()})
+    shutil.copytree(template, repo)
     store = tmp_path / 'remote.json'
     state = {'sha': sha, 'checkout': str(repo), 'issue': {'number': 7, 'body': BODY, 'state': 'open'},
              'pr': {'number': 11, 'body': '<!-- workshop-item: alpha:7 -->', 'head': {'sha': sha}, 'state': 'open', 'merged': False}}
@@ -573,7 +566,7 @@ def test_preparation_cwd_and_check_timeout_are_evidence(world):
     assert output[0]['kind'] == 'prepare' and output[0]['stdout'].strip().endswith('/repo/scripts')
     assert output[1]['stdout'] == 'prepared\n'
     target = {**world['target'], 'check_timeout': 0.02}
-    output = world['io'].verify(target, world['sha'], [['/bin/sleep', '1']])
+    output = world['io'].verify(target, world['sha'], [[sys.executable, '-c', 'import signal; signal.pause()']])
     assert output[0]['exit_code'] == 124 and output[0]['timed_out']
 
 

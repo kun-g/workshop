@@ -878,8 +878,7 @@ class Engine:
         port, name = "flow", target["plugin"]
         unavailable = tuple(dict.fromkeys((*unavailable, *self.recently_unavailable(item))))
         try:
-            flow = self.plugins.get(port, name)
-            stages = flow.stages(target)
+            stages = self.call(port, name, "stages", target)
             validate_stages(stages)
             if item["stage"] not in stages:
                 following = next(s for s in stages if ALL_STAGES.index(s) > ALL_STAGES.index(item["stage"]))
@@ -1217,13 +1216,12 @@ class Engine:
             receipt = Receipt.parse(row["receipt"], received_at)
             target = self.rules.target(item["target"])
             port, name = "flow", target["plugin"]
-            flow = self.plugins.get(port, name)
             evidence = (Evidence(**row["assessment"]) if row.get("assessment") else
                         Evidence() if row.get("automatic_failure") else
                         self.call(port, name, "assess", item, receipt, target,
                                   identity=[item["id"], item["stage"], token, row["receipt"]], item=item["id"]))
             evidence.validate()
-            stages = flow.stages(target)
+            stages = self.call(port, name, "stages", target)
             decision = decide(item, receipt, evidence, stages, self.rules)
             self.fact("round_changed", {"token": token, "assessment": asdict(evidence)}, item["id"])
             required = self.required_reviews(item, evidence, target)

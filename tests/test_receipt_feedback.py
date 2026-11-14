@@ -4,7 +4,7 @@
 判成「未交回执」；codex 交 outcome=success、顶层带 head，被拒后原因没回给它，下一轮
 接回同一会话照抄同样的错。
 """
-from datetime import timedelta
+from datetime import datetime, timedelta
 import json
 import os
 from pathlib import Path
@@ -79,7 +79,6 @@ def wait_for(predicate, timeout=20):
     while time.monotonic() < deadline:
         if predicate():
             return
-        time.sleep(.02)
     raise AssertionError('timed out')
 
 
@@ -206,9 +205,8 @@ def test_cursor_no_receipt_fails_fast_with_reason(rig):
     engine.ingest(event())
     engine.tick()
     scenario('no-receipt')
-    started = time.monotonic()
     row, directory, _ = run_round(engine, make('cursor-grok'), target, repo)
-    assert time.monotonic() - started < 15  # 不等到每轮期限
+    assert engine.clock() < datetime.fromisoformat(row["deadline"])  # 进程退出即交失败回执，不等轮次期限
     assert row['receipt']['outcome'] == 'failed'
     assert row['receipt']['summary'].count('没有回执 JSON 对象') == 2
     assert '我先按只读方式看这次要审的提交' in row['receipt']['evidence'][0]
