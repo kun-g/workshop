@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 import json
 import re
 from typing import Any
-from .cards import validate_question, validate_notice
+from .cards import validate_question, validate_notice, question_rules, question_example
 
 STAGES = ("接单", "说清楚", "执行", "证据", "审查", "交付", "验收", "收尾", "观察")
 OUTCOMES = ("done", "failed", "nothing")
@@ -220,6 +220,15 @@ class Answer:
     cancelled: bool = False  # 上游作废或已清理，不是 Kun 的回答。
 
 
+class ReceiptError(ValueError):
+    def __init__(self, problems):
+        self.ask_only = all(p.startswith(("ask:", "ask[", "ask ")) for p in problems)
+        message = "；".join(problems)
+        if any(p.startswith(("ask:", "ask[", "ask ")) for p in problems) and "完整问卡要求" not in message:
+            message += "；完整问卡要求：" + question_rules()
+        super().__init__(message)
+
+
 @dataclass(frozen=True)
 class Receipt:
     outcome: str
@@ -277,7 +286,7 @@ class Receipt:
                     problems.append(f"{path} 必须是 JSON 对象")
                     continue
                 key = entry.get("key")
-                if not isinstance(key, str) or not key or key in keys:
+                if not isinstance(key, str) or not key.strip() or key in keys:
                     problems.append(f"{path}: {name} key 无效或重复")
                 else:
                     keys.add(key)
@@ -312,7 +321,7 @@ class Receipt:
                 elif leave.get("kind") == "等你" and not data.get("ask") and not data.get("notice"):
                     problems.append("leave: 等你须带问卡；旧版 notice 回执只兼容转为卡住")
         if problems:
-            raise ValueError("；".join(problems))
+            raise ReceiptError(problems)
         return cls(**data)
 
     @staticmethod
@@ -331,6 +340,8 @@ class Receipt:
             "最小回执 JSON 示例：\n```json\n" + json.dumps(minimal, ensure_ascii=False) + "\n```\n"
             "仅在本轮允许通知时添加 notice，示例（合入回执顶层，subject/text 为字符串，fyi 为 true）：\n```json\n"
             + json.dumps(notification, ensure_ascii=False) + "\n```\n"
+            + "仅在本轮允许提问时添加 ask；示例不授予提问或批准权限。\n" + question_rules() + "\n"
+            + question_example()
         )
 
     def json(self) -> dict:

@@ -740,7 +740,8 @@ def test_receipt_examples_are_valid_and_optional_defaults_unchanged(engine):
     import re
     instructions = Receipt.format_help()
     examples = [json.loads(raw) for raw in re.findall(r"```json\n(.*?)\n```", instructions, re.S)]
-    minimal, notification = examples
+    minimal, notification, question = examples
+    Receipt.parse({**minimal, **question}, engine.clock())
     parsed = Receipt.parse(minimal, engine.clock())
     assert parsed.advance is None and parsed.notice == [] and parsed.leave is None
     parsed = Receipt.parse({**minimal, **notification}, engine.clock())
