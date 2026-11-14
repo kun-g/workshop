@@ -368,18 +368,24 @@ def test_round_started_in_the_restart_tick_survives_the_new_daemon(world, main_c
 
 def test_run_loop_exits_after_the_tick_that_requested_restart(tmp_path, monkeypatch):
     import workshop.cli as cli
+    from contextlib import nullcontext
+    from types import SimpleNamespace
     ticks = []
 
     class Restarting:
         def __init__(self, *args, **kwargs):
             self.restart_requested = False
 
-        def tick(self):
+        def wake_paths(self):
+            return {}
+
+        def tick(self, received_at=None):
             ticks.append(True)
             self.restart_requested = True
 
+    mailbox = SimpleNamespace(wait=lambda seconds: pytest.fail('重启请求后不再等下一拍'))
     monkeypatch.setattr(cli, 'Engine', Restarting)
-    monkeypatch.setattr(cli.time, 'sleep', lambda seconds: pytest.fail('重启请求后不再等下一拍'))
+    monkeypatch.setattr(cli, 'Mailbox', lambda *args: nullcontext(mailbox))
     assert cli.main(['--state-dir', str(tmp_path), 'run', '--interval', '60']) == 0
     assert ticks == [True]
 

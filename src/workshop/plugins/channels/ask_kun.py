@@ -299,6 +299,10 @@ class AskKun:
             raise RuntimeError(f"列表缺号但不能确认清理：{exc}") from exc
         return Answer(card["id"], "", cancelled=True)
 
+    def wake_paths(self, target=None):
+        return [str(Path((target or {}).get("ask_kun_state") or os.environ.get(
+            "ASK_KUN_STATE", "~/.local/state/ask-kun/asks.json")).expanduser())]
+
     def poll(self, cards):
         cards = [card for card in cards if not card.get("answered") and not card.get("cancelled")]
         if not cards:

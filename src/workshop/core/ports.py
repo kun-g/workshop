@@ -21,6 +21,10 @@ class TargetBlocked(Exception):
 
 
 class Source(Protocol):
+    def wake_paths(self, target: dict | None = None) -> list[str]:
+        """可选、纯本地查询（也兼容无参数实现）。返回文件路径；文件变化使本来源在该交付对象的 poll 缓存过期。"""
+        ...
+
     def poll(self, target: dict, cursor: str | None) -> Poll:
         """整批事件和 cursor 同事务；Retryable 退避，其他异常隔离受影响类。"""
         ...
@@ -97,6 +101,10 @@ class Executor(Protocol):
 
 
 class Channel(Protocol):
+    def wake_paths(self, target: dict | None = None) -> list[str]:
+        """可选、纯本地查询（也兼容无参数实现）。逐交付对象收集路径；变化使通道的 poll 缓存过期。"""
+        ...
+
     def ask(self, key: str, card: Question) -> str:
         """返回外部编号。调用前核心已持久记发送中，异常后先 reconcile。"""
         ...

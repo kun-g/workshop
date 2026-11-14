@@ -74,6 +74,7 @@ targets:
     sources: [github]
     github_overlap_seconds: 60
     short_name: ws
+    ask_kun_state: ~/.local/state/ask-kun/asks.json
     ci: none
     prepare: [{argv: [uv, sync, --locked]}]
     check_timeout: 300

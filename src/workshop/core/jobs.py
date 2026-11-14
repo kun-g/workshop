@@ -28,6 +28,7 @@ import traceback
 
 from .models import After, Answer, Brief, Classification, Event, Evidence, FlowBrief, Poll, Receipt, Release, RoundUsage, Selection, Started, Usage
 from .ports import ChannelRejected, Retryable, Unavailable, TargetBlocked
+from .wake import ring
 from .records import StoredBrief, RoundHistory, ResultHistory, materialize
 
 
@@ -159,6 +160,9 @@ class Jobs:
         self.children = {}
         self.spawned = 0
         self.swept = 0.0
+        self.due = []
+        self.again = False
+        self.retries = {}
         self.launcher = ThreadPoolExecutor(max_workers=1, thread_name_prefix="workshop-start")
         # Jobs 在进入主循环前构造；先起好线程，一拍内只入队，不等线程启动。
         self.launcher.submit(lambda: None).result()
@@ -174,12 +178,23 @@ class Jobs:
         identity = list(args) if identity is None else identity
         path = self.path(port, name, method, identity)
         label = LABELS.get((port, method))
+        attempts, retry_at = self.retries.get(path, (0, 0))
+        if retry_at > self.clock():
+            self.due.append(retry_at)
+            raise Pending(path.name, label, item)
         # 极快的子进程可能在启动线程公布 pid 前写完结果；此时不能消费并删目录。
         starting = read(path / "pid") == -1 and held(path)
         result = None if starting else read(path / "result.json")
+        if result is not None and (path / "invalidated").exists():
+            shutil.rmtree(path, ignore_errors=True)
+            result = None
         if result is not None:
             fresh = FRESH.get((port, method))
             if "error" in result:
+                # 完成信立即叫醒主循环；没有上层退避的调用也不能因此连续重启失败作业。
+                retry_at = self.clock() + min(60, 2 ** min(attempts, 6))
+                self.retries[path] = attempts + 1, retry_at
+                self.due.append(retry_at)
                 shutil.rmtree(path, ignore_errors=True)
                 error = result["error"]
                 kind = ERRORS.get(error.get("kind"))
@@ -187,18 +202,22 @@ class Jobs:
                     raise kind(error.get("message", ""))
                 raise JobFailed(error.get("repr", "作业失败"), error.get("message", ""))
             # 0 表示只消费一次，不是完成后立即过期。
-            if fresh is not None and fresh > 0 and self.clock() - result.get("finished", 0) > fresh:
+            if fresh is not None and fresh > 0 and self.clock() - result.get("finished", 0) >= fresh:
                 shutil.rmtree(path, ignore_errors=True)
             else:
                 if fresh == 0:
                     shutil.rmtree(path, ignore_errors=True)
                 else:
                     os.utime(path / "result.json")
+                if fresh is not None and fresh > 0:
+                    self.due.append(result.get("finished", 0) + fresh)
+                self.retries.pop(path, None)
                 return decode(result["ok"])
         elif (path / "pid").exists():
             if held(path):
                 spec = read(path / "spec.json") or {}
-                if self.clock() > spec.get("deadline", float("inf")):
+                self.due.append(spec.get("deadline", self.clock() + self.deadline))
+                if self.clock() >= spec.get("deadline", float("inf")):
                     self.kill(path)
                     raise Retryable(f"作业超过 {self.deadline} 秒没出结果，已结束：{port}/{name}.{method}")
                 raise Pending(path.name, label, item)
@@ -208,11 +227,21 @@ class Jobs:
             shutil.rmtree(path, ignore_errors=True)
             raise Retryable(f"作业进程没写结果就退出了：{port}/{name}.{method}")
         if self.spawned >= SPAWNS_PER_TICK:
+            self.again = True
             raise Pending(path.name, label, item)
         self.start(path, {"port": port, "name": name, "method": method, "args": encode(list(args)),
                           "item": item, "label": label, "lookup": lookup,
                           "started": self.clock(), "deadline": self.clock() + self.deadline})
         raise Pending(path.name, label, item)
+
+    def invalidate(self, port, name, identity):
+        """在途调用不终止；它的结果回来后丢掉一次，再查变化后的状态。"""
+        path = self.path(port, name, "poll", identity)
+        if path.is_dir():
+            (path / "invalidated").touch()
+
+    def wait_timeout(self):
+        return 0 if self.again else max(0, min([60, *(at - self.clock() for at in self.due)]))
 
     def start(self, path, spec):
         shutil.rmtree(path, ignore_errors=True)
@@ -230,6 +259,7 @@ class Jobs:
             os.close(lock)
             os.close(output)
             raise
+        self.due.append(spec["deadline"])
         self.spawned += 1
 
     def spawn(self, path, lock, output):
@@ -264,6 +294,7 @@ class Jobs:
             os.close(output)
             if (path / "cancelled").exists():
                 shutil.rmtree(path, ignore_errors=True)
+            ring(self.directory.parent)
 
     def kill(self, path):
         try:
@@ -283,6 +314,8 @@ class Jobs:
         """每拍开头调用：收掉已退出的作业进程（WNOHANG，不等），重置这一拍的启动数，
         定期清掉一天没人取的结果和没启动成的目录。"""
         self.spawned = 0
+        self.due = []
+        self.again = False
         while True:
             try:
                 child = self.launched.get_nowait()
@@ -324,3 +357,4 @@ def execute(path, plugins, lookup=None):
         result = {"error": {"kind": kind, "message": str(exc), "repr": repr(exc)}}
     result["finished"] = time.time()
     write(path / "result.json", result)
+    ring(path.parent.parent)

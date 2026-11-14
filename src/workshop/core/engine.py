@@ -8,6 +8,7 @@ from pathlib import Path
 import uuid
 import sys
 import hashlib
+from inspect import signature
 import time
 
 from .gates import advance_problem, decide, overlaps, validate_stages
@@ -1548,8 +1549,66 @@ class Engine:
         except Exception as exc:
             self.broken(item["target"], "flow", target["plugin"], exc)
 
-    def tick(self):
+    def wake_paths(self):
+        """可选端口只返回本地路径；路径变动只使声明者的查询结果过期。"""
+        paths = {}
+        channel = self.rules.data["channel"]
+        for target, rule in self.rules.data["targets"].items():
+            entries = [("source", name, (target,)) for name in rule.get("sources", [])]
+            entries.append(("channel", channel, ("poll",)))
+            for port, name, identity in entries:
+                method = getattr(self.plugins.get(port, name), "wake_paths", None)
+                if method:
+                    declared = method(self.rules.target(target)) if signature(method).parameters else method()
+                    for path in declared:
+                        path = Path(path).expanduser().absolute()
+                        paths.setdefault(path, set()).add((port, name, identity))
+        return paths
+
+    def awaken(self, wake, paths):
+        if self.jobs is None:
+            return
+        affected = set()
+        for path in wake.paths:
+            affected.update(paths.get(path, ()))
+        for message in wake.messages:
+            parts = message.split(":", 2)
+            if len(parts) == 3 and parts[0] == "source":
+                _, target, name = parts
+                if name in self.rules.data["targets"].get(target, {}).get("sources", []):
+                    affected.add(("source", name, (target,)))
+        for port, name, identity in affected:
+            self.jobs.invalidate(port, name, list(identity))
+
+    def wait_timeout(self):
+        """等到最近一个尚需处理的截止时间，最长 60 秒写一次心跳。"""
+        now = self.clock()
+        start = getattr(self, "tick_started", now)
+        waits = [60]
+        def include(value, *, overdue=False):
+            if value:
+                at = datetime.fromisoformat(value)
+                if overdue or at > start:
+                    waits.append(max(0, (at - now).total_seconds()))
+        for timer in self.log.all("timers"):
+            if not timer["fired"] and not self.control(timer["target"]).get("broken"):
+                include(timer["at"], overdue=True)
+        for control in self.log.all("controls"):
+            if control["id"].startswith("retry:"):
+                include(control.get("at"))
+        for row in self.active():
+            include(row.get("deadline"))
+        for item in self.log.all("items"):
+            include(item.get("retry_at"))
+            include(item.get("release_at"))
+        if self.jobs is not None:
+            waits.append(self.jobs.wait_timeout())
+        return min(waits)
+
+    def tick(self, received_at=None):
         began = time.monotonic()
+        self.tick_started = self.clock()
+        self.wake_ms = round(max(0, began - received_at) * 1000, 3) if received_at is not None else None
         try:
             self._tick(began)
         except Exception as exc:
@@ -1578,7 +1637,7 @@ class Engine:
                 self.fact("control", {"id": failure["id"], "since": now})
         # tick_ms：这一拍从进入到写心跳前的耗时；一拍只读写事实库和本地文件，应是毫秒级。
         elapsed = round((time.monotonic() - began) * 1000) if began is not None else None
-        temporary.write_text(json.dumps({"at": now, "last_ok_at": now, "tick_ms": elapsed, "active": self.occupied(),
+        temporary.write_text(json.dumps({"at": now, "last_ok_at": now, "tick_ms": elapsed, "wake_ms": getattr(self, "wake_ms", None), "active": self.occupied(),
             "delivery_failed_count": len(failures),
             "delivery_failed_since": min((c.get("since", now) for c in failures), default=None)}))
         with self.log.transaction():

@@ -4,7 +4,6 @@ import json
 import os
 from pathlib import Path
 import sys
-import time
 
 from .core.engine import Engine, finder
 from .core.jobs import Jobs, execute
@@ -12,6 +11,7 @@ from .core.log import Log
 from .core.models import Event
 from .core.report import resolve, status, unfiled, usage, why
 from .core.rules import Rules
+from .core.wake import Mailbox, ring
 from .registry import Registry, load_rules
 
 
@@ -61,7 +61,7 @@ def parser():
     resume.add_argument("--seen", help="上次看过的全部事实编号，逗号分隔；空清单填 none")
     run = commands.add_parser("run", help="守护进程：每拍只读写状态库和本地文件，插件调用放到后台作业；--once 只跑一拍，插件调用就地进行")
     run.add_argument("--once", action="store_true")
-    run.add_argument("--interval", type=float, default=2)
+    run.add_argument("--interval", type=float, default=None, help="兼容旧调用；已改为事件唤醒，不再使用固定间隔")
     job = commands.add_parser("job", help="（守护进程内部用）在独立进程里跑一个作业，结果写回作业目录")
     job.add_argument("directory", type=Path)
     return result
@@ -80,6 +80,7 @@ def current_rules(args, saved):
 def main(argv=None):
     args = parser().parse_args(argv)
     log = Log(args.state_dir / "workshop.db")
+    jobs = None
     try:
         if args.command == "status":
             print(status(log))
@@ -112,6 +113,7 @@ def main(argv=None):
             if args.command in ("event", "receipt"):
                 data = json.loads(args.json if args.json is not None else args.file.read_text() if args.file else sys.stdin.read())
                 added = engine.ingest(Event(**data), round_token=os.environ.get("WORKSHOP_ROUND_TOKEN"), ingress="external") if args.command == "event" else engine.submit(args.token, data)
+                ring(args.state_dir)
                 print("已收到并提交" if added else "已收到过，未重复记录")
             elif args.command == "abort":
                 engine.abort(args.token)
@@ -126,6 +128,7 @@ def main(argv=None):
                 print(f"已放弃 {item_id}；串行路径已让出，要再做就返工")
             elif args.command == "answer":
                 card = engine.answer_here(args.card, args.choice, args.quote, args.session)
+                ring(args.state_dir)
                 print(f'已记到 {card["item"]} 的卡 {card.get("external") or card["id"]}：{args.choice}')
             elif args.command == "recover":
                 item_id = resolve(log, rules.data["targets"], args.item)
@@ -153,17 +156,22 @@ def main(argv=None):
                     engine.resume(args.target, selected, expected=seen)
                     print(f"已恢复 {args.target}，补 {len(selected)} 个事件")
             elif args.command == "run":
-                if args.interval <= 0:
+                if args.interval is not None and args.interval <= 0:
                     raise ValueError("interval 必须为正数")
-                while True:
+                if args.once:
                     engine.tick()
-                    if engine.restart_requested:
-                        # 交付改了车间自己的代码；正常退出，由 launchd KeepAlive 拉起新代码。
-                        print("车间代码已更新，这一拍结束，退出等守护拉起", flush=True)
-                        break
-                    if args.once:
-                        break
-                    time.sleep(args.interval)
+                else:
+                    paths = engine.wake_paths()
+                    with Mailbox(args.state_dir, paths) as mailbox:
+                        received_at = None
+                        while True:
+                            engine.tick(received_at)
+                            if engine.restart_requested:
+                                print("车间代码已更新，这一拍结束，退出等守护拉起", flush=True)
+                                break
+                            wake = mailbox.wait(engine.wait_timeout())
+                            engine.awaken(wake, paths)
+                            received_at = wake.received_at
         return 0
     except (ValueError, TypeError, KeyError, OSError) as exc:
         print(f"车间：{exc}", file=sys.stderr)
@@ -171,6 +179,8 @@ def main(argv=None):
     except KeyboardInterrupt:
         return 130
     finally:
+        if jobs is not None:
+            jobs.launcher.shutdown(wait=True)
         log.close()
 
 
