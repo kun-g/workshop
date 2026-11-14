@@ -311,7 +311,7 @@ class IssueDelivery:
             "交付": (
                 "合并和打 tag 只由流程 after 做，本轮不要做。给回执 pr/head 并推进验收。"
                 "合并冲突或 PR 已关闭没合并时，本轮只交 advance=\"执行\"，到执行阶段再合 main、解冲突。"
-                "release=self（交付对象是车间自己）时，合并后由流程快进主检出并重启车间，本轮不要动主检出、不要重启。"
+                "车间自己的 issue 合并即交付；上线由定时发版流程处理，本轮不要动主检出、不要重启。"
                 f"若已合并且 release=tag，{self._runbook(target, state) if stage == '交付' else '照规则 release_runbook 指向的发版手册'}完成发布；集群授权只用 "
                 "~/workspace/runtime/repos/grant-console/scripts/request_grant.py，--requested-by 带本活 id。"
                 "要发哪些卡以发版手册为准；手册要求的卡都要 Kun 批，一张都不能代批或跳过。"
@@ -776,52 +776,6 @@ class IssueDelivery:
             raise BusinessWait(f"合并没成功，GitHub 还没算出能否合并，稍后回查。gh 输出：{output}", rerun=False)
         raise Retryable(failure(argv, merging))
 
-    def _self_update(self, target, state):
-        """交付对象是车间自己：主检出快进到合并提交，请核心这一拍结束后退出，由 launchd 拉起。"""
-        sha = state["merge"]
-        checkout = Path(target["checkout"]).expanduser().resolve()
-        git = [self.io.git, "-C", str(checkout)]
-
-        def skipped(why, *, updated=False):
-            state["self_update"] = {"merge": sha, "updated": updated, "restart": False, "reason": why}
-            prepare = "、".join(" ".join(p["argv"]) for p in target.get("prepare", [])) or "准备命令"
-            step = (f"主检出已经是新代码，环境可能只装了一半；车间要是在这之前因别的原因重启，会用新代码起来。"
-                    f"在主检出重跑 {prepare} 成功后，再重启车间守护进程" if updated else
-                    f"处理后在主检出执行 git merge --ff-only {sha}，再重启车间守护进程")
-            return After(notice=(f'{target["name"]} 已合并 {sha}，但{why}，车间还在跑合并前的代码。'
-                                 f"主检出：{checkout}。{step}（launchctl kickstart -k gui/$(id -u)/com.kun.workshop）。这条不用回。"))
-
-        status = run(git + ["status", "--porcelain"], check=False)
-        if status.returncode:
-            return skipped(f"读不了主检出状态（{tail(status.stderr)}），没有快进")
-        if status.stdout.strip():
-            return skipped("主检出有未提交的改动或未跟踪的文件，没有快进")
-        branch = run(git + ["symbolic-ref", "--quiet", "--short", "HEAD"], check=False).stdout.strip()
-        if branch != "main":
-            return skipped(f"主检出不在 main（现在是 {branch or '游离 HEAD'}），没有快进")
-        if run(git + ["merge-base", "--is-ancestor", sha, "HEAD"], check=False).returncode:
-            run(git + ["fetch", f'https://github.com/{target["repo"]}.git', "+refs/heads/main:refs/remotes/origin/main"])
-            moved = run(git + ["merge", "--ff-only", sha], check=False)
-            if moved.returncode:
-                return skipped(f"主检出不能快进到合并提交（{tail(moved.stderr) or tail(moved.stdout)}）")
-        # 依赖或入口点变了要先装好，不然拉起后起不来；用规则里 prepare 的同一组命令。
-        for step in target.get("prepare", []):
-            cwd = (checkout / step.get("cwd", ".")).resolve()
-            if not cwd.is_relative_to(checkout):
-                raise ValueError("准备命令目录须在主检出内")
-            command = list(step["argv"])
-            try:
-                if "/" not in command[0]:
-                    command[0] = executable(command[0])
-                prepared = run(command, cwd=cwd, timeout=target.get("release_timeout", 300), check=False)
-            except (RuntimeError, Retryable) as exc:
-                return skipped(f"已快进主检出，但准备命令 {' '.join(step['argv'])} 没跑成（{exc}），没有重启", updated=True)
-            if prepared.returncode:
-                return skipped(f"已快进主检出，但准备命令 {' '.join(step['argv'])} 失败（{tail(prepared.stderr) or tail(prepared.stdout)}），"
-                               "没有重启", updated=True)
-        state["self_update"] = {"merge": sha, "updated": True, "restart": True}
-        return After(restart=True)
-
     @github_scope
     def after(self, item, completed_stage, key, target):
         try:
@@ -922,9 +876,7 @@ class IssueDelivery:
                     raise BusinessWait("合并结果未确认")
                 state["merge"] = pr["merge_commit_sha"]
                 self.io.save(item, target, state)
-                if target.get("release", "none") == "self":
-                    result = self._self_update(target, state)
-                elif target.get("release", "none") == "tag":
+                if target.get("release", "none") == "tag":
                     self._tag(item, target, state)
                     from workshop.core.models import Receipt
                     if report(Receipt(**item.get("result", {"outcome": "done", "summary": ""}))).get("release_submitted") is True:
@@ -932,8 +884,9 @@ class IssueDelivery:
                     if not self._deployed(target, state["merge"]):
                         result = After(pending=True, rerun=not state.get("release_submitted", False),
                                        reason="线上版本尚未核对通过", next="按发版手册发布" if not state.get("release_submitted") else "定时回查线上版本")
-                elif target.get("release", "none") != "none":
+                elif target.get("release", "none") not in ("none", "self"):
                     raise BusinessWait("未知 release 类型")
+                # 在途作业可能持有旧 release=self 快照：兼容为只合并，不再自更新。
                 if not result.pending and state["merge"] not in state.setdefault("delivered", []):
                     # 交付完成的事实按提交号记下；release=tag 要上线核对过才走到这里。重走验收只认这里的提交。
                     state["delivered"].append(state["merge"])
