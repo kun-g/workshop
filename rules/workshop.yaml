@@ -8,6 +8,7 @@ targets:
     # 阶段开关：去掉审查（Kun 11-13：「先跳过 Review 加快交付，反正现在的系统是我自己在用」）。要恢复就把审查加回证据和交付之间。
     stages: [接单, 说清楚, 执行, 证据, 交付, 验收, 收尾]
     sources: [github]
+    github_overlap_seconds: 60
     repo: kun-g/grant-console
     # 仅作为证据/审查 clone 的只读来源；发布在插件状态目录 releases/ 的专用检出。
     checkout: ~/workspace/runtime/repos/grant-console
@@ -69,6 +70,7 @@ targets:
     # 阶段开关：去掉审查（Kun 11-13：「先跳过 Review 加快交付，反正现在的系统是我自己在用」）。要恢复就把审查加回证据和交付之间。
     stages: [接单, 说清楚, 执行, 证据, 交付, 验收, 收尾]
     sources: [github]
+    github_overlap_seconds: 60
     short_name: ws
     ci: none
     prepare: [{argv: [uv, sync, --locked]}]

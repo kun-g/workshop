@@ -1,5 +1,7 @@
 """GitHub 的条件读取；游标与事件由核心一起确认，不另写来源账本。"""
 from copy import deepcopy
+from datetime import datetime, timedelta
+import fcntl
 import hashlib
 import json
 import re
@@ -31,7 +33,13 @@ class GitHubSource:
         try:
             return json.loads(path.read_text())
         except (OSError, ValueError):
-            return None
+            # 旧共享目录仅作迁移回退；缺文件时 _get 会无条件读取，不把缓存当事实。
+            try:
+                value = json.loads((self.legacy_root / path.name).read_text())
+            except (OSError, ValueError):
+                return None
+            self._save_response(value)
+            return value
 
     def _save_response(self, value):
         payload = json.dumps(value, sort_keys=True, ensure_ascii=False)
@@ -93,25 +101,65 @@ class GitHubSource:
         return rows
 
     def poll(self, target, cursor):
-        state = json.loads(cursor) if cursor else {"cache": {}, "known": {}, "seen": {}}
-        state = deepcopy(state)
-        self.cache_root = self.state_dir or Path(target.get("github_cache_dir", "~/.local/state/workshop/github-responses")).expanduser()
+        self.legacy_root = self.state_dir or Path(target.get(
+            "github_cache_dir", "~/.local/state/workshop/github-responses")).expanduser()
+        scope = hashlib.sha256(json.dumps([target["repo"], target["name"]]).encode()).hexdigest()
+        self.cache_root = self.legacy_root / scope
         self.cache_root.mkdir(parents=True, exist_ok=True)
-        for record in state["cache"].values():
+        # 同一交付对象的读取与回收串行；各交付对象不能清理彼此的缓存。
+        with (self.cache_root / ".lock").open("a") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            return self._poll(target, cursor)
+
+    def _poll(self, target, cursor):
+        state = deepcopy(json.loads(cursor)) if cursor else {"cache": {}, "known": {}, "seen": {}}
+        cache, known, seen = state["cache"], state["known"], state["seen"]
+        for record in cache.values():
             if "data" in record:
                 record["fingerprint"] = self._save_response(record.pop("data"))
+        # 缺水位的旧游标必须重新完整建立快照，不能沿用旧扫描的 refreshed。
+        if state.get("version") != 2:
+            state["refreshed"] = []
+            state["version"] = 2
+            state["legacy_cleanup"] = "copy"
+            # 先保留旧游标引用的每份响应，待新目录的游标确认后才清理共享目录。
+            for record in cache.values():
+                self._cached(record)
         self.refreshed = set(state.get("refreshed", []))
         self.requests = 0
         self.limit = target.get("github_requests_per_tick", 20)
         self.deadline = time.monotonic() + target.get("github_poll_seconds", 15)
+        overlap = target.get("github_overlap_seconds", 60)
         if type(self.limit) is not int or self.limit < 1:
             raise ValueError("github_requests_per_tick 必须是正整数")
-        cache, known, seen = state["cache"], state["known"], state["seen"]
+        if type(overlap) is not int or overlap < 0:
+            raise ValueError("github_overlap_seconds 必须是非负整数")
         repo, name = target["repo"], target["name"]
         base = f"repos/{repo}"
         label = target.get("label", "Ready for Agent")
         bots = set(target.get("github_bot_logins", []))
+        listed = state.setdefault("listed", {})
+        pr_keys = state.setdefault("pr_keys", {})
+        open_prs = state.setdefault("open_prs", {})
+        # 磁盘回收延迟到下一次成功轮询，当前已确认的游标在返回/确认之间仍可重放。
+        pinned = {r["fingerprint"] for r in cache.values() if r.get("fingerprint")}
         events = []
+
+        def endpoint(path, watermark, **params):
+            if watermark:
+                since = datetime.fromisoformat(watermark.replace("Z", "+00:00")) - timedelta(seconds=overlap)
+                params["since"] = since.isoformat().replace("+00:00", "Z")
+            return base + path + "?" + urlencode({**params, "per_page": 100})
+
+        def latest(rows, previous):
+            # 空仓库也能结束首次建立快照；以后没有变化不把水位推进到本机时间。
+            return max([previous or "1970-01-01T00:00:00Z", *[r["updated_at"] for r in rows]])
+
+        def marker(pr):
+            matches = re.findall(r"<!-- workshop-item: ([^\s<>]+) -->", pr.get("body") or "")
+            if len(matches) == 1 and matches[0].startswith(name + ":"):
+                return matches[0][len(name) + 1:]
+            return None
 
         def emit(kind, number, key, identity, value, action="update"):
             signature = hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()
@@ -141,52 +189,107 @@ class GitHubSource:
                 action = "rework" if comment.get("user", {}).get("login") == "kun-g" and rework else "update"
                 emit(kind, number, key, comment["id"], comment, action)
 
-        try:
-            issues = self._list(base + "/issues?" + urlencode({"state": "all", "labels": label, "per_page": 100}), cache)
-            for issue in issues:
-                if "pull_request" not in issue and (issue.get("state") != "closed" or str(issue["number"]) in known):
-                    known[str(issue["number"])] = True
-            # 保留已接单对象，即使移除标签或收尾，仍能接受评论和返工。
-            for number in known:
-                issue, _ = self._get(f"{base}/issues/{number}", cache)
-                changes = self._list(f"{base}/issues/{number}/events?per_page=100", cache)
-                emit("issue", number, number, "body", issue)
-                # 程序建单的初次标签与 issue 同次创建，不能冒充 Kun 再放行。
-                own_intake = re.search(r"<!-- workshop-intake: [^<>]+ -->", issue.get("body") or "")
-                initial = next((c.get("id") for c in changes if c.get("event") == "labeled" and c.get("label", {}).get("name") == label), None) if own_intake else None
-                own_labels = state.setdefault("own_labels", {})
-                if initial is not None:
-                    own_labels[number] = initial
-                initial = own_labels.get(number)
-                for change in changes:
-                    if change.get("event") == "labeled" and change.get("label", {}).get("name") == label:
-                        action = "ready" if change.get("actor", {}).get("login") == "kun-g" and change["id"] != initial else "update"
-                        emit("label", number, number, change["id"], change, action)
-                comments(f"{base}/issues/{number}/comments", "issue-comment", number, number)
+        def read_issue(number):
+            issue, _ = self._get(f"{base}/issues/{number}", cache)
+            changes = self._list(f"{base}/issues/{number}/events?per_page=100", cache)
+            emit("issue", number, number, "body", issue)
+            own_intake = re.search(r"<!-- workshop-intake: [^<>]+ -->", issue.get("body") or "")
+            initial = next((c.get("id") for c in changes if c.get("event") == "labeled"
+                            and c.get("label", {}).get("name") == label), None) if own_intake else None
+            own_labels = state.setdefault("own_labels", {})
+            if initial is not None:
+                own_labels[number] = initial
+            initial = own_labels.get(number)
+            for change in changes:
+                if change.get("event") == "labeled" and change.get("label", {}).get("name") == label:
+                    action = "ready" if change.get("actor", {}).get("login") == "kun-g" and change["id"] != initial else "update"
+                    emit("label", number, number, change["id"], change, action)
+            comments(f"{base}/issues/{number}/comments", "issue-comment", number, number)
 
-            for pr in self._list(f"{base}/pulls?state=all&per_page=100", cache):
-                marker = re.findall(r"<!-- workshop-item: ([^\s<>]+) -->", pr.get("body") or "")
-                if len(marker) != 1 or not marker[0].startswith(name + ":"):
+        def read_pr(number):
+            pr, _ = self._get(f"{base}/pulls/{number}", cache)
+            key = marker(pr)
+            if key is None:
+                open_prs.pop(number, None)
+                pr_keys.pop(number, None)
+                return
+            sha = pr["head"]["sha"]
+            pr_keys[number] = key
+            emit("pr-head", number, key, "head", {"sha": sha, "body": pr.get("body"), "state": pr["state"]})
+            comments(f"{base}/issues/{number}/comments", "pr-comment", number, key)
+            comments(f"{base}/pulls/{number}/comments", "pr-review-comment", number, key)
+            for review in self._list(f"{base}/pulls/{number}/reviews?per_page=100", cache):
+                if not automated(review):
+                    rework = re.fullmatch(r"不对(?:[，,:：。！!\s].*)?", (review.get("body") or "").strip(), re.S)
+                    action = "rework" if review.get("user", {}).get("login") == "kun-g" and rework else "update"
+                    emit("pr-review", number, key, review["id"], review, action)
+            if pr["state"] == "open":
+                open_prs[number] = {"sha": sha, "key": key}
+            else:
+                open_prs.pop(number, None)
+
+        try:
+            issues = self._list(endpoint("/issues", state.get("watermark"), state="all", sort="updated"), cache)
+            for issue in issues:
+                number = str(issue["number"])
+                signature = hashlib.sha256(json.dumps(issue, sort_keys=True).encode()).hexdigest()
+                # 重叠会反复列出最后一批对象；内容未变时不能反复查询详情。
+                if listed.get(number) == signature:
                     continue
-                key = marker[0][len(name) + 1:]
-                number, sha = str(pr["number"]), pr["head"]["sha"]
-                emit("pr-head", number, key, "head", {"sha": sha, "body": pr.get("body"), "state": pr["state"]})
-                comments(f"{base}/issues/{number}/comments", "pr-comment", number, key)
-                comments(f"{base}/pulls/{number}/comments", "pr-review-comment", number, key)
-                for review in self._list(f"{base}/pulls/{number}/reviews?per_page=100", cache):
-                    if not automated(review):
-                        rework = re.fullmatch(r"不对(?:[，,:：。！!\s].*)?", (review.get("body") or "").strip(), re.S)
-                        action = "rework" if review.get("user", {}).get("login") == "kun-g" and rework else "update"
-                        emit("pr-review", number, key, review["id"], review, action)
-                # 已关闭对象继续接收评论；CI 只轮询仍打开的对象。
-                if pr["state"] == "open":
-                    checks, _ = self._get(f"{base}/commits/{sha}/check-runs?per_page=100", cache)
-                    status, _ = self._get(f"{base}/commits/{sha}/status", cache)
-                    emit("pr-ci", number, key, sha, {"sha": sha, "checks": checks, "status": status})
+                if "pull_request" in issue:
+                    if marker(issue) is None:
+                        open_prs.pop(number, None)
+                        pr_keys.pop(number, None)
+                        listed.pop(number, None)
+                        continue
+                    read_pr(number)
+                elif number in known or (issue.get("state") != "closed" and
+                                         any(v["name"] == label for v in issue.get("labels", []))):
+                    known[number] = True
+                    read_issue(number)
+                else:
+                    continue
+                # 全部详情完成后再记摘要，中途让出请求预算时下次仍会补完。
+                listed[number] = signature
+
+            review_comments = self._list(endpoint("/pulls/comments", state.get("review_watermark"),
+                                                  sort="updated", direction="asc"), cache)
+            for comment in review_comments:
+                parent = re.fullmatch(r"https://api\.github\.com/" + re.escape(base) + r"/pulls/(\d+)",
+                                      comment.get("pull_request_url", ""))
+                if parent is None or parent[1] not in pr_keys or automated(comment):
+                    continue
+                number = parent[1]
+                rework = re.fullmatch(r"不对(?:[，,:：。！!\s].*)?", (comment.get("body") or "").strip(), re.S)
+                action = "rework" if comment.get("user", {}).get("login") == "kun-g" and rework else "update"
+                emit("pr-review-comment", number, pr_keys[number], comment["id"], comment, action)
+
+            # CI 的变化不必推进 PR.updated_at；只保留开放标记对象的头提交。
+            for number, pr in open_prs.items():
+                sha = pr["sha"]
+                checks, _ = self._get(f"{base}/commits/{sha}/check-runs?per_page=100", cache)
+                status, _ = self._get(f"{base}/commits/{sha}/status", cache)
+                emit("pr-ci", number, pr["key"], sha, {"sha": sha, "checks": checks, "status": status})
         except _YieldPoll:
             state["refreshed"] = sorted(self.refreshed)
         else:
+            state["watermark"] = latest(issues, state.get("watermark"))
+            state["review_watermark"] = latest(review_comments, state.get("review_watermark"))
+            state["cache"] = {k: v for k, v in cache.items() if k in self.refreshed}
             state["refreshed"] = []
+            keep = pinned | {r["fingerprint"] for r in state["cache"].values()}
+            for path in self.cache_root.glob("*.json"):
+                if path.stem not in keep:
+                    path.unlink()
+            if state.get("legacy_cleanup") == "ready":
+                # 旧共享目录仅存可重建响应。尚未迁移的其他游标缺缓存会重新 GET，
+                # 不丢 seen/known/事件；各交付对象的新目录永不互相清理。
+                for path in self.legacy_root.glob("*.json"):
+                    if re.fullmatch(r"[0-9a-f]{64}", path.stem):
+                        path.unlink(missing_ok=True)
+                state.pop("legacy_cleanup")
+            elif state.get("legacy_cleanup") == "copy":
+                state["legacy_cleanup"] = "ready"
         return Poll(events, json.dumps(state, ensure_ascii=False))
 
 
