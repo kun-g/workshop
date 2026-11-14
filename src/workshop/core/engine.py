@@ -29,6 +29,11 @@ def gate(ingress):
     return {"release_gate": True} if ingress == "source" else {}
 
 
+def serial_stage(stage):
+    """串行路径只保护执行至交付，含两个端点及中间启用的阶段。"""
+    return STAGES.index("执行") <= STAGES.index(stage) <= STAGES.index("交付")
+
+
 def finder(log, target):
     """给流程判定用的只读查找：按外部编号找卡，或按对象键（先解析别名）找同目标的活。"""
     scope = target if isinstance(target, dict) else {"target": target}
@@ -92,6 +97,9 @@ class Engine:
         return self.log.append(kind, body, item, at=stamp(self.clock()), **kwargs)
 
     def change(self, item, kind="item_changed", **changes):
+        # 离开占位区间立即让出；从区间外返工也不能继承旧版本残留的占位。
+        if "stage" in changes and (not serial_stage(item["stage"]) or not serial_stage(changes["stage"])):
+            changes["serial_hold"] = False
         # 等回答必须有本活仍有效的问题。通知、已作废的卡不能充当问题。
         if changes.get("state") == "等你" and not self.answerable(item):
             reason = changes.get("gate_reason") or (changes.get("leave") or {}).get("about") or changes.get("next") or "缺少有效问卡"
@@ -1276,26 +1284,29 @@ class Engine:
             self.change(item, state="空闲", round=None, next="选择下一执行者")
 
     def serial_holder(self, item):
-        """同一交付对象里占着串行路径的另一件活：进了执行、没收尾完成、没放弃、不在排队。"""
-        start = STAGES.index("执行")
+        """同一交付对象里执行至交付占位的另一件活；验收起让出，完成、放弃、排队不占位。"""
         return next((other for other in self.log.all("items")
                      if other["id"] != item["id"] and other["target"] == item["target"] and other.get("serial_hold")
-                     and other["state"] not in ("完成", "放弃", "排队") and STAGES.index(other["stage"]) >= start), None)
+                     and other["state"] not in ("完成", "放弃", "排队") and serial_stage(other["stage"])), None)
 
     def serial_queue(self, item):
-        """规则 serial_paths：碰到的活同一时间只放一件过执行，其余停在当前阶段前排队，前一件收尾完成或放弃后自动放下一件。
-        按说清楚时登记的路径加之后实际改动判；占位从进执行起，退回执行期间仍占着。"""
+        """规则 serial_paths：执行至交付只允许一件占位，验收起让出且不参与排队。
+        按预计路径加实际改动判；区间内返工仍占位，验收后返工重新排队。"""
         prefixes = self.item_target(item).get("serial_paths", [])
-        needed = (prefixes and STAGES.index(item["stage"]) >= STAGES.index("执行")
+        needed = (prefixes and serial_stage(item["stage"])
                   and overlaps(item.get("paths", []), prefixes))
         if not needed:
             if item["state"] == "排队":
-                self.change(item, state="空闲", next=item["stage"], blocked_by="", serial_hold=False)
+                self.change(item, state="空闲", next=item["stage"], blocked_by="", serial_hold=False,
+                            leave={"kind": "工序", "owner": "车间", "at": stamp(self.clock()), "about": item["stage"]})
+            elif item.get("serial_hold"):
+                self.change(item, serial_hold=False)
             return self.log.get("items", item["id"])
         holder = self.serial_holder(item)
         if holder:
-            about = f'排队：等 {holder["id"]} 收尾让出串行路径'
-            if item["state"] != "排队" or item.get("blocked_by") != holder["id"] or item.get("serial_hold"):
+            about = f'排队：等 {holder["id"]} 离开执行至交付阶段，让出串行路径'
+            if (item["state"] != "排队" or item.get("blocked_by") != holder["id"]
+                    or item.get("serial_hold") or item.get("next") != about):
                 self.change(item, state="排队", next=about, blocked_by=holder["id"], serial_hold=False,
                             leave={"kind": "工序", "owner": "车间", "at": stamp(self.clock()), "about": about})
         elif item["state"] == "排队" or not item.get("serial_hold"):
