@@ -30,28 +30,49 @@ def text_field(data, name, limit=None):
         raise ValueError(f"卡片 {name} 为空或超长")
 
 
+def text_problems(data, specs, prefix=""):
+    problems = []
+    for name, limit in specs:
+        try:
+            text_field(data, name, limit)
+        except ValueError as exc:
+            problems.append(f"{prefix}{exc}")
+    return problems
+
+
 def validate_question(data):
-    for name, limit in (("subject", 30), ("decision", 42), ("context", None), ("reason", 60)):
-        text_field(data, name, limit)
+    problems = text_problems(data, (("subject", 30), ("decision", 42), ("context", None), ("reason", 60)))
     choices = data.get("choices")
-    if not isinstance(choices, list) or not 2 <= len(choices) <= 3:
-        raise ValueError("问题须有 2–3 个选项")
     keys = set()
-    for choice in choices:
-        for name, limit in (("key", 18), ("label", 18), ("effect", 60)):
-            text_field(choice, name, limit)
-        if choice["key"] in keys:
-            raise ValueError("选项 key 重复")
-        keys.add(choice["key"])
-    if data.get("recommend") not in keys or data.get("kind") not in ("approval", "reversible"):
-        raise ValueError("推荐选项或问题 kind 无效")
+    if not isinstance(choices, list):
+        problems.append("choices: 问题须有 2–3 个选项")
+    else:
+        if not 2 <= len(choices) <= 3:
+            problems.append("choices: 问题须有 2–3 个选项")
+        for i, choice in enumerate(choices):
+            if not isinstance(choice, dict):
+                problems.append(f"choices[{i}] 必须是 JSON 对象")
+                continue
+            problems.extend(text_problems(choice, (("key", 18), ("label", 18), ("effect", 60)), f"choices[{i}]: "))
+            key = choice.get("key")
+            if isinstance(key, str):
+                if key in keys:
+                    problems.append(f"choices[{i}]: 选项 key 重复")
+                keys.add(key)
+        if not isinstance(data.get("recommend"), str) or data["recommend"] not in keys:
+            problems.append("recommend: 推荐选项无效")
+    if data.get("kind") not in ("approval", "reversible"):
+        problems.append("kind: 问题 kind 无效")
+    if problems:
+        raise ValueError("；".join(problems))
 
 
 def validate_notice(data):
-    text_field(data, "subject", 30)
-    text_field(data, "text")
+    problems = text_problems(data, (("subject", 30), ("text", None)))
     if data.get("fyi") is not True:
-        raise ValueError("通知必须 fyi=true")
+        problems.append("fyi: 通知必须 fyi=true")
+    if problems:
+        raise ValueError("；".join(problems))
 
 
 def frozen_question(item, files, actions=()):

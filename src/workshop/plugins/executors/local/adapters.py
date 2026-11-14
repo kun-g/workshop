@@ -9,7 +9,7 @@ import subprocess
 import sys
 import uuid
 
-from workshop.core.models import Release, Started
+from workshop.core.models import Receipt, Release, Started
 from workshop.core.ports import Retryable, Unavailable
 from .storage import alive, identity, lock, read, write
 from .runner import RECEIPT_REJECTED, VENDOR_SESSION
@@ -136,6 +136,7 @@ class Executor:
                 env = environment(directory / 'gh-config', env)
             env.update(WORKSHOP_ITEM=item['id'], WORKSHOP_EXECUTOR_ROUND=str(directory))
             prompt = brief.instructions + '\n\n回执：结束时执行 ' + shlex.join(runtime['command'] + ['receipt', token, '--file', '<回执 JSON 文件>'])
+            prompt += '\n' + Receipt.format_help()
             if not self.interactive:
                 prompt += ('\n会话无法交文件时，最后一条消息只输出回执 JSON 对象本身（outcome、summary 必填，不加说明文字），包装进程会代交；'
                            '被拒时包装进程会把原因发回本会话，照原因改对再输出一次。')

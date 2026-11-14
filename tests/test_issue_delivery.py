@@ -1017,3 +1017,15 @@ def test_item_retrying_review_skips_it_without_a_round_when_rules_drop_review(wo
     reviews = [r for r in engine.log.all('rounds') if r['item'] == 'alpha:7' and r['stage'] == '审查']
     assert len(reviews) == 1
     engine.log.close()
+
+
+def test_brief_includes_typed_receipt_and_business_evidence_example(world):
+    import re
+    from workshop.core.models import utcnow
+    text = world['flow'].brief(snapshot(world, '说清楚'), '说清楚', world['target'])
+    samples = [json.loads(v) for v in re.findall(r"```json\n(.*?)\n```", text, re.S)]
+    minimal = next(v for v in samples if 'outcome' in v)
+    notice = next(v for v in samples if 'notice' in v)
+    assert json.loads(minimal['evidence'][0]) == {'schema': 'issue-delivery/v1'}
+    Receipt.parse({**minimal, **notice}, utcnow())
+    assert '字符串列表' in text and '对象列表' in text and 'null' in text

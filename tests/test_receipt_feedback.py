@@ -22,7 +22,7 @@ from workshop.plugins.executors.local.runner import result_receipt
 from workshop.plugins.executors.local.storage import read
 
 FAKE = r'''
-import json, os, pathlib, sys
+import json, os, pathlib, re, sys
 name = pathlib.Path(sys.argv[0]).name
 args = sys.argv[1:]
 root = pathlib.Path(sys.argv[0]).parent
@@ -42,7 +42,18 @@ else:
 good = {'outcome': 'done', 'summary': '审查通过，没有必须改。', 'advance': '交付',
         'evidence': [json.dumps({'schema': 'issue-delivery/v1', 'head': 'abc', 'must_fix': [], 'suggestions': []})]}
 bad = {'outcome': 'success', 'summary': '审查通过', 'advance': '验收', 'head': 'abc', 'must_fix': [], 'suggestions': []}
-if scenario == 'normal':
+if scenario in ('typed-example', 'two-types-then-fixed'):
+    samples = [json.loads(v) for v in re.findall(r'```json\n(.*?)\n```', prompt, re.S)]
+    example = next(v for v in samples if 'outcome' in v)
+    notification = next(v for v in samples if 'notice' in v)
+    assert isinstance(example['evidence'], list)
+    assert notification['notice'][0]['key']
+    good = {**good, 'evidence': example['evidence'], **notification}
+    if resumed:
+        assert 'evidence 必须是字符串列表' in prompt and 'notice 必须是列表' in prompt
+    text = json.dumps(good if resumed or scenario == 'typed-example' else
+                      {**good, 'evidence': '{}', 'notice': '完成'}, ensure_ascii=False)
+elif scenario == 'normal':
     text = '审查通过。\n\n```json\n' + json.dumps(good, ensure_ascii=False, indent=2) + '\n```'
 elif scenario == 'rejected-then-fixed':
     text = '复核完毕。' + json.dumps(good if resumed else {**good, 'head': 'abc'}, ensure_ascii=False)
@@ -78,7 +89,7 @@ def rig(tmp_path, monkeypatch):
         if key not in ('PATH', 'LANG', 'HOME', 'TMPDIR', 'TERM'):
             monkeypatch.delenv(key)
     commands = {}
-    for name in ('codex', 'cursor-agent'):
+    for name in ('codex', 'cursor-agent', 'claude'):
         path = tmp_path / name
         path.write_text('#!' + sys.executable + '\n' + FAKE)
         path.chmod(0o755)
@@ -229,3 +240,25 @@ def test_codex_wrong_format_reason_reaches_next_round_in_a_fresh_session(rig):
     engine.tick()
     assert core_item(engine)['stage'] == '交付'
     assert core_item(engine)['last_failure'] is None
+
+
+@pytest.mark.parametrize("scenario_name, attempts", [("typed-example", 1), ("two-types-then-fixed", 2)])
+def test_readonly_claude_uses_example_and_fixes_both_types(rig, scenario_name, attempts):
+    engine, make, target, scenario, calls, repo = rig
+    engine.ingest(event())
+    engine.tick()
+    scenario(scenario_name)
+    row, directory, _ = run_round(engine, make('claude'), target, repo)
+    assert read(directory / 'spec.json')['readonly'] is True
+    assert read(directory / 'receipt-result.json')['code'] == 0
+    assert row['receipt']['outcome'] == 'done'
+    assert isinstance(row['receipt']['evidence'], list)
+    assert row['receipt']['notice'][0]['key'] == 'result'
+    assert len(calls()) == attempts
+    assert not (directory / 'receipt-rejected.json').exists()
+    if attempts == 2:
+        assert 'evidence 必须是字符串列表' in row['receipt_rejected']
+        assert 'notice 必须是列表' in row['receipt_rejected']
+        assert '--resume' in calls()[1]['args']
+        assert read(directory / 'fallback-receipt.json')['evidence'] == '{}'
+        assert read(directory / 'fallback-receipt-2.json') == row['receipt']
