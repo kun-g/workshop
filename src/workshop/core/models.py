@@ -232,45 +232,87 @@ class Receipt:
             problems.append("summary 必须是字符串")
         if data.get("advance") is not None and data["advance"] not in STAGES:
             problems.append(f"advance 是 {json.dumps(data['advance'], ensure_ascii=False)}，不是阶段名；阶段只有 {'、'.join(STAGES)}")
-        if problems:
-            raise ValueError("；".join(problems))
-        receipt = cls(**data)
-        if not isinstance(receipt.evidence, list) or not all(isinstance(x, str) for x in receipt.evidence):
-            raise ValueError("evidence 必须是字符串列表")
+        # 校验原始字段，最后才构造对象；顶层缺字段不妨碍收集其余错误。
+        def check(path, operation):
+            try:
+                operation()
+            except (ValueError, TypeError, KeyError, OverflowError) as exc:
+                problems.extend(f"{path}: {part}" for part in str(exc).split("；"))
+
+        evidence = data.get("evidence", [])
+        if not isinstance(evidence, list):
+            problems.append("evidence 必须是字符串列表")
+        else:
+            for i, value in enumerate(evidence):
+                if not isinstance(value, str):
+                    problems.append(f"evidence[{i}] 必须是字符串")
         for name in ("ask", "notice", "later"):
-            entries = getattr(receipt, name)
+            entries = data.get(name, [])
             if not isinstance(entries, list):
-                raise ValueError(f"{name} 必须是列表")
+                problems.append(f"{name} 必须是列表")
+                continue
             keys = set()
-            for entry in entries:
-                if not isinstance(entry, dict) or not isinstance(entry.get("key"), str) or not entry["key"] or entry["key"] in keys:
-                    raise ValueError(f"{name} key 无效或重复")
-                keys.add(entry["key"])
+            for i, entry in enumerate(entries):
+                path = f"{name}[{i}]"
+                if not isinstance(entry, dict):
+                    problems.append(f"{path} 必须是 JSON 对象")
+                    continue
+                key = entry.get("key")
+                if not isinstance(key, str) or not key or key in keys:
+                    problems.append(f"{path}: {name} key 无效或重复")
+                else:
+                    keys.add(key)
                 if name == "ask":
-                    validate_question(entry)
+                    check(path, lambda: validate_question(entry))
                 elif name == "notice":
-                    validate_notice(entry)
+                    check(path, lambda: validate_notice(entry))
                 else:
                     if not isinstance(entry.get("about"), str) or not entry["about"]:
-                        raise ValueError("定时缺 about")
-                    due(entry["at"], now)
-        if not isinstance(receipt.events, list):
-            raise ValueError("events 必须是列表")
-        for event in receipt.events:
-            Event(**{**event, "action": "update", "depth": 0}).validate()
-        if receipt.leave is not None:
-            if not isinstance(receipt.leave, dict):
-                raise ValueError("leave 必须是 JSON 对象")
-            if (receipt.leave.get("kind") not in ("工序", "送回", "等你")
-                    or not receipt.leave.get("about")):
-                raise ValueError("停下必须留下工序、送回或等你")
-            if receipt.leave["kind"] in ("工序", "送回"):
-                due(receipt.leave["at"], now)
-                if receipt.leave["kind"] == "工序" and not receipt.leave.get("owner"):
-                    raise ValueError("工序必须有人做")
-            elif not receipt.ask and not receipt.notice:
-                raise ValueError("无卡等你必须有通知，并由放行事件继续")
-        return receipt
+                        problems.append(f"{path}.about: 定时缺 about")
+                    check(f"{path}.at", lambda: due(entry.get("at"), now))
+        events = data.get("events", [])
+        if not isinstance(events, list):
+            problems.append("events 必须是列表")
+        else:
+            for i, event in enumerate(events):
+                if not isinstance(event, dict):
+                    problems.append(f"events[{i}] 必须是 JSON 对象")
+                    continue
+                check(f"events[{i}]", lambda: Event(**{**event, "action": "update", "depth": 0}).validate())
+        leave = data.get("leave")
+        if leave is not None:
+            if not isinstance(leave, dict):
+                problems.append("leave 必须是 JSON 对象")
+            else:
+                if leave.get("kind") not in ("工序", "送回", "等你") or not leave.get("about"):
+                    problems.append("leave.kind/about: 停下必须留下工序、送回或等你")
+                if leave.get("kind") in ("工序", "送回"):
+                    check("leave.at", lambda: due(leave.get("at"), now))
+                    if leave["kind"] == "工序" and not leave.get("owner"):
+                        problems.append("leave.owner: 工序必须有人做")
+                elif leave.get("kind") == "等你" and not data.get("ask") and not data.get("notice"):
+                    problems.append("leave: 无卡等你必须有通知，并由放行事件继续")
+        if problems:
+            raise ValueError("；".join(problems))
+        return cls(**data)
+
+    @staticmethod
+    def format_help(evidence: str = "证据字符串") -> str:
+        """通用回执协议；流程可提供一条自己的证据示例。"""
+        minimal = {"outcome": "done", "summary": "本轮结果", "evidence": [evidence]}
+        notification = {"notice": [{"key": "result", "subject": "结果", "text": "结果说明", "fyi": True}]}
+        return (
+            "回执字段类型：outcome、summary 必填且为字符串；outcome 只能是 done、failed、nothing。"
+            "其余可省略：advance 为阶段字符串或 null（取值按本轮说明）；evidence 为字符串列表；"
+            "ask、notice、later、events 为对象列表；leave 为对象或 null。"
+            "ask、notice、later 每项须有非空字符串 key，同一列表内不重复；"
+            "later 每项还须有字符串 at、about；events 每项须有 source/ext_id/target/object_key/title 字符串及 body。"
+            "leave 须有 kind（工序/送回/等你）、about；工序/送回还须有 at，工序还须有 owner。\n"
+            "示例只展示格式；summary、evidence 须替换为本轮实际结果，证据内容按流程说明填写。\n"
+            "最小回执 JSON 示例：\n```json\n" + json.dumps(minimal, ensure_ascii=False) + "\n```\n"
+            "仅在本轮允许通知时添加 notice，示例（合入回执顶层，subject/text 为字符串，fyi 为 true）：\n```json\n"
+            + json.dumps(notification, ensure_ascii=False) + "\n```\n"
+        )
 
     def json(self) -> dict:
         return asdict(self)

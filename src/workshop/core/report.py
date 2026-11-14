@@ -162,7 +162,7 @@ def why(log, item_id, rules=None, plugins=None, raw=False):
             if isinstance(via, dict) and via.get("channel") == "session":
                 detail += f'（会话 {via.get("session")} 转录，Kun 原话：「{via.get("quote")}」）'
         elif kind == "notice_held":
-            detail = f'通知没发 {body["stage"]} {body["key"]}「{body["subject"]}」：{body["reason"]}'
+            detail = f'通知没发 {body.get("stage", "")} {body["key"]}「{body["subject"] or body.get("text", "")}」：{body["reason"]}'
         elif kind == "work_blocked":
             detail = f'卡住 {body["blocked_by"]}'
         else:

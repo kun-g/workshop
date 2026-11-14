@@ -691,3 +691,39 @@ def test_advance_check_follows_stages_switched_off_by_rules(engine):
         engine.submit(row["token"], dict(outcome="done", summary="完成证据", advance="审查"))
     finish(engine, "交付")
     assert item(engine)["stage"] == "交付"
+
+
+def test_receipt_collects_top_level_and_field_errors(engine):
+    with pytest.raises(ValueError) as caught:
+        Receipt.parse({"outcome": "success", "extra": 1, "evidence": "{}", "notice": "完成",
+                       "ask": None, "events": None, "leave": 3}, engine.clock())
+    reason = str(caught.value)
+    for field in ("extra", "summary", "outcome", "evidence", "notice", "ask", "events", "leave"):
+        assert field in reason
+
+
+def test_receipt_collects_nested_errors_without_cascading_type_failures(engine):
+    with pytest.raises(ValueError) as caught:
+        Receipt.parse({"outcome": "done", "summary": "x", "evidence": [3, None],
+                       "notice": [None, {"key": []}, {"key": "same"}, {"key": "same"}],
+                       "ask": [{"key": "q", "choices": [None, {"key": []}], "recommend": []}],
+                       "later": [{"key": "timer"}, None], "events": [None, {}],
+                       "leave": {"kind": "工序"}}, engine.clock())
+    reason = str(caught.value)
+    for field in ("evidence[0]", "evidence[1]", "notice[0]", "notice[1]", "subject", "text", "fyi",
+                  "notice[3]", "ask[0]", "choices[0]", "choices[1]", "recommend", "kind",
+                  "later[0].about", "later[0].at", "later[1]", "events[0]", "events[1]",
+                  "leave.kind/about", "leave.at", "leave.owner"):
+        assert field in reason
+    assert "unhashable" not in reason and "has no attribute" not in reason
+
+
+def test_receipt_examples_are_valid_and_optional_defaults_unchanged(engine):
+    import re
+    instructions = Receipt.format_help()
+    examples = [json.loads(raw) for raw in re.findall(r"```json\n(.*?)\n```", instructions, re.S)]
+    minimal, notification = examples
+    parsed = Receipt.parse(minimal, engine.clock())
+    assert parsed.advance is None and parsed.notice == [] and parsed.leave is None
+    parsed = Receipt.parse({**minimal, **notification}, engine.clock())
+    assert parsed.notice[0]["fyi"] is True

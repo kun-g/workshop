@@ -790,7 +790,7 @@ def test_delivery_instructions_point_to_rule_runbook_or_fallback(world):
     brief = world['flow'].brief(data, '交付', target)
     assert '若已合并且 release=tag，照 issue kun-g/grant-console#143 正文的步骤完成发布' in brief
     assert 'docs/runbooks/sync-production.md' not in brief and 'docs/runbooks/release.md' not in brief
-    for text in ('两张卡，都要 Kun 批', '有延迟，要轮询', '不删 Pod，只靠 rollout'):
+    for text in ('手册要求的卡都要 Kun 批', '有延迟，要轮询', '不删 Pod，只靠 rollout'):
         assert text in brief
 
 
@@ -1017,3 +1017,15 @@ def test_item_retrying_review_skips_it_without_a_round_when_rules_drop_review(wo
     reviews = [r for r in engine.log.all('rounds') if r['item'] == 'alpha:7' and r['stage'] == '审查']
     assert len(reviews) == 1
     engine.log.close()
+
+
+def test_brief_includes_typed_receipt_and_business_evidence_example(world):
+    import re
+    from workshop.core.models import utcnow
+    text = world['flow'].brief(snapshot(world, '说清楚'), '说清楚', world['target'])
+    samples = [json.loads(v) for v in re.findall(r"```json\n(.*?)\n```", text, re.S)]
+    minimal = next(v for v in samples if 'outcome' in v)
+    notice = next(v for v in samples if 'notice' in v)
+    assert json.loads(minimal['evidence'][0]) == {'schema': 'issue-delivery/v1'}
+    Receipt.parse({**minimal, **notice}, utcnow())
+    assert '字符串列表' in text and '对象列表' in text and 'null' in text
