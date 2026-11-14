@@ -746,3 +746,41 @@ def test_receipt_examples_are_valid_and_optional_defaults_unchanged(engine):
     assert parsed.advance is None and parsed.notice == [] and parsed.leave is None
     parsed = Receipt.parse({**minimal, **notification}, engine.clock())
     assert parsed.notice[0]["fyi"] is True
+
+
+@pytest.mark.parametrize('bad', [
+    {'recheck_after': 5}, {'recheck_after': 'soon', 'reason': '尚未结束', 'next': '回查'},
+    {'recheck_after': '+5m'},
+    {'recheck_after': '+5m', 'reason': '尚未结束', 'next': '回查', 'passed': True},
+    {'recheck_after': '+5m', 'reason': '尚未结束', 'next': '回查', 'blocked': '坏了'},
+])
+def test_recheck_evidence_requires_valid_wait(bad):
+    from workshop.core.models import Evidence
+    with pytest.raises(ValueError):
+        Evidence(**bad).validate()
+
+
+def test_flow_wait_crosses_job_boundary_and_never_advances(engine, monkeypatch):
+    from datetime import datetime
+    from workshop.core.jobs import decode, encode, Pending
+    from workshop.core.models import After, Evidence
+    reach(engine, '执行')
+    flow = engine.plugins.get('flow', 'flow')
+    waiting = Evidence(reason='外部作业尚未结束', next='回查作业', recheck_after='+5m')
+    monkeypatch.setattr(flow, 'assess', lambda *args: decode(encode(waiting)))
+    finish(engine, outcome='nothing')
+    assert item(engine)['state'] == '定时' and not engine.active()
+    assert item(engine)['after_wait']['to'] == '执行'
+    engine.clock.now = datetime.fromisoformat(item(engine)['after_wait']['at'])
+    # 后台作业尚未完成时让出本拍，不启动执行者，也不当成插件故障。
+    def pending(*args):
+        raise Pending('external-check')
+    monkeypatch.setattr(flow, 'after', pending)
+    engine.tick()
+    assert not engine.active() and not engine.flow_broken('alpha')
+    monkeypatch.setattr(flow, 'after', lambda *args: decode(encode(After(blocked='作业已失败', next='处理后恢复'))))
+    engine.tick()
+    assert item(engine)['state'] == '卡住' and item(engine)['stage'] == '执行'
+    assert item(engine)['blocked_by'] == '作业已失败'
+    assert not item(engine)['after_wait'] and not engine.active()
+    assert '作业已失败' in why(engine.log, 'alpha:one')

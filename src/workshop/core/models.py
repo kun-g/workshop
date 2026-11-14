@@ -103,6 +103,8 @@ class After:
     notice: str = ""
     # 流程已幂等消费的恢复计划，核心追加事实供查询。
     recovery_id: str = ""
+    # 回查已经确定不能继续时，留下原因，不再自动等待或推进。
+    blocked: str = ""
 
 
 @dataclass(frozen=True)
@@ -137,8 +139,16 @@ class Evidence:
     done_key: str = ""
     blocked: str = ""
     next: str = ""
+    # 无下一步的回执，经流程核实仍需等待；到点调用 after，完成后重跑本阶段。
+    recheck_after: str = ""
 
     def validate(self) -> None:
+        if (not isinstance(self.recheck_after, str) or self.recheck_after and
+                (self.blocked or self.passed or not isinstance(self.reason, str) or not self.reason.strip()
+                 or not isinstance(self.next, str) or not self.next.strip())):
+            raise ValueError("定时回查须有原因和下一步，不能同时通过或阻塞")
+        if self.recheck_after:
+            due(self.recheck_after, utcnow())
         if not isinstance(self.blocked, str) or not isinstance(self.next, str) or self.blocked and not self.next.strip():
             raise ValueError("阻塞必须有原因和建议动作")
         if (self.reviewers not in (1, 2) or not isinstance(self.paths, list)

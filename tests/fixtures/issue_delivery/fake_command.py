@@ -143,6 +143,15 @@ def handle(name, args, *, stdin='', env=None, cwd=None, git=real_git):
                 value = state['issue']
             elif path.endswith('/check-runs'):
                 value = {'check_runs': state.get('checks', [{'name': 'check', 'status': 'completed', 'conclusion': 'success'}])}
+            elif path.endswith('/actions/runs'):
+                if state.get('workflow_error'):
+                    say(state['workflow_error'], stderr)
+                    raise Exit(1)
+                # 保留干扰记录，由调用方核对 tag/提交；支持多页回放。
+                if '--slurp' in args and 'workflow_pages' in state:
+                    emit(state['workflow_pages'])
+                    raise Exit(0)
+                value = {'workflow_runs': state.get('workflow_runs', [])}
             elif path.endswith('/status'):
                 value = {'statuses': state.get('statuses', [])}
             elif '/contents/' in path and not path.endswith('/contents/release.json'):

@@ -312,6 +312,7 @@ class IssueDelivery:
                 "有必须改退回执行；建议不阻断。敏感路径需要两家审，由核心挑不同家族。"
             ),
             "交付": (
+                "等外部任务（CI、授权）时必须交 later（key/at/about）并退出。"
                 "合并和打 tag 只由流程 after 做，本轮不要做。给回执 pr/head 并推进验收。"
                 "合并冲突或 PR 已关闭没合并时，本轮只交 advance=\"执行\"，到执行阶段再合 main、解冲突。"
                 "车间自己的 issue 合并即交付；上线由定时发版流程处理，本轮不要动主检出、不要重启。"
@@ -507,12 +508,58 @@ class IssueDelivery:
         return (f'<!-- workshop-item: {item["id"]} -->' in body
                 and not re.search(r"\b(?:close[sd]?|fix(?:es|ed)?|resolve[sd]?)(?:\s*:\s*|\s+)(?:(?:[\w.-]+/[\w.-]+)?#\d+|https://github\.com/[^/]+/[^/]+/issues/\d+)", (pr.get("title") or "") + "\n" + body, re.I))
 
+    @staticmethod
+    def _needs_delivery_recheck(stage, receipt, target):
+        return (stage == "交付" and target.get("release") == "tag" and receipt.outcome == "nothing"
+                and not receipt.advance and not receipt.later and not receipt.ask and not receipt.leave)
+
+    def _tag_ci(self, item, target):
+        """只读核对本活的 tag 和合并提交；同一工作流重跑只取最新记录。"""
+        state = self.io.read(item, target)
+        tag, sha = state.get("tag"), state.get("merge")
+        prefix = f'{target["repo"]} tag {tag or "未登记"}'
+        if not tag or not sha:
+            return "blocked", prefix + "：未登记发版 tag 或合并提交，无法核对 CI"
+        endpoint = (f'repos/{target["repo"]}/actions/runs?branch={quote(tag, safe="")}'
+                    f'&head_sha={quote(sha, safe="")}&per_page=100')
+        output = run([self.io.gh, "api", "--paginate", "--slurp", endpoint]).stdout
+        try:
+            pages = json.loads(output)
+            runs = [r for page in pages for r in page["workflow_runs"]
+                    if r.get("head_branch") == tag and r.get("head_sha") == sha and r.get("event") == "push"]
+            latest = {}
+            for row in sorted(runs, key=lambda r: (r["id"], r.get("run_attempt", 1))):
+                latest[row["workflow_id"]] = row
+        except (ValueError, KeyError, TypeError, AttributeError) as exc:
+            raise Retryable(prefix + "：CI 查询返回格式异常，未确认状态") from exc
+        if not latest:
+            return "blocked", prefix + f"（{sha}）：没有对应提交的 tag CI run"
+        runs = list(latest.values())
+        detail = prefix + "：" + "；".join(
+            f'CI run {r["id"]} {r.get("status")} / {r.get("conclusion") or "未结束"}' for r in runs)
+        # 已知失败不能被另一条还在跑的工作流遮住。
+        if any(r.get("status") == "completed" and r.get("conclusion") not in ("success", "skipped", "neutral") for r in runs):
+            return "blocked", detail
+        if any(r.get("status") not in ("queued", "in_progress", "completed") for r in runs):
+            return "blocked", detail + "；状态未确认，需核对"
+        if any(r.get("status") in ("queued", "in_progress") for r in runs):
+            return "pending", detail
+        if any(r.get("conclusion") == "success" for r in runs):
+            return "success", detail
+        return "blocked", detail + "；没有成功的 CI run"
+
     @github_scope
     def assess(self, item, receipt, target):
         data, stage = report(receipt), item["stage"]
         checks = item.get("checks", [])
         actions = [target.get("delivery_action", "只有你在用的交付对象上线")]
         try:
+            if self._needs_delivery_recheck(stage, receipt, target):
+                status, reason = self._tag_ci(item, target)
+                if status == "pending":
+                    return Evidence(checks, reason=reason, next="定时回查发版 CI", recheck_after=After().recheck_after)
+                return Evidence(checks, blocked=reason, reason=reason,
+                                next="核对 CI 结论后补交交付下一步，再恢复本活")
             if "blocked" in data:
                 blocked = data["blocked"]
                 if (receipt.outcome != "nothing" or receipt.advance or not isinstance(blocked, dict)
@@ -791,6 +838,15 @@ class IssueDelivery:
             return After(pending=True, rerun=wait.rerun, reason=wait.reason, next="按关口理由修正或复查", recheck_after="+5m")
 
     def _after(self, item, completed_stage, key, target):
+        # assess 登记的等待由核心到点调用；这里不能执行合并、发版或上线。
+        receipt = Receipt(**item.get("result", {"outcome": "done", "summary": ""}))
+        if self._needs_delivery_recheck(completed_stage, receipt, target):
+            status, reason = self._tag_ci(item, target)
+            if status == "pending":
+                return After(pending=True, reason=reason, next="定时回查发版 CI")
+            if status == "success":
+                return After(reason=reason)
+            return After(blocked=reason, reason=reason, next="核对 CI 结论后处理失败，再恢复交付")
         with self.io.locked(item, target) as state:
             if key in state["effects"] and not state["effects"][key].get("pending"):
                 return After(**state["effects"][key])
@@ -807,13 +863,11 @@ class IssueDelivery:
                 self._intake(item, target, state)
                 result = After(aliases=[str(state["issue"])])
             elif completed_stage == "说清楚":
-                from workshop.core.models import Receipt
                 evidence = self.assess(item, Receipt(**item["result"]), target)
                 if not evidence.passed:
                     raise BusinessWait("说清楚阶段还不能放行：" + evidence.reason)
             elif completed_stage == "执行" and item.get("result", {}).get("advance") == "验收":
                 # 重走验收：结算时按回执请求的提交再查一遍，不改选别的提交；记下它已用过这一次。
-                from workshop.core.models import Receipt
                 request = report(Receipt(**item["result"])).get("rerun_acceptance")
                 merge = request.get("merge") if isinstance(request, dict) else None
                 opened, latest = self._pull_requests(item, target)
@@ -835,7 +889,6 @@ class IssueDelivery:
                 state.pop("merge_runs", None)
             elif completed_stage in ("执行", "证据", "审查"):
                 pr = self.io.pr(item, target)
-                from workshop.core.models import Receipt
                 current = report(Receipt(**item["result"]))
                 if current.get("head") != pr["head"]["sha"]:
                     raise BusinessWait("结算时提交已变化，须重新检查和审查")
@@ -883,7 +936,6 @@ class IssueDelivery:
                 self.io.save(item, target, state)
                 if target.get("release", "none") == "tag":
                     self._tag(item, target, state)
-                    from workshop.core.models import Receipt
                     if report(Receipt(**item.get("result", {"outcome": "done", "summary": ""}))).get("release_submitted") is True:
                         state["release_submitted"] = True
                     if not self._deployed(target, state["merge"]):
