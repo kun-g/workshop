@@ -1,5 +1,6 @@
 """GitHub 的条件读取；游标与事件由核心一起确认，不另写来源账本。"""
 from copy import deepcopy
+from dataclasses import replace
 from datetime import datetime, timedelta
 import fcntl
 import hashlib
@@ -28,6 +29,30 @@ class GitHubSource:
         self.gh = gh or shutil.which("gh")
         if not self.gh:
             raise RuntimeError("找不到 gh；请在启动 PATH 中配置")
+
+    @staticmethod
+    def normalize(batch, target):
+        """升级时认回旧 poll 作业：补事实字段，再交核心按新规则匹配，游标不变。"""
+        events = []
+        for event in batch.events:
+            if event.action_id:
+                events.append(event)
+                continue
+            data = event.body.get('data', {})
+            actor, author = data.get('actor') or {}, data.get('user') or {}
+            stable = event.ext_id
+            if event.action == 'update' and re.search(r':[0-9a-f]{64}$', stable):
+                stable = stable.rsplit(':', 1)[0]
+            body = {**event.body, 'actor': actor.get('login', ''), 'author': author.get('login', ''),
+                    'label': (data.get('label') or {}).get('name', ''), 'text': (data.get('body') or '').strip(),
+                    'by_workshop': actor.get('type') == 'Bot' or author.get('type') == 'Bot'
+                        or author.get('login') in target.get('github_bot_logins', [])
+                        or '<!-- workshop-comment:' in (data.get('body') or ''),
+                    # 旧作业明确只更新的事件不得在升级时变成一次新的控制动作。
+                    'edited': event.action == 'update'}
+            events.append(replace(event, body=body, action='update', action_id=stable,
+                                  previous_ids=[event.ext_id]))
+        return Poll(events, batch.cursor, normalized=True)
 
     def _cached(self, record):
         path = self.cache_root / (record.get("fingerprint", "missing") + ".json")
@@ -163,18 +188,22 @@ class GitHubSource:
                 return matches[0][len(name) + 1:]
             return None
 
-        def emit(kind, number, key, identity, value, action="update"):
+        def emit(kind, number, key, identity, value, initial=False):
             signature = hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()
             identity_key = f"{kind}:{number}:{identity}"
             previous = seen.get(identity_key)
             if previous == signature:
                 return
-            if previous is not None:
-                action = "update"
-            ext = f"{repo}:{identity_key}" + ("" if action in ("ready", "rework") else f":{signature}")
+            ext = f"{repo}:{identity_key}"
             seen[identity_key] = signature
-            events.append(Event("github", ext, name, key, f"{repo} #{number}",
-                                {"kind": kind, "repo": repo, "number": number, "data": value}, action=action))
+            actor, author = value.get('actor') or {}, value.get('user') or {}
+            body = {'kind': kind, 'repo': repo, 'number': number, 'data': value,
+                    'actor': actor.get('login', ''), 'author': author.get('login', ''),
+                    'label': (value.get('label') or {}).get('name', ''),
+                    'text': (value.get('body') or '').strip(), 'edited': previous is not None,
+                    'by_workshop': initial or actor.get('type') == 'Bot' or automated(value)}
+            events.append(Event('github', f'{ext}:{signature}', name, key, f'{repo} #{number}', body,
+                                action_id=ext, previous_ids=[ext, f'{ext}:{signature}']))
 
         def automated(value):
             user = value.get("user") or {}
@@ -185,11 +214,7 @@ class GitHubSource:
             for comment in self._list(endpoint + "?per_page=100", cache):
                 if automated(comment):
                     continue
-                text = (comment.get("body") or "").strip()
-                # 固定写法；引文或叙述中的“不对”不放行、不返工。
-                rework = re.fullmatch(r"不对(?:[，,:：。！!\s].*)?", text, re.S)
-                action = "rework" if comment.get("user", {}).get("login") == "kun-g" and rework else "update"
-                emit(kind, number, key, comment["id"], comment, action)
+                emit(kind, number, key, comment['id'], comment)
 
         def read_issue(number):
             issue, _ = self._get(f"{base}/issues/{number}", cache)
@@ -203,11 +228,8 @@ class GitHubSource:
                 own_labels[number] = initial
             initial = own_labels.get(number)
             for change in changes:
-                if change.get("event") == "labeled" and change.get("label", {}).get("name") == label:
-                    actor = change.get("actor") or {}
-                    human = actor.get('login') == 'kun-g' and actor.get('type') != 'Bot'
-                    action = "ready" if human and change["id"] != initial else "update"
-                    emit("label", number, number, change["id"], change, action)
+                if change.get('event') == 'labeled':
+                    emit('label', number, number, change['id'], change, change['id'] == initial)
             comments(f"{base}/issues/{number}/comments", "issue-comment", number, number)
 
         def read_pr(number):
@@ -224,9 +246,7 @@ class GitHubSource:
             comments(f"{base}/pulls/{number}/comments", "pr-review-comment", number, key)
             for review in self._list(f"{base}/pulls/{number}/reviews?per_page=100", cache):
                 if not automated(review):
-                    rework = re.fullmatch(r"不对(?:[，,:：。！!\s].*)?", (review.get("body") or "").strip(), re.S)
-                    action = "rework" if review.get("user", {}).get("login") == "kun-g" and rework else "update"
-                    emit("pr-review", number, key, review["id"], review, action)
+                    emit('pr-review', number, key, review['id'], review)
             if pr["state"] == "open":
                 open_prs[number] = {"sha": sha, "key": key}
             else:
@@ -247,8 +267,7 @@ class GitHubSource:
                         listed.pop(number, None)
                         continue
                     read_pr(number)
-                elif number in known or (issue.get("state") != "closed" and
-                                         any(v["name"] == label for v in issue.get("labels", []))):
+                elif number in known or issue.get("state") != "closed":
                     known[number] = True
                     read_issue(number)
                 else:
@@ -264,9 +283,8 @@ class GitHubSource:
                 if parent is None or parent[1] not in pr_keys or automated(comment):
                     continue
                 number = parent[1]
-                rework = re.fullmatch(r"不对(?:[，,:：。！!\s].*)?", (comment.get("body") or "").strip(), re.S)
-                action = "rework" if comment.get("user", {}).get("login") == "kun-g" and rework else "update"
-                emit("pr-review-comment", number, pr_keys[number], comment["id"], comment, action)
+                emit('pr-review-comment', number, pr_keys[number], comment['id'], comment)
+
 
             # CI 的变化不必推进 PR.updated_at；只保留开放标记对象的头提交。
             for number, pr in open_prs.items():
@@ -294,7 +312,7 @@ class GitHubSource:
                 state.pop("legacy_cleanup")
             elif state.get("legacy_cleanup") == "copy":
                 state["legacy_cleanup"] = "ready"
-        return Poll(events, json.dumps(state, ensure_ascii=False))
+        return Poll(events, json.dumps(state, ensure_ascii=False), normalized=True)
 
 
 def make_source():

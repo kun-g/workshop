@@ -15,8 +15,20 @@ class Registry:
         """Validate every driver before any stage can start a session."""
         from .core.rules import Rules
         from .github_identity import configuration
-        for target in rules.data['targets'].values():
-            configuration(target)
+        from .core.flows import entries
+        targets = {}
+        for name, target in rules.data['targets'].items():
+            if 'flows' not in target:
+                try:
+                    adapt = getattr(self.get('flow', target['plugin']), 'configure_target', None)
+                except LookupError:
+                    adapt = None  # 查询和恢复命令允许暂时没有装上该流程。
+                target = adapt(target) if adapt else target
+            targets[name] = target
+        rules = Rules({**rules.data, 'targets': targets}, rules.path)
+        for name, target in targets.items():
+            for flow in entries(target):
+                configuration(rules.target(name, flow))
         profiles = {}
         for name, profile in rules.data.get('executor_profiles', {}).items():
             try:

@@ -5,6 +5,7 @@ import json
 import re
 from .jobs import running as running_jobs
 from .models import Event, utcnow
+from .flows import configured
 
 
 def status(log):
@@ -44,7 +45,7 @@ def resolve(log, targets, text, *, allow_new=False):
     target, key = (short.get(named[1]), named[2]) if named else text.split(":", 1) if ":" in text else (None, None)
     if target and (not allow_new or target in targets) and key and not re.search(r'\s', key):
         alias = log.get("aliases", f"{target}:{key}")
-        item_id = f'{target}:{alias["object_key"] if alias else key}'
+        item_id = alias["item"] if alias else f"{target}:{key}"
         if allow_new or log.get("items", item_id):
             return item_id
     raise ValueError(f'找不到活：{text}；可用短名：{"、".join(sorted(short)) or "无"}')
@@ -57,9 +58,12 @@ def one_line(text):
 ACTIONS = {"update": "更新", "rework": "返工", "ready": "放行"}
 
 
-def flow_for(targets, name, plugins):
+def flow_for(targets, name, plugins, selected=""):
     """规则里的交付对象和它的流程；装不上流程时只回交付对象，查看起因不依赖插件。"""
-    target = {"name": name, **targets[name]} if name in targets else None
+    try:
+        target = configured(name, targets[name], selected) if name in targets else None
+    except (ValueError, KeyError):
+        target = {"name": name, **targets[name]}  # 历史仍可查，即使当前规则已移除该流程。
     flow = None
     if plugins and target:
         try:
@@ -123,7 +127,7 @@ def why(log, item_id, rules=None, plugins=None, raw=False):
     targets = (rules or {}).get("targets") or {}
     item_id = resolve(log, targets, item_id)
     item = log.get("items", item_id)
-    target, flow = flow_for(targets, item["target"], plugins)
+    target, flow = flow_for(targets, item["target"], plugins, item.get("flow", ""))
     lines = [f"活 {item_id}"]
     for fact in log.facts(item_id):
         body = fact["body"]
@@ -203,11 +207,13 @@ def unfiled(log, rules=None, plugins=None):
     lines = ["未归件"]
     for fact in log.facts():
         body = fact["body"]
-        if fact["kind"] != "event" or body.get("ingress") != "external":
+        if fact["kind"] != "event" or (body.get("ingress") != "external" and not body.get("unmatched")):
             continue
-        target, flow = flow_for(targets, body["target"], plugins)
+        target, flow = flow_for(targets, body["target"], plugins, body.get("flow", ""))
         outcome = outcomes.get(fact["seq"])
-        if outcome and outcome["kind"] == "event_classified":
+        if body.get("unmatched"):
+            state = "没有流程匹配"
+        elif outcome and outcome["kind"] == "event_classified":
             if log.get("items", outcome["item"]):
                 continue
             state = f'归到 {outcome["item"]}，活已清掉'

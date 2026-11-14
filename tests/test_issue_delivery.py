@@ -15,7 +15,7 @@ from workshop.core.models import After, Classification, Event, FlowBrief, Receip
 from workshop.plugins.issue_delivery import IssueDelivery, action_for
 from workshop.plugins.issue_delivery.io import IO, clean_env
 from workshop.core.ports import Retryable
-from workshop.plugins.sources.github import GitHubSource
+from source_routing import RoutedGitHubSource as GitHubSource
 from conftest import build, configuration, current, finish, in_process_commands, item
 
 
