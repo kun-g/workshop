@@ -68,6 +68,7 @@ def world(tmp_path):
     io = LocalIO(tmp_path / 'state', remote)
     flow = ScheduledRelease(io)
     target = {'name': 'alpha', 'repo': 'example/workshop', 'checkout': str(repo),
+              'scheduled_release_state_dir': str(tmp_path / 'state'),
               'sources': {'main_branch': {'every': '1h'}}, 'prepare': [], 'github_identity': {'mode': 'inherit'}}
     body = {'kind': 'ahead', 'from': a, 'to': b}
     data = {'id': f'alpha:scheduled_release:{b}', 'target': 'alpha', 'object_key': b,
@@ -347,3 +348,85 @@ def test_registered_rules_load_both_flows_and_default_issue_ids():
     assert release['sources']['main_branch']['every'] == '1h'
     assert isinstance(Registry().get('flow', 'scheduled_release'), ScheduledRelease)
     assert isinstance(Registry().get('source', 'main_branch'), MainBranchSource)
+
+
+def test_source_skips_rolled_back_commit_but_releases_new_merge(world, monkeypatch):
+    w = world
+    calls = []
+    real = source_module.run
+    def run(argv, **kwargs):
+        calls.append(argv)
+        return real([str(w['remote']) if str(a).startswith('https://github.com/') else a for a in argv], **kwargs)
+    monkeypatch.setattr(source_module, 'run', run)
+    # 来源收到默认流程的配置；发版目录在另一流程下。
+    target = dict(w['target'])
+    target['flows'] = {'issue_delivery': {}, 'scheduled_release': {
+        'scheduled_release_state_dir': target.pop('scheduled_release_state_dir')}}
+    root = w['io'].root(w['target'])
+    write(root / 'release.json', {'from': w['a'], 'to': w['b'], 'status': 'rolled_back'})
+    now = datetime(2026, 11, 14, 10, tzinfo=timezone.utc)
+    source = MainBranchSource(lambda: now)
+    skipped = source.poll(target, None)
+    assert skipped.events == [] and skipped.cursor == now.isoformat()
+    assert not source.poll(target, skipped.cursor).events and len(calls) == 2
+    now += timedelta(hours=1)
+    again = source.poll(target, skipped.cursor)
+    assert not again.events and again.cursor != skipped.cursor
+    git(w['repo'], 'checkout', '-qb', 'newer', w['b'])
+    c = commit(w['repo'], 'readme', 'new')
+    git(w['repo'], 'push', str(w['remote']), 'HEAD:main')
+    git(w['repo'], 'checkout', 'main')
+    now += timedelta(hours=1)
+    next_release = source.poll(target, again.cursor)
+    assert len(next_release.events) == 1
+    assert next_release.events[0].body == {'kind': 'ahead', 'from': w['a'], 'to': c}
+    assert not source.poll(target, next_release.cursor).events and len(calls) == 6
+    w['data'] = {'id': 'alpha:scheduled_release:' + c, 'object_key': c,
+                 'materials': [{'source': 'main_branch', 'body': next_release.events[0].body}]}
+    after(w, '证据')
+    assert after(w, '交付').restart
+    restart(w)
+    after(w, '验收')
+    assert read(root / 'release.json')['status'] == 'ok'
+
+
+@pytest.mark.parametrize('status', ['rolling_back', 'rollback_failed', 'rolled_back'])
+def test_rollback_cannot_replay_restart_or_finish_successfully(world, status):
+    w = world
+    engine = make_engine(w)
+    engine.ingest(event(target='beta'))
+    try:
+        for _ in range(5):
+            engine.tick()
+        running = current(engine, target='beta')
+        assert engine.restart_requested
+        release = read(w['io'].root(w['target']) / 'release.json')
+        write(w['io'].root(w['target']) / 'release.json', {**release, 'status': status})
+        # 即使是同一个旧父进程重放交付 key，也不能重启失败版本。
+        assert not after(w, '交付').restart
+        git(w['repo'], 'reset', '--keep', w['a'])
+        restart(w)
+        revived = Engine(engine.log, engine.rules, engine.plugins, engine.clock)
+        for _ in range(5):
+            revived.tick()
+        assert revived.log.get('items', w['data']['id'])['state'] == '完成'
+        assert state(w)['status'] == 'failed'
+        assert not after(w, '收尾').notice
+        assert read(w['io'].root(w['target']) / 'release.json')['status'] == status
+        assert current(revived, target='beta')['token'] == running['token']
+        assert len(revived.log.all('rounds')) == 1 and not revived.restart_requested
+        assert not [c for c in revived.log.all('cards') if c['mode'] == 'notice']
+    finally:
+        engine.log.close()
+
+
+def test_source_corrupt_release_is_not_treated_as_no_failure(world, monkeypatch):
+    w = world
+    real = source_module.run
+    monkeypatch.setattr(source_module, 'run', lambda argv, **kw: real([
+        str(w['remote']) if str(a).startswith('https://github.com/') else a for a in argv], **kw))
+    root = w['io'].root(w['target'])
+    root.mkdir(parents=True)
+    (root / 'release.json').write_text('{broken')
+    with pytest.raises(Retryable, match='无法读取发版记录'):
+        MainBranchSource().poll(w['target'], None)

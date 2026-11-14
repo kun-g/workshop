@@ -7,6 +7,7 @@ import json
 import math
 import os
 from pathlib import Path
+import re
 import shutil
 import sqlite3
 import subprocess
@@ -24,6 +25,179 @@ def timestamp(value):
     if parsed.tzinfo is None:
         raise ValueError("时间缺时区")
     return parsed
+
+
+def save_json(path, value):
+    fd, name = tempfile.mkstemp(dir=path.parent)
+    try:
+        with os.fdopen(fd, "w") as stream:
+            json.dump(value, stream, ensure_ascii=False)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(name, path)
+    finally:
+        if os.path.exists(name):
+            os.unlink(name)
+
+
+class ReleaseRollback:
+    """系统 Python 也能运行；只读规则快照，与发版作业共用文件契约。"""
+    def __init__(self, directory):
+        self.directory = directory
+
+    def configuration(self):
+        with closing(sqlite3.connect((self.directory / "workshop.db").as_uri() + "?mode=ro", uri=True, timeout=5)) as db:
+            row = db.execute("SELECT body FROM controls WHERE id='@rules'").fetchone()
+        data = json.loads(row[0])["data"] if row else {}
+        if not isinstance(data, dict) or not isinstance(data.get("targets"), dict):
+            raise ValueError("规则快照缺少交付对象")
+        notices = data.get("notices", "send")
+        if notices not in ("hold", "send"):
+            raise ValueError("规则 notices 无效")
+        candidates = []
+        for name, target in data.get("targets", {}).items():
+            if not isinstance(target, dict) or not isinstance(target.get("flows", {}), dict):
+                raise ValueError("规则快照的交付对象或流程无效")
+            for flow, local in target.get("flows", {}).items():
+                if not isinstance(local, dict):
+                    raise ValueError("规则快照的流程配置无效")
+                if local.get("plugin", flow) != "scheduled_release":
+                    continue
+                config = {**target, **local}
+                root = Path(config.get("scheduled_release_state_dir", "~/.local/state/workshop")).expanduser().resolve()
+                if root == self.directory:
+                    candidates.append((name, config))
+        if len(candidates) != 1:
+            raise ValueError("规则快照未唯一指定本状态目录的定时发版对象")
+        return *candidates[0], notices
+
+    def command(self, argv, *, cwd=None, timeout=30, isolated=False):
+        # prepare 不继承部署凭据，也不依赖损坏的项目虚拟环境启动看门。
+        with tempfile.TemporaryDirectory(prefix="workshop-rollback-") as home:
+            env = None
+            if isolated:
+                env = {k: os.environ[k] for k in ("PATH", "LANG", "LC_ALL", "TMPDIR") if k in os.environ}
+                env.update(HOME=home, GH_CONFIG_DIR=home, GIT_CONFIG_GLOBAL="/dev/null",
+                           GIT_CONFIG_NOSYSTEM="1", GIT_TERMINAL_PROMPT="0",
+                           AWS_CONFIG_FILE="/dev/null", AWS_SHARED_CREDENTIALS_FILE="/dev/null",
+                           KUBECONFIG="/dev/null", GIT_CONFIG_COUNT="1",
+                           GIT_CONFIG_KEY_0="core.hooksPath", GIT_CONFIG_VALUE_0="/dev/null")
+            try:
+                result = subprocess.run(argv, cwd=cwd, env=env, timeout=timeout,
+                                        capture_output=True, text=True, errors="replace")
+                return dict(argv=list(argv), exit_code=result.returncode, stdout=result.stdout, stderr=result.stderr)
+            except subprocess.TimeoutExpired as exc:
+                def text(value):
+                    return value.decode(errors="replace") if isinstance(value, bytes) else value or ""
+                return dict(argv=list(argv), exit_code=124, stdout=text(exc.stdout), stderr=text(exc.stderr) + "\n命令超时")
+            except OSError as exc:
+                return dict(argv=list(argv), exit_code=127, stdout="", stderr=str(exc))
+
+    def attempt(self, record, target, now):
+        for field in ("from", "to"):
+            if not isinstance(record.get(field), str) or not re.fullmatch("[0-9a-f]{40}", record[field]):
+                raise ValueError("发版记录缺少完整 from/to 提交号")
+        checkout = Path(target["checkout"]).expanduser().resolve()
+        prepare = record.get("prepare")
+        if not isinstance(prepare, list) or any(not isinstance(a, list) or not a or
+                not all(isinstance(s, str) and s.strip() for s in a) for a in prepare):
+            raise ValueError("发版记录 prepare 须为 argv 列表")
+        cwds = record.get("prepare_cwds", ["."] * len(prepare))
+        if not isinstance(cwds, list) or len(cwds) != len(prepare) or not all(isinstance(s, str) for s in cwds):
+            raise ValueError("发版记录 prepare_cwds 与命令不对应")
+        def directory(relative):
+            cwd = (checkout / relative).resolve()
+            if not cwd.is_relative_to(checkout):
+                raise ValueError("准备命令目录超出主检出")
+            return cwd
+        for cwd in cwds:
+            directory(cwd)
+        timeout = target.get("release_timeout", 300)
+        if type(timeout) not in (int, float) or not math.isfinite(timeout) or timeout <= 0:
+            raise ValueError("发版超时配置无效")
+        git = ["git", "-c", "core.hooksPath=/dev/null", "-C", str(checkout)]
+        def read(*args):
+            result = self.command(git + list(args))
+            if result["exit_code"]:
+                raise ValueError("回退预检失败：" + json.dumps(result, ensure_ascii=False))
+            return result["stdout"].strip()
+        if read("symbolic-ref", "--short", "HEAD") != "main":
+            raise ValueError("主检出不在 main")
+        if read("status", "--porcelain", "--untracked-files=all"):
+            raise ValueError("主检出有未提交改动或未跟踪文件")
+        if read("rev-parse", "HEAD") != record["to"]:
+            raise ValueError("主检出 HEAD 不等于本次发版 to")
+        if read("rev-parse", "--verify", record["from"] + "^{commit}") != record["from"]:
+            raise ValueError("发版前的提交不存在")
+        read("merge-base", "--is-ancestor", record["from"], record["to"])
+
+        path = self.directory / "release.json"
+        record["status"] = "rolling_back"
+        record["rollback"] = {"at": now.isoformat(), "runs": []}
+        save_json(path, record)  # 外部动作前登记；中断后不猜测动作有没有完成。
+        def perform(argv, **kwargs):
+            record["rollback"]["pending"] = list(argv)
+            save_json(path, record)
+            result = self.command(argv, **kwargs)
+            record["rollback"]["runs"].append({**result, "cwd": str(kwargs.get("cwd") or checkout)})
+            record["rollback"].pop("pending")
+            save_json(path, record)
+            if result["exit_code"]:
+                raise ValueError("回退命令失败，退出 " + str(result["exit_code"]) + "；原样输出见 release.json")
+        perform(git + ["reset", "--keep", record["from"]])
+        for argv, cwd in zip(prepare, cwds):
+            # reset 可能改变目录/符号链接，使用旧版内容再次核对。
+            perform(argv, cwd=directory(cwd), timeout=timeout, isolated=True)
+        perform(["launchctl", "kickstart", "-k", f"gui/{os.getuid()}/com.kun.workshop"])
+        record.update(status="rolled_back", rolled_back_at=now.isoformat())
+        save_json(path, record)
+
+    def run(self, now):
+        path = self.directory / "release.json"
+        if not path.exists():
+            return {}
+        # 和 scheduled_release 的 IO.locked 使用同一把锁；取锁后才读记录。
+        with (self.directory / "scheduled-release.lock").open("a") as lock:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                return None  # 此次没有观测，不能把上次的通知去重记录当作已恢复。
+            policy, record, anchor = "hold", None, "unreadable"
+            try:
+                name, target, policy = self.configuration()
+                raw = path.read_text()
+                anchor = hashlib.sha256(raw.encode()).hexdigest()
+                record = json.loads(raw)
+                if not isinstance(record, dict):
+                    raise ValueError("发版记录须为对象")
+                anchor = json.dumps([record.get(k) for k in ("item", "from", "to", "at")], ensure_ascii=False)
+                if not isinstance(record.get("item"), str) or record["item"].split(":")[0] != name:
+                    raise ValueError("发版记录与规则中的交付对象不匹配")
+                status = record.get("status")
+                if status == "ok":
+                    return {}
+                if status == "restarting":
+                    if (now - timestamp(record["at"])).total_seconds() <= 180:
+                        return {}
+                    self.attempt(record, target, now)
+                elif status == "rolling_back":
+                    raise ValueError("上次回退中断，命令结果未确认；不自动重做，请核对 release.json")
+                elif status not in ("rolled_back", "rollback_failed"):
+                    raise ValueError("发版记录状态无效")
+                if record["status"] == "rolled_back":
+                    text = "车间发版已退回上一版并请求重启；同一提交不重发，有新合并下个整点再试。详情见 release.json。"
+                else:
+                    text = "车间发版回退未完成，需要你处理：" + record["rollback"]["reason"]
+            except (OSError, ValueError, KeyError, TypeError, sqlite3.Error) as exc:
+                if isinstance(record, dict) and record.get("status") == "rolling_back":
+                    record["status"] = "rollback_failed"
+                    if not isinstance(record.get("rollback"), dict):
+                        record["rollback"] = {"unreadable": record.get("rollback")}
+                    record.setdefault("rollback", {})["reason"] = str(exc)
+                    save_json(path, record)
+                text = "车间发版无法安全退回，需要你处理：" + str(exc)
+            key = "release:" + hashlib.sha256(anchor.encode()).hexdigest()[:24]
+            return {key: {"anchor": anchor, "text": text, "immediate": True, "notices": policy}}
 
 
 class Watch:
@@ -111,16 +285,7 @@ class Watch:
             yield
 
     def _save(self, state):
-        fd, name = tempfile.mkstemp(dir=self.directory)
-        try:
-            with os.fdopen(fd, "w") as stream:
-                json.dump(state, stream, ensure_ascii=False)
-                stream.flush()
-                os.fsync(stream.fileno())
-            os.replace(name, self.directory / "watch.json")
-        finally:
-            if os.path.exists(name):
-                os.unlink(name)
+        save_json(self.directory / "watch.json", state)
 
     def _send(self, incident):
         try:
@@ -160,6 +325,9 @@ class Watch:
             awake = previous is not None and 0 <= (now - timestamp(previous)).total_seconds() <= 90
             state["last_run"] = now.isoformat()
             faults = self.faults(now)
+            release_faults = ReleaseRollback(self.directory).run(now)
+            faults.update(release_faults if release_faults is not None else
+                          {k: v for k, v in state["active"].items() if k.startswith("release:")})
             tick_fault = self.tick_fault(state, now, awake)
             if tick_fault:
                 faults["tick"] = tick_fault
@@ -174,13 +342,17 @@ class Watch:
                     active[key] = {**fault, "id": f"workshop-watch:{self.scope}:{now.date()}:{fingerprint}",
                                    "since": now.isoformat(),
                                    "confirmed": False, "reported": False}
-                active[key]["confirmed"] = awake
+                active[key]["confirmed"] = awake or fault.get("immediate", False)
             # 同一次故障跨日期不重复；确认恢复后再次故障会分配新 id。
             self._save(state)
             errors = []
             for incident in active.values():
                 if incident.get("confirmed") and not incident["reported"]:
                     try:
+                        if incident.get("notices") == "hold":
+                            incident.update(reported=True, via="held")
+                            self._save(state)
+                            continue
                         incident["via"] = self._send(incident)
                         incident["reported"] = incident["via"] == "ask-kun"
                         self._save(state)

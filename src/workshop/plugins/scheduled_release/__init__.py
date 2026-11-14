@@ -85,7 +85,7 @@ class ScheduledRelease:
             state['status'] = release['status']
             # 已重启则不要再次请求；同一旧进程尚未消费返回值则重放重启请求。
             return After(restart=release['status'] == 'restarting' and self.io.daemon() == release['daemon'])
-        if release.get('status') == 'restarting':
+        if release.get('status') in ('restarting', 'rolling_back', 'rollback_failed'):
             return After(pending=True, reason='上一件发版尚未确认', next='等上一件确认或退回后再检查主检出')
         if state.get('checked') != state['to'] or state.get('check', {}).get('exit_code') != 0:
             return self.fail(state, '目标提交缺少通过的检查')
@@ -160,6 +160,14 @@ class ScheduledRelease:
             state = read(path) or {**self.intent(item), 'status': 'new', 'effects': {}}
             def save():
                 write(path, state)
+            release = read(self.io.root(target) / 'release.json')
+            if (release.get('item') == item['id'] and release.get('to') == state['to']
+                    and release.get('status') in ('rolling_back', 'rollback_failed', 'rolled_back')):
+                # 在旧 after key 重放之前拦住重启请求/成功通知；通知由独立看门负责。
+                state.update(status='failed', failure='看门已停止本次发版：' + release['status'])
+                state['effects'][key] = asdict(After())
+                save()
+                return After()
             if key in state['effects']:
                 result = After(**state['effects'][key])
                 if result.restart and self.io.daemon() != read(self.io.root(target) / 'release.json').get('daemon'):
