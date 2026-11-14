@@ -90,11 +90,40 @@ targets:
       scheduled_release:
         triggers: [{source: main_branch, when: {kind: ahead}, action: ready}]
         scheduled_release_state_dir: ~/.local/state/workshop
+      watch_updates:
+        triggers:
+          - {source: watch_updates, when: {kind: [version, reconcile, failure]}, action: ready}
+          - {source: watch_updates, when: {kind: wake}, action: rework}
+          - {source: 'cli:feishu', action: update}
+        stage_executors:
+          说清楚: [{use: watch-inventory}]
+          执行: [{use: codex}]
+        pending_limit: 24
     selector: quota
     quota_snapshot: *quota_snapshot
     # 阶段开关：去掉审查（Kun 11-13：「先跳过 Review 加快交付，反正现在的系统是我自己在用」）。要恢复就把审查加回证据和交付之间。
     stages: [接单, 说清楚, 执行, 证据, 交付, 验收, 收尾]
-    sources: {github: {}, main_branch: {every: 1h}}
+    sources: {github: {}, main_branch: {every: 1h}, watch_updates: {}}
+    watch_updates:
+      # 负责会话转换真实清单并对接私聊入口后启用；本 PR 不改 workspace 文件。
+      enabled: false
+      timezone: Asia/Singapore
+      hour: 9
+      weekday: 0
+      report_wait_minutes: 60
+      data_repo: ~/workspace
+      watchlist: ~/workspace/runtime/jobs/periodic/watch_updates/watchlist.yaml
+      sources: ~/workspace/runtime/jobs/periodic/watch_updates/sources.yaml
+      needs: ~/workspace/needs.yaml
+      snapshots: ~/workspace/runtime/jobs/periodic/watch_updates/snapshots
+      state_dir: ~/.local/state/workshop/watch_updates
+      reports: ~/.local/state/workshop/watch_updates/reports
+      lark: lark-cli
+      profile: tuan
+      kun_open_id: ou_43456ed5ae17472375fcbb6ec0fc4661
+      directions:
+        - {id: workshop, path: ~/workspace/contexts/projects/workshop/pm.md}
+        - {id: workspace, path: ~/workspace/contexts/WORKSPACE.md}
     github_overlap_seconds: 60
     short_name: ws
     ask_kun_state: ~/.local/state/ask-kun/asks.json
@@ -118,6 +147,19 @@ targets:
     release: none
 # 配置档集中定义；use 是持久身份，不随 driver 或运行方式改变。
 executor_profiles:
+  watch-inventory:
+    driver: codex
+    transport: headless
+    family: codex
+    billing: subscription
+    model: gpt-6.1-sol
+    effort: high
+    sandbox: workspace-write
+    settings: {sandbox_workspace_write: {network_access: true}}
+    permission_mode: never
+    ignore_user_config: true
+    ignore_rules: true
+    prompt: '只读对账：只读本机、ssh 和 kubectl 的版本与清单，不运行升级、配置写入、重启或对外发消息；只通过车间回执交结构化证据。'
   orca-codex:
     driver: codex
     transport: orca
