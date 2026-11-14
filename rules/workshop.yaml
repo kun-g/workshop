@@ -1,7 +1,25 @@
+# 新 flows 只使用这里的条件；兼容旧 plugin 文件的默认条件留在流程迁移适配中。
+issue_triggers: &issue_triggers
+  - source: github
+    when: {kind: label, label: Ready for Agent, actor: kun-g, by_workshop: false, edited: false}
+    action: ready
+  - source: github
+    when:
+      kind: [issue-comment, pr-comment, pr-review-comment, pr-review]
+      author: kun-g
+      text: '^不对(?:[，,:：。！!\s][\s\S]*)?$'
+      by_workshop: false
+      edited: false
+    action: rework
+  - {source: github, action: update}
+  - {source: 'cli:feishu', action: update}
+  - {source: 'cli:orca', action: update}
 # 唯一规则入口；插件通过 workshop.<port> 入口点按名字加载。
 targets:
   grant-console:
-    plugin: issue_delivery
+    default_flow: issue_delivery
+    flows:
+      issue_delivery: {triggers: *issue_triggers}
     selector: quota
     # 本机 ai_quota 快照（和 ai-quota MCP 同一数据源），只读；最近一次成功采集超过 45 分钟算过期（和 ai_quota 提醒同一条线）。
     quota_snapshot: &quota_snapshot {path: ~/.local/state/ai_quota/quota.db, max_age_minutes: 45}
@@ -66,7 +84,9 @@ targets:
                    'services/devops-console/tests/test_lark_receiver.py',
                    'docs/requirements/approval-card.md']
   workshop:
-    plugin: issue_delivery
+    default_flow: issue_delivery
+    flows:
+      issue_delivery: {triggers: *issue_triggers}
     selector: quota
     quota_snapshot: *quota_snapshot
     # 阶段开关：去掉审查（Kun 11-13：「先跳过 Review 加快交付，反正现在的系统是我自己在用」）。要恢复就把审查加回证据和交付之间。

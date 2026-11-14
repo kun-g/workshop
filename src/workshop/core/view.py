@@ -66,13 +66,14 @@ def evolve(db, fact: dict) -> None:
     elif kind == "alias_bound":
         put("aliases", body["id"], body)
     elif kind == "event":
-        if body.get("pending_classification"):
+        if body.get("unmatched") or body.get("pending_classification"):
             return
         item = get("items", item_id)
         if not item:
             if body.get("release_gate") and body["action"] != "ready":
                 return  # 来源里没放行过的对象只记事实，不建活。
             item = dict(id=item_id, target=body["target"], object_key=body["object_key"],
+                        flow=body.get("flow", ""), flow_default=body.get("flow_default", not body.get("flow")),
                         title=body["title"], stage="接单", state="空闲", session=None,
                         sessions={}, writer=None, ticket=None, failures=0, approved=[],
                         checks=[], depth=body["depth"], created=fact["at"], next="接单",

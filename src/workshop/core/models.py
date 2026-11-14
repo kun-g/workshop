@@ -40,15 +40,25 @@ class Event:
     body: Any
     depth: int = 0
     action: str = "update"
+    flow: str = ""
+    flow_default: bool = False
+    action_id: str = ""
+    previous_ids: list[str] = field(default_factory=list)
 
     @property
     def item_id(self) -> str:
-        return f"{self.target}:{self.object_key}"
+        prefix = f"{self.target}:{self.flow}" if self.flow and not self.flow_default else self.target
+        return f"{prefix}:{self.object_key}"
 
     def validate(self) -> None:
         if not all(isinstance(x, str) and x for x in
                    (self.source, self.ext_id, self.target, self.object_key, self.title)):
             raise ValueError("事件标识与标题不能为空")
+        if (not isinstance(self.flow, str) or ":" in self.flow or type(self.flow_default) is not bool
+                or not isinstance(self.action_id, str)):
+            raise ValueError("事件流程无效")
+        if not isinstance(self.previous_ids, list) or not all(isinstance(v, str) and v for v in self.previous_ids):
+            raise ValueError("旧事件标识须为字符串列表")
         if type(self.depth) is not int or self.depth < 0 or self.action not in ("update", "rework", "ready"):
             raise ValueError("事件深度或动作无效")
 
@@ -66,6 +76,7 @@ class Classification:
 class Poll:
     events: list[Event]
     cursor: str | None = None
+    normalized: bool = False
 
 
 @dataclass(frozen=True)

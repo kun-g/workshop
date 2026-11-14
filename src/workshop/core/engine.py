@@ -19,6 +19,7 @@ from .cards import frozen_question, question, notice, validate_question, validat
 from .models import After, Answer, FlowBrief, Classification, Evidence, Release, Usage, RoundUsage
 from .jobs import Pending
 from .records import StoredBrief, defer_items, materialize
+from .flows import entries, default_flow, matches
 
 
 def gate(ingress):
@@ -29,19 +30,23 @@ def gate(ingress):
 
 def finder(log, target):
     """给流程判定用的只读查找：按外部编号找卡，或按对象键（先解析别名）找同目标的活。"""
+    scope = target if isinstance(target, dict) else {"target": target}
+    target = scope["target"]
+    prefix = target if scope.get("flow_default", True) else f'{target}:{scope["flow"]}'
+
     def resolve(object_key):
-        alias = log.get("aliases", f"{target}:{object_key}")
+        alias = log.get("aliases", f"{prefix}:{object_key}")
         return alias["object_key"] if alias else object_key
 
     def find(external=None, *, object_key=None):
         if object_key is not None:
-            found = log.get("items", f"{target}:{resolve(object_key)}")
+            found = log.get("items", f"{prefix}:{resolve(object_key)}")
             return {"item": log.full_item(found)} if found else None
         matches = [c for c in log.all("cards") if c.get("external") == external]
         if len(matches) != 1:
             return None
         item = log.get("items", matches[0]["item"])
-        return {"card": matches[0], "item": log.full_item(item)} if item and item["target"] == target else None
+        return {"card": matches[0], "item": log.full_item(item)} if item and item["target"] == target and item["id"] == f'{prefix}:{item["object_key"]}' else None
     return find
 
 
@@ -54,6 +59,22 @@ class Engine:
         self.restart_requested = False
         self.tick_failures = self.control("@tick").get("failures", 0)
         saved = self.log.get("controls", "@rules") or {}
+        pinned = dict(self.control("@flow-defaults").get("values", {}))
+        targets = {}
+        for name, config in rules.data['targets'].items():
+            old = saved.get('data', {}).get('targets', {}).get(name, {})
+            chosen = pinned.get(name) or (default_flow(old) if old else default_flow(config))
+            if chosen not in entries(config):
+                raise ValueError(f'{name} 兼容流程 {chosen} 不能移除或换名')
+            if config.get('default_flow', chosen) != chosen:
+                raise ValueError(f'{name} default_flow 不能改变已有活的归属')
+            pinned[name] = chosen
+            targets[name] = {**config, 'default_flow': chosen} if 'flows' in config else config
+        if pinned != self.control('@flow-defaults').get('values'):
+            self.fact('control', {'id': '@flow-defaults', 'values': pinned})
+        rules = type(rules)({**rules.data, 'targets': targets}, rules.path)
+        self.rules = rules
+
         if saved.get("data") != rules.data or saved.get("path") != rules.path:
             self.fact("control", {"id": "@rules", "data": rules.data, "path": rules.path})
 
@@ -95,8 +116,24 @@ class Engine:
             return getattr(self.plugins.get(port, name), method)(*args)
         return self.jobs.call(port, name, method, args, identity=identity, item=item, lookup=lookup)
 
-    def resolve_key(self, target, object_key):
-        alias = self.log.get("aliases", f"{target}:{object_key}")
+    def item_target(self, item):
+        return self.rules.target(item['target'], item.get('flow', ''))
+
+    def scope(self, target, flow=''):
+        config = self.rules.target(target, flow)
+        return {'target': target, 'flow': config['flow'], 'flow_default': config['flow_default']}
+
+    def prefix(self, target, flow=''):
+        scope = self.scope(target, flow)
+        return target if scope['flow_default'] else f"{target}:{scope['flow']}"
+
+    def flow_broken(self, target, flow=''):
+        config = self.rules.target(target, flow)
+        return bool(self.control(target).get('broken') or
+                    self.control(f"@flow:{target}:{config['plugin']}").get('broken'))
+
+    def resolve_key(self, target, object_key, flow=''):
+        alias = self.log.get("aliases", f"{self.prefix(target, flow)}:{object_key}")
         return alias["object_key"] if alias else object_key
 
     def find_external(self, target, external):
@@ -136,7 +173,7 @@ class Engine:
             raise ValueError("流程返回的别名必须是非空字符串列表")
         with self.log.transaction():
             for alias in aliases:
-                identity = f'{item["target"]}:{alias}'
+                identity = f'{self.prefix(item["target"], item.get("flow", ""))}:{alias}'
                 existing = self.log.get("aliases", identity) or self.log.get("items", identity)
                 if existing and existing["object_key"] != item["object_key"]:
                     raise ValueError(f"别名冲突：{identity}")
@@ -172,7 +209,7 @@ class Engine:
         hook = item.get("after_wait")
         if not hook or item["state"] != "空闲" or stamp(self.clock()) < hook["at"] or not self.retry_due(hook["key"]):
             return
-        target = self.rules.target(item["target"])
+        target = self.item_target(item)
         try:
             result = self.after({**item, "result": hook["receipt"]}, item["stage"], hook["key"], target, recheck=True)
             with self.log.transaction():
@@ -191,17 +228,18 @@ class Engine:
 
     def cleanup_flows(self):
         keep = [r.get("workdir") for r in self.active() if not r.get("stopped")]
-        for name in self.rules.data["targets"]:
-            target = self.rules.target(name)
-            if self.control(name).get("broken"):
-                continue
-            try:
-                if getattr(self.plugins.get("flow", target["plugin"]), "cleanup", None):
-                    self.call("flow", target["plugin"], "cleanup", target, keep)
-            except Pending:
-                pass  # 清理不挡别的事，作业自己跑完。
-            except Exception as exc:
-                self.broken(name, "flow", target["plugin"], exc)
+        for name, rule in self.rules.data['targets'].items():
+            for flow in entries(rule):
+                target = self.rules.target(name, flow)
+                if self.flow_broken(name, flow):
+                    continue
+                try:
+                    if getattr(self.plugins.get('flow', target['plugin']), 'cleanup', None):
+                        self.call('flow', target['plugin'], 'cleanup', target, keep)
+                except Pending:
+                    pass
+                except Exception as exc:
+                    self.broken(name, 'flow', target['plugin'], exc)
 
     def release_workdirs(self):
         """收尾完成的活：流程说不用留了，就请为它开过工作目录的执行者收回；返工时执行者重新开。
@@ -216,9 +254,9 @@ class Engine:
                     or item["id"] in running or (item.get("release_at") or "") > now):
                 continue
             control = self.control(item["target"])
-            if control.get("paused") or control.get("broken") or item["target"] not in self.rules.data["targets"]:
+            if control.get("paused") or self.flow_broken(item["target"], item.get("flow", "")) or item["target"] not in self.rules.data["targets"]:
                 continue
-            target = self.rules.target(item["target"])
+            target = self.item_target(item)
             later = stamp(self.clock() + timedelta(hours=1))
             # 同一次收回跨拍、跨重启复用结果；延期重试和返工后的收尾必须重新判断。
             identity = [item["id"], item.get("pending_episode", 0), item["workdir"], item.get("release_at")]
@@ -273,7 +311,7 @@ class Engine:
             if outcome == "无执行者认领":
                 self.change(item, workdir_released=outcome, release_hold="", release_at=None)
 
-    def ingest(self, event: Event, round_token: str | None = None, *, ingress: str = "source") -> bool:
+    def ingest(self, event: Event, round_token: str | None = None, *, ingress: str = "source", directed=False) -> bool:
         if ingress == "external":
             event = replace(event, source=f"cli:{event.source}")
         if round_token:
@@ -288,13 +326,54 @@ class Engine:
         elif ingress != "source":
             raise ValueError("事件入口必须是可信来源、外部入口或带轮次令牌的 agent")
         event.validate()
-        event = replace(event, object_key=self.resolve_key(event.target, event.object_key))
-        self.rules.target(event.target)
+        target = self.rules.target(event.target)
+        # 只有核心内部的定时与会话放行可绕过触发器定向；外部自报流程不授予权限。
+        if directed:
+            selected = [(self.rules.target(event.target, event.flow), event.action)]
+        elif 'flows' not in target:
+            action = event.action
+            for trigger in target.get('legacy_triggers', {}).get(event.source, []) if event.action_id else []:
+                if matches(event.body, trigger.get('when', {})):
+                    action = trigger['action'] if ingress == 'source' else 'update'
+                    break
+            selected = [(target, action)]
+        else:
+            selected = []
+            for flow in entries(target):
+                config = self.rules.target(event.target, flow)
+                for trigger in config['triggers']:
+                    if trigger['source'] == event.source and matches(event.body, trigger.get('when', {})):
+                        selected.append((config, trigger['action'] if ingress == 'source' else 'update'))
+                        break
+        if not selected and round_token:
+            # 回执子事件的来源带轮次标识，默认跟随原流程；跨对象时用对方兼容流程。
+            flow = parent.get('flow', '') if parent['target'] == event.target else ''
+            selected = [(self.rules.target(event.target, flow), 'update')]
+        with self.log.transaction():
+            if not selected:
+                return self.fact('event', {**asdict(event), 'ingress': ingress, 'unmatched': True},
+                                 source=event.source, ext_id=json.dumps([event.target, '', event.ext_id], ensure_ascii=False))
+            added = False
+            for config, action in selected:
+                scoped = replace(event, flow=config['flow'], flow_default=config['flow_default'], action=action,
+                                 ext_id=event.action_id if action != 'update' and event.action_id else event.ext_id)
+                # 旧兼容流程的历史去重标识仍有效；新流程不受旧记录影响。
+                if config['flow_default'] and 'flows' in target and not directed:
+                    ids = [scoped.ext_id, *event.previous_ids]
+                    if any(self.log.db.execute("SELECT 1 FROM facts WHERE source=? AND ext_id=? AND json_extract(body, '$.target')=?",
+                                               (event.source, key, event.target)).fetchone() for key in ids):
+                        continue
+                scoped = replace(scoped, object_key=self.resolve_key(scoped.target, scoped.object_key, scoped.flow))
+                added = self.record_event(scoped, ingress, namespaced='flows' in target and not directed) or added
+            return added
+
+    def record_event(self, event, ingress, *, namespaced=False):
         with self.log.transaction():
             paused = self.control(event.target).get("paused", False)
             kind = "deferred_event" if paused else "event"
             added = self.fact(kind, {**asdict(event), "ingress": ingress, "pending_classification": ingress == "external",
-                                     **gate(ingress)}, event.item_id, source=event.source, ext_id=event.ext_id)
+                                     **gate(ingress)}, event.item_id, source=event.source,
+                                     ext_id=json.dumps([event.target, event.flow, event.ext_id], ensure_ascii=False) if namespaced else event.ext_id)
             if added and not paused:
                 if ingress == "external":
                     self.classification_intent(event)
@@ -302,9 +381,9 @@ class Engine:
                 item = self.log.get("items", event.item_id)
                 if item is None:
                     return added  # 没放行的对象只记了事实。
-                if event.depth > self.rules.data["limits"]["chain_depth"]:
+                if item["depth"] > self.rules.data["limits"]["chain_depth"]:
                     self.block(item, "事件连锁超过上限")
-                elif self.control(event.target).get("broken"):
+                elif self.flow_broken(event.target, event.flow):
                     self.block(item, "流程插件等待修复", plugin=True)
             return added
 
@@ -321,13 +400,13 @@ class Engine:
                 continue
             event = Event(**entry["event"])
             control = self.control(event.target)
-            if control.get("paused") or control.get("broken") or not self.retry_due(entry["id"]):
+            if control.get("paused") or self.flow_broken(event.target, event.flow) or not self.retry_due(entry["id"]):
                 continue
-            target = self.rules.target(event.target)
+            target = self.rules.target(event.target, event.flow)
             try:
                 item = self.log.get("items", event.item_id)
                 result = self.call("flow", target["plugin"], "classify", event, item, target,
-                                   identity=[entry["id"], asdict(event)], lookup=event.target)
+                                   identity=[entry["id"], entry["event"]], lookup=self.scope(event.target, event.flow))
                 decision = Classification(result) if isinstance(result, str) else result
                 if not isinstance(decision, Classification):
                     raise ValueError("流程返回了未知判定")
@@ -342,12 +421,12 @@ class Engine:
                     continue
                 action = decision.action
                 if decision.object_key is not None:
-                    key = self.resolve_key(event.target, decision.object_key)
-                    if not isinstance(key, str) or not key or not self.log.get("items", f"{event.target}:{key}"):
+                    key = self.resolve_key(event.target, decision.object_key, event.flow)
+                    if not isinstance(key, str) or not key or not self.log.get("items", f"{self.prefix(event.target, event.flow)}:{key}"):
                         raise ValueError("可信归件只能指向已有活")
                     event = replace(event, object_key=key)
                 else:
-                    event = replace(event, object_key=self.resolve_key(event.target, event.object_key))
+                    event = replace(event, object_key=self.resolve_key(event.target, event.object_key, event.flow))
                 if action not in ("update", "ready", "rework"):
                     raise ValueError("流程返回了未知事件动作")
                 action = self.after_abandon(event.item_id, entry.get("received_seq", entry["event_seq"]), action)
@@ -429,11 +508,11 @@ class Engine:
             raise ValueError("只能恢复已停止的活")
         if item.get("pending_rework"):
             raise ValueError("已经登记返工，不能重复恢复")
-        if self.control(item["target"]).get("broken"):
+        if self.flow_broken(item["target"], item.get("flow", "")):
             raise ValueError("插件尚在隔离，先修复插件")
         if self.waiting(item) and mode != "rework":
             raise ValueError("仍有有效问卡，不能用恢复代替回答")
-        target = self.rules.target(item["target"])
+        target = self.item_target(item)
         plan = {}
         if mode == "wait":
             hook = item.get("after_wait")
@@ -516,7 +595,7 @@ class Engine:
                     event = Event(**body)
                     if ingress == "unknown":
                         event = replace(event, action="update")
-                    event = replace(event, object_key=self.resolve_key(event.target, event.object_key))
+                    event = replace(event, object_key=self.resolve_key(event.target, event.object_key, event.flow))
                     event = replace(event, action=self.after_abandon(event.item_id, int(entry["id"]), event.action))
                     self.fact("event", {**asdict(event), "ingress": ingress, "pending_classification": ingress == "external",
                                         **gate(ingress)}, event.item_id, source="resume", ext_id=entry["id"])
@@ -535,9 +614,17 @@ class Engine:
             # 恢复只解除插件故障；重试耗尽和连锁上限须由新决定处理。
             self.restore_target(target)
 
-    def restore_target(self, target):
+    def restore_target(self, target, plugin=None):
+        for flow in entries(self.rules.data['targets'][target]):
+            name = self.rules.target(target, flow)['plugin']
+            key = f'@flow:{target}:{name}'
+            if plugin is not None and name != plugin:
+                continue
+            if self.control(key).get('broken'):
+                self.fact('control', {'id': key, 'broken': False, 'action_blocked': False})
         for item in self.log.all("items"):
-            if item["target"] == target and item.get("plugin_blocked"):
+            if (item["target"] == target and item.get("plugin_blocked")
+                    and (plugin is None or self.item_target(item)["plugin"] == plugin)):
                 restored = dict(item["before_plugin_failure"])
                 if restored["state"] == "等你" and not item.get("wait_for_ready") and not self.waiting(item):
                     restored.update(state="空闲", next="按已收到的回答继续", blocked_by="")
@@ -585,7 +672,7 @@ class Engine:
         if not item or item["stage"] != row["stage"]:
             return ""
         try:
-            target = self.rules.target(item["target"])
+            target = self.item_target(item)
             stages = self.plugins.get("flow", target["plugin"]).stages(target)
             validate_stages(stages)
         except Exception:
@@ -663,23 +750,28 @@ class Engine:
                         plugin_blocked=plugin, before_plugin_failure=saved, leave={"kind": "等你", "about": reason})
 
     def broken(self, target, port, name, exc):
-        # 流程插件共享的所有类一起隔离；其他端口按本次受影响的交付对象隔离。
-        targets = [target]
-        if port == "flow" and not isinstance(exc, TargetBlocked):
-            targets = [t for t, rule in self.rules.data["targets"].items() if rule["plugin"] == name]
+        affected = [(target, None)]
+        if port == 'flow':
+            affected = [(t, flow) for t, rule in self.rules.data['targets'].items()
+                        for flow in entries(rule)
+                        if self.rules.target(t, flow)['plugin'] == name
+                        and (not isinstance(exc, TargetBlocked) or t == target)]
         with self.log.transaction():
-            for affected in targets:
-                if not self.control(affected).get("broken"):
-                    self.fact("plugin_failed", {"target": affected, "port": port, "name": name,
-                                                 "error": repr(exc)})
-                    incident = self.log.db.execute("SELECT max(seq) FROM facts").fetchone()[0]
-                    self.fact("control", {"id": affected, "broken": True,
-                                          "action_blocked": isinstance(exc, TargetBlocked)})
-                    pseudo = {"id": f"@{affected}"}
-                    self.card(pseudo, f"plugin:{port}:{name}:{incident}", "notice", notice(f"{affected} 插件故障：{exc}"))
-                for item in self.log.all("items"):
-                    if item["target"] == affected and item["state"] not in ("完成", "放弃") and not item.get("plugin_blocked"):
-                        self.block(item, f"{port}/{name}: {exc}", plugin=True)
+            for target_name, flow in affected:
+                scoped = flow is not None and 'flows' in self.rules.data['targets'][target_name]
+                key = f'@flow:{target_name}:{name}' if scoped else target_name
+                if not self.control(key).get('broken'):
+                    self.fact('plugin_failed', {'target': target_name, 'flow': flow, 'port': port,
+                                               'name': name, 'error': repr(exc)})
+                    incident = self.log.db.execute('SELECT max(seq) FROM facts').fetchone()[0]
+                    self.fact('control', {'id': key, 'broken': True, 'action_blocked': isinstance(exc, TargetBlocked)})
+                    self.card({'id': f'@{key}'}, f'plugin:{port}:{name}:{incident}', 'notice',
+                              notice(f'{target_name} 插件故障：{exc}'))
+                for item in self.log.all('items'):
+                    if (item['target'] == target_name and item['state'] not in ('完成', '放弃')
+                            and not item.get('plugin_blocked')
+                            and (flow is None or self.item_target(item)['flow'] == flow)):
+                        self.block(item, f'{port}/{name}: {exc}', plugin=True)
 
     def waiting(self, item):
         # 拒收/作废后的待放行也阻止自动执行，但它不属于「等你」。
@@ -710,6 +802,8 @@ class Engine:
                 try:
                     # 身份只认交付对象：游标每次都可能变，带进身份就成了一出结果马上再拉；拉的间隔由新鲜期管。
                     batch = self.call("source", name, "poll", self.rules.target(target), cursor, identity=[target])
+                    if not batch.normalized and callable(getattr(self.plugins.get('source', name), 'normalize', None)):
+                        batch = self.call('source', name, 'normalize', batch, self.rules.target(target))
                     with self.log.transaction():
                         for event in batch.events:
                             if event.target != target:
@@ -885,12 +979,12 @@ class Engine:
             if timer["fired"] or timer["at"] > now:
                 continue
             item = self.log.get("items", timer["item"])
-            if self.control(item["target"]).get("broken"):
+            if self.flow_broken(item["target"], item.get("flow", "")):
                 continue
             with self.log.transaction():
                 self.fact("timer_fired", {"id": timer["id"]}, item["id"])
                 self.ingest(Event("timer", timer["id"], item["target"], item["object_key"],
-                                  item["title"], timer["about"], item["depth"]))
+                                  item["title"], timer["about"], item["depth"], flow=item.get("flow", "")), directed=True)
                 if not self.control(item["target"]).get("paused"):
                     self.apply_timer(timer, item)
 
@@ -943,7 +1037,7 @@ class Engine:
             return True
         try:
             self.plugins.get("taskhome", name)
-            target = self.rules.target(item["target"])
+            target = self.item_target(item)
             if not item.get("ticket"):
                 key = f'ticket:{item["id"]}'
                 ticket = self.effect(key, lambda: self.call("taskhome", name, "open", item["id"], item, target, identity=[key]))
@@ -998,7 +1092,7 @@ class Engine:
         if item["depth"] > self.rules.data["limits"]["chain_depth"]:
             self.block(item, "事件连锁超过上限")
             return
-        target = self.rules.target(item["target"])
+        target = self.item_target(item)
         port, name = "flow", target["plugin"]
         unavailable = tuple(dict.fromkeys((*unavailable, *self.recently_unavailable(item))))
         try:
@@ -1031,7 +1125,7 @@ class Engine:
             candidates = []
             metered = []
             waiting = None
-            for config in self.rules.candidates(item["stage"], item["target"], item["writer"]):
+            for config in self.rules.candidates(item["stage"], item["target"], item["writer"], item.get("flow", "")):
                 if (config["use"] in unavailable or item.get("retry_executor") and config["use"] != item["retry_executor"]
                         or item["stage"] == "审查" and config["family"] in item.get("reviews", [])):
                     continue
@@ -1064,7 +1158,7 @@ class Engine:
             history = self.log.history(item["id"])
             selection_target = {**target, "selection": {"writer": item["writer"], "reviewed": item.get("reviews", []),
                                 "retry_executor": item.get("retry_executor"), "excluded": list(unavailable)}}
-            selector_name = self.rules.selector(item["stage"], item["target"])
+            selector_name = self.rules.selector(item["stage"], item["target"], item.get("flow", ""))
             port, name = "selector", selector_name
             self.plugins.get(port, name)
             choice = self.call(port, name, "select", selection_target, item["stage"], history.count + 1, history, candidates)
@@ -1162,7 +1256,7 @@ class Engine:
     def serial_queue(self, item):
         """规则 serial_paths：碰到的活同一时间只放一件过执行，其余停在当前阶段前排队，前一件收尾完成或放弃后自动放下一件。
         按说清楚时登记的路径加之后实际改动判；占位从进执行起，退回执行期间仍占着。"""
-        prefixes = self.rules.target(item["target"]).get("serial_paths", [])
+        prefixes = self.item_target(item).get("serial_paths", [])
         needed = (prefixes and STAGES.index(item["stage"]) >= STAGES.index("执行")
                   and overlaps(item.get("paths", []), prefixes))
         if not needed:
@@ -1249,11 +1343,21 @@ class Engine:
         with self.log.transaction():
             item_id = resolve(self.log, self.rules.data['targets'], ref, allow_new=True)
             target, key = item_id.split(':', 1)
+            original = self.log.get('items', item_id)
+            flow = original.get('flow', '') if original else ''
+            if original:
+                key = original['object_key']
+            elif ':' in key:
+                flow, key = key.split(':', 1)
             if self.control(target).get('action_blocked'):
                 self.fact('control', {'id': target, 'broken': False, 'action_blocked': False})
                 self.restore_target(target)
+            selected = self.rules.target(target, flow)
+            failure_key = f"@flow:{target}:{selected['plugin']}"
+            if self.control(failure_key).get('action_blocked'):
+                self.restore_target(target, selected['plugin'])
             self.ingest(Event('session', str(uuid.uuid4()), target, key, f'会话放行 {item_id}',
-                              {'channel': 'session', 'session': session, 'quote': quote}, action='ready'))
+                              {'channel': 'session', 'session': session, 'quote': quote}, action='ready', flow=flow), directed=True)
         return item_id
 
     def abort(self, token, reason="人手动结束这一轮"):
@@ -1373,15 +1477,15 @@ class Engine:
         if not program and not self.settle_executor(row):
             return
         item = self.log.get("items", row["item"])
-        if self.control(item["target"]).get("broken") or not self.retry_due(f"finish:{row['token']}"):
+        if self.flow_broken(item["target"], item.get("flow", "")) or not self.retry_due(f"finish:{row['token']}"):
             return
         self.cleanup_flows()
         token = row["token"]
-        port, name = "flow", self.rules.target(item["target"])["plugin"]
+        port, name = "flow", self.item_target(item)["plugin"]
         try:
             received_at = datetime.fromisoformat(row["received"])
             receipt = Receipt.parse(row["receipt"], received_at)
-            target = self.rules.target(item["target"])
+            target = self.item_target(item)
             port, name = "flow", target["plugin"]
             evidence = (Evidence(**row["assessment"]) if row.get("assessment") else
                         Evidence() if row.get("automatic_failure") else
@@ -1497,7 +1601,7 @@ class Engine:
                     self.fact("round_changed", {"token": token, "status": "ended", "ended": stamp(self.clock()),
                                "outcome": receipt.outcome, "summary": summary,
                                "passed": evidence.passed if row["stage"] in ("审查", "验收") and receipt.outcome != "nothing" and not row.get("automatic_failure") else None}, item["id"])
-                if item.get("plugin_blocked") and self.control(item["target"]).get("broken"):
+                if item.get("plugin_blocked") and self.flow_broken(item["target"], item.get("flow", "")):
                     changes["before_plugin_failure"] = {k: changes.get(k, item.get(k)) for k in ("state", "next", "blocked_by", "leave")}
                     changes.update(state="卡住", next="修复插件后继续", blocked_by=item["blocked_by"])
                 self.change(item, "item_changed" if program else "round_finished", **changes)
@@ -1526,7 +1630,7 @@ class Engine:
                             review_required=1, approved=[], retry_executor=None, gate_count=0, gate_reason=reason,
                             leave={"kind": "工序", "owner": "车间", "at": stamp(self.clock()), "about": "按拒绝意见修改"})
             return
-        target = self.rules.target(item["target"])
+        target = self.item_target(item)
         try:
             key = f"after:{pending['token']}"
             with self.log.transaction():
@@ -1603,7 +1707,7 @@ class Engine:
                 try:
                     expired = row.get("deadline", "9999") <= stamp(self.clock())
                     if row["status"] == "starting" and not row.get("started") and not row.get("abort_requested") and not expired:
-                        if self.control(item["target"]).get("broken"):
+                        if self.flow_broken(item["target"], item.get("flow", "")):
                             continue
                         try:
                             self.launch(row)
@@ -1637,7 +1741,7 @@ class Engine:
 
     def advance(self, item):
         control = self.control(item["target"])
-        if control.get("paused") or control.get("broken"):
+        if control.get("paused") or self.flow_broken(item["target"], item.get("flow", "")):
             return
         if item["state"] == "等你" and not self.answerable(item):
             self.change(item, state="等你", next=item.get("next"), leave=item.get("leave"),

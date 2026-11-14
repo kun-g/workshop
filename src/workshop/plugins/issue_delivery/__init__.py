@@ -66,6 +66,19 @@ class BusinessWait(Exception):
 
 
 class IssueDelivery:
+    @staticmethod
+    def configure_target(target):
+        """旧 plugin 规则的迁移默认；新 flows 的条件全部来自规则，不补默认值。"""
+        if 'flows' in target:
+            return target
+        return {**target, 'legacy_triggers': {'github': [
+            {'when': {'kind': 'label', 'label': target.get('label', 'Ready for Agent'),
+                      'actor': 'kun-g', 'by_workshop': False, 'edited': False}, 'action': 'ready'},
+            {'when': {'kind': ['issue-comment', 'pr-comment', 'pr-review-comment', 'pr-review'],
+                      'author': 'kun-g', 'text': r'^不对(?:[，,:：。！!\s][\s\S]*)?$',
+                      'by_workshop': False, 'edited': False}, 'action': 'rework'},
+            {'action': 'update'}]}}
+
     def __init__(self, io=None):
         self.io = io or IO()
 

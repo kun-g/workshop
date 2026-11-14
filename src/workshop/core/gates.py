@@ -90,7 +90,7 @@ def decide(item: dict, receipt: Receipt, evidence: Evidence, stages, rules: Rule
     frozen = ()
     if STAGES.index(current) > STAGES.index("执行"):
         # 执行之后按实际改动查冻结路径；放行过的文件不再问，退回执行后碰到新的冻结文件再问。
-        prefixes = rules.data["targets"].get(item.get("target"), {}).get("frozen_paths", [])
+        prefixes = rules.target(item["target"], item.get("flow", "")).get("frozen_paths", [])
         frozen = tuple(p for p in touched(evidence.paths, prefixes) if p not in item.get("frozen_approved", []))
     pending = ()
     if requested == "交付" or ("交付" not in stages and requested == "验收"):

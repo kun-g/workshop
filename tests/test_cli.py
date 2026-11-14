@@ -25,7 +25,7 @@ def test_cli_on_completed_state(tmp_path, capsys, monkeypatch):
 def test_cli_ingest_pause_and_select(tmp_path, capsys, monkeypatch):
     monkeypatch.setenv("WORKSHOP_STATE_DIR", str(tmp_path))
     assert main(["pause", "workshop"]) == 0
-    payload = json.dumps(dict(source="test", ext_id="1", target="workshop", object_key="1", title="测试", body="资料"))
+    payload = json.dumps(dict(source="orca", ext_id="1", target="workshop", object_key="1", title="测试", body="资料"))
     assert main(["event", "--json", payload]) == 0
     assert main(["resume", "workshop"]) == 0
     assert "尚未恢复" in capsys.readouterr().out

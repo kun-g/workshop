@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from test_issue_delivery import world, snapshot, source_responses, edit, touch_source
-from workshop.plugins.sources.github import GitHubSource
+from source_routing import RoutedGitHubSource as GitHubSource
 from workshop import github_identity as identity
 from workshop.core.ports import TargetBlocked
 from workshop.core.models import Receipt

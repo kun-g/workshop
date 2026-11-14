@@ -2,6 +2,7 @@
 from dataclasses import dataclass
 from pathlib import Path
 from .models import STAGES
+from .flows import configured, entries as flow_entries, validate as validate_flows
 import yaml
 
 
@@ -35,20 +36,23 @@ class Rules:
         if type(limits.get("round_timeout_seconds", 7200)) is not int or limits.get("round_timeout_seconds", 7200) <= 0:
             raise ValueError("每轮期限必须为正整数秒")
         for name, target in data["targets"].items():
-            if not isinstance(target, dict) or not target.get("plugin"):
-                raise ValueError(f"{name} 缺流程插件")
+            if not isinstance(target, dict):
+                raise ValueError(f"{name} 交付对象配置无效")
+            validate_flows(name, target)
             if type(target.get("pending_limit", 5)) is not int or target.get("pending_limit", 5) < 1:
                 raise ValueError("pending_limit 必须是正整数")
             for field in ("frozen_paths", "serial_paths"):
                 value = target.get(field, [])
                 if not isinstance(value, list) or not all(isinstance(v, str) and v.strip() for v in value):
                     raise ValueError(f"{name} 的 {field} 必须是非空路径前缀列表")
+        locals_ = [configured(name, target, flow) for name, target in data["targets"].items()
+                   for flow in flow_entries(target)]
         for role in ("writer", "reviewer", "acceptor"):
             value = data.get("executors", {}).get(role)
             entries = value if isinstance(value, list) else [value]
             if not entries or not all(isinstance(v, str) or isinstance(v, dict) and v.get("use") for v in entries):
                 raise ValueError(f"缺执行者 {role}")
-        mappings = [data.get("stage_executors", {})] + [t.get("stage_executors", {}) for t in data["targets"].values()]
+        mappings = [data.get("stage_executors", {})] + [t.get("stage_executors", {}) for t in locals_]
         for mapping in mappings:
             if not isinstance(mapping, dict) or any(stage not in STAGES for stage in mapping):
                 raise ValueError("阶段执行者配置无效")
@@ -56,10 +60,10 @@ class Rules:
                 entries = value if isinstance(value, list) else [value]
                 if not entries or not all(isinstance(v, str) and v or isinstance(v, dict) and v.get("use") for v in entries):
                     raise ValueError("阶段执行者候选不能为空")
-        for mapping in [data.get("stage_selectors", {})] + [t.get("stage_selectors", {}) for t in data["targets"].values()]:
+        for mapping in [data.get("stage_selectors", {})] + [t.get("stage_selectors", {}) for t in locals_]:
             if not isinstance(mapping, dict) or any(k not in STAGES or not isinstance(v, str) or not v for k, v in mapping.items()):
                 raise ValueError("阶段挑选逻辑配置无效")
-        for entry in [data] + list(data["targets"].values()):
+        for entry in [data] + locals_:
             if "selector" in entry and (not isinstance(entry["selector"], str) or not entry["selector"]):
                 raise ValueError("挑选逻辑名字不能为空")
         profiles = data.get("executor_profiles", {})
@@ -98,12 +102,12 @@ class Rules:
                 raise ValueError(f"{name} 必须是列表")
         return cls(data)
 
-    def target(self, name: str) -> dict:
-        return {"name": name, **self.data["targets"][name]}
+    def target(self, name: str, flow: str = "") -> dict:
+        return configured(name, self.data["targets"][name], flow)
 
-    def candidates(self, stage: str, target: str | None = None, writer: str | None = None) -> list[dict]:
+    def candidates(self, stage: str, target: str | None = None, writer: str | None = None, flow: str = "") -> list[dict]:
         role = {"审查": "reviewer", "验收": "acceptor"}.get(stage, "writer")
-        overrides = {**self.data.get("stage_executors", {}), **(self.target(target).get("stage_executors", {}) if target else {})}
+        overrides = {**self.data.get("stage_executors", {}), **(self.target(target, flow).get("stage_executors", {}) if target else {})}
         entries = overrides.get(stage, self.data["executors"][role])
         entries = entries if isinstance(entries, list) else [entries]
         result = []
@@ -118,7 +122,7 @@ class Rules:
             result.append(config)
         return result
 
-    def selector(self, stage: str, target: str) -> str:
-        local = self.target(target)
+    def selector(self, stage: str, target: str, flow: str = "") -> str:
+        local = self.target(target, flow)
         return local.get("stage_selectors", {}).get(stage, local.get("selector",
                         self.data.get("stage_selectors", {}).get(stage, self.data.get("selector", "ordered"))))

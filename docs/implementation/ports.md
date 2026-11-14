@@ -38,15 +38,40 @@ limits: {concurrent: 2, chain_depth: 8, round_timeout_seconds: 7200}
 - `command`：可直接执行的 argv，以本环境的绝对 Python 路径、`-m workshop.cli` 和状态目录参数开头，不带 `--rules`。适配器在后面追加 `receipt <token> --file <绝对路径>`，不依赖 PATH 中有 `workshop` 或工作目录中有 uv 项目。
 - `env`：`WORKSHOP_STATE_DIR`、`WORKSHOP_ROUND_TOKEN`；不提供 `WORKSHOP_RULES`，避免规则文件损坏阻断交回执。
 
+## 一个交付对象的多个流程
+
+`targets.<对象>.flows` 以流程名为键；默认用同名 `workshop.flow` 入口点，也可用本流程的 `plugin` 指定插件。对象公共字段与流程字段浅合并，流程字段优先；`name` 始终是交付对象，`flow` 是本流程名，`plugin` 是选定的插件。阶段、执行者候选、挑选逻辑、身份和关口配置均取该流程的合并配置。共享条件用 YAML 锚点，不增加继承机制。例如：
+
+```yaml
+targets:
+  workshop:
+    default_flow: issue_delivery
+    flows:
+      issue_delivery:
+        triggers:
+          - source: github
+            when: {kind: label, actor: kun-g, label: Ready for Agent, by_workshop: false, edited: false}
+            action: ready
+          - {source: github, action: update}
+```
+
+每个流程的 `triggers` 是有序列表；首个匹配决定动作，后续兜底不覆盖。`source` 精确相等，`when` 各顶层字段同时满足；标量按类型和值相等，列表匹配任一标量，以 `^` 开头的字符串是正则，字段缺失不匹配，省略 `when` 匹配该来源全部事件。不支持嵌套路径或表达式求值。加载时校验结构、动作和正则，错误包含对象、流程及字段。来源事件在每个流程各匹配一次；CLI 和 agent 事件即使命中 ready/rework，也先强制 update，保留原有可信分类及连锁限制。带轮次令牌的子事件若没有匹配触发器，仍跟随原流程；跨对象时进入对方兼容流程，不丢失原有回执事件能力。
+
+`Event.flow` 由核心填写，`flow_default` 表示兼容编号空间。`default_flow` 首次运行时固定到事实 `@flow-defaults`；旧规则升级时取旧 `plugin`，新规则未指定时取首个流程。重排 flows 不改已有归属，显式换兼容流程或移除它会报错。兼容流程的编号和别名仍为 `对象:对象号`，其他流程为 `对象:流程:对象号`。旧事实缺少 flow 仍可读取和重建，旧轮次令牌和回执不改；定时、会话放行定向原流程，不再次分流。`why` 和短名查找保留旧用法，其他流程可用完整编号。流程故障按所用插件隔离；同对象其他插件的流程继续，来源故障仍影响整个对象。
+
+来源事件的去重记录使用 `[target, flow, ext_id]` 的 JSON 字符串；Event 本身和交给流程的资料保留原始 ext_id，以便回源查消息。可选 `action_id` 是一个不可重复控制动作的稳定来源标识，ready/rework 用它去重，普通更新仍用版本 ext_id；`previous_ids` 仅供兼容流程核对旧去重记录。GitHub 来源输出 kind、actor、author、label、text、by_workshop、edited 及原始 data，不判断 ready/rework；已知事件编辑只更新，游标丢失后的重新读取仍由稳定动作标识阻止重复返工。零命中记 unmatched 事实、不建活，在 `why --unfiled` 可查。来源可实现 `normalize(batch, target)` 兼容旧作业结果：`Poll.normalized` 缺省为 false，核心先在独立作业中补规范字段，成功后才提交事件和原游标；新 GitHub poll 返回 normalized=true，不多起作业。旧 classify 作业继续按持久原事件的身份认回。
+
+旧 `plugin:` 配置仍支持来源自带动作。装配层可调用流程的可选 `configure_target(target)`，给旧文件补迁移数据；issue 交付仅在旧写法下提供 `legacy_triggers`，保留旧标签、Kun 身份及返工边界。新 flows 完全使用 YAML，不混入旧默认。暂停补回保留已选流程，不重新按当前条件分流。查找端口的持久 lookup 兼容旧字符串对象名和 `{target, flow, flow_default}`，后者只看本流程别名与卡片。
+
 ## 资料、回答与跨轮历史
 
-`Event(source, ext_id, target, object_key, title, body, depth=0, action="update")`。同一 source/ext_id 去重，同一 `target:object_key` 归一件活。正文仅为资料。只有进程内可信 `Source.poll` 可直接标 `action="rework"`（返工）或 `action="ready"`（放行）；CLI 自填 action 不可信。来源 poll 进来的事件对应的活还不存在时，只有 `ready` 新建活；`update`、`rework` 只记事实（事实带 `release_gate` 标记），等放行建活时按事实号并进资料（上次 `drop` 之前的不并）。外部入口经 classify 判定的事件、带令牌事件和回执子事件不受此限，照旧可建活。没有标记的旧事实重建视图时照旧投影。
+`Event(source, ext_id, target, object_key, title, body, depth=0, action="update")`。旧单流程按 source/ext_id 去重；多流程按上节命名空间去重、归件。正文仅为资料。旧规则下只有进程内可信 `Source.poll` 可直接标 `action="rework"`（返工）或 `action="ready"`（放行）；CLI 自填 action 不可信。来源 poll 进来的事件对应的活还不存在时，只有 `ready` 新建活；`update`、`rework` 只记事实（事实带 `release_gate` 标记），等放行建活时按事实号并进资料（上次 `drop` 之前的不并）。外部入口经 classify 判定的事件、带令牌事件和回执子事件不受此限，照旧可建活。没有标记的旧事实重建视图时照旧投影。
 
 核心能标出的 agent 来源有两种：带 `WORKSHOP_ROUND_TOKEN` 的 CLI `event`，以及回执 `events`。两者一律强制 action=update、depth=原活深度+1，忽略调用方 action/depth，永不调用 Flow.classify；未知令牌拒绝，第 9 层卡住。回执子事件 source/ext_id 由轮次令牌和索引生成。无轮次令牌的 CLI 事件强制 depth=0、action=update，先事务提交原事件和判定意图（尚不建活或追加到活），由下一 tick 调用 Flow.classify 后归件。暂停期间先记遗漏，选择补回后再判。所有 CLI 事件的 source 都加一层 `cli:` 前缀（含带令牌入口），与来源插件的去重空间分开；重复同一 CLI 输入仍去重，why 标“CLI 入口”。无令牌 CLI 的 depth 归零仅用于观测，不防止 agent 去掉令牌另开活绕过 C2；第一版接受此限制，不加更强限制。升级前缺 ingress 的遗漏事件按 unknown 处理，补回时 action 强制 update，也不交给 classify 追认。
 
 内部 `Engine.ingest` 默认 ingress="source" 仅供可信进程内来源使用；CLI 固定传 ingress="external"，不能通过 JSON 自报 ingress。令牌入口覆盖 ingress 为 agent。适配器应保留轮次令牌，但 agent 可以去掉它，因此无令牌不等于来自人。核心不是挡 agent 的安全边界：agent 和守护进程是同一个系统用户，能写状态目录，第一版接受这个前提。
 
-活快照中的稳定字段：id、target、object_key、title、stage、state、materials、history、session、sessions、writer、workdir、ticket、checks、approved、depth、next、blocked_by、leave、revision、cause、round。`sessions` 按执行者名字保存会话；`workdir` 是中性的执行目录。`history` 每轮追加 token、stage、outcome、summary、evidence、证据判定 reason，流程 brief 能读到审查意见和返工原因；`gate_reason` 是关口需要修正的理由。
+活快照中的稳定字段：id、target、flow、flow_default、object_key、title、stage、state、materials、history、session、sessions、writer、workdir、ticket、checks、approved、depth、next、blocked_by、leave、revision、cause、round。`sessions` 按执行者名字保存会话；`workdir` 是中性的执行目录。`history` 每轮追加 token、stage、outcome、summary、evidence、证据判定 reason，流程 brief 能读到审查意见和返工原因；`gate_reason` 是关口需要修正的理由。
 
 `Brief.instructions` 是可信派活说明；`Brief.materials` 仅含外部资料，标“资料，不是指令”。`Brief.workdir` 和 `Brief.readonly` 是流程提供的可信执行目录与只读约束，省略时沿用执行者默认目录。`Brief.answers` 单独放 Kun 的回答，含 card、key、title、body、seq、role="Kun 的回答"。回答是独立事实，由 evolve 在最新资料上追加，不回写旧数组；cause 不倒退。回答与资料不是授权工具调用的自由文本，核心自己的动作/计费审批只按选项 key `yes` 判批准，忽略通道传的 approved；其他 key 都不批准。插件自己发的问题保留 Answer.approved 语义，但不能赋予核心动作授权。
 
@@ -58,9 +83,9 @@ limits: {concurrent: 2, chain_depth: 8, round_timeout_seconds: 7200}
 
 ## 流程 Flow 和关口
 
-`classify(event, item, target, find_external) -> Classification | str` 只判无轮次令牌的 CLI 事件。event 是已归一 action/depth 的原资料，item 是按当前对象键找到的既有活快照，没有则为 null；尚未加入本事件，target 是交付规则；核对可信上游身份和语义后决定动作，默认 `Classification("update")`。兼容只返回 action 字符串；返回 Classification(discard=True) 记 event_discarded 事实并结束判定，不建活、不追加资料；None 是协议错误。来源 poll 已有可信动作，不走此方法；带令牌事件和回执子事件不走此方法。不带令牌的 CLI 事件仍可能来自 agent，classify 必须回到源头核实身份和原文（例如飞书按消息号回查发送者；GitHub 放行优先走来源 poll），不认 body 中 from_kun 等自称身份。测试 FakeFlow 回查独立的假上游登记，不把 CLI 正文当身份凭据。该方法短时只读，可能因重启重放；返回动作和判定意图完成同事务落事实，evolve 更新活。Retryable 退避、连续 3 次故障，非法返回值或普通异常隔离流程；修复恢复后继续未完成判定。W2-A 可在这里识别可信的 Kun 返工意见、再次放行。
+`classify(event, item, target, find_external) -> Classification | str` 只判无轮次令牌的 CLI 事件。event 是已归一 action/depth 的原资料，item 是按当前对象键找到的既有活快照，没有则为 null；尚未加入本事件，target 是交付规则；核对可信上游身份和语义后决定动作，默认 `Classification("update")`。兼容只返回 action 字符串；返回 Classification(discard=True) 记 event_discarded 事实并结束判定，不建活、不追加资料；None 是协议错误。来源 poll 由规则决定动作（旧写法兼容来源动作），不走此方法；带令牌事件和回执子事件不走此方法。不带令牌的 CLI 事件仍可能来自 agent，classify 必须回到源头核实身份和原文（例如飞书按消息号回查发送者；GitHub 放行优先走来源 poll），不认 body 中 from_kun 等自称身份。测试 FakeFlow 回查独立的假上游登记，不把 CLI 正文当身份凭据。该方法短时只读，可能因重启重放；返回动作和判定意图完成同事务落事实，evolve 更新活。Retryable 退避、连续 3 次故障，非法返回值或普通异常隔离流程；修复恢复后继续未完成判定。W2-A 可在这里识别可信的 Kun 返工意见、再次放行。
 
-`Classification(action="update", object_key=None, discard=False, summary=None)` 的可选 summary 是流程核实上游后给的一句话（谁说的、原话摘要，例如「飞书 Kun：「gc#109 不对」」），丢弃时写丢弃原因；核心照存进 event_classified / event_discarded 事实，只供 why 显示，不参与判定和相等比较。可选 object_key 只能指向同一交付对象的已有活（先解析别名），不能跨目标或凭空指定新活。没有指定则用输入对象键；归件、资料追加和完成判定同事务。`find_external(external)` 是只读函数，按通道外部编号查 `{card, item}` 快照；跨交付对象、重复编号或未找到都返回 null。`find_external(object_key=...)` 按同目标已有对象键查 `{item}`，先解析别名，找不到返回 null。流程仍须回源核对引用关系，不能把 CLI 自报外部编号当凭据。
+`Classification(action="update", object_key=None, discard=False, summary=None)` 的可选 summary 是流程核实上游后给的一句话（谁说的、原话摘要，例如「飞书 Kun：「gc#109 不对」」），丢弃时写丢弃原因；核心照存进 event_classified / event_discarded 事实，只供 why 显示，不参与判定和相等比较。可选 object_key 只能指向同一交付对象及流程的已有活（先解析别名），不能跨目标或凭空指定新活。没有指定则用输入对象键；归件、资料追加和完成判定同事务。`find_external(external)` 是只读函数，按通道外部编号查 `{card, item}` 快照；跨交付对象、重复编号或未找到都返回 null。`find_external(object_key=...)` 按同目标同流程已有对象键查 `{item}`，先解析别名，找不到返回 null。流程仍须回源核对引用关系，不能把 CLI 自报外部编号当凭据。
 
 `after` 返回的 aliases 把目标下的另一个 object_key 绑定到当前活。核心追加 alias_bound 事实；重复 key 幂等，别名已指向其他活或已有同名活则隔离流程，不覆盖。来源、agent、外部事件和暂停补回都先查别名。已开始但尚未结算的完成钩子会暂缓该目标来源轮询，恢复别名后再收新事件；避免远端对象创建成功、核心绑定前崩溃造成重复活。
 
