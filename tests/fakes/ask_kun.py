@@ -101,6 +101,8 @@ elif args[0] == "list":
             questions.append(existing)
         existing["status"] = "waiting" if code == 3 else "cancelled" if code == 6 else "answered"
     questions = [q for q in questions if q["id"] not in config.get("missing_ids", [])]
+    if config.get("legacy_list"):
+        questions = [{k: v for k, v in q.items() if k not in ("choice", "answer_format")} for q in questions]
     if config.get("bad_list"):
         print("Q1\twaiting\t旧格式不含完整标题")
     else:

@@ -17,7 +17,7 @@ from .log import Log
 from .models import Brief, Event, Receipt, ReceiptError, STAGES, Started, due, stamp, utcnow
 from .ports import Unavailable, Retryable, ChannelRejected, TargetBlocked
 from .cards import frozen_question, question, notice, validate_question, validate_notice
-from .models import After, Answer, FlowBrief, Classification, Evidence, Release, Usage, RoundUsage
+from .models import After, Answer, ChannelPoll, FlowBrief, Classification, Evidence, Release, Usage, RoundUsage
 from .jobs import Pending
 from .records import StoredBrief, defer_items, materialize
 from .flows import entries, default_flow, matches
@@ -917,6 +917,7 @@ class Engine:
                       "cancel_done": cancelled, "reconcile_failed": False,
                       "awaiting_release": bool(wait)}, card["item"])
             self.reconcile_clear(card)
+            self.delivery_ok(f"read:{card['id']}")
             self.delivery_error(card["id"], RuntimeError(reason), card["item"])
             if wait:
                 pending = item.get("pending_advance")
@@ -949,6 +950,7 @@ class Engine:
                         if not card.get("cancel_done"):
                             self.call("channel", name, "cancel", card["id"], card.get("external"), identity=["cancel", card["id"]])
                             self.fact("card_changed", {"id": card["id"], "cancel_done": True}, card["item"])
+                        self.delivery_ok(f"read:{card['id']}")
                     elif not card["sent"]:
                         external = None
                         method = "ask" if card["mode"] == "ask" else "notify"
@@ -979,9 +981,21 @@ class Engine:
             cards = [c for c in self.log.all("cards") if c["mode"] == "ask" and c["sent"]
                      and not c["answered"] and not c.get("cancelled")]
             try:
-                answers = self.call("channel", name, "poll", cards, identity=["poll"])
+                result = self.call("channel", name, "poll", cards, identity=["poll"])
             except Pending:
-                answers = []
+                result = ChannelPoll()
+            except Exception as exc:
+                # 整批失败也逐卡记，不能只剩一条无归属的通道错误。
+                result = ChannelPoll(checked=[c["id"] for c in cards],
+                                     errors={c["id"]: str(exc) for c in cards})
+                self.delivery_error(f"channel:{name}", exc)
+            else:
+                self.delivery_ok(f"channel:{name}")
+            if isinstance(result, ChannelPoll):
+                self.channel_reads(result)
+                answers = result.answers
+            else:
+                answers = result  # 旧通道的回答列表不含读取诊断。
             for answer in answers:
                 with self.log.transaction():
                     card = self.log.get("cards", answer.card_id)
@@ -996,9 +1010,25 @@ class Engine:
                         self.invalid_answer(card, answer.value)
                         continue
                     self.record_answer(card, answer)
-            self.delivery_ok(f"channel:{name}")
         except Exception as exc:
             self.delivery_error(f"channel:{name}", exc)
+
+    def channel_reads(self, result):
+        """只累计完成的读取；同一作业结果在新鲜期被重复收取不再计数。"""
+        with self.log.transaction():
+            for cid in result.checked:
+                card = self.log.get("cards", cid)
+                if (not card or card["mode"] != "ask" or not card["sent"] or card["answered"]
+                        or card.get("cancelled") or card.get("read_token") == result.token):
+                    continue
+                error = result.errors.get(cid, "")
+                count = card.get("read_failures", 0) + 1 if error else 0
+                self.fact("card_changed", {"id": cid, "read_token": result.token,
+                          "read_failures": count, "read_error": error}, card["item"])
+                if error:
+                    self.delivery_error(f"read:{cid}", RuntimeError(error), card["item"])
+                else:
+                    self.delivery_ok(f"read:{cid}")
 
     def cancel_questions(self, item):
         for card in self.log.all("cards"):
@@ -1024,6 +1054,7 @@ class Engine:
 
     def record_answer(self, card, answer, provenance=None):
         """记下 Kun 对一张卡的回答。provenance 记回答从哪个渠道来（飞书卡片不写；会话转录写会话号和原话）。"""
+        self.delivery_ok(f"read:{card['id']}")
         approved = answer.value == "yes" if card.get("core_approval") else answer.approved
         choice_label = next((c["label"] for c in card["payload"]["choices"] if c["key"] == answer.value), answer.value)
         # 回答单独追加，由 evolve 在最新资料上追加，不回写旧资料快照。
@@ -1031,7 +1062,8 @@ class Engine:
                   "title": card["payload"]["decision"], "actions": card.get("actions", []), "billing_configs": card.get("billing_configs", []),
                   "frozen_files": card.get("frozen_files", []), **({"via": provenance} if provenance else {})},
                   card["item"], source="answer", ext_id=card["id"])
-        self.fact("card_changed", {"id": card["id"], "answered": True, "answer": answer.value, "choice_label": choice_label, "approved": approved}, card["item"])
+        self.fact("card_changed", {"id": card["id"], "answered": True, "answer": answer.value, "choice_label": choice_label,
+                  "approved": approved, "read_failures": 0, "read_error": ""}, card["item"])
         item = self.log.get("items", card["item"])
         if card.get("billing_configs") and not approved:
             self.change(item, state="等你", wait_for_ready=True, next="按量计费未获批准，等待放行", blocked_by="Kun",

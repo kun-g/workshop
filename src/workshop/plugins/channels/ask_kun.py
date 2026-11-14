@@ -14,7 +14,7 @@ from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 
 from workshop.core.cards import validate_notice, validate_question
-from workshop.core.models import Answer
+from workshop.core.models import Answer, ChannelPoll
 from workshop.core.ports import ChannelRejected
 
 DEFAULT_COMMAND = Path.home() / "workspace/runtime/worktrees/oh-my-assistant/workbench/workbench/agent-bin/ask-kun"
@@ -305,21 +305,48 @@ class AskKun:
 
     def poll(self, cards):
         cards = [card for card in cards if not card.get("answered") and not card.get("cancelled")]
+        report = ChannelPoll(checked=[card["id"] for card in cards])
         if not cards:
-            return []
-        rows = self._questions()
-        if rows is None:
-            raise RuntimeError("问题列表不完整，保留所有待答卡")
+            return report
+        try:
+            rows = self._questions()
+            if rows is None:
+                raise RuntimeError("问题列表不完整，保留所有待答卡")
+        except (RuntimeError, OSError, ValueError, subprocess.TimeoutExpired) as exc:
+            report.errors.update({card["id"]: str(exc) for card in cards})
+            return report
         indexed = {row.get("id"): row for row in rows}
-        answers, failures = [], []
+        answers = report.answers
         for card in cards:
             try:
                 row = indexed.get(card["external"])
                 if row is None:
                     answers.append(self._missing_answer(card))
                     continue
-                if row.get("status") not in ("answered", "cancelled", "defaulted"):
+                if row.get("status") in ("waiting", "sending", "queued"):
                     continue  # 待答无需 wait，省去每卡启动外部程序。
+                if row.get("status") not in ("answered", "cancelled"):
+                    raise RuntimeError("卡片状态不能作为用户回答，保留原卡")
+                if row.get("status") == "cancelled" and row.get("answer_format") == "key":
+                    answers.append(Answer(card["id"], "", cancelled=True))
+                    continue
+                if row.get("status") == "answered" and ("choice" in row or row.get("answer_format") == "key"):
+                    # 已鉴权的 list 已含用户选择；wait 另做租约/认领且依赖调用者会话，
+                    # 不应让它的失败吞掉已提交的回答。只认本通道原发送记录的同一张卡。
+                    record = self._read(card["id"])
+                    if (not isinstance(record, dict) or record.get("mode") != "ask"
+                            or record.get("external") != card["external"]
+                            or record.get("payload") != card["payload"]
+                            or not record.get("sender") or row.get("from") != record.get("sender")
+                            or row.get("subject") != record.get("wire", record["payload"]).get("subject")
+                            or row.get("answer_format") != "key"):
+                        raise RuntimeError("已答卡与本地发送记录不匹配，保留原卡")
+                    value = row.get("choice")
+                    if not isinstance(value, str) or value not in [c["key"] for c in card["payload"]["choices"]]:
+                        raise RuntimeError("已答卡缺少合法 choice，保留原卡")
+                    answers.append(Answer(card["id"], value, card["payload"]["kind"] == "approval" and value == "yes"))
+                    continue
+                # 旧版列表没有 choice，沿用 wait 的鉴权读取；不能用默认值当批准。
                 result = self._run("wait", card["external"], "--timeout", "0")
                 if result.returncode == 3:
                     continue
@@ -329,7 +356,7 @@ class AskKun:
                         or result.returncode == 4 and "HTTP 403" in result.stderr):
                     latest = self._questions()
                     missing = latest is not None and not any(row.get("id") == card["external"] for row in latest)
-                if result.returncode == 6:
+                if result.returncode == 6 or row.get("status") == "cancelled":
                     answers.append(Answer(card["id"], "", cancelled=True))
                     continue
                 if missing:
@@ -341,12 +368,10 @@ class AskKun:
                 approved = (payload["kind"] == "approval" and value == "yes"
                             and any(c["key"] == "yes" for c in payload["choices"]))
                 answers.append(Answer(card["id"], value, approved))
-            except (RuntimeError, OSError, subprocess.TimeoutExpired) as exc:
-                failures.append(f"{card['external']}: {exc}")
-                print(f"车间卡片轮询失败 {failures[-1]}", file=sys.stderr)
-        if len(failures) == len(cards):
-            raise RuntimeError("; ".join(failures))
-        return answers
+            except (RuntimeError, OSError, ValueError, KeyError, TypeError, AttributeError, subprocess.TimeoutExpired) as exc:
+                report.errors[card["id"]] = str(exc)
+                print(f"车间卡片轮询失败 {card['external']}: {exc}", file=sys.stderr)
+        return report
 
     def cancel(self, key, external):
         with self._locked():
