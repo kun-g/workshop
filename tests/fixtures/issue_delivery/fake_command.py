@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+from urllib.parse import parse_qsl, urlencode, urlsplit
 
 GIT = '/usr/bin/git'
 
@@ -103,6 +104,14 @@ def handle(name, args, *, stdin='', env=None, cwd=None, git=real_git):
                 raise Exit(0)
             if '--include' in args:
                 entry = state.get('responses', {}).get(endpoint)
+                # 时间窗口的列表替身：记录的全集按真实 since 语义筛选；其他未登记 URL 仍报错。
+                parsed = urlsplit(endpoint)
+                query = dict(parse_qsl(parsed.query))
+                if entry is None and 'since' in query and parsed.path.endswith(('/issues', '/pulls/comments')):
+                    since = query.pop('since')
+                    full = state.get('responses', {}).get(parsed.path + '?' + urlencode(query))
+                    if isinstance(full, list):
+                        entry = [r for r in full if r.get('updated_at', '') >= since]
                 if entry is None:
                     say('HTTP/2.0 404 Not Found\n\n{}')
                     raise Exit(1)

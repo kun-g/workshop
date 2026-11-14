@@ -1,4 +1,5 @@
 import base64
+from datetime import datetime, timedelta
 from dataclasses import asdict
 import json
 import os
@@ -101,7 +102,8 @@ def source_responses(world):
     base = 'repos/kun-g/workshop'
     sha = world['sha']
     return {
-        base + '/issues?state=all&labels=Ready+for+Agent&per_page=100': [{'number': 7}],
+        base + '/issues?state=all&sort=updated&per_page=100': [{'number': 7, 'state': 'open', 'labels': [{'name': 'Ready for Agent'}], 'updated_at': '2026-11-13T00:01:00Z'}],
+        base + '/pulls/comments?sort=updated&direction=asc&per_page=100': [],
         base + '/issues/7': {'number': 7, 'body': BODY},
         base + '/issues/7/events?per_page=100': [{'id': 80, 'event': 'labeled', 'label': {'name': 'Ready for Agent'}, 'actor': {'login': 'kun-g'}}],
         base + '/issues/7/comments?per_page=100': [],
@@ -114,6 +116,13 @@ def source_responses(world):
     }
 
 
+def touch_source(world, responses):
+    row = responses['repos/kun-g/workshop/issues?state=all&sort=updated&per_page=100'][0]
+    row['updated_at'] = (datetime.fromisoformat(row['updated_at'].replace('Z', '+00:00'))
+                         + timedelta(seconds=1)).isoformat().replace('+00:00', 'Z')
+    edit(world, responses=responses)
+
+
 def test_source_labels_comments_etag_and_replay(world):
     responses = source_responses(world)
     edit(world, responses=responses)
@@ -121,7 +130,9 @@ def test_source_labels_comments_etag_and_replay(world):
     batch = source.poll(world['target'], None)
     assert any(e.action == 'ready' for e in batch.events)
     assert {e.object_key for e in batch.events} == {'7'}
-    assert source.poll(world['target'], batch.cursor).events == []
+    quiet = source.poll(world['target'], batch.cursor)
+    assert quiet.events == []
+    assert source.poll(world['target'], quiet.cursor).events == []
     assert source.poll(world['target'], None).events == batch.events
     assert any('If-None-Match: "AbC' in a for call in calls(world) for a in call)
     comments = [{'id': n, 'body': '不对' if n < 3 else '普通意见', 'user': {'login': 'kun-g' if n == 1 else 'other'}} for n in (1, 2, 3)]
@@ -129,6 +140,7 @@ def test_source_labels_comments_etag_and_replay(world):
                  {'id': 5, 'body': '<!-- workshop-comment: alpha:7 --> done', 'user': {'login': 'kun-g'}}]
     responses['repos/kun-g/workshop/issues/7/comments?per_page=100'] = comments
     edit(world, responses=responses)
+    touch_source(world, responses)
     new = source.poll(world['target'], batch.cursor)
     assert len(new.events) == 3 and {e.object_key for e in new.events} == {'7'}
     assert [e.action for e in new.events] == ['rework', 'update', 'update']
@@ -143,7 +155,8 @@ def test_source_labels_comments_etag_and_replay(world):
 def test_source_pr_marker_and_pagination(world):
     responses = source_responses(world)
     pr = json.loads(world['store'].read_text())['pr']
-    responses['repos/kun-g/workshop/pulls?state=all&per_page=100'] = [pr]
+    responses['repos/kun-g/workshop/issues?state=all&sort=updated&per_page=100'].append({**pr, 'pull_request': {}, 'updated_at': '2026-11-13T00:01:00Z'})
+    responses['repos/kun-g/workshop/pulls/11'] = pr
     endpoint = 'repos/kun-g/workshop/issues/11/comments?per_page=100'
     responses[endpoint] = {'_response': True, 'data': [], 'next': endpoint + '&page=2'}
     responses[endpoint + '&page=2'] = [{'id': 99, 'body': '不对，重做', 'user': {'login': 'kun-g'}}]
@@ -491,6 +504,7 @@ def test_source_control_ids_survive_edits_reactions_and_cursor_replay(world):
     for field, value in [('reactions', {'+1': 1}), ('body', '不对，换个做法')]:
         responses[endpoint][0][field] = value
         edit(world, responses=responses)
+        touch_source(world, responses)
         batch = source.poll(world['target'], first.cursor)
         assert batch.events and all(e.action == 'update' for e in batch.events)
         # 丢了本地游标重放，控制事件仍与第一次相同，核心可以去重。
@@ -499,7 +513,7 @@ def test_source_control_ids_survive_edits_reactions_and_cursor_replay(world):
     cursor = json.loads(batch.cursor)
     assert all(set(v) == {'etag', 'fingerprint', 'next'} for v in cursor['cache'].values())
     assert BODY not in batch.cursor
-    assert list(Path(world['target']['github_cache_dir']).glob('*.json'))
+    assert list(source.cache_root.glob('*.json'))
 
 
 def test_own_label_non_kun_label_and_closed_initial_issue(world):
@@ -513,9 +527,10 @@ def test_own_label_non_kun_label_and_closed_initial_issue(world):
     assert all(e.action == 'update' for e in first.events)
     labels.append({**labels[0], 'id': 82})
     edit(world, responses=responses)
+    touch_source(world, responses)
     second = source.poll(world['target'], first.cursor)
     assert [e.ext_id for e in second.events if e.action == 'ready'] == ['kun-g/workshop:label:7:82']
-    responses['repos/kun-g/workshop/issues?state=all&labels=Ready+for+Agent&per_page=100'][0]['state'] = 'closed'
+    responses['repos/kun-g/workshop/issues?state=all&sort=updated&per_page=100'][0]['state'] = 'closed'
     edit(world, responses=responses)
     assert source.poll(world['target'], None).events == []
 
@@ -824,10 +839,12 @@ def test_editing_ordinary_comment_into_rework_is_only_update(world):
     first = source.poll(world['target'], None)
     responses[endpoint][0]['body'] = '不对'
     edit(world, responses=responses)
+    touch_source(world, responses)
     changed = source.poll(world['target'], first.cursor)
     assert len(changed.events) == 1 and changed.events[0].action == 'update'
     responses[endpoint].append({'id': 10, 'body': '不对', 'user': {'login': 'kun-g'}})
     edit(world, responses=responses)
+    touch_source(world, responses)
     fresh = source.poll(world['target'], changed.cursor)
     assert len(fresh.events) == 1 and fresh.events[0].action == 'rework'
 
@@ -1029,3 +1046,279 @@ def test_brief_includes_typed_receipt_and_business_evidence_example(world):
     assert json.loads(minimal['evidence'][0]) == {'schema': 'issue-delivery/v1'}
     Receipt.parse({**minimal, **notice}, utcnow())
     assert '字符串列表' in text and '对象列表' in text and 'null' in text
+
+
+# #14 的离线回放：关掉的对象仍可返工，但不常驻扫描。
+SOURCE_BASE = 'repos/kun-g/workshop'
+SOURCE_ISSUES = SOURCE_BASE + '/issues?state=all&sort=updated&per_page=100'
+SOURCE_COMMENTS = SOURCE_BASE + '/pulls/comments?sort=updated&direction=asc&per_page=100'
+
+
+def incremental_fixture(world):
+    responses = source_responses(world)
+    rows = responses[SOURCE_ISSUES]
+    for n in (1, 2, 3):
+        row = {'number': n, 'state': 'closed', 'body': f'完成 {n}', 'labels': [],
+               'updated_at': '2026-11-13T00:00:00Z'}
+        rows.append(row)
+        responses[f'{SOURCE_BASE}/issues/{n}'] = row
+        responses[f'{SOURCE_BASE}/issues/{n}/events?per_page=100'] = []
+        responses[f'{SOURCE_BASE}/issues/{n}/comments?per_page=100'] = []
+    pr = {**json.loads(world['store'].read_text())['pr'], 'updated_at': '2026-11-13T00:01:00Z'}
+    rows.append({**pr, 'pull_request': {}})
+    responses[f'{SOURCE_BASE}/pulls/11'] = pr
+    edit(world, responses=responses)
+    target = {**world['target'], 'github_requests_per_tick': 100}
+    source = GitHubSource(str(world['commands'] / 'gh'))
+    old = json.dumps({'known': {str(n): True for n in (1, 2, 3, 7)}, 'seen': {}, 'cache': {}})
+    return responses, target, source, old
+
+
+def source_urls(world, start=0):
+    return [next(a for a in c if a.startswith('repos/')) for c in calls(world)[start:]]
+
+
+def change_row(responses, number, **fields):
+    next(r for r in responses[SOURCE_ISSUES] if r['number'] == number).update(fields)
+
+
+def test_incremental_quiet_only_lists_and_open_head_ci(world):
+    responses, target, source, old = incremental_fixture(world)
+    first = source.poll(target, old)
+    before = len(calls(world))
+    quiet = source.poll(target, first.cursor)
+    urls = source_urls(world, before)
+    assert quiet.events == []
+    assert len(urls) == 4
+    assert urls[0].startswith(SOURCE_BASE + '/issues?state=all&sort=updated&since=')
+    assert urls[1].startswith(SOURCE_BASE + '/pulls/comments?sort=updated&direction=asc&since=')
+    assert urls[2:] == [f'{SOURCE_BASE}/commits/{world["sha"]}/check-runs?per_page=100',
+                       f'{SOURCE_BASE}/commits/{world["sha"]}/status']
+    assert json.loads(quiet.cursor)['watermark'] == '2026-11-13T00:01:00Z'
+    assert '/pulls?state=all' not in '\n'.join(source_urls(world))
+
+
+def test_incremental_closed_issue_rework_new_ready_and_overlap(world):
+    responses, target, source, old = incremental_fixture(world)
+    first = source.poll(target, old)
+    change_row(responses, 2, updated_at='2026-11-13T00:02:00Z')
+    responses[f'{SOURCE_BASE}/issues/2/comments?per_page=100'] = [
+        {'id': 100, 'body': '不对，补上关闭后返工', 'user': {'login': 'kun-g'}}]
+    row = {'number': 8, 'state': 'open', 'labels': [{'name': 'Ready for Agent'}],
+           'updated_at': '2026-11-13T00:02:00Z'}
+    responses[SOURCE_ISSUES].append(row)
+    responses[f'{SOURCE_BASE}/issues/8'] = row
+    responses[f'{SOURCE_BASE}/issues/8/events?per_page=100'] = [
+        {'id': 88, 'event': 'labeled', 'label': {'name': 'Ready for Agent'}, 'actor': {'login': 'kun-g'}}]
+    responses[f'{SOURCE_BASE}/issues/8/comments?per_page=100'] = []
+    edit(world, responses=responses)
+    before = len(calls(world))
+    batch = source.poll(target, first.cursor)
+    assert [(e.object_key, e.action) for e in batch.events if e.action != 'update'] == [('2', 'rework'), ('8', 'ready')]
+    urls = source_urls(world, before)
+    assert not any(f'/issues/{n}/' in u or u.endswith(f'/issues/{n}') for n in (1, 3, 7) for u in urls)
+    restarted = GitHubSource(str(world['commands'] / 'gh'))
+    assert restarted.poll(target, batch.cursor).events == []
+    engine = build(world['root'] / 'incremental-core')
+    for e in [*batch.events, *batch.events]:
+        engine.ingest(e)
+    assert any(i['object_key'] == '8' for i in engine.log.all('items'))
+    engine.log.close()
+
+
+def test_incremental_inline_edit_without_parent_update_and_closed_pr(world):
+    responses, target, source, old = incremental_fixture(world)
+    change_row(responses, 11, state='closed')
+    responses[f'{SOURCE_BASE}/pulls/11']['state'] = 'closed'
+    comment = {'id': 200, 'body': '普通意见', 'user': {'login': 'kun-g'},
+               'updated_at': '2026-11-13T00:01:00Z', 'pull_request_url': 'https://api.github.com/repos/kun-g/workshop/pulls/11'}
+    responses[SOURCE_COMMENTS] = [comment]
+    responses[f'{SOURCE_BASE}/pulls/11/comments?per_page=100'] = [comment]
+    edit(world, responses=responses)
+    first = source.poll(target, old)
+    assert all(e.body['kind'] != 'pr-ci' for e in first.events)
+    comment.update(body='不对', updated_at='2026-11-13T00:03:00Z')
+    edit(world, responses=responses)
+    before = len(calls(world))
+    batch = source.poll(target, first.cursor)
+    assert len(batch.events) == 1
+    event = batch.events[0]
+    assert event.action == 'update' and event.body['kind'] == 'pr-review-comment' and event.object_key == '7'
+    assert len(source_urls(world, before)) == 2
+    assert json.loads(batch.cursor)['watermark'] == '2026-11-13T00:01:00Z'
+    assert json.loads(batch.cursor)['review_watermark'] == '2026-11-13T00:03:00Z'
+    assert source.poll(target, batch.cursor).events == []
+
+
+def test_incremental_ci_changes_push_review_and_close(world):
+    responses, target, source, old = incremental_fixture(world)
+    first = source.poll(target, old)
+    responses[f'{SOURCE_BASE}/commits/{world["sha"]}/check-runs?per_page=100'] = {
+        'check_runs': [{'id': 50, 'status': 'completed', 'conclusion': 'success'}]}
+    edit(world, responses=responses)
+    batch = source.poll(target, first.cursor)
+    assert [e.body['kind'] for e in batch.events] == ['pr-ci']
+    sha = 'b' * 40
+    change_row(responses, 11, updated_at='2026-11-13T00:04:00Z')
+    responses[f'{SOURCE_BASE}/pulls/11']['head'] = {'sha': sha}
+    responses[f'{SOURCE_BASE}/pulls/11/reviews?per_page=100'] = [
+        {'id': 201, 'body': '不对，补测试', 'user': {'login': 'kun-g'}}]
+    responses[f'{SOURCE_BASE}/commits/{sha}/check-runs?per_page=100'] = {'check_runs': []}
+    responses[f'{SOURCE_BASE}/commits/{sha}/status'] = {'statuses': []}
+    edit(world, responses=responses)
+    before = len(calls(world))
+    pushed = source.poll(target, batch.cursor)
+    assert {e.body['kind'] for e in pushed.events} == {'pr-head', 'pr-review', 'pr-ci'}
+    assert any(e.action == 'rework' for e in pushed.events)
+    assert all(world['sha'] not in u for u in source_urls(world, before))
+    change_row(responses, 11, state='closed', updated_at='2026-11-13T00:05:00Z')
+    responses[f'{SOURCE_BASE}/pulls/11']['state'] = 'closed'
+    edit(world, responses=responses)
+    closed = source.poll(target, pushed.cursor)
+    assert json.loads(closed.cursor)['open_prs'] == {}
+    before = len(calls(world))
+    source.poll(target, closed.cursor)
+    assert len(source_urls(world, before)) == 2
+
+
+def test_incremental_retryable_keeps_watermarks_and_replays(world, monkeypatch):
+    responses, target, source, old = incremental_fixture(world)
+    first = source.poll(target, old)
+    original = json.loads(first.cursor)
+    change_row(responses, 2, updated_at='2026-11-13T00:03:00Z')
+    responses[f'{SOURCE_BASE}/issues/2/comments?per_page=100'] = [
+        {'id': 101, 'body': '不对', 'user': {'login': 'kun-g'}}]
+    edit(world, responses=responses)
+    real = source._get
+    def fail(endpoint, cache):
+        if '/pulls/comments?' in endpoint:
+            raise Retryable('模拟中途网络故障')
+        return real(endpoint, cache)
+    monkeypatch.setattr(source, '_get', fail)
+    with pytest.raises(Retryable):
+        source.poll(target, first.cursor)
+    assert json.loads(first.cursor) == original
+    monkeypatch.setattr(source, '_get', real)
+    resumed = source.poll(target, first.cursor)
+    assert any(e.action == 'rework' for e in resumed.events)
+    assert json.loads(resumed.cursor)['watermark'] == '2026-11-13T00:03:00Z'
+
+
+def test_incremental_budget_restart_pagination_and_atomic_watermarks(world):
+    responses, target, source, old = incremental_fixture(world)
+    rows = responses[SOURCE_ISSUES]
+    page2 = SOURCE_ISSUES + '&page=2'
+    responses[SOURCE_ISSUES] = {'_response': True, 'data': rows[:2], 'next': page2}
+    responses[page2] = rows[2:]
+    edit(world, responses=responses)
+    cursor, events = old, []
+    target['github_requests_per_tick'] = 1
+    for _ in range(40):
+        before = len(calls(world))
+        # 每一拍新进程、新实例，只允许游标携带进度。
+        source = GitHubSource(str(world['commands'] / 'gh'))
+        batch = source.poll(target, cursor)
+        assert len(calls(world)) - before <= 1
+        cursor = batch.cursor
+        events.extend(batch.events)
+        state = json.loads(cursor)
+        if not state['refreshed']:
+            break
+        assert 'watermark' not in state
+    else:
+        pytest.fail('small budget starves the scan')
+    assert state['watermark'] == '2026-11-13T00:01:00Z'
+    assert any(e.action == 'ready' for e in events)
+    assert len(events) == len({e.ext_id for e in events})
+    assert page2 in source_urls(world)
+
+
+def test_incremental_upgrade_legacy_seen_and_shared_cache(world):
+    import hashlib
+    responses = source_responses(world)
+    detail = responses[f'{SOURCE_BASE}/issues/7']
+    label = responses[f'{SOURCE_BASE}/issues/7/events?per_page=100'][0]
+    signature = lambda v: hashlib.sha256(json.dumps(v, sort_keys=True).encode()).hexdigest()
+    root = Path(world['target']['github_cache_dir'])
+    root.mkdir()
+    payload = json.dumps(detail, sort_keys=True, ensure_ascii=False)
+    fingerprint = hashlib.sha256(payload.encode()).hexdigest()
+    legacy = root / (fingerprint + '.json')
+    legacy.write_text(payload)
+    old = json.dumps({'known': {'7': True}, 'seen': {'issue:7:body': signature(detail), 'label:7:80': signature(label)},
+                      'cache': {f'{SOURCE_BASE}/issues/7': {'fingerprint': fingerprint, 'etag': None, 'next': None}},
+                      'refreshed': [f'{SOURCE_BASE}/issues/7']})
+    edit(world, responses=responses)
+    source = GitHubSource(str(world['commands'] / 'gh'))
+    first = source.poll(world['target'], old)
+    assert first.events == []
+    assert json.loads(first.cursor)['watermark'] == '2026-11-13T00:01:00Z'
+    assert source.cache_root != root and legacy.exists()
+    assert source.poll(world['target'], first.cursor).events == []
+    assert not legacy.exists()
+    # 另一条尚未升级的旧游标失去共享缓存，仍可通过 GET 完成迁移且不重复控制事件。
+    assert GitHubSource(str(world['commands'] / 'gh')).poll({**world['target'], 'name': 'beta'}, old).events == []
+
+
+def test_incremental_cache_gc_after_success_preserves_committed_and_other_target(world):
+    responses, target, source, old = incremental_fixture(world)
+    first = source.poll(target, old)
+    directory = source.cache_root
+    pinned = {r['fingerprint'] for r in json.loads(first.cursor)['cache'].values()}
+    other = GitHubSource(str(world['commands'] / 'gh'))
+    other.poll({**target, 'name': 'beta'}, None)
+    other_files = {f: f.read_bytes() for f in other.cache_root.glob('*.json')}
+    orphan = directory / ('f' * 64 + '.json')
+    orphan.write_text('{}')
+    second = source.poll(target, first.cursor)
+    assert not orphan.exists()
+    assert all((directory / (name + '.json')).exists() for name in pinned)
+    third = source.poll(target, second.cursor)
+    fourth = source.poll(target, third.cursor)
+    current = {r['fingerprint'] for r in json.loads(fourth.cursor)['cache'].values()}
+    assert {f.stem for f in directory.glob('*.json')} == current
+    assert all(f.read_bytes() == body for f, body in other_files.items())
+
+
+@pytest.mark.parametrize('overlap', [-1, True, '60'])
+def test_incremental_overlap_validation(world, overlap):
+    source = GitHubSource(str(world['commands'] / 'gh'))
+    with pytest.raises(ValueError, match='github_overlap_seconds'):
+        source.poll({**world['target'], 'github_overlap_seconds': overlap}, None)
+
+
+def test_incremental_removed_label_keeps_intake_and_removed_marker_stops_ci(world):
+    responses, target, source, old = incremental_fixture(world)
+    first = source.poll(target, old)
+    change_row(responses, 7, labels=[], updated_at='2026-11-13T00:02:00Z')
+    responses[f'{SOURCE_BASE}/issues/7/comments?per_page=100'] = [
+        {'id': 303, 'body': '不对', 'user': {'login': 'kun-g'}}]
+    change_row(responses, 11, body='撤掉关联', updated_at='2026-11-13T00:02:00Z')
+    # 同仓库其他交付对象的 PR 不应读取详情或 CI。
+    responses[SOURCE_ISSUES].append({'number': 12, 'pull_request': {}, 'body': '<!-- workshop-item: beta:7 -->',
+                                     'updated_at': '2026-11-13T00:02:00Z'})
+    edit(world, responses=responses)
+    before = len(calls(world))
+    batch = source.poll(target, first.cursor)
+    assert any(e.action == 'rework' and e.object_key == '7' for e in batch.events)
+    assert json.loads(batch.cursor)['open_prs'] == {}
+    assert not any('/pulls/12' in u or '/commits/' in u for u in source_urls(world, before))
+
+
+def test_incremental_feed_pagination_and_custom_overlap(world):
+    responses, target, source, old = incremental_fixture(world)
+    first = source.poll(target, old)
+    # 只有补查的第二页含变化；issue 列表完全未变。
+    comment = {'id': 404, 'body': '行内意见', 'user': {'login': 'other'},
+               'updated_at': '2026-11-13T00:03:00Z', 'pull_request_url': 'https://api.github.com/repos/kun-g/workshop/pulls/11'}
+    feed = SOURCE_BASE + '/pulls/comments?sort=updated&direction=asc&since=1969-12-31T23%3A58%3A00Z&per_page=100'
+    responses[feed] = {'_response': True, 'data': [], 'next': feed + '&page=2'}
+    responses[feed + '&page=2'] = [comment]
+    edit(world, responses=responses)
+    before = len(calls(world))
+    batch = source.poll({**target, 'github_overlap_seconds': 120}, first.cursor)
+    assert [e.body['kind'] for e in batch.events] == ['pr-review-comment']
+    assert json.loads(batch.cursor)['review_watermark'] == '2026-11-13T00:03:00Z'
+    urls = source_urls(world, before)
+    assert 'since=2026-11-12T23%3A59%3A00Z' in urls[0]
+    assert feed + '&page=2' in urls
