@@ -30,6 +30,8 @@ class Rules:
             raise ValueError("chain_depth 必须在 1 到 8 之间")
         if not data.get("channel"):
             raise ValueError("规则缺通道插件")
+        if data.get("notices", "send") not in ("send", "hold"):
+            raise ValueError("notices 只能是 send 或 hold")
         if type(limits.get("round_timeout_seconds", 7200)) is not int or limits.get("round_timeout_seconds", 7200) <= 0:
             raise ValueError("每轮期限必须为正整数秒")
         for name, target in data["targets"].items():

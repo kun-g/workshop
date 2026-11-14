@@ -139,6 +139,8 @@ limits: {concurrent: 5, chain_depth: 8, round_timeout_seconds: 7200}
 # 所有阶段默认用 quota；没有额度门槛时它和 ordered 一样按顺序取第一个。
 selector: quota
 channel: ask_kun
+# 通知开关：hold 只记不发（Kun 11-14：「自从你们这边开始用Ash给我发消息，里面全是垃圾消息。我已经不想看了」）。要 Kun 定的事走问卡，不受影响。
+notices: hold
 ask_first:
   - 对外发消息
   - 删别处的东西
