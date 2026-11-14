@@ -11,7 +11,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
-from urllib.parse import parse_qsl, urlencode, urlsplit
+from urllib.parse import parse_qsl, unquote, urlencode, urlsplit
 
 GIT = '/usr/bin/git'
 
@@ -146,14 +146,27 @@ def handle(name, args, *, stdin='', env=None, cwd=None, git=real_git):
             elif path.endswith('/status'):
                 value = {'statuses': state.get('statuses', [])}
             elif '/contents/' in path and not path.endswith('/contents/release.json'):
-                name = path.split('/contents/', 1)[1]
+                name = unquote(path.split('/contents/', 1)[1])
                 if state.get('contents_error'):
                     say(state['contents_error'], stderr)
                     raise Exit(1)
-                if name not in state.get('contents', []):
+                docs = state.get('requirement_contents', {})
+                if name in docs:
+                    value = {'path': name, 'type': 'file', 'encoding': 'base64',
+                             'content': base64.b64encode(docs[name].encode()).decode()}
+                elif any(p.startswith(name + '/') for p in docs):
+                    entries = {}
+                    for p in docs:
+                        if p.startswith(name + '/'):
+                            rest = p[len(name) + 1:]
+                            child = name + '/' + rest.split('/')[0]
+                            entries[child] = {'path': child, 'type': 'dir' if '/' in rest else 'file'}
+                    value = list(entries.values())
+                elif name not in state.get('contents', []):
                     say('gh: Not Found (HTTP 404)', stderr)
                     raise Exit(1)
-                value = {'path': name, 'content': ''}
+                else:
+                    value = {'path': name, 'content': ''}
             elif path.endswith('/contents/release.json'):
                 value = {'content': base64.b64encode(json.dumps({'source_commit': state.get('deployed_sha')}).encode()).decode()}
             else:

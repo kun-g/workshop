@@ -10,6 +10,7 @@ targets:
     sources: [github]
     github_overlap_seconds: 60
     repo: kun-g/grant-console
+    requirement_docs: ['docs/requirements/']
     # 仅作为证据/审查 clone 的只读来源；发布在插件状态目录 releases/ 的专用检出。
     checkout: ~/workspace/runtime/repos/grant-console
     skill: issue-delivery
@@ -77,6 +78,7 @@ targets:
     check_timeout: 300
     bot_review: false
     repo: kun-g/workshop
+    requirement_docs: ['docs/requirements/核心.md', 'docs/requirements/issue交付.md', 'docs/requirements/定时发版.md']
     checkout: ~/workspace/runtime/repos/workshop
     skill: issue-delivery
     permissions: repository

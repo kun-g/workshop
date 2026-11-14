@@ -1,5 +1,6 @@
 """进程边界、独立副本和插件自己的幂等记录，不访问核心数据库。"""
 from contextlib import contextmanager
+import base64
 import fcntl
 import hashlib
 import json
@@ -11,6 +12,9 @@ import tempfile
 import time
 import urllib.request
 import urllib.error
+from urllib.parse import quote
+
+from .requirements import registered_paths
 
 from workshop.core.ports import Retryable
 
@@ -152,6 +156,39 @@ class IO:
     def pages(self, endpoint):
         pages = json.loads(run([self.gh, "api", "--paginate", "--slurp", endpoint]).stdout)
         return [entry for page in pages for entry in page]
+
+    def requirement_documents(self, target):
+        """回查默认分支的需求正文；不读取执行者工作区里可自行改写的版本。"""
+        documents, visited = {}, set()
+
+        def read(path, directory=False):
+            if path in visited:
+                return
+            visited.add(path)
+            value = self.api(f'repos/{target["repo"]}/contents/{quote(path, safe="/")}')
+            if directory:
+                if not isinstance(value, list):
+                    raise ValueError(f"依据：需求目录 {path} 不是目录")
+                for entry in value:
+                    child = entry.get("path", "")
+                    if not child.startswith(path.rstrip("/") + "/") or "/../" in child:
+                        raise ValueError(f"依据：需求目录 {path} 返回了无效路径")
+                    if entry.get("type") == "dir":
+                        read(child, True)
+                    elif entry.get("type") == "file" and child.endswith(".md"):
+                        read(child)
+                return
+            if (not isinstance(value, dict) or value.get("type") != "file"
+                    or value.get("encoding") != "base64" or value.get("submodule_git_url")):
+                raise ValueError(f"依据：需求文档 {path} 不是可读取的普通文件")
+            try:
+                documents[path] = base64.b64decode(value["content"]).decode("utf-8")
+            except (ValueError, KeyError, UnicodeError) as exc:
+                raise ValueError(f"依据：需求文档 {path} 无法解码") from exc
+
+        for path in registered_paths(target):
+            read(path.rstrip("/"), path.endswith("/"))
+        return documents
 
     def item_prs(self, item, target):
         marker = f'<!-- workshop-item: {item["id"]} -->'
