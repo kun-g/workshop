@@ -2,7 +2,7 @@ from datetime import datetime, timedelta
 
 import pytest
 
-from conftest import current, event, item
+from conftest import current, event, finish, item, reach
 from workshop.core.engine import Engine
 from workshop.core.models import After
 from workshop.core.ports import Retryable
@@ -32,9 +32,74 @@ def test_all_program_stages_complete_without_rounds_and_replay(engine, monkeypat
         assert f'程序完成 {stage}' in output
         assert f'程序阶段 {stage} after' in output
     assert len(engine.log.full_item(item(engine))['history']) == len(flow.path)
+    assert not engine.log.all('timers')
+    facts = engine.log.facts('alpha:one')
+    for _ in range(10):
+        engine.clock.now += timedelta(seconds=1)
+        engine.tick()
+    assert item(engine)['state'] == '完成'
+    assert engine.log.facts('alpha:one') == facts
     before = {t: engine.log.all(t) for t in TABLES}
     engine.log.rebuild()
     assert before == {t: engine.log.all(t) for t in TABLES}
+
+
+@pytest.mark.parametrize('abandoned', [False, True])
+def test_old_program_leave_timer_cannot_keep_repeating(engine, monkeypatch, abandoned):
+    flow = automatic(engine, monkeypatch)
+    engine.ingest(event())
+    for _ in flow.path:
+        engine.tick()
+    # 模拟升级前留下的立即定时；最多再结算一次，不能继续产生定时链。
+    engine.timer(item(engine), 'leave:program:old', '+0s', '已收尾')
+    if abandoned:
+        engine.change(item(engine), state='空闲')
+        engine.abandon('alpha:one', '停止')
+    calls = len(flow.after_keys)
+    engine.tick()
+    assert item(engine)['state'] == ('放弃' if abandoned else '完成')
+    assert len(flow.after_keys) == calls + (0 if abandoned else 1)
+    facts = engine.log.facts('alpha:one')
+    for _ in range(10):
+        engine.clock.now += timedelta(seconds=1)
+        engine.tick()
+    assert engine.log.facts('alpha:one') == facts
+    assert all(t['fired'] for t in engine.log.all('timers'))
+
+
+@pytest.mark.parametrize('kind', ['工序', '送回'])
+def test_explicit_leave_after_completion_still_fires(engine, kind):
+    reach(engine, '收尾')
+    finish(engine, leave={'kind': kind, 'owner': '车间', 'at': '+1h', 'about': '复看'})
+    assert item(engine)['state'] == '完成'
+    assert len(engine.log.all('timers')) == 1
+    engine.clock.now += timedelta(hours=1)
+    engine.tick()
+    assert engine.log.all('timers')[0]['fired']
+    if kind == '工序':
+        assert current(engine)['stage'] == '收尾'
+    else:
+        assert item(engine)['state'] == '等你'
+        assert any(c['mode'] == 'ask' for c in engine.log.all('cards'))
+
+
+def test_abandon_running_program_explains_pause_without_mutation(engine, monkeypatch):
+    flow = automatic(engine, monkeypatch)
+    def pending(*args):
+        raise Retryable('still running')
+    monkeypatch.setattr(flow, 'after', pending)
+    engine.ingest(event())
+    engine.tick()
+    assert item(engine)['program']
+    before = {t: engine.log.all(t) for t in TABLES}
+    facts = engine.log.facts()
+    with pytest.raises(ValueError) as error:
+        engine.abandon('alpha:one', '停止')
+    assert 'workshop pause alpha' in str(error.value)
+    assert '不会自动放弃或取消在跑作业' in str(error.value)
+    assert '负责会话' in str(error.value)
+    assert before == {t: engine.log.all(t) for t in TABLES}
+    assert engine.log.facts() == facts
 
 
 def test_two_program_stages_then_executor(engine, monkeypatch):

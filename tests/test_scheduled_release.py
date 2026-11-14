@@ -263,7 +263,10 @@ def test_background_jobs_resume_without_rechecking_or_restarting_twice(world, mo
     from workshop.core.jobs import Pending
     import job_plugins
     w = world
-    engine = make_engine(w)
+    prepared = w['root'] / 'prepared'
+    w['target']['prepare'] = [{'argv': [sys.executable, '-c',
+        f'from pathlib import Path; Path({str(prepared)!r}).write_text("ready")']}]
+    engine = make_engine(w, notices='hold')
     plugins = engine.plugins
     monkeypatch.setattr(job_plugins, 'registry', lambda: plugins)
     locks = {}
@@ -299,6 +302,18 @@ def test_background_jobs_resume_without_rechecking_or_restarting_twice(world, mo
         assert unrelated.after_keys.count('unrelated-key') == 1
         assert jobs.call('flow', 'other', 'after', args, identity=['unrelated']) is None
         assert unrelated.after_keys.count('unrelated-key') == 1
+        assert prepared.read_text() == 'ready'
+        facts = engine.log.facts(w['data']['id'])
+        notices = [f for f in facts if f['kind'] == 'notice_held'
+                   and f['body']['subject'].startswith('定时发版完成')]
+        assert len(notices) == 1
+        assert not engine.log.all('timers')
+        for _ in range(10):
+            engine.clock.now += timedelta(seconds=1)
+            engine.tick()
+            jobs.finish()
+            assert engine.log.get('items', w['data']['id'])['state'] == '完成'
+            assert engine.log.facts(w['data']['id']) == facts
     finally:
         for descriptor in locks.values():
             os.close(descriptor)
