@@ -10,6 +10,7 @@ import sys
 # A file entry point works even when launchd/Orca cwd is outside the installed project.
 if __package__ in (None, ''):
     sys.path.insert(0, str(Path(__file__).resolve().parents[4]))
+from workshop.core.models import Receipt
 from workshop.plugins.executors.local.storage import me, read, write
 from workshop.plugins.executors.local.isolation import session_environment
 from workshop.plugins.executors.local.drivers import for_spec
@@ -106,7 +107,8 @@ def proxy_receipt(directory, spec, env, output, code, run):
             f'车间没收下这一轮的回执：{problem}。\n'
             '照这个原因改对，最后一条消息只输出回执 JSON 对象本身，不加说明文字。'
             f'回执顶层只认 {FIELDS}，别的字段放进 evidence 那条 JSON；outcome 只能是 done、failed、nothing；'
-            'advance 照派活说明里写的本阶段可填值。已经做完的工作不用重做。\n')
+            'advance 照派活说明里写的本阶段可填值。已经做完的工作不用重做。\n'
+            + Receipt.format_help())
         start = output.stat().st_size if output.exists() else 0
         code = run(argv, prompt)
     if code == 0:

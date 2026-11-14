@@ -65,6 +65,10 @@ def stop_round(directory: Path, close_terminal, timeout):
                             os.killpg(pgid, sig)
                         except ProcessLookupError:
                             pass
+                        except PermissionError:
+                            # A group containing only zombies can return EPERM.
+                            # Recheck below; live members must still be retried.
+                            continue
                         signalled.add(pgid)
                     try:
                         fcntl.flock(guard, fcntl.LOCK_EX | fcntl.LOCK_NB)

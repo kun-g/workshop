@@ -1,4 +1,5 @@
 """End-to-end adapters use fake agent/Orca executables, real OS processes, no network."""
+import errno
 import json
 import os
 from pathlib import Path
@@ -454,6 +455,52 @@ def test_stop_escalates_to_kill_for_ignoring_process_group(setup):
     assert not members(read(executor.directory('one')/'supervisor.json')['group'])
     from workshop.plugins.executors.local.storage import identity
     assert identity(int((root/'descendant-pid').read_text())) is None
+
+
+@pytest.mark.parametrize('exit_on', [signal.SIGTERM, signal.SIGKILL, None])
+def test_stop_rechecks_members_after_eperm(tmp_path, monkeypatch, exit_on):
+    from types import SimpleNamespace
+    from workshop.plugins.executors.local import processes
+
+    executor = Executor('codex', state_dir=tmp_path/'state', stop_timeout=.06)
+    directory = executor.directory('eperm-round')
+    group = {'pid': 99999999, 'birth': 'fake process start time'}
+    write(directory/'supervisor.json', {**group, 'group': group})
+    live = [group['pid']]
+    calls = []
+    clock = [0.0]
+
+    def denied(pgid, sig):
+        assert pgid == group['pid']
+        calls.append(sig)
+        if sig == exit_on:
+            # The last live member exits between enumeration and signalling.
+            live.clear()
+        raise PermissionError(errno.EPERM, 'Operation not permitted')
+
+    def sleep(seconds):
+        clock[0] += seconds
+
+    monkeypatch.setattr(processes.os, 'killpg', denied)
+    monkeypatch.setattr(processes, 'members', lambda group: list(live))
+    monkeypatch.setattr(processes, 'alive', lambda record: bool(live))
+    monkeypatch.setattr(processes, 'time', SimpleNamespace(monotonic=lambda: clock[0], sleep=sleep))
+
+    if exit_on is None:
+        with pytest.raises(Retryable, match='TERM/KILL 后仍不能确认进程组退出'):
+            executor.stop('eperm-round', None)
+        assert not (directory/'stopped.json').exists()
+        assert calls.count(signal.SIGKILL) >= 2
+        assert clock[0] >= 2 * executor.stop_timeout
+    else:
+        executor.stop('eperm-round', None)
+        assert read(directory/'stopped.json')['confirmed'] is True
+        assert executor.poll('eperm-round', None) == 'exited'
+        assert calls[-1] == exit_on
+    if exit_on != signal.SIGTERM:
+        assert calls.count(signal.SIGTERM) >= 2
+    else:
+        assert calls == [signal.SIGTERM]
 
 
 def test_stop_fences_runner_that_has_not_started(setup):

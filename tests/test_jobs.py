@@ -29,6 +29,7 @@ from workshop.core.report import status
 from workshop.core.rules import Rules
 
 import job_plugins
+import workshop.core.jobs as job_module
 
 RUNNER = str(Path(__file__).with_name("job_runner.py"))
 
@@ -105,19 +106,24 @@ def forbidden(name):
 
 @contextmanager
 def no_waiting_or_network(monkeypatch):
-    """一拍期间：等子进程、发网络请求的入口一律报错；只允许启动独立进程（Popen 不等）。"""
+    """禁止主循环同步调进程/网络；启动线程仍可创建真实作业进程。"""
+    main_thread = threading.get_ident()
+    violations = []
     with monkeypatch.context() as patch:
-        for module, name in ((subprocess.Popen, "__init__"), (subprocess, "run"), (subprocess, "check_output"), (subprocess, "call"),
-                             (subprocess, "check_call"), (subprocess.Popen, "wait"), (subprocess.Popen, "communicate"),
+        def guard(original, name):
+            def called(*args, **kwargs):
+                if threading.get_ident() == main_thread:
+                    violations.append(name)
+                    raise AssertionError(f"一拍里不许调用 {name}")
+                return original(*args, **kwargs)
+            return called
+        for module, name in ((subprocess.Popen, "__init__"), (subprocess, "run"),
+                             (subprocess, "check_output"), (subprocess, "call"), (subprocess, "check_call"),
+                             (subprocess.Popen, "wait"), (subprocess.Popen, "communicate"), (os, "posix_spawnp"),
                              (urllib.request, "urlopen"), (socket, "create_connection"), (socket.socket, "connect")):
-            patch.setattr(module, name, forbidden(f"{getattr(module, '__name__', module)}.{name}"))
-        spawn = os.posix_spawnp
-        main_thread = threading.get_ident()
-        def background_spawn(*args, **kwargs):
-            assert threading.get_ident() != main_thread, "一拍里同步创建进程"
-            return spawn(*args, **kwargs)
-        patch.setattr(os, "posix_spawnp", background_spawn)
+            patch.setattr(module, name, guard(getattr(module, name), name))
         yield
+        assert not violations, violations  # 核心即使捕获了异常也不能误过。
 
 
 def item(log, key):
@@ -315,7 +321,7 @@ def test_same_call_reuses_result_without_new_job(tmp_path, monkeypatch):
 
 def test_slow_process_creation_does_not_hold_tick(world, monkeypatch):
     """真实进程创建只能在后台线程发生。"""
-    spawn = os.posix_spawnp
+    spawn = job_module.Popen
     callers = []
     main_thread = threading.get_ident()
 
@@ -323,7 +329,7 @@ def test_slow_process_creation_does_not_hold_tick(world, monkeypatch):
         callers.append(threading.get_ident())
         return spawn(*args, **kwargs)
 
-    monkeypatch.setattr(os, "posix_spawnp", slow_spawn)
+    monkeypatch.setattr(job_module, "Popen", slow_spawn)
     configure(world["path"])
     engine = world["engine"](real=True)
     try:
@@ -337,6 +343,30 @@ def test_slow_process_creation_does_not_hold_tick(world, monkeypatch):
         engine.log.close()
 
 
+def test_native_process_creation_does_not_hold_tick(world, monkeypatch):
+    """验证创建路径：后台 Popen 独立会话、只传本作业锁，不走持有 GIL 的旧入口。"""
+    popen = job_module.Popen
+    calls = []
+    main_thread = threading.get_ident()
+
+    def create(*args, **kwargs):
+        calls.append((threading.get_ident(), kwargs))
+        return popen(*args, **kwargs)
+
+    monkeypatch.setattr(job_module, "Popen", create)
+    monkeypatch.setattr(os, "posix_spawnp", forbidden("旧 posix_spawnp 创建路径"))
+    engine = world["engine"](real=True)
+    try:
+        wait(world, engine, monkeypatch,
+             lambda: any(r.get("started") for r in rounds(engine.log, "8")))
+        assert calls and all(thread != main_thread for thread, _ in calls)
+        assert all(options["start_new_session"] is True and len(options["pass_fds"]) == 1
+                   for _, options in calls)
+    finally:
+        engine.jobs.launcher.shutdown(wait=True)
+        engine.log.close()
+
+
 @pytest.mark.parametrize("cancel", [False, True])
 @pytest.mark.parametrize("child_finished", [False, True])
 def test_job_is_recognized_or_cancelled_while_process_is_being_created(tmp_path, monkeypatch, cancel, child_finished):
@@ -344,15 +374,15 @@ def test_job_is_recognized_or_cancelled_while_process_is_being_created(tmp_path,
     configure(tmp_path)
     Log(tmp_path / "workshop.db").close()
     entered, release = threading.Event(), threading.Event()
-    spawn = os.posix_spawnp
+    spawn = job_module.Popen
 
     def held_spawn(*args, **kwargs):
-        pid = spawn(*args, **kwargs) if child_finished else None
+        child = spawn(*args, **kwargs) if child_finished else None
         entered.set()
         assert release.wait(10)
-        return pid if child_finished else spawn(*args, **kwargs)
+        return child if child_finished else spawn(*args, **kwargs)
 
-    monkeypatch.setattr(os, "posix_spawnp", held_spawn)
+    monkeypatch.setattr(job_module, "Popen", held_spawn)
     jobs = Jobs(tmp_path / "jobs", [sys.executable, RUNNER, str(tmp_path)])
     revived = Jobs(jobs.directory, jobs.command)
     args = [{}, None]
@@ -396,7 +426,7 @@ def test_background_process_creation_failure_is_retryable(tmp_path, monkeypatch)
     def fail(*args, **kwargs):
         raise OSError("spawn unavailable")
 
-    monkeypatch.setattr(os, "posix_spawnp", fail)
+    monkeypatch.setattr(job_module, "Popen", fail)
     jobs = Jobs(tmp_path / "jobs", [sys.executable])
     with pytest.raises(Pending):
         jobs.call("source", "source", "poll", [])
@@ -527,7 +557,7 @@ def test_release_jobs_do_not_block_and_survive_restart(world, monkeypatch, resta
     def pending():
         engine.jobs.finish(lambda spec: spec["method"] != method)
         return any(read(path / "spec.json")["method"] == method and not (path / "result.json").exists()
-                   for path in engine.jobs.locks) and bool(rounds(engine.log, "8"))
+                   for path in engine.jobs.locks) and any(r.get("started") for r in rounds(engine.log, "8"))
     wait(world, engine, monkeypatch, pending, finish=False)
     assert item(engine.log, "9")["workdir"] == "/fake/completed"
     engine.log.close()
@@ -538,7 +568,7 @@ def test_release_jobs_do_not_block_and_survive_restart(world, monkeypatch, resta
     revived.jobs.finish()
     wait(world, revived, monkeypatch, lambda: bool(item(revived.log, "9").get("workdir_released")))
     assert len(job_plugins.calls("hold-start")) == len(job_plugins.calls("release-start")) == 1
-    assert rounds(revived.log, "8")  # 其他活仍能派出。
+    assert any(r.get("started") for r in rounds(revived.log, "8"))  # 收回未完成时已经启动。
     row = item(revived.log, "9")
     assert row["workdir"] == ("/fake/completed" if reason else None)
     assert row["workdir_released"] == ("留着：" + reason if reason else "已收回")
