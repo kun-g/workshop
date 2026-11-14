@@ -18,7 +18,7 @@ from workshop.plugins.selectors.ordered import OrderedSelector
 
 @pytest.hookimpl(optionalhook=True)
 def pytest_xdist_make_scheduler(config, log):
-    """10 秒慢调用场景先独占一个 worker；其余作业测试共用另一个 worker。
+    """真实作业测试共用一个 worker；其余测试仍逐条并行分配。
 
     pytest 9.2 的 nodeid 改读 _id，xdist 3.8 的 loadgroup 仍写 _nodeid，
     分组标记不生效。按收集到的公开 nodeid 分组，不改 pytest 的内部字段。
@@ -26,17 +26,9 @@ def pytest_xdist_make_scheduler(config, log):
     from xdist.scheduler import LoadScopeScheduling
 
     class JobScheduling(LoadScopeScheduling):
-        slow = "tests/test_jobs.py::test_slow_external_calls_do_not_hold_the_tick"
-
         def _split_scope(self, nodeid):
             path = nodeid.split("::", 1)[0]
-            return path if path == "tests/test_jobs.py" and nodeid != self.slow else nodeid
-
-        def _assign_work_unit(self, node):
-            # 实际睡眠是这条用例的断言，不能压缩；从第一批就开始，和其他检查重叠。
-            if self.slow in self.workqueue:
-                self.workqueue.move_to_end(self.slow, last=False)
-            super()._assign_work_unit(node)
+            return path if path == "tests/test_jobs.py" else nodeid
 
     return JobScheduling(config, log)
 

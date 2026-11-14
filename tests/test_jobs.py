@@ -150,9 +150,9 @@ def wait(world, engine, monkeypatch, done, seconds=40):
 
 
 def test_slow_external_calls_do_not_hold_the_tick(world, monkeypatch):
-    # 验收规定的四类外部调用各睡 10 秒；执行者覆盖启动、探测和停止。
+    # ws#48 A5：各睡 1 秒（100ms 上限的十倍）；执行者覆盖启动、探测和停止。
     slow_calls = {"check", "source", "channel", "executor_launch", "executor_poll", "executor_stop"}
-    configure(world["path"], **{f"{kind}_seconds": 10 for kind in slow_calls}, checks=[["/bin/sleep", "5"]])
+    configure(world["path"], **{f"{kind}_seconds": 1 for kind in slow_calls}, checks=[["/bin/sleep", "5"]])
     engine = world["engine"]()
     log = engine.log
     seen = {"label": False, "dispatched_during_check": False}
@@ -180,7 +180,7 @@ def test_slow_external_calls_do_not_hold_the_tick(world, monkeypatch):
         # 校验实际等待时长，防止替身配置未生效而空过。
         durations = {kind: [float(r[2]) for r in job_plugins.calls("delay-end") if r[1] == kind]
                      for kind in slow_calls}
-        assert all(values and min(values) >= 10 for values in durations.values()), durations
+        assert all(values and min(values) >= 1 for values in durations.values()), durations
         print(f"slow calls (seconds): {durations}; ticks={len(beats)}; "
               f"max tick_ms={max(b['tick_ms'] for _, b in beats)}; "
               f"max wall_ms={max(elapsed for elapsed, _ in beats):.2f}")
