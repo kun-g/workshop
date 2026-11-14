@@ -110,3 +110,11 @@ PY
 ```
 
 测试覆盖假 gh/git/lark-cli/kubectl/tag-release.sh 的 JSON 回放（默认在测试进程内调用同一份替身代码，省掉每次起解释器），以及本地真实 git 提交上的检查与只读副本。测试不连接 GitHub、飞书、Orca 或集群。跨块测试将流程生成的只读审查副本通过 Brief.workdir 交给 Codex/Orca Claude 执行者插件，用假的 CLI 记录实际子进程 cwd/env，断言没有 GH_TOKEN、SSH_AUTH_SOCK 等凭据。
+
+## GitHub 身份与会话放行（issue #31）
+
+`targets.<对象>.github_identity` 配置身份：`inherit` 保持原来的身份链（grant-console）；`app` 指定 `signer` argv 和真实 `gh` 的绝对路径（workshop）。装配时验证配置。签发器接收 `--repo owner/repo`，stdout 只返回令牌；异常输出不进入诊断。内置 `python -m workshop.github_token` 从既有身份配置读取仓库白名单和权限，从 Keychain 读密钥，经内存管道签 JWT，取得仅限此仓库的 installation token，无磁盘缓存，也不修改旧身份配置。使用标准库与本机 security/openssl，无新增 Python 依赖。
+
+执行者的 spec 只保存非秘密配置和仓库。runner 在实际启动 agent 前签发并装配环境；只读审查和验收继续清理全部部署凭据，不签写令牌。真实 gh 优先于全局身份 wrapper；git helper 只为 HTTPS github.com 上的同一仓库提供本进程令牌，不存凭据。签发失败时 runner 不起 agent，交等你回执；程序作业的签发失败通过通用 TargetBlocked 端口只隔离本交付对象、通知一次，不影响共用流程的其他交付对象。通知沿用 notices 开关。程序动作的令牌只在一次插件调用的内存范围内复用，离开即释放；返回的命令输出先遮去令牌。检查脚本仍使用干净环境。
+
+`workshop release ws#31 --quote '放' --session <会话号>`（也支持 `workshop:31`）写入可信 session 放行事件；新对象从接单开始，同一对象不重复建活。原话和会话号不能为空，why 显示 channel=session、原话、会话号。外部 event 自报 session 不提升权限。已有卡住/等你的活按放行状态规则继续；接单、说清楚保留原阶段，已有未答审批不被替代。
