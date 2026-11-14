@@ -27,6 +27,7 @@ from workshop.core.report import status
 from workshop.core.rules import Rules
 
 import job_plugins
+import workshop.core.jobs as job_module
 
 RUNNER = str(Path(__file__).with_name("job_runner.py"))
 LIMIT_MS = 100
@@ -241,7 +242,7 @@ def test_same_call_reuses_result_without_new_job(tmp_path, monkeypatch):
 
 def test_slow_process_creation_does_not_hold_tick(world, monkeypatch):
     """操作系统创建进程也会变慢；不能把这段等待留在一拍里。"""
-    spawn = os.posix_spawnp
+    spawn = job_module.Popen
     callers = []
     main_thread = threading.get_ident()
 
@@ -250,7 +251,7 @@ def test_slow_process_creation_does_not_hold_tick(world, monkeypatch):
         time.sleep(.2)
         return spawn(*args, **kwargs)
 
-    monkeypatch.setattr(os, "posix_spawnp", slow_spawn)
+    monkeypatch.setattr(job_module, "Popen", slow_spawn)
     configure(world["path"], check_seconds=0)
     engine = world["engine"]()
     try:
@@ -265,6 +266,73 @@ def test_slow_process_creation_does_not_hold_tick(world, monkeypatch):
         engine.log.close()
 
 
+def test_native_process_creation_does_not_hold_tick(world, monkeypatch):
+    """真实创建调用阻塞；Python sleep 会释放 GIL，不能覆盖这个竞态。"""
+    fifo = world["path"] / "spawn.fifo"
+    entered = world["path"] / "spawn-entered"
+    os.mkfifo(fifo)
+    # 独立进程放行，避免放行线程也被创建进程时持有的 GIL 卡住。
+    writer = subprocess.Popen([sys.executable, "-c", """
+import os, sys, time
+from pathlib import Path
+marker = Path(sys.argv[1])
+deadline = time.monotonic() + 10
+while not marker.exists():
+    if time.monotonic() > deadline:
+        raise TimeoutError('没有创建作业进程')
+    time.sleep(.001)
+time.sleep(.25)
+fd = os.open(sys.argv[2], os.O_WRONLY)
+os.close(fd)
+""", str(entered), str(fifo)], start_new_session=True)
+    native_delays = []
+    spawn = os.posix_spawnp
+
+    def slow_spawn(*args, **kwargs):
+        if entered.exists():
+            return spawn(*args, **kwargs)
+        entered.touch()
+        kwargs["file_actions"] = [*kwargs.get("file_actions", ()),
+                                  (os.POSIX_SPAWN_OPEN, 200, str(fifo), os.O_RDONLY, 0)]
+        began = time.monotonic()
+        result = spawn(*args, **kwargs)
+        native_delays.append(time.monotonic() - began)
+        return result
+
+    def child_wait():
+        fd = os.open(fifo, os.O_RDONLY)
+        os.close(fd)
+
+    class SlowPopen(subprocess.Popen):
+        def __init__(self, *args, **kwargs):
+            if entered.exists():
+                super().__init__(*args, **kwargs)
+                return
+            # 仅测试中在子进程 exec 前阻塞；生产不使用 preexec_fn。
+            kwargs["preexec_fn"] = child_wait
+            entered.touch()
+            began = time.monotonic()
+            super().__init__(*args, **kwargs)
+            native_delays.append(time.monotonic() - began)
+
+    monkeypatch.setattr(os, "posix_spawnp", slow_spawn)
+    monkeypatch.setattr(job_module, "Popen", SlowPopen, raising=False)
+    engine = world["engine"]()
+    try:
+        beats = wait(world, engine, monkeypatch,
+                     lambda: any(r.get("started") for r in rounds(engine.log, "8")))
+        assert native_delays and native_delays[0] >= .25
+        slow = [(elapsed, beat["tick_ms"]) for elapsed, beat in beats
+                if elapsed > LIMIT_MS or beat["tick_ms"] > LIMIT_MS]
+        assert not slow, {"slow_ticks_ms": slow, "creation_seconds": native_delays}
+    finally:
+        if writer.poll() is None:
+            writer.terminate()
+        writer.wait(timeout=5)
+        engine.jobs.launcher.shutdown()
+        engine.log.close()
+
+
 @pytest.mark.parametrize("cancel", [False, True])
 @pytest.mark.parametrize("child_finished", [False, True])
 def test_job_is_recognized_or_cancelled_while_process_is_being_created(tmp_path, monkeypatch, cancel, child_finished):
@@ -272,15 +340,15 @@ def test_job_is_recognized_or_cancelled_while_process_is_being_created(tmp_path,
     configure(tmp_path)
     Log(tmp_path / "workshop.db").close()
     entered, release = threading.Event(), threading.Event()
-    spawn = os.posix_spawnp
+    spawn = job_module.Popen
 
     def held_spawn(*args, **kwargs):
-        pid = spawn(*args, **kwargs) if child_finished else None
+        child = spawn(*args, **kwargs) if child_finished else None
         entered.set()
         assert release.wait(10)
-        return pid if child_finished else spawn(*args, **kwargs)
+        return child if child_finished else spawn(*args, **kwargs)
 
-    monkeypatch.setattr(os, "posix_spawnp", held_spawn)
+    monkeypatch.setattr(job_module, "Popen", held_spawn)
     jobs = Jobs(tmp_path / "jobs", [sys.executable, RUNNER, str(tmp_path)])
     revived = Jobs(jobs.directory, jobs.command)
     args = [{}, None]
@@ -326,7 +394,7 @@ def test_background_process_creation_failure_is_retryable(tmp_path, monkeypatch)
     def fail(*args, **kwargs):
         raise OSError("spawn unavailable")
 
-    monkeypatch.setattr(os, "posix_spawnp", fail)
+    monkeypatch.setattr(job_module, "Popen", fail)
     jobs = Jobs(tmp_path / "jobs", [sys.executable])
     with pytest.raises(Pending):
         jobs.call("source", "source", "poll", [])
@@ -460,7 +528,8 @@ def test_release_jobs_do_not_block_and_survive_restart(world, monkeypatch, resta
         beats += wait(world, engine, monkeypatch, lambda: bool(item(engine.log, "9").get("workdir_released")))
         beats.append(tick(world, engine, monkeypatch))
         assert all(elapsed <= LIMIT_MS and beat["tick_ms"] <= LIMIT_MS for elapsed, beat in beats), [
-            {"wall_ms": round(elapsed, 2), "tick_ms": beat["tick_ms"]} for elapsed, beat in beats]
+            {"wall_ms": round(elapsed, 2), "tick_ms": beat["tick_ms"]} for elapsed, beat in beats
+            if elapsed > LIMIT_MS or beat["tick_ms"] > LIMIT_MS]
         assert len(job_plugins.calls("hold-start")) == len(job_plugins.calls("release-start")) == 1
         row = item(engine.log, "9")
         assert row["workdir"] == ("/fake/completed" if reason else None)
