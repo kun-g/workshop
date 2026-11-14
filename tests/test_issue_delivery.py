@@ -394,6 +394,17 @@ def test_engine_eight_stages_with_real_flow_and_fake_executor(world):
             assert json.loads(world['store'].read_text())['issue']['state'] == 'open'
     assert item(engine, '7')['state'] == '完成'
     assert json.loads(world['store'].read_text())['issue']['state'] == 'closed'
+    facts = engine.log.facts('alpha:7')
+    for _ in range(10):
+        engine.clock.now += timedelta(seconds=1)
+        engine.tick()
+    assert item(engine, '7')['state'] == '完成'
+    assert engine.log.facts('alpha:7') == facts
+    assert len(engine.log.all('timers')) == 1  # 显式送回仍保留。
+    assert len([c for c in engine.log.all('cards') if c['mode'] == 'notice']) == 1
+    engine.ingest(Event('github', 'trusted-rework', 'alpha', '7', '不对', {}, action='rework'))
+    engine.tick()
+    assert current(engine, '7')['stage'] == '执行'
     engine.log.close()
 
 

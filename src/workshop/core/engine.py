@@ -485,7 +485,8 @@ class Engine:
             if item["state"] in ("完成", "放弃"):
                 raise ValueError(f"{item_id} 已经{item['state']}，不用放弃")
             if item.get("program"):
-                raise ValueError("程序阶段还没结算，不能放弃")
+                raise ValueError(f"程序阶段还没结算，不能放弃；先用 workshop pause {item['target']} 暂停。"
+                                 "暂停不会自动放弃或取消在跑作业，请由负责会话处理未结算作业后再决定是否放弃")
             if any(r["item"] == item_id for r in self.active()):
                 raise ValueError(f"{item_id} 还有一轮没结束，先用 abort 结束那一轮再放弃")
             self.fact("item_abandoned", {"id": item_id, "reason": reason.strip()}, item_id)
@@ -1569,7 +1570,10 @@ class Engine:
                 self.receipt_notices(item, row["stage"], token, receipt, evidence, completed)
                 for later in receipt.later:
                     self.timer(item, f'{token}:{later["key"]}', later["at"], later["about"], base=received_at)
-                if receipt.leave and receipt.leave["kind"] in ("工序", "送回"):
+                # 最后一个程序阶段的 leave 是自动补的收尾登记，不是后续工序。
+                # 保留登记供回查，但不建立即定时重新唤醒已完成的活。
+                if (receipt.leave and receipt.leave["kind"] in ("工序", "送回")
+                        and not (program and decision.complete)):
                     leave = receipt.leave
                     self.timer(item, f"leave:{token}", leave["at"], leave["about"], leave["kind"], leave.get("owner", "Kun"), base=received_at)
                 changes = dict(failures=0, round=None, retry_at=None, cause=max(item["cause"], row["receipt_seq"]),
