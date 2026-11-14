@@ -9,13 +9,15 @@ from urllib.parse import quote
 from workshop.core.gates import allowed_advances
 from workshop.core.models import After, Classification, Evidence, FlowBrief, OUTCOMES, Receipt, STAGES
 from .io import IO, executable, failure, run, tail
+from .requirements import (approval_answer, changed_requirement, change_documents,
+                           check_references, quoted_approval, section)
 from workshop.core.ports import Retryable
 
 # 合并失败后回查 PR，这些状态是要执行者动手的业务原因：退回执行，不算插件故障。
 BUSINESS_MERGE_STATES = ("dirty", "behind", "blocked", "unstable")
 
 
-HEADINGS = ("Kun 的原话", "验收标准", "验收步骤", "能跑的检查", "要不要亲眼看")
+HEADINGS = ("Kun 的原话", "依据", "验收标准", "验收步骤", "能跑的检查", "要不要亲眼看")
 
 
 def report(receipt):
@@ -253,7 +255,12 @@ class IssueDelivery:
         instructions = {
             "接单": "已有 issue 直接接单；飞书需求由流程 after 幂等开 issue。此轮只核实资料，推进说清楚，不自行开重复 issue。",
             "说清楚": (
-                "按 docs/issue写法.md 把同一个 issue 写清：Kun 的原话、可判定的验收标准、验收步骤、能跑的检查、要不要亲眼看。"
+                "按 docs/issue写法.md 把同一个 issue 写清：Kun 的原话、依据、可判定的验收标准、验收步骤、能跑的检查、要不要亲眼看。"
+                f'依据中的编号从规则 requirement_docs={target.get("requirement_docs", [])} 登记的文档核对。'
+                "需求变更须写需求原文和文档位置；未确认时发 key=requirement-change 的 ask，选项 yes/no，context 逐字放依据，带推荐和理由，不推进。"
+                "Kun 答 no：不推进、不重复问，交 leave={kind:等你,about:等 Kun 调整需求变更并重新放行}，附一条 fyi notice 说明要调整什么。"
+                "原话已认过的可免卡：evidence JSON 的 requirement_approval 写 basis（完整依据节）和 quote（原话节中含确认及上下文的逐字引用）；"
+                "执行者须判断引用确实同意这条需求，不可把问题描述或 agent 的理解当批准，验收者复核。"
                 "检查使用 workshop-checks 代码块里的 JSON argv 列表，至少 scripts/check.sh 或仓库等价检查；evidence 那条 JSON 的 checks 交回完全相同命令。"
                 "evidence 那条 JSON 的 paths 登记这件活预计会改的路径（仓库根起的相对路径，目录以 / 结尾）；碰到规则串行路径的活由流程排队，一件一件过执行。"
                 "一张带推荐的卡能问清才用 ask；否则 notice 发一条 fyi 通知说卡在哪、先聊清什么，leave={kind:等你,about:等 Kun 改好同一 issue 并重打 Ready for Agent}。不猜标准，不连发卡。"
@@ -441,18 +448,48 @@ class IssueDelivery:
             issue = self._issue(item, target)
             if stage == "说清楚":
                 body = issue.get("body") or ""
+                basis = section(body, "依据")
+                if not basis:
+                    return Evidence(reason="issue 缺少或未写清依据节")
                 checks = checks_from(body)
                 sections = {h: re.search(r"^## " + re.escape(h) + r"\s*\n(.+?)(?=^## |\Z)", body, re.M | re.S) for h in HEADINGS}
                 clear = all(m and m[1].strip() and not re.search(r"待定|TODO|待补充", m[1]) for m in sections.values())
                 clear = clear and bool(re.match(r"(?:是|否)(?:\s|$)", sections["要不要亲眼看"][1].strip()))
                 if (not clear or not checks or data.get("checks") != checks
                         or not all(c in checks for c in target.get("required_checks", [["scripts/check.sh"]]))):
-                    return Evidence(reason="issue 五项或回执检查未写清")
+                    return Evidence(reason="issue 六项（含依据）或回执检查未写清")
+                documents = self.io.requirement_documents(target)
+                if changed_requirement(basis) is not None:
+                    if not changed_requirement(basis):
+                        return Evidence(reason="依据：需求变更未写需求原文")
+                    change_documents(basis, documents, target)
+                    answer = approval_answer(item)
+                    # 完成钩子也会在锁内回查 assess；只有发卡轮需要另取锁保存问题。
+                    question = next((a for a in receipt.ask if a.get("key") == "requirement-change"), None)
+                    if question:
+                        with self.io.locked(item, target) as state:
+                            valid = basis in question.get("context", "")
+                            state["requirement_question"] = {"basis": basis,
+                                "valid": valid, "after": max((m.get("seq", 0) for m in item.get("materials", [])), default=0)}
+                            self.io.save(item, target, state)
+                        if not valid:
+                            return Evidence(reason="依据：requirement-change 卡片 context 须包含完整依据")
+                    pending = self.io.read(item, target).get("requirement_question")
+                    if answer and answer.get("body") == "no":
+                        return Evidence(reason="依据：Kun 对 requirement-change 回答 no；停在说清楚，回执须留下等你，不再发卡")
+                    answered = bool(answer and answer.get("body") == "yes")
+                    if pending:
+                        answered = (answered and pending.get("valid") and pending["basis"] == basis
+                                    and answer.get("seq", 0) > pending["after"])
+                    if not answered and not quoted_approval(body, basis, data):
+                        return Evidence(reason="依据：需求变更尚无匹配的 requirement-change=yes 回答或已确认原话引用")
+                else:
+                    check_references(basis, documents)
                 declared = data.get("paths", [])
                 if not isinstance(declared, list) or not all(isinstance(p, str) and p.strip() for p in declared):
                     return Evidence(reason="回执 paths 须是非空路径字符串列表")
                 # 预计会改的路径交给核心，串行路径在执行前按它排队。
-                return Evidence(checks, True, reason="issue 五项和检查命令已回查", paths=[p.strip() for p in declared])
+                return Evidence(checks, True, reason="issue 六项、依据和检查命令已回查", paths=[p.strip() for p in declared])
             if stage == "收尾":
                 state = self.io.read(item, target)
                 hint = f'{target.get("short_name", target["name"])}#{issue["number"]} 不对'
@@ -465,7 +502,8 @@ class IssueDelivery:
             pr = self.io.pr(item, target)
             sha = pr["head"]["sha"]
             # 改名的文件新旧路径都算：从冻结或串行路径挪走也是碰到了它们。
-            paths = sorted({path for f in self.io.pages(f'repos/{target["repo"]}/pulls/{pr["number"]}/files?per_page=100')
+            files = self.io.pages(f'repos/{target["repo"]}/pulls/{pr["number"]}/files?per_page=100')
+            paths = sorted({path for f in files
                             for path in (f["filename"], f.get("previous_filename")) if path})
             if not self._safe_pr(pr, item):
                 return Evidence(checks, False, reason="PR 标记缺失或带自动关闭 issue 的语句", paths=paths)
@@ -486,6 +524,14 @@ class IssueDelivery:
             if data.get("head") != sha:
                 return Evidence(checks, False, reason=f"头提交变化：回执 {data.get('head')}，GitHub 当前 {sha}，退回执行", paths=paths)
             if stage == "证据":
+                basis = section(issue.get("body") or "", "依据")
+                if changed_requirement(basis) is not None:
+                    documents = self.io.requirement_documents(target)
+                    required = change_documents(basis, documents, target)
+                    updated = {f["filename"] for f in files if f.get("status") != "removed"}
+                    missing = required - updated
+                    if missing:
+                        return Evidence(checks, False, reason="需求变更未修改登记的需求文档：" + "、".join(sorted(missing)) + "；退回执行", paths=paths)
                 outputs = self.io.verify(target, sha, checks)
                 passed = bool(outputs) and all(r["exit_code"] == 0 for r in outputs)
                 return Evidence(checks, passed, reason=json.dumps({"reason": "检查通过" if passed else "检查失败，退回执行修正", "head": sha, "runs": outputs}, ensure_ascii=False), paths=paths)

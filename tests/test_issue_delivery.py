@@ -21,6 +21,8 @@ from conftest import build, configuration, current, finish, in_process_commands,
 
 BODY = '''## Kun 的原话
 检查失败时让错误可见。
+## 依据
+核心 R14
 ## 验收标准
 错误输出和非零退出码保留。
 ## 验收步骤
@@ -48,13 +50,15 @@ def world(tmp_path, monkeypatch, git_template):
                                   'scripts/tag-release.sh': script.read_text()})
     shutil.copytree(template, repo)
     store = tmp_path / 'remote.json'
-    state = {'sha': sha, 'checkout': str(repo), 'issue': {'number': 7, 'body': BODY, 'state': 'open'},
+    state = {'sha': sha, 'checkout': str(repo), 'requirement_contents': {'docs/requirements/核心.md': '**R14 失败不反复通知。**\n'},
+             'issue': {'number': 7, 'body': BODY, 'state': 'open'},
              'pr': {'number': 11, 'body': '<!-- workshop-item: alpha:7 -->', 'head': {'sha': sha}, 'state': 'open', 'merged': False}}
     store.write_text(json.dumps(state))
     monkeypatch.setenv('WORKSHOP_FAKE_STATE', str(store))
     monkeypatch.setenv('PATH', str(commands) + os.pathsep + os.environ['PATH'])
     in_process_commands(monkeypatch, commands)
     target = {'name': 'alpha', 'repo': 'kun-g/workshop', 'checkout': str(repo), 'release': 'none',
+              'requirement_docs': ['docs/requirements/核心.md'],
               'ci': ['check'], 'short_name': 'ws', 'github_cache_dir': str(tmp_path / 'cache'),
               'tag_command': ['scripts/tag-release.sh'], 'delivery_action': '自己的交付', 'feishu_chat_id': 'oc_group', 'kun_feishu_open_id': 'ou_kun',
               'ask_kun_state': str(tmp_path / 'asks.json'), 'deployment': {'app': 'test', 'context': 'readonly', 'namespace': 'argocd', 'revision_field': 'status.sync.revision', 'branch': 'production', 'release_file': 'release.json', 'source_field': 'source_commit',
