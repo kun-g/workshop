@@ -267,103 +267,17 @@ def main_checkout(world):
     return repo, merged
 
 
-def test_self_release_fast_forwards_clean_main_and_requests_restart(world, main_checkout):
+@pytest.mark.parametrize('release', ['none', 'self'])
+def test_issue_merge_does_not_update_checkout_or_restart(world, main_checkout, release):
     repo, merged = main_checkout
-    marker = world['root'] / 'prepared'
-    target = {**world['target'], 'release': 'self', 'prepare': [{'argv': ['/bin/sh', '-c', f'pwd > {marker}']}]}
-    data = snapshot(world, '交付')
-    world['io'].save(data, target, {'effects': {}, 'issue': 7, 'reviewed_head': world['sha']})
-    done = world['flow'].after(data, '交付', 'deliver', target)
-    assert done.restart and not done.pending and not done.notice
-    assert git(repo, 'rev-parse', 'HEAD') == merged and git(repo, 'symbolic-ref', '--short', 'HEAD') == 'main'
-    assert Path(marker.read_text().strip()).resolve() == Path(repo).resolve()
-    assert world['flow'].after(data, '交付', 'deliver', target) == done
-
-
-def test_self_release_asks_core_to_restart_after_this_tick(world, main_checkout):
-    repo, merged = main_checkout
-    engine = engine_for(world, 'self-engine', release='self')
-    walk(engine, world, ['执行', '证据', '审查', '交付'])
-    assert not engine.restart_requested
-    finish(engine, '验收', key='7', evidence=[result(world)])
-    assert engine.restart_requested and current(engine, '7')['stage'] == '验收'
-    assert git(repo, 'rev-parse', 'HEAD') == merged
-    engine.log.close()
-
-
-UNCLEAN = {'dirty': '未提交的改动或未跟踪的文件', 'untracked': '未提交的改动或未跟踪的文件',
-           'branch': '不在 main', 'forked': '不能快进到合并提交'}
-
-
-@pytest.mark.parametrize('problem', UNCLEAN)
-def test_self_release_leaves_unclean_main_alone_and_notifies_once(world, main_checkout, problem):
-    repo, merged = main_checkout
-    if problem == 'dirty':
-        Path(repo, 'scripts/check.sh').write_text('#!/bin/sh\necho Kun 正在改\n')
-    elif problem == 'untracked':
-        Path(repo, 'notes.txt').write_text('scratch\n')
-    elif problem == 'branch':
-        git(repo, 'checkout', '-qb', 'kuns-work')
-    else:
-        # 主检出 main 上有本地提交，和合并提交分叉：快进不了。
-        commit(repo, 'local.txt', 'Kun 本地的提交\n')
     before = git(repo, 'rev-parse', 'HEAD')
-    engine = engine_for(world, 'self-' + problem, release='self')
+    engine = engine_for(world, 'merge-without-release', release=release)
     walk(engine, world, ['执行', '证据', '审查', '交付'])
     finish(engine, '验收', key='7', evidence=[result(world)])
-    assert current(engine, '7')['stage'] == '验收' and not engine.restart_requested
-    assert git(repo, 'rev-parse', 'HEAD') == before
-    if problem == 'dirty':
-        assert 'Kun 正在改' in Path(repo, 'scripts/check.sh').read_text()
-    notices = [c for c in engine.log.all('cards') if c['key'].startswith('after-notice:')]
-    assert len(notices) == 1
-    text = notices[0]['payload']['text']
-    assert merged in text and 'git merge --ff-only' in text and 'kickstart' in text
-    assert UNCLEAN[problem] in text
-    engine.tick()
-    assert len([c for c in engine.log.all('cards') if c['key'].startswith('after-notice:')]) == 1
+    assert not engine.restart_requested
+    assert current(engine, '7')['stage'] == '验收'
+    assert git(repo, 'rev-parse', 'HEAD') == before != merged
     engine.log.close()
-
-
-def test_self_release_prepare_failure_leaves_new_code_without_restart(world, main_checkout):
-    """准备命令失败：主检出已经快进了，不重启，通知说清要重跑准备命令；活照常进验收。"""
-    repo, merged = main_checkout
-    # 只在主检出里失败；证据阶段在干净副本里跑同一组准备命令要成功。
-    failing = f'[ "$(pwd -P)" != "{Path(repo).resolve()}" ] || {{ echo 依赖装不上 >&2; exit 1; }}'
-    engine = engine_for(world, 'self-prepare', release='self', prepare=[{'argv': ['/bin/sh', '-c', failing]}])
-    walk(engine, world, ['执行', '证据', '审查', '交付'])
-    finish(engine, '验收', key='7', evidence=[result(world)])
-    assert current(engine, '7')['stage'] == '验收' and not engine.restart_requested
-    assert git(repo, 'rev-parse', 'HEAD') == merged
-    state = world['io'].read(item(engine, '7'), world['target'])
-    assert state['self_update']['updated'] and not state['self_update']['restart'] and state['delivered'] == [merged]
-    [card] = [c for c in engine.log.all('cards') if c['key'].startswith('after-notice:')]
-    text = card['payload']['text']
-    assert '已快进主检出' in text and '依赖装不上' in text and '重跑' in text and '会用新代码起来' in text
-    assert 'git merge --ff-only' not in text
-    engine.log.close()
-
-
-def test_round_started_in_the_restart_tick_survives_the_new_daemon(world, main_checkout):
-    """请求重启的那一拍派出的验收轮，守护进程换了新进程后接着跑，不重派、只读副本不被清掉。"""
-    repo, merged = main_checkout
-    engine = engine_for(world, 'self-restart', release='self')
-    walk(engine, world, ['执行', '证据', '审查', '交付'])
-    finish(engine, '验收', key='7', evidence=[result(world)])
-    row = current(engine, '7')
-    assert engine.restart_requested and row['stage'] == '验收' and Path(row['brief']['workdir']).is_dir()
-    # 守护进程退出；launchd 拉起的新进程用同一份事实库建引擎。执行者会话是独立进程组，还活着（同一批执行者替身）。
-    path, rules, plugins, clock = engine.log.path, engine.rules, engine.plugins, engine.clock
-    engine.log.close()
-    revived = Engine(Log(path), rules, plugins, clock)
-    assert not revived.restart_requested
-    revived.tick()
-    assert current(revived, '7')['token'] == row['token'] and Path(row['brief']['workdir']).is_dir()
-    acceptor = plugins.get('executor', row['executor'])
-    assert [c[1] for c in acceptor.calls if c[0] == 'launch'].count(row['token']) == 1
-    pass_acceptance_and_close(revived, world, merged)
-    assert not revived.restart_requested
-    revived.log.close()
 
 
 def test_run_loop_exits_after_the_tick_that_requested_restart(tmp_path, monkeypatch):

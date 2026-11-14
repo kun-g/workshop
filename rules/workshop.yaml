@@ -87,11 +87,14 @@ targets:
     default_flow: issue_delivery
     flows:
       issue_delivery: {triggers: *issue_triggers}
+      scheduled_release:
+        triggers: [{source: main_branch, when: {kind: ahead}, action: ready}]
+        scheduled_release_state_dir: ~/.local/state/workshop
     selector: quota
     quota_snapshot: *quota_snapshot
     # 阶段开关：去掉审查（Kun 11-13：「先跳过 Review 加快交付，反正现在的系统是我自己在用」）。要恢复就把审查加回证据和交付之间。
     stages: [接单, 说清楚, 执行, 证据, 交付, 验收, 收尾]
-    sources: [github]
+    sources: {github: {}, main_branch: {every: 1h}}
     github_overlap_seconds: 60
     short_name: ws
     ask_kun_state: ~/.local/state/ask-kun/asks.json
@@ -111,8 +114,8 @@ targets:
     skill: issue-delivery
     permissions: repository
     label: Ready for Agent
-    # 交付对象就是车间自己：合并后快进 checkout（主检出）并让守护进程这一拍后退出，由 launchd 拉起。
-    release: self
+    # issue 合并即交付；整点上线由 scheduled_release 程序流程完成。
+    release: none
 # 配置档集中定义；use 是持久身份，不随 driver 或运行方式改变。
 executor_profiles:
   orca-codex:
