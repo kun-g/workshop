@@ -87,6 +87,8 @@ class After:
     restart: bool = False
     # 给 Kun 一条不用回的通知；同一个完成钩子 key 只发一次。
     notice: str = ""
+    # 流程已幂等消费的恢复计划，核心追加事实供查询。
+    recovery_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -119,8 +121,12 @@ class Evidence:
     # 流程确认结果已完成时给出的标识；判过并向前推进就可发完成通知，同一标识只发一张。
     # 空时只在最后阶段完成后发，一件活只发一张。
     done_key: str = ""
+    blocked: str = ""
+    next: str = ""
 
     def validate(self) -> None:
+        if not isinstance(self.blocked, str) or not isinstance(self.next, str) or self.blocked and not self.next.strip():
+            raise ValueError("阻塞必须有原因和建议动作")
         if (self.reviewers not in (1, 2) or not isinstance(self.paths, list)
                 or not isinstance(self.done_key, str)
                 or not all(isinstance(v, str) for v in self.paths)
@@ -291,7 +297,7 @@ class Receipt:
                     if leave["kind"] == "工序" and not leave.get("owner"):
                         problems.append("leave.owner: 工序必须有人做")
                 elif leave.get("kind") == "等你" and not data.get("ask") and not data.get("notice"):
-                    problems.append("leave: 无卡等你必须有通知，并由放行事件继续")
+                    problems.append("leave: 等你须带问卡；旧版 notice 回执只兼容转为卡住")
         if problems:
             raise ValueError("；".join(problems))
         return cls(**data)

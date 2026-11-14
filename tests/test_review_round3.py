@@ -23,7 +23,7 @@ def wait_without_card(engine):
     reach(engine, "说清楚")
     finish(engine, leave={"kind": "等你", "about": "等放行"},
            notice=[{"key": "wait", "text": "先说清楚，不用回卡"}])
-    assert item(engine)["state"] == "等你"
+    assert item(engine)["state"] == "卡住"
     return engine.log.all("rounds")[-1]["token"]
 
 
@@ -70,7 +70,7 @@ def test_2_receipt_children_cannot_release_or_rework_waiting_item(engine, monkey
     monkeypatch.setattr(engine.plugins.get("flow", "flow"), "classify",
                         lambda *args: (_ for _ in ()).throw(AssertionError("agent 事件不能 classify")))
     finish(engine, "说清楚", key="two", events=[child])
-    assert item(engine)["state"] == "等你" and not item(engine)["pending_rework"]
+    assert item(engine)["state"] == "卡住" and not item(engine)["pending_rework"]
     received = [f for f in engine.log.facts("alpha:one") if f["kind"] == "event"][-1]
     assert received["body"]["action"] == "update" and received["body"]["depth"] == 1
     assert received["body"]["ingress"] == "agent"
@@ -85,7 +85,7 @@ def test_2_cli_agent_cannot_forge_source_action_or_depth(engine, tmp_path, monke
                             env={**os.environ, **runtime["env"]}, text=True, capture_output=True)
     assert result.returncode == 0, result.stderr
     engine.tick()
-    assert item(engine)["state"] == "等你" and item(engine)["depth"] == 1
+    assert item(engine)["state"] == "卡住" and item(engine)["depth"] == 1
     assert not any(e.get("kind") == "classify" for e in engine.log.all("effects"))
 
 
@@ -98,7 +98,7 @@ def test_2_non_agent_cli_action_is_decided_by_flow(engine, monkeypatch, action):
     body = {"from_kun": True, "requested_action": action}
     data = asdict(replace(event(ext_id="human-cli"), action="wrong-caller-value", depth=99, body=body))
     assert main(["event", "--json", json.dumps(data)]) == 0
-    assert item(engine)["state"] == "等你"  # CLI 只提交，判定发生在 tick。
+    assert item(engine)["state"] == "卡住"  # CLI 只提交，判定发生在 tick。
     engine.tick()
     assert current(engine)["stage"] == ("说清楚" if action == "ready" else "执行")
     received = [f for f in engine.log.facts() if f["kind"] == "event" and f["ext_id"] == "human-cli"][0]
@@ -110,7 +110,7 @@ def test_2_untrusted_cli_ready_does_not_release_and_source_ready_still_does(engi
     wait_without_card(engine)
     engine.ingest(event(ext_id="untrusted", action="ready", depth=99), ingress="external")
     engine.tick()
-    assert item(engine)["state"] == "等你" and item(engine)["depth"] == 0
+    assert item(engine)["state"] == "卡住" and item(engine)["depth"] == 0
     engine.plugins.get("source", "source").events = [event(ext_id="trusted", action="ready")]
     engine.tick()
     assert current(engine)["stage"] == "说清楚"
@@ -124,7 +124,7 @@ def test_2_paused_external_event_keeps_provenance_until_selected(engine):
                           body={"from_kun": True, "requested_action": "ready"}), ingress="external")
     missed = engine.missed("alpha")
     engine.resume("alpha", [missed[0]["id"]])
-    assert item(engine)["state"] == "等你"
+    assert item(engine)["state"] == "卡住"
     engine.tick()
     assert current(engine)["stage"] == "说清楚"
     before = {table: engine.log.all(table) for table in TABLES}

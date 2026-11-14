@@ -131,7 +131,7 @@ def test_unexplained_merge_failure_stays_retryable_with_stderr(world):
 
 # 2. 已合并的活重走验收：同一合并提交一次，再不过问 Kun
 
-def test_merged_item_reruns_acceptance_once_then_asks_kun(world):
+def test_merged_item_reruns_acceptance_once_then_blocks(world):
     engine = engine_for(world, 'rerun')
     walk(engine, world, ['说清楚', '执行', '证据', '审查', '交付', '验收'])
     sha = remote(world)['pr']['merge_commit_sha']
@@ -140,7 +140,7 @@ def test_merged_item_reruns_acceptance_once_then_asks_kun(world):
     rerun(engine, world, sha)
     assert current(engine, '7')['stage'] == '验收'
     assert merges(world) == 1 and world['io'].read(item(engine, '7'), world['target'])['acceptance_reruns'] == [sha]
-    assert f'只验交付提交 {sha}' in brief(engine)
+    assert f'只验固定检查提交 {sha}' in brief(engine)
     fail_acceptance(engine, world, sha)
     assert '已重走过一次验收' in brief(engine) and 'outcome=nothing' in brief(engine)
     for attempt in range(3):
@@ -148,9 +148,9 @@ def test_merged_item_reruns_acceptance_once_then_asks_kun(world):
         if attempt < 2:
             assert current(engine, '7')['stage'] == '执行'
             assert '已重走过一次验收' in item(engine, '7')['gate_reason']
-    assert item(engine, '7')['state'] == '等你'
+    assert item(engine, '7')['state'] == '卡住'
     asks = [c for c in engine.log.all('cards') if c['mode'] == 'ask']
-    assert len(asks) == 1 and '已重走过一次验收' in asks[0]['payload']['context']
+    assert asks == [] and '已重走过一次验收' in item(engine, '7')['blocked_by']
     engine.log.close()
 
 
@@ -387,7 +387,7 @@ def test_run_loop_exits_after_the_tick_that_requested_restart(tmp_path, monkeypa
 
 def test_execution_brief_states_boundaries(world):
     text = world['flow'].brief(snapshot(world, '执行'), '执行', world['target'])
-    for phrase in ('只改本 issue 要的东西', '车间流程或环境的问题', 'outcome=nothing', 'leave={kind:等你',
+    for phrase in ('只改本 issue 要的东西', '车间流程或环境的问题', 'outcome=nothing', 'blocked={reason:原因,next:建议动作}',
                    '不改车间自己的流程代码', f"不动主检出 {world['target']['checkout']}", '不重启车间'):
         assert phrase in text
     # 没到过验收的活不提重走验收，也不为此查 GitHub。
@@ -414,10 +414,10 @@ def test_recover_ws5_waiting_after_nothing(world, release):
     engine.submit(current(engine, '7')['token'], {'outcome': 'nothing', 'summary': '没有要改的代码', 'notice': [card],
                                                   'leave': {'kind': '等你', 'about': '等 Kun 定怎么重走验收'}})
     engine.tick()
-    assert item(engine, '7')['state'] == '等你' and item(engine, '7')['wait_for_ready']
+    assert item(engine, '7')['state'] == '卡住' and item(engine, '7')['wait_for_ready']
     quarantine(engine)
     engine.resume('alpha', [])
-    assert item(engine, '7')['state'] == '等你' and not engine.active()
+    assert item(engine, '7')['state'] == '卡住' and not engine.active()
     engine.ingest(Event('github', 'kun-again', 'alpha', '7', 'label', {}, action=release))
     engine.tick()
     assert current(engine, '7')['stage'] == '执行' and 'rerun_acceptance' in brief(engine)
@@ -461,7 +461,7 @@ def test_recover_ws18_delivery_stuck_on_closed_duplicate_pr(world, release):
     assert current(engine, '7')['stage'] == '执行'
     assert f'PR #11，合并提交 {sha}' in brief(engine)
     rerun(engine, world, sha)
-    assert current(engine, '7')['stage'] == '验收' and f'只验交付提交 {sha}' in brief(engine)
+    assert current(engine, '7')['stage'] == '验收' and f'只验固定检查提交 {sha}' in brief(engine)
     pass_acceptance_and_close(engine, world, sha)
     assert merges(world) == 1
     engine.log.close()

@@ -258,12 +258,13 @@ class IssueDelivery:
                 "按 docs/issue写法.md 把同一个 issue 写清：Kun 的原话、依据、可判定的验收标准、验收步骤、能跑的检查、要不要亲眼看。"
                 f'依据中的编号从规则 requirement_docs={target.get("requirement_docs", [])} 登记的文档核对。'
                 "需求变更须写需求原文和文档位置；未确认时发 key=requirement-change 的 ask，选项 yes/no，context 逐字放依据，带推荐和理由，不推进。"
-                "Kun 答 no：不推进、不重复问，交 leave={kind:等你,about:等 Kun 调整需求变更并重新放行}，附一条 fyi notice 说明要调整什么。"
+                "Kun 答 no：不推进、不重复问，交 outcome=nothing，evidence JSON 写 blocked={reason:需求变更未获批准,next:负责会话调整需求后重新确认}。"
                 "原话已认过的可免卡：evidence JSON 的 requirement_approval 写 basis（完整依据节）和 quote（原话节中含确认及上下文的逐字引用）；"
                 "执行者须判断引用确实同意这条需求，不可把问题描述或 agent 的理解当批准，验收者复核。"
                 "检查使用 workshop-checks 代码块里的 JSON argv 列表，至少 scripts/check.sh 或仓库等价检查；evidence 那条 JSON 的 checks 交回完全相同命令。"
                 "evidence 那条 JSON 的 paths 登记这件活预计会改的路径（仓库根起的相对路径，目录以 / 结尾）；碰到规则串行路径的活由流程排队，一件一件过执行。"
-                "一张带推荐的卡能问清才用 ask；否则 notice 发一条 fyi 通知说卡在哪、先聊清什么，leave={kind:等你,about:等 Kun 改好同一 issue 并重打 Ready for Agent}。不猜标准，不连发卡。"
+                "需要 Kun 判断时用 ask，带选项、推荐和理由；操作阻塞在 evidence JSON 写 blocked={reason:原因,next:建议动作}，交 outcome=nothing，不带 advance。"
+                "不能用 notice 代替问卡；不猜标准，不连发卡。"
             ),
             "执行": (
                 "在本活 worktree 改代码、运行登记的检查、开新的 PR；原 issue 已关闭则先重开。正文必须含 "
@@ -271,7 +272,7 @@ class IssueDelivery:
                 "PR 正文贴命令、完整头提交号和原样 stdout/stderr；禁止写自动关 issue 的关键词，禁止自行合并、打 tag 或关 issue。"
                 "evidence 那条 JSON 给 pr、head、runs；runs 每项 argv/exit_code/stdout/stderr。"
                 "守边界：只改本 issue 要的东西。遇到车间流程或环境的问题（验收拿不到提交、检查在车间里跑不起来、关口不认等），"
-                "交 outcome=nothing，summary 写清原因，notice 给 Kun 发一条 fyi，leave={kind:等你,about:原因}，由 Kun 定；"
+                "交 outcome=nothing，summary 写清原因，evidence JSON 写 blocked={reason:原因,next:建议动作}；只有要 Kun 判断时才用带推荐的 ask；"
                 f'不改车间自己的流程代码（本 issue 要改的除外），不动主检出 {target.get("checkout", "")} 和车间正在跑的代码，不重启车间。'
             ),
             "证据": "核对 PR 与完整头提交号，交 pr/head；流程会在独立干净副本实际重跑登记检查，保存原样输出，不接受 done 自证。",
@@ -292,7 +293,7 @@ class IssueDelivery:
                 "真正 sync 完并确认上线后，evidence 那条 JSON 才给 release_submitted=true；流程只定时核对线上版本包含合并提交，不重复叫执行者。"
             ),
             "验收": (
-                "由另一家照 issue 的验收步骤逐项验，evidence 那条 JSON 给 acceptance={passed:布尔,output:原样输出,head:交付提交号}。"
+                "由另一家照 issue 的验收步骤逐项验，evidence 那条 JSON 给 acceptance={passed:布尔,output:原样输出,head:本轮固定的检查提交号}。"
                 "不过退回执行。只有 issue 明写亲眼看=是时才发 key=visual-acceptance 的 ask 验收卡，选项 yes/no，不能自填批准；答复 no 退回执行。"
             ),
             "收尾": (
@@ -312,10 +313,11 @@ class IssueDelivery:
         if stage == "验收" and state.get("merge"):
             # 验收者是只读会话：给交付提交的只读副本，并附流程在干净副本跑的检查结果，免得它对着 PR 头或跑不了命令。
             merge = state["merge"]
-            directory = self.io.review_copy(item, target, merge)
-            runs = self._merge_runs(item, target, merge)
-            extra = (f"\n只验交付提交 {merge}；工作目录是该提交的只读副本。"
-                     "\n流程已在干净副本对交付提交重跑登记检查，以下是原样结果（可信，acceptance.output 照抄相关部分）：\n"
+            head = self._acceptance_head(state)
+            directory = self.io.review_copy(item, target, head)
+            runs = self._merge_runs(item, target, head)
+            extra = (f"\n原交付提交 {merge}；只验固定检查提交 {head}；工作目录是检查提交的只读副本。"
+                     "\n流程已在干净副本对检查提交重跑登记检查，以下是原样结果（可信，acceptance.output 照抄相关部分）：\n"
                      + json.dumps(runs, ensure_ascii=False))
             return FlowBrief(common + instructions + extra, directory, True)
         if stage == "执行":
@@ -364,7 +366,7 @@ class IssueDelivery:
             return sha in state["delivered"]
         return target.get("release", "none") != "tag" or self._deployed(target, sha)
 
-    def _rerun_block(self, target, state, opened, latest, request=None):
+    def _rerun_block(self, target, state, opened, latest, request=None, item=None):
         """不能直接重走验收的原因；None 表示可以走。
 
         只认交付完成过的那个合并提交，且是本活最近的合并、和回执请求的一致；同一提交只给一次。
@@ -378,13 +380,50 @@ class IssueDelivery:
             return f"回执请求的提交 {request} 不是本活最近的合并提交 {sha}，不能重走验收"
         if not self._delivery_done(target, state, sha):
             return (f"最近的合并提交 {sha} 还没交付完成（release=tag 时线上还没核对到它），不能重走验收；"
-                    "交 outcome=nothing，summary 写清原因，notice 给 Kun 发一条 fyi，leave={kind:等你,about:原因}，由 Kun 定")
+                    "交 outcome=nothing，evidence JSON 写 blocked={reason:原因,next:完成交付后再验收}")
         if state.get("accepted") and state.get("merge") == sha:
             return f"合并提交 {sha} 已验收通过；要改就从最新 main 开新 PR"
-        if sha in state.get("acceptance_reruns", []):
+        if sha in state.get("acceptance_reruns", []) and not self._recovery_grant(item, state, sha):
             return (f"合并提交 {sha} 已重走过一次验收，不能再走；代码不用改时交 outcome=nothing，"
-                    "summary 写清原因，notice 给 Kun 发一条 fyi，leave={kind:等你,about:原因}，由 Kun 定")
+                    "evidence JSON 写 blocked={reason:重验次数用完,next:负责会话用 recover --mode verify --reason 追加一次验收}")
         return None
+
+    @staticmethod
+    def _recovery_grant(item, state, merge):
+        recovery = (item or {}).get("recovery") or {}
+        plan = recovery.get("plan") or {}
+        if (recovery.get("mode") == "verify" and plan.get("merge") == merge
+                and recovery.get("id") and recovery["id"] not in state.get("recovery_consumed", [])):
+            return recovery
+        return None
+
+    @staticmethod
+    def _acceptance_head(state):
+        selected = state.get("acceptance_target") or {}
+        return selected["head"] if selected.get("merge") == state.get("merge") else state["merge"]
+
+    def prepare_recovery(self, item, options, target):
+        """只读准备；核心将计划持久化，after 再幂等消费，避免两份状态半写成功。"""
+        if not self._reached_acceptance(item):
+            raise ValueError("尚未到过验收，不能追加重验")
+        state = self.io.read(item, target)
+        opened, latest = self._pull_requests(item, target)
+        # 只放宽次数，不放宽交付完成、当前 PR、已验收等约束。
+        block = self._rerun_block(target, {**state, "acceptance_reruns": []}, opened, latest)
+        if block:
+            raise ValueError(block)
+        merge = latest["merge_commit_sha"]
+        if self._recovery_grant(item, state, merge):
+            raise ValueError("已有尚未消费的重验机会")
+        head = merge
+        if options.get("ref") == "main":
+            head = self.io.api(f'repos/{target["repo"]}/commits/main')["sha"]
+            if not isinstance(head, str) or not re.fullmatch(r"[0-9a-f]{40}", head):
+                raise ValueError("main 未解析成完整提交号")
+            comparison = self.io.api(f'repos/{target["repo"]}/compare/{merge}...{head}')
+            if comparison.get("status") not in ("ahead", "identical"):
+                raise ValueError("当前 main 不包含原合并提交")
+        return {"merge": merge, "head": head, "ref": options.get("ref") or "delivered", "pr": latest["number"]}
 
     def _rerun_hint(self, item, target, state):
         """到过验收又回到执行：告诉执行者代码已合并，以及能不能不开 PR 直接回验收。"""
@@ -396,12 +435,12 @@ class IssueDelivery:
         sha = latest["merge_commit_sha"]
         hint = (f'\n本活到过验收，代码已合并：PR #{latest["number"]}，合并提交 {sha}。'
                 "先判断验收没过的原因在代码，还是在验收环境或车间流程。要改代码：照常从最新 main 开分支、开新的 PR。")
-        block = self._rerun_block(target, state, opened, latest)
+        block = self._rerun_block(target, state, opened, latest, item=item)
         if block:
             return hint + f"代码不用改时不能直接重走验收：{block}。"
         return hint + ('代码不用改（例如验收者拿不到合并提交、只读环境跑不了检查）：不开空 PR，回执 outcome=done、advance="验收"，'
                        f'evidence 的 JSON 加 rerun_acceptance={{"merge":"{sha}","reason":"为什么不用改"}}，'
-                       "流程直接回到验收重走；同一合并提交只给一次，再不过就问 Kun。")
+                       "流程直接回到验收重走；次数用完后记为卡住，由负责会话核对原因后用 recover --mode verify 追加一次。")
 
     def _merge_runs(self, item, target, merge):
         """交付提交上的登记检查只跑一次，按提交号缓存在插件状态里。"""
@@ -437,6 +476,12 @@ class IssueDelivery:
         checks = item.get("checks", [])
         actions = [target.get("delivery_action", "只有你在用的交付对象上线")]
         try:
+            if "blocked" in data:
+                blocked = data["blocked"]
+                if (receipt.outcome != "nothing" or receipt.advance or not isinstance(blocked, dict)
+                        or not all(isinstance(blocked.get(k), str) and blocked[k].strip() for k in ("reason", "next"))):
+                    raise ValueError("blocked 要 reason/next，且 outcome=nothing、不带 advance")
+                return Evidence(checks, blocked=blocked["reason"], next=blocked["next"], reason=blocked["reason"])
             if stage == "接单":
                 if item["object_key"].isdigit():
                     self._issue(item, target)
@@ -476,7 +521,7 @@ class IssueDelivery:
                             return Evidence(reason="依据：requirement-change 卡片 context 须包含完整依据")
                     pending = self.io.read(item, target).get("requirement_question")
                     if answer and answer.get("body") == "no":
-                        return Evidence(reason="依据：Kun 对 requirement-change 回答 no；停在说清楚，回执须留下等你，不再发卡")
+                        return Evidence(reason="依据：Kun 对 requirement-change 回答 no；停在说清楚，回执登记卡住和建议动作，不再发卡")
                     answered = bool(answer and answer.get("body") == "yes")
                     if pending:
                         answered = (answered and pending.get("valid") and pending["basis"] == basis
@@ -514,10 +559,13 @@ class IssueDelivery:
                 answers = [m for m in item.get("materials", []) if m.get("role") == "Kun 的回答" and str(m.get("key", "")).endswith(":visual-acceptance")
                            and m.get("seq", 0) > state.get("acceptance_after", -1)]
                 manual = not visual or any(a.get("key") == "visual-acceptance" for a in receipt.ask) or bool(answers and answers[-1]["body"] == "yes")
+                head = self._acceptance_head(state) if state.get("merge") else None
+                runs = self._merge_runs(item, target, head) if head else []
                 passed = (bool(state.get("merge")) and acceptance.get("passed") is True and bool(acceptance.get("output"))
-                          and acceptance.get("head") == state.get("merge") and manual
+                          and acceptance.get("head") == head and manual and bool(runs)
+                          and all(r["exit_code"] == 0 for r in runs)
                           and self._delivery_done(target, state, state["merge"]))
-                return Evidence(checks, passed, reason="验收输出、交付完成的提交和亲眼看结论", paths=paths,
+                return Evidence(checks, passed, reason=f'验收：原交付提交 {state.get("merge")}；固定检查提交 {head}；检查、验收输出和亲眼看结论', paths=paths,
                                 done_key=state["merge"] if passed else "")
             if stage == "执行" and (pr.get("merged") or pr["state"] != "open"):
                 return Evidence(checks, False, reason="执行须交新的打开的 PR；代码已合并且不用改时，按说明交 advance=\"验收\" 重走验收", paths=paths)
@@ -556,11 +604,13 @@ class IssueDelivery:
         merge = request.get("merge") if isinstance(request, dict) else None
         if not isinstance(merge, str) or not merge:
             return Evidence(checks, False, reason="重走验收须在 evidence 写 rerun_acceptance.merge=本活最近的合并提交")
-        block = self._rerun_block(target, state, opened, latest, merge)
+        block = self._rerun_block(target, state, opened, latest, merge, item)
         if block:
             return Evidence(checks, False, reason=block)
+        grant = self._recovery_grant(item, state, merge)
+        detail = (f'；拟消费恢复机会 {grant["id"]}，固定检查提交 {grant["plan"]["head"]}' if grant else "")
         return Evidence(checks, True, reason=f'代码已合并并交付（PR #{latest["number"]}，合并提交 {merge}），'
-                                             "执行确认不用改，回到验收重走一次")
+                                             "执行确认不用改，回到验收重走一次" + detail)
 
     def _intake(self, item, target, state):
         if state.get("issue"):
@@ -773,10 +823,17 @@ class IssueDelivery:
                 request = report(Receipt(**item["result"])).get("rerun_acceptance")
                 merge = request.get("merge") if isinstance(request, dict) else None
                 opened, latest = self._pull_requests(item, target)
-                block = self._rerun_block(target, state, opened, latest, merge or "")
+                block = self._rerun_block(target, state, opened, latest, merge or "", item)
                 if block:
                     raise BusinessWait(block)
                 state.setdefault("acceptance_reruns", []).append(merge)
+                grant = self._recovery_grant(item, state, merge)
+                if grant:
+                    state.setdefault("recovery_consumed", []).append(grant["id"])
+                    state["acceptance_target"] = {**grant["plan"], "recovery": grant["id"]}
+                    result = After(recovery_id=grant["id"])
+                else:
+                    state.pop("acceptance_target", None)
                 state.update(merge=merge, pr=latest["number"],
                              acceptance_after=max((m.get("seq", 0) for m in item.get("materials", [])), default=0))
                 # 验收重走连同流程在交付提交上的检查一起重跑，环境问题可能就出在那一步。
@@ -796,6 +853,7 @@ class IssueDelivery:
                     state.pop("reviewed_head", None)
                     state.pop("evidence_head", None)
                     state.pop("merge", None)
+                    state.pop("acceptance_target", None)
                     state.pop("merge_runs", None)
                     state.pop("tag", None)
                     state.pop("release_submitted", None)
@@ -846,6 +904,7 @@ class IssueDelivery:
                     state["delivered"].append(state["merge"])
             elif completed_stage == "验收":
                 state["accepted"] = True
+                state["accepted_head"] = self._acceptance_head(state)
             elif completed_stage == "收尾":
                 if not state.get("accepted"):
                     raise BusinessWait("未验收不能关 issue")

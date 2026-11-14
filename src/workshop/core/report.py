@@ -23,6 +23,14 @@ def status(log):
         control = log.get("controls", item["target"]) or {}
         state = "暂停" if control.get("paused") else jobs.get(item["id"], item["state"])
         lines.append("\t".join((item["id"], item["stage"], state, who, item["next"], item["blocked_by"] or "—")))
+    lines.append("卡住清单（负责会话处理）\n活\t阶段\t原因\t建议动作")
+    for item in items:
+        if item["state"] == "卡住":
+            lines.append("\t".join((item["id"], item["stage"], one_line(item["blocked_by"]), one_line(item["next"]))))
+    lines.append("等回答的问卡")
+    for card in log.all("cards"):
+        if card["mode"] == "ask" and not card["answered"] and not card.get("cancelled") and not card.get("rejected"):
+            lines.append(f'{card["item"]}\t{card.get("external") or card["id"]}\t{card["payload"]["decision"]}')
     uncertain = [c for c in log.all("cards") if c.get("reconcile_failed") and not c["sent"] and not c.get("cancel_done")]
     for card in uncertain:
         lines.append(f'通道待对账\t{card["item"]}\t{card["id"]}\t连续 3 次不能确定是否已发送，需检查通道')
@@ -146,6 +154,8 @@ def why(log, item_id, rules=None, plugins=None, raw=False):
         elif kind == "receipt":
             receipt = body["receipt"]
             detail = f'回执 {receipt["outcome"]} {receipt["summary"]}'
+        elif kind == "round_result" and body.get("reason"):
+            detail = f'流程核对 {body["stage"]}：{body["reason"]}'
         elif kind in ("gate_blocked", "gate_passed"):
             detail = f'{"关口拦住" if kind == "gate_blocked" else "过关口"} {body.get("gate_reason", "")}'
         elif kind == "selection_failed":
@@ -165,6 +175,10 @@ def why(log, item_id, rules=None, plugins=None, raw=False):
             detail = f'通知没发 {body.get("stage", "")} {body["key"]}「{body["subject"] or body.get("text", "")}」：{body["reason"]}'
         elif kind == "work_blocked":
             detail = f'卡住 {body["blocked_by"]}'
+        elif kind == "recovery_requested":
+            detail = f'恢复 {body["mode"]} 从 {body["from_state"]}/{body["stage"]}：{body["reason"]}；Kun 原话：{body["quote"]}；计划：{json.dumps(body["plan"], ensure_ascii=False)}'
+        elif kind == "recovery_applied":
+            detail = f'已消费恢复机会 {body["id"]}'
         else:
             continue
         lines.append(f'{fact["at"]} {one_line(detail)}')

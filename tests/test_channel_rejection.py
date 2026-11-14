@@ -13,8 +13,9 @@ from conftest import event, item, finish, current
 def waiting_card(engine, key="first"):
     engine.ingest(event())
     current = item(engine)
+    cid = engine.card(current, key, "ask", question("批准操作", approval=True), core_approval=True)
     engine.change(current, state="等你")
-    return engine.card(current, key, "ask", question("批准操作", approval=True), core_approval=True)
+    return cid
 
 
 def test_rejected_card_records_reason_waits_and_notifies_once(engine):
@@ -32,7 +33,7 @@ def test_rejected_card_records_reason_waits_and_notifies_once(engine):
     card = engine.log.get("cards", cid)
     assert card["rejected"] and not card["sending"] and not card["sent"]
     assert attempts == [cid]
-    assert item(engine)["state"] == "等你" and item(engine)["wait_for_ready"]
+    assert item(engine)["state"] == "卡住" and item(engine)["wait_for_ready"]
     assert "上游 stderr：不合规，尚未发送" in why(engine.log, "alpha:one")
     notices = [v for v in channel.messages.values() if v[0] == "notice"]
     assert len(notices) == 1
@@ -73,7 +74,7 @@ def test_cancelled_external_card_is_not_answer_and_does_not_authorize(engine):
     assert card["cancelled"] and card["cancel_done"] and not card["answered"]
     assert not item(engine)["approved"]
     assert item(engine)["pending_advance"] is None
-    assert item(engine)["state"] == "等你" and item(engine)["wait_for_ready"]
+    assert item(engine)["state"] == "卡住" and item(engine)["wait_for_ready"]
     assert "作废" in why(engine.log, "alpha:one")
     assert not [f for f in engine.log.facts() if f["kind"] == "answer"]
     assert len([c for c in engine.log.all("cards") if c["mode"] == "notice"]) == 1
@@ -87,7 +88,7 @@ def test_other_card_answer_does_not_clear_undeliverable_wait(engine):
     channel.answers = [Answer(cid, "", cancelled=True), Answer(other, "yes")]
     engine.channels()
     assert engine.log.get("cards", other)["answered"]
-    assert item(engine)["state"] == "等你" and item(engine)["wait_for_ready"]
+    assert item(engine)["state"] == "卡住" and item(engine)["wait_for_ready"]
 
 
 def refuse(*args):
@@ -117,7 +118,7 @@ def test_running_rejection_waits_at_finish_and_release_clears_flag(engine):
     assert item(engine)["state"] == "跑着" and item(engine)["round"] == token
     assert engine.waiting(item(engine))
     finish(engine, "说清楚")
-    assert item(engine)["state"] == "等你" and not engine.active()
+    assert item(engine)["state"] == "卡住" and not engine.active()
     engine.ingest(event(ext_id="ready", action="ready"))
     assert item(engine)["state"] == "空闲" and not item(engine)["wait_for_ready"]
     assert not engine.waiting(item(engine))
@@ -181,8 +182,8 @@ def test_delivery_failure_heartbeat_recovers_after_success(engine):
 
 def test_kun_answer_given_in_a_session_counts_like_a_card_answer(engine):
     engine.ingest(event())
-    engine.change(item(engine), state="等你")
     cid = engine.card(item(engine), "pick", "ask", question("选哪个"))
+    engine.change(item(engine), state="等你")
     engine.channels()
     with pytest.raises(ValueError):
         engine.answer_here(cid, "other", "可以加载", "s1")

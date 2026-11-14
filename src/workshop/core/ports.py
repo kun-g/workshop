@@ -40,6 +40,12 @@ class Flow(Protocol):
     def assess(self, item: dict, receipt: Receipt, target: dict) -> Evidence:
         """短时只读核对证据；paths/reviewers 决定需要几家审；未知动作类别是插件错误。"""
         ...
+    def prepare_recovery(self, item: dict, options: dict, target: dict) -> dict:
+        """可选。命令行追加核验前只读验证并固定计划；核心记为恢复事实，由流程消费一次。
+
+        不能写流程状态；失败抛 ValueError。计划是流程自有数据，核心不解释其业务字段。
+        """
+        ...
     def after(self, item: dict, completed_stage: str, key: str, target: dict) -> After | list[str] | None:
         """准许推进后调用，item.result 含本轮回执，key 必须持久幂等；After 可绑定别名或仍留本阶段。"""
         ...

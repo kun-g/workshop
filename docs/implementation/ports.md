@@ -127,7 +127,7 @@ rounds 同时保存规则要求的 executor/model/effort、挑选理由、开始
 
 ## 挑选逻辑 Selector
 
-`select(target, stage, round_number, history, candidates) -> Selection(config, reason) | None`。`Selection(None, reason)` 表示一个都没选并说明原因：核心记 `selection_none` 事实（why 显示「挑选逻辑没选出执行者 …」），把原因写进「没有可用执行者」卡的 context 和 leave.about；返回 None 时照旧只发通用卡。history 是这件活之前所有轮的快照，包括执行者、规则模型、实际主/子用量和结果；candidates 依唯一规则的阶段候选顺序排列，每项含 config、available=true。核心已调用 available，并筛掉写代码家族（审查/验收）、无额度候选、尚未批准的按量候选，也落实两家审和关口重试的家族/执行者限制。target.selection 仍提供 writer、reviewed、retry_executor、excluded 背景供解释；硬规矩不委托插件。
+`select(target, stage, round_number, history, candidates) -> Selection(config, reason) | None`。`Selection(None, reason)` 表示一个都没选并说明原因：核心记 `selection_none` 事实（why 显示「挑选逻辑没选出执行者 …」），把原因写进卡住的 blocked_by 和建议动作；返回 None 时使用通用的执行者不可用原因，不发问卡。history 是这件活之前所有轮的快照，包括执行者、规则模型、实际主/子用量和结果；candidates 依唯一规则的阶段候选顺序排列，每项含 config、available=true。核心已调用 available，并筛掉写代码家族（审查/验收）、无额度候选、尚未批准的按量候选，也落实两家审和关口重试的家族/执行者限制。target.selection 仍提供 writer、reviewed、retry_executor、excluded 背景供解释；硬规矩不委托插件。
 
 `workshop.plugins.selectors.ordered` 只返回获准候选的第一项和理由。
 
@@ -135,26 +135,17 @@ rounds 同时保存规则要求的 executor/model/effort、挑选理由、开始
 
 `workshop usage` 仅统计 status=ended 的轮，在跑、启动中、收尾中的轮不计入未上报或未知模型。保留今天、最近 7 天、按活，并按实际模型分组，未知模型单列。组内列轮数、审查/验收一次过、平均耗时、四种 token、API 折合花费和缓存命中率。一次过的统计单位为“活、阶段、执行者家族”的首次尝试；后续重试不把首次失败改成成功，两家审分别计各自首次尝试。缺判定的首次尝试排除并显示缺失数。平均耗时只取有起止数据的轮；缓存命中率只取输入/缓存读/缓存写三项完整的轮，公式为缓存读总和 ÷ 三项总和，分母 0 显示未知。每项只累加已知值，全部缺失显示未知；模型行同时列未上报轮数，各比率另外列缺失数。主会话和子 agent 的 token/花费按实际模型分别汇总，同一模型在同一轮出现两处，轮数与耗时只计一次。模型耗时是它参与的车间整轮耗时，不冒充子 agent 独立执行时长；审查/验收一次过只归因主执行模型，子 agent 贡献只算用量。各行另列「子 agent 未计 N 轮」。
 
-## 回执和无卡等你
+## 回执和等待
 
-outcome=done 表示本轮拿到了供流程核验的结果，核心仍判证据和关口；nothing 表示没有新结果，不自行推进、不发空卡，没有安排则登记五分钟后复看；failed 表示这一轮没跑成，按 5/10/20/40/60 分钟退避、之后封顶 60 分钟。每次连续失败第 3 次通知一次，第 10 次卡住；成功后新一段连续失败会重新通知。验收实际证据不过优先于 failed 退避，直接回执行。进程退出/超时且无回执时没有验收证据，按运行失败退避，passed 保持 null，不伪造验收结论。
+outcome=done 表示本轮拿到了供流程核验的结果，核心仍判证据和关口；nothing 表示没有新结果，不自行推进，没有安排则登记五分钟后复看；failed 表示这一轮没跑成，按 5/10/20/40/60 分钟退避、之后封顶 60 分钟。连续失败第 3 次通知一次，第 10 次卡住。验收实际证据不过回执行；操作阻塞的 Evidence.blocked 则保留阶段，转为卡住。
 
-`receipt <token> --file <JSON>`、`--json` 或 stdin；提交成功才确认收到，下一 tick 停进程并结算。相同 token 相同 JSON 幂等，不同回执拒绝。时间支持 +Ns/+Nm/+Nh/+Nd 或带时区 ISO 8601，相对时间按提交时刻算。字段 outcome、summary 必填，其余可省略：advance、evidence（字符串列表）、ask、notice、later、events、leave。
+`receipt <token> --file <JSON>`、`--json` 或 stdin；提交成功后下一拍停进程并结算。相同 token 相同 JSON 幂等，不同回执拒绝。字段 outcome、summary 必填，其余可省略：advance、evidence（字符串列表）、ask、notice、later、events、leave。
 
-```json
-{
-  "outcome": "done",
-  "summary": "需要先确定验收标准",
-  "notice": [{"key": "clarify-needed", "subject": "先说清楚验收标准", "text": "已停在说清楚，补充后放行即可，不用回卡", "fyi": true}],
-  "leave": {"kind": "等你", "about": "等待明确的放行事件"}
-}
-```
+等你只用于关联有效问卡的等待；ask 必须有选项、推荐和理由。旧版 notice+等你 回执兼容读入，但落成卡住，通知不代替问卡。普通 update 事件只追加资料，历史上登记过 wait_for_ready 的活仍可由可信 ready 继续；它不伪造问卡答案。缺工具、权限、次数用完等操作阻塞使用 Evidence.blocked 和 Evidence.next，详见 [恢复与重验](恢复与重验.md)。
 
-这是 Kun 11-13 补定的“无卡等你”：停在原阶段，标等你，只发一次不用回的通知，不起执行者。普通 update 事件仅追加资料；来源明确标记的 `action="ready"` 事件才解开同一件活，从原阶段继续。暂停/插件故障期间收到的放行也按各自恢复规则保留。若有 ask，则等全部问题回答，不把 ready 当作卡片答案。
+leave 工序须有 owner、at、about；送回须有 at、about；等你须有 about 和有效问卡。ask/later 的 key 在一轮内去重。时间支持 +Ns/+Nm/+Nh/+Nd 或带时区 ISO 8601，相对时间按提交时刻算。
 
-leave 工序须有 owner、at、about；送回须有 at、about；等你须有 about，并且有 ask 或 notice。ask/later 的 key 在一轮内去重。
-
-回执里的 notice 只在 Kun 需要知道时发卡（ws#46，11-13 Kun 嫌卡太多）：这一轮 leave 是等你时照发，卡片 key 为 `notice:<回执 key>`，在一件活内去重；这一轮让活完成（最后一个阶段判过并推进），或流程给出非空 Evidence.done_key 且这一轮判过并向前推进时，只发第一条，卡片 key 为 `notice:完成:<Evidence.done_key>`（done_key 空时为 `notice:完成`），所以同一完成标识不论执行者用什么 key、交几次，只出一张卡。其余的不发卡，记 `notice_held` 事实（阶段、key、subject、正文、原因），`workshop why` 显示为「通知没发」。进度在 `workshop status` / `why` 里看，不推送。核心自己发的告警（连续失败、卡住、插件故障、卡发不出去、对账不确定、工序到点、完成钩子的 notice）不受影响。正常推进自动登记下一工序。回执里有 ask 时不推进，问题解决后接回原阶段。
+回执里的 notice 只在 Kun 需要知道时发卡（ws#46，11-13 Kun 嫌卡太多）：这一轮 leave 是等你且存在有效问卡时照发，卡片 key 为 `notice:<回执 key>`，在一件活内去重；这一轮让活完成（最后一个阶段判过并推进），或流程给出非空 Evidence.done_key 且这一轮判过并向前推进时，只发第一条，卡片 key 为 `notice:完成:<Evidence.done_key>`（done_key 空时为 `notice:完成`），所以同一完成标识不论执行者用什么 key、交几次，只出一张卡。其余的不发卡，记 `notice_held` 事实（阶段、key、subject、正文、原因），`workshop why` 显示为「通知没发」。进度在 `workshop status` / `why` 里看，不推送。核心自己发的告警（连续失败、卡住、插件故障、卡发不出去、对账不确定、工序到点、完成钩子的 notice）不受影响。正常推进自动登记下一工序。回执里有 ask 时不推进，问题解决后接回原阶段。
 
 ## 卡片、通道与对账
 
@@ -215,3 +206,7 @@ poll 每批先调用一次 `list --all`，列表中 waiting/sending 的卡不再
 只有成功走完 tick 才原子替换 `heartbeat.json`，含 UTC at、last_ok_at（两者相同）、tick_ms（这一拍耗时，毫秒）、active，以及 delivery_failed_count（当前未恢复投递失败信号数）和 delivery_failed_since（其中最早开始时刻，无故障为 null）。成功恢复清除对应失败信号；拒收通知自身失败也在此计数。看门在投递故障持续超过 180 秒时告警/兜底。失败 tick 不改心跳；首次 tick 即失败时文件不存在，看门应按缺失/last_ok_at 陈旧判断失联，不能只看守护进程还活着。普通 tick 异常记 tick_failed，同一错误在恢复前只记一次；controls 的 @tick 仅在连续失败达到 1/3/10 次阈值时更新 failures（10 表示至少 10 次），成功恢复时归零；相同故障持续 30 次也仅三条阈值 control。阈值间计数在进程内，重启从最近持久阈值接续，不作为精确失败次数报表；同一错误事实去重可跨重启，再坏会重新记事实。下一 tick 继续；若暂时写不进数据库则输出 stderr 并继续尝试，初始化打不开数据库才无法启动。独立看门下一波实现，可查 rounds JSON 的 at、status、deadline、stopped；starting/running/finishing 是未结算轮，stopped=true 不占执行者位。
 
 `extension_metrics(log, repository, base, head, target, started)` 保留观察阶段的核心改动行数、第一件活用时固定检查，流程负责调用并登记结果。
+
+## 阻塞与恢复
+
+`Evidence.blocked` 是操作阻塞原因，非空时必须有 `Evidence.next` 建议动作；核心保留阶段并登记卡住，不把失败验收或推进混进这条路径。流程可实现只读的 `prepare_recovery(item, options, target) -> dict`，核心把计划写成恢复事实，流程在完成钩子幂等消费。命令与 issue 交付协议见 [恢复与重验](恢复与重验.md)。

@@ -64,7 +64,7 @@ def test_runnable_check_gate_and_no_skipping(engine):
     for _ in range(3):
         finish(engine, "执行")
     assert item(engine)["stage"] == "说清楚"
-    assert item(engine)["state"] == "等你"
+    assert item(engine)["state"] == "卡住"
     assert "能跑的检查" in item(engine)["gate_reason"]
     assert not engine.active()
 
@@ -183,7 +183,7 @@ def test_close_requires_leave(engine):
     reach(engine, "收尾")
     for _ in range(3):
         finish(engine)
-    assert item(engine)["state"] == "等你"
+    assert item(engine)["state"] == "卡住"
     assert "停下必须登记" in item(engine)["gate_reason"]
 
 
@@ -410,7 +410,7 @@ def test_no_available_executor_waits_without_spend(engine):
     engine.ingest(event())
     engine.tick()
     assert not engine.active()
-    assert item(engine)["state"] == "等你"
+    assert item(engine)["state"] == "卡住"
 
 
 def test_unknown_usage_is_separate(engine):

@@ -28,24 +28,25 @@ def test_progress_notices_are_held_and_visible_in_why(engine):
     assert text.count("进度通知不发") == 3
 
 
-def test_notice_that_leaves_kun_waiting_is_sent(engine):
+def test_notice_without_question_blocks_and_is_held(engine):
     reach(engine, "说清楚")
     finish(engine, notice=[{"key": "stuck", "text": "卡在验收标准，先聊清范围"}],
            leave={"kind": "等你", "about": "等 Kun 改好同一 issue 并重打 Ready for Agent"})
     engine.tick()
-    assert item(engine)["state"] == "等你"
-    assert [c["payload"]["text"] for c in notices(engine)] == ["卡在验收标准，先聊清范围"]
-    assert [c["text"] for c in sent(engine)] == ["卡在验收标准，先聊清范围"]
+    assert item(engine)["state"] == "卡住"
+    assert notices(engine) == []
+    assert sent(engine) == []
 
 
-def test_executor_failure_notice_with_waiting_is_sent(engine):
+def test_executor_failure_without_question_is_blocked(engine):
     reach(engine, "执行")
     row = current(engine)
     engine.submit(row["token"], {"outcome": "nothing", "summary": "验收拿不到提交",
                                  "notice": [{"key": "env", "subject": "ws#9 卡在环境", "text": "验收拿不到提交", "fyi": True}],
                                  "leave": {"kind": "等你", "about": "验收拿不到提交"}})
     engine.tick()
-    assert [c["payload"]["subject"] for c in notices(engine)] == ["ws#9 卡在环境"]
+    assert notices(engine) == []
+    assert item(engine)["state"] == "卡住"
 
 
 def test_completion_notice_is_sent_once_whatever_the_keys(engine):

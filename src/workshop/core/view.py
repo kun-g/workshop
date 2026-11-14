@@ -31,9 +31,9 @@ def evolve(db, fact: dict) -> None:
                 if not card["answered"] and not card.get("cancelled") and not card.get("rejected"):
                     pending = True
             item["wait_for_ready"] = False  # 跑着/卡住时也消费放行，不能留下残标记。
-            if item["state"] == "等你" and not pending:
+            if item["state"] in ("等你", "卡住") and not pending and not item.get("plugin_blocked"):
                 item.update(state="空闲", next="按放行事件继续", blocked_by="")
-            elif item.get("plugin_blocked") and (item.get("before_plugin_failure") or {}).get("state") == "等你" and not pending:
+            elif item.get("plugin_blocked") and (item.get("before_plugin_failure") or {}).get("state") in ("等你", "卡住") and not pending:
                 item["before_plugin_failure"].update(state="空闲", next="按放行事件继续", blocked_by="")
 
     def held(item_id, before):

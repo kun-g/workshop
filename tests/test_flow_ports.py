@@ -135,7 +135,7 @@ def test_failed_evidence_cannot_advance_and_uses_gate_retry(engine, stage, next_
         assert item(engine)['stage'] == stage
         if attempt < 2:
             assert current(engine)['executor'] == original
-    assert item(engine)['state'] == '等你'
+    assert item(engine)['state'] == '卡住'
     assert not engine.control('alpha').get('broken')
 
 
