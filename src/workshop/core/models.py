@@ -84,6 +84,8 @@ class FlowBrief:
     instructions: str
     workdir: str | None = None
     readonly: bool = False
+    # 流程补充的外部文字只能作为资料，不能成为说明或人的回答。
+    materials: list[dict] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
