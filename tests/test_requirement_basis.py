@@ -71,7 +71,7 @@ def test_change_requires_answer_and_latest_no_overrides_yes_and_quote(world, key
     data['materials'].insert(0, {'seq': 3, 'role': 'Kun 的回答', 'key': key, 'body': 'no'})
     evidence = world['flow'].assess(data, receipt(world, requirement_approval={
         'basis': CHANGE, 'quote': section(body, 'Kun 的原话')}), world['target'])
-    assert not evidence.passed and '等你' in evidence.reason
+    assert not evidence.passed and '卡住' in evidence.reason
 
 
 def test_quote_requires_exact_source_and_current_basis(world):
@@ -162,6 +162,7 @@ def test_requirement_answer_controls_stage_and_leave(world, answer):
            leave={'kind': '等你', 'about': '等 Kun 调整需求变更并重新放行'},
            notice=[{'key': 'requirement-change-rejected', 'text': '需调整需求变更；不对就在群里回一句「ws#7 不对」'}])
     state = item(engine, '7')
-    assert state['stage'] == '说清楚' and state['state'] == '等你'
-    assert state['leave']['kind'] == '等你'
+    assert state['stage'] == '说清楚' and state['state'] == '卡住'
+    assert state['leave']['kind'] == '工序'
+    assert not engine.answerable(state)
     assert len([c for c in engine.log.all('cards') if c['payload'].get('key') == 'requirement-change']) == 1

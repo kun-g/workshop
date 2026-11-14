@@ -164,15 +164,37 @@ def test_extra_verification_consumed_once_and_revalidated(world):
     recovery = engine.recover('alpha:7', 'verify', '环境已修复')
     assert recovery['plan']['head'] == sha
     engine.tick()
+    token = current(engine, '7')['token']
     rerun(engine, world, sha)
     state = world['io'].read(item(engine, '7'), world['target'])
     assert state['acceptance_reruns'] == [sha, sha]
     assert state['recovery_consumed'] == [recovery['id']]
+    # 完成钩子重复结算，只认回原结果，不重复消费或记账。
+    assert engine.after(item(engine, '7'), '执行', f'after:{token}', world['target']).recovery_id == recovery['id']
+    assert world['io'].read(item(engine, '7'), world['target'])['recovery_consumed'] == [recovery['id']]
+    assert len([f for f in engine.log.facts('alpha:7') if f['kind'] == 'recovery_applied']) == 1
+    assert recovery['id'] in why(engine.log, 'alpha:7')
     fail_acceptance(engine, world, sha)
     evidence = world['flow'].assess(item(engine, '7'), Receipt('done', '', advance='验收',
         evidence=[result(world, rerun_acceptance={'merge': sha})]), world['target'])
     assert not evidence.passed and '已重走过一次' in evidence.reason
     assert '环境已修复' in why(engine.log, 'alpha:7') and sha in why(engine.log, 'alpha:7')
+    engine.log.close()
+
+
+def test_recovery_refuses_state_changed_during_readonly_preparation(world, monkeypatch):
+    engine, sha = exhaust(world)
+    prepare = world['flow'].prepare_recovery
+    def changed(data, options, target):
+        plan = prepare(data, options, target)
+        engine.change(item(engine, '7'), gate_reason='另一会话正在处理')
+        return plan
+    monkeypatch.setattr(world['flow'], 'prepare_recovery', changed)
+    with pytest.raises(ValueError, match='活已变化'):
+        engine.recover('alpha:7', 'verify', '环境恢复')
+    assert item(engine, '7')['gate_reason'] == '另一会话正在处理'
+    assert not any(f['kind'] == 'recovery_requested' for f in engine.log.facts('alpha:7'))
+    assert world['io'].read(item(engine, '7'), world['target'])['acceptance_reruns'] == [sha]
     engine.log.close()
 
 
