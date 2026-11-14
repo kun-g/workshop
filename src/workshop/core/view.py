@@ -19,6 +19,14 @@ def evolve(db, fact: dict) -> None:
     def apply_action(item, action):
         if action == "rework":
             item["pending_rework"] = True
+        if action == 'ready' and item['state'] in ('卡住', '等你') and not item.get('plugin_blocked'):
+            pending = any((card := json.loads(raw))['item'] == item['id'] and card['mode'] == 'ask'
+                          and not card.get('answered') and not card.get('cancelled') and not card.get('rejected')
+                          for (raw,) in db.execute('SELECT body FROM cards').fetchall())
+            if not pending:
+                if item['stage'] not in ('接单', '说清楚') and not item.get('wait_for_ready'):
+                    item['pending_rework'] = True
+                item.update(state='空闲', next='按放行事件继续', blocked_by='')
         if action == "ready" and item.get("wait_for_ready"):
             # 放行解除拒收/作废问题的等待，但不伪造其他问题的答案。
             pending = False

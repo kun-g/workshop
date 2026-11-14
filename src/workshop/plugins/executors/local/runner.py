@@ -11,6 +11,7 @@ import sys
 if __package__ in (None, ''):
     sys.path.insert(0, str(Path(__file__).resolve().parents[4]))
 from workshop.core.models import Receipt
+from workshop.github_identity import IdentityError
 from workshop.plugins.executors.local.storage import me, read, write
 from workshop.plugins.executors.local.isolation import session_environment
 from workshop.plugins.executors.local.drivers import for_spec
@@ -134,7 +135,18 @@ def main(directory: Path):
         if any((directory / name).exists() for name in ('claimed.json', 'stopping.json', 'stopped.json')):
             return
         write(directory / 'claimed.json', {**me(), 'terminal': os.environ.get('ORCA_TERMINAL_HANDLE')})
-        env = session_environment(spec)
+        try:
+            env = session_environment(spec)
+        except IdentityError as exc:
+            # Stop before creating the agent. Receipt transport needs no GitHub token.
+            failed = {'outcome': 'nothing', 'summary': str(exc),
+                      'leave': {'kind': '等你', 'about': '修复 App 签发后重新放行'},
+                      'notice': [{'key': 'identity-signing', 'subject': 'App 签发失败',
+                                  'text': str(exc), 'fyi': True}]}
+            result = submit(directory, spec, dict(os.environ), 'identity-receipt.json', failed)
+            write(directory / 'receipt-result.json', result)
+            write(directory / 'exited.json', {'code': 1})
+            return
         driver = for_spec(spec)
         driver.prepare(spec, env, directory)
         prompt = Path(spec['prompt']).read_text()

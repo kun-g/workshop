@@ -14,6 +14,9 @@ class Registry:
     def configure(self, rules):
         """Validate every driver before any stage can start a session."""
         from .core.rules import Rules
+        from .github_identity import configuration
+        for target in rules.data['targets'].values():
+            configuration(target)
         profiles = {}
         for name, profile in rules.data.get('executor_profiles', {}).items():
             try:

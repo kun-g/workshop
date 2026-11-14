@@ -15,6 +15,7 @@ from urllib.parse import urlencode
 
 from workshop.core.models import Event, Poll
 from workshop.core.ports import Retryable
+from workshop.github_identity import scoped, run as identity_run
 
 
 class _YieldPoll(Exception):
@@ -66,7 +67,7 @@ class GitHubSource:
         if old.get("etag") and saved is not None:
             args += ["-H", f'If-None-Match: {old["etag"]}']
         try:
-            result = subprocess.run(args, text=True, capture_output=True, timeout=min(12, remaining))
+            result = identity_run(args, text=True, capture_output=True, timeout=min(12, remaining))
         except (OSError, subprocess.TimeoutExpired) as exc:
             raise Retryable("GitHub 读取暂时不可用") from exc
         raw = result.stdout.replace("\r\n", "\n")
@@ -100,6 +101,7 @@ class GitHubSource:
             rows.extend(page)
         return rows
 
+    @scoped
     def poll(self, target, cursor):
         self.legacy_root = self.state_dir or Path(target.get(
             "github_cache_dir", "~/.local/state/workshop/github-responses")).expanduser()
@@ -202,7 +204,9 @@ class GitHubSource:
             initial = own_labels.get(number)
             for change in changes:
                 if change.get("event") == "labeled" and change.get("label", {}).get("name") == label:
-                    action = "ready" if change.get("actor", {}).get("login") == "kun-g" and change["id"] != initial else "update"
+                    actor = change.get("actor") or {}
+                    human = actor.get('login') == 'kun-g' and actor.get('type') != 'Bot'
+                    action = "ready" if human and change["id"] != initial else "update"
                     emit("label", number, number, change["id"], change, action)
             comments(f"{base}/issues/{number}/comments", "issue-comment", number, number)
 

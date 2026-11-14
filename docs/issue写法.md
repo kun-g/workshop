@@ -70,3 +70,8 @@ Kun 的原话已经确认同一条需求时，不重复发卡：回执 evidence 
 ```
 
 执行/证据轮加 `pr`、完整 `head`；审查轮加 `must_fix`（必须改列表）、`suggestions`（建议列表）；验收轮加 `acceptance: {"passed": true, "head": "派活说明指定的固定检查提交号", "output": "原样输出"}`。`done` 只是交回本轮结果，插件还会回查 GitHub 和实际检查输出。
+
+## 在会话里放行
+
+Kun 在会话里明确说「放」后，负责会话用 `workshop release ws#31 --quote '放' --session <会话号>` 登记；也支持 `workshop:31`。未接单的对象可直接放行，已有活继续或返工，原话与会话号在 why 中可查。两项都必填，不得只写空白。只更新 issue 正文或用 App 打标签不等于 Kun 放行；不要代 Kun 使用个人 GitHub 身份。
+

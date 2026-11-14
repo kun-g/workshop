@@ -37,15 +37,15 @@ def status(log):
     return "\n".join(lines)
 
 
-def resolve(log, targets, text):
+def resolve(log, targets, text, *, allow_new=False):
     """`<短名>#<对象键>` 或 `<交付对象>:<对象键>` 找到活 id；对象键先查别名。"""
     short = {t["short_name"]: name for name, t in targets.items() if isinstance(t, dict) and t.get("short_name")}
     named = re.fullmatch(r"([^\s:#]+)#(\S+)", text)
     target, key = (short.get(named[1]), named[2]) if named else text.split(":", 1) if ":" in text else (None, None)
-    if target and key:
+    if target and (not allow_new or target in targets) and key and not re.search(r'\s', key):
         alias = log.get("aliases", f"{target}:{key}")
         item_id = f'{target}:{alias["object_key"] if alias else key}'
-        if log.get("items", item_id):
+        if allow_new or log.get("items", item_id):
             return item_id
     raise ValueError(f'找不到活：{text}；可用短名：{"、".join(sorted(short)) or "无"}')
 
@@ -90,6 +90,9 @@ def entry_label(source):
 def event_line(body, target, flow, raw):
     """一条事件一行：来源、动作和流程给的一句说明；流程没有说明时退回事件种类。"""
     line = f'{entry_label(body["source"])}事件 {body["source"]} {body.get("action", "update")}：{summarize(body, target, flow)}'
+    via = body.get('body')
+    if body['source'] == 'session' and body.get('ingress') == 'source' and isinstance(via, dict):
+        line += f'（channel=session，会话 {one_line(via.get("session"))}，Kun 原话：「{one_line(via.get("quote"))}」）'
     if raw:
         line += "\n    原始资料：" + json.dumps(body["body"], ensure_ascii=False, sort_keys=True)
     return line

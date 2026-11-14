@@ -16,6 +16,10 @@ class Retryable(Exception):
     """暂时故障；启动方法仅在确认没有启动副作用时使用。核心退避，连续三次升级故障。"""
 
 
+class TargetBlocked(Exception):
+    """当前交付对象缺少动作前提；不重试、不影响其他交付对象。"""
+
+
 class Source(Protocol):
     def poll(self, target: dict, cursor: str | None) -> Poll:
         """整批事件和 cursor 同事务；Retryable 退避，其他异常隔离受影响类。"""

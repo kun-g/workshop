@@ -14,7 +14,7 @@ from .gates import advance_problem, decide, overlaps, validate_stages
 from .models import STAGES as ALL_STAGES
 from .log import Log
 from .models import Brief, Event, Receipt, STAGES, Started, due, stamp, utcnow
-from .ports import Unavailable, Retryable, ChannelRejected
+from .ports import Unavailable, Retryable, ChannelRejected, TargetBlocked
 from .cards import frozen_question, question, notice, validate_question, validate_notice
 from .models import After, Answer, FlowBrief, Classification, Evidence, Release, Usage, RoundUsage
 from .jobs import Pending
@@ -533,12 +533,15 @@ class Engine:
                         if timer:
                             self.apply_timer(timer, replayed)
             # 恢复只解除插件故障；重试耗尽和连锁上限须由新决定处理。
-            for item in self.log.all("items"):
-                if item["target"] == target and item.get("plugin_blocked"):
-                    restored = dict(item["before_plugin_failure"])
-                    if restored["state"] == "等你" and not item.get("wait_for_ready") and not self.waiting(item):
-                        restored.update(state="空闲", next="按已收到的回答继续", blocked_by="")
-                    self.change(item, **restored, plugin_blocked=False, before_plugin_failure=None)
+            self.restore_target(target)
+
+    def restore_target(self, target):
+        for item in self.log.all("items"):
+            if item["target"] == target and item.get("plugin_blocked"):
+                restored = dict(item["before_plugin_failure"])
+                if restored["state"] == "等你" and not item.get("wait_for_ready") and not self.waiting(item):
+                    restored.update(state="空闲", next="按已收到的回答继续", blocked_by="")
+                self.change(item, **restored, plugin_blocked=False, before_plugin_failure=None)
 
     def submit(self, token: str, data: dict) -> bool:
         try:
@@ -662,7 +665,7 @@ class Engine:
     def broken(self, target, port, name, exc):
         # 流程插件共享的所有类一起隔离；其他端口按本次受影响的交付对象隔离。
         targets = [target]
-        if port == "flow":
+        if port == "flow" and not isinstance(exc, TargetBlocked):
             targets = [t for t, rule in self.rules.data["targets"].items() if rule["plugin"] == name]
         with self.log.transaction():
             for affected in targets:
@@ -670,7 +673,8 @@ class Engine:
                     self.fact("plugin_failed", {"target": affected, "port": port, "name": name,
                                                  "error": repr(exc)})
                     incident = self.log.db.execute("SELECT max(seq) FROM facts").fetchone()[0]
-                    self.fact("control", {"id": affected, "broken": True})
+                    self.fact("control", {"id": affected, "broken": True,
+                                          "action_blocked": isinstance(exc, TargetBlocked)})
                     pseudo = {"id": f"@{affected}"}
                     self.card(pseudo, f"plugin:{port}:{name}:{incident}", "notice", notice(f"{affected} 插件故障：{exc}"))
                 for item in self.log.all("items"):
@@ -1236,6 +1240,21 @@ class Engine:
             self.record_answer(card, Answer(card["id"], value, approved),
                                provenance={"channel": "session", "session": session, "quote": quote})
         return card
+
+    def release_here(self, ref, quote, session):
+        """会话确认的放行；外部正文不能通过自报来源调用此入口。"""
+        from .report import resolve
+        if not quote.strip() or not session.strip():
+            raise ValueError("要写 Kun 的原话和会话号")
+        with self.log.transaction():
+            item_id = resolve(self.log, self.rules.data['targets'], ref, allow_new=True)
+            target, key = item_id.split(':', 1)
+            if self.control(target).get('action_blocked'):
+                self.fact('control', {'id': target, 'broken': False, 'action_blocked': False})
+                self.restore_target(target)
+            self.ingest(Event('session', str(uuid.uuid4()), target, key, f'会话放行 {item_id}',
+                              {'channel': 'session', 'session': session, 'quote': quote}, action='ready'))
+        return item_id
 
     def abort(self, token, reason="人手动结束这一轮"):
         with self.log.transaction():
