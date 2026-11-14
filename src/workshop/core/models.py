@@ -1,5 +1,6 @@
 """端口共享的值类型。所有时间为带时区的 ISO 8601，金额为 USD。"""
 from dataclasses import asdict, dataclass, field, fields
+from uuid import uuid4
 from datetime import datetime, timedelta, timezone
 import json
 import re
@@ -218,6 +219,15 @@ class Answer:
     value: str
     approved: bool = False
     cancelled: bool = False  # 上游作废或已清理，不是 Kun 的回答。
+
+
+@dataclass(frozen=True)
+class ChannelPoll:
+    """一次已完成读取；逐卡错误与成功共存，token 防止缓存结果重复计数。"""
+    answers: list[Answer] = field(default_factory=list)
+    checked: list[str] = field(default_factory=list)
+    errors: dict[str, str] = field(default_factory=dict)
+    token: str = field(default_factory=lambda: uuid4().hex)
 
 
 class ReceiptError(ValueError):

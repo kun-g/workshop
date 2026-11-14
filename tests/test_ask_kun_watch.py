@@ -79,6 +79,20 @@ def card(external="Q1", payload=None, **fields):
     return {"id": "core-card", "external": external, "payload": payload or question("批准发布", approval=True), **fields}
 
 
+@pytest.mark.parametrize("choice", ["yes", "no"])
+def test_answered_card_survives_wait_403(fake, tmp_path, choice):
+    c = channel(fake, tmp_path)
+    q = question("批准发布", approval=True)
+    external = c.ask("core-card", q)
+    path = fake.parent / "questions.json"
+    rows = json.loads(path.read_text())
+    rows[0].update(status="answered", choice=choice, answer_claimed=True)
+    path.write_text(json.dumps(rows))
+    configure(fake, errors={"wait": [4, "等待租约将自行到期：client:test: HTTP 403；未确认成功"]})
+    answer, = c.poll([card(external, q)]).answers
+    assert (answer.card_id, answer.value, answer.approved) == ("core-card", choice, choice == "yes")
+
+
 @pytest.mark.parametrize("fake", ["process", "in_process"], indirect=True)
 def test_ask_maps_key_and_persists_external(fake, tmp_path):
     q = question("批准发布", approval=True)
@@ -135,7 +149,7 @@ def test_same_subject_distinguishes_keys(fake, tmp_path):
 def test_poll_approval_only_stable_yes(fake, tmp_path, kind, value, approved):
     configure(fake, answers={"Q1": [0, value]})
     q = question("批准发布", approval=kind == "approval")
-    answer, = channel(fake, tmp_path).poll([card(payload=q)])
+    answer, = channel(fake, tmp_path).poll([card(payload=q)]).answers
     assert (answer.card_id, answer.value, answer.approved) == ("core-card", value, approved)
     assert calls(fake, "wait")[0]["args"] == ["wait", "Q1", "--timeout", "0"]
 
@@ -143,14 +157,13 @@ def test_poll_approval_only_stable_yes(fake, tmp_path, kind, value, approved):
 def test_pending_cancellation_and_failure_are_not_answers(fake, tmp_path):
     c = channel(fake, tmp_path)
     c.ask("pending", question("批准方案", approval=True))
-    assert c.poll([card()]) == []
+    assert c.poll([card()]).answers == []
     configure(fake, answers={"Q1": [6, "已作废"]})
-    cancelled, = c.poll([card()])
+    cancelled, = c.poll([card()]).answers
     assert cancelled.cancelled and not cancelled.approved
     configure(fake, answers={"Q1": [1, "yes"]})
-    with pytest.raises(RuntimeError):
-        c.poll([card()])
-    assert c.poll([card(cancelled=True), card(answered=True)]) == []
+    assert c.poll([card()]).errors
+    assert c.poll([card(cancelled=True), card(answered=True)]).answers == []
 
 
 @pytest.mark.parametrize("fake", ["process", "in_process"], indirect=True)
@@ -348,7 +361,7 @@ def test_definite_rejection_is_not_reconciliation(fake, tmp_path, mode):
 
 def test_poll_one_failure_does_not_drop_other_answers(fake, tmp_path, capsys):
     configure(fake, answers={"Q1": [1, ""], "Q2": [0, "yes"], "Q3": [3, ""]})
-    result = channel(fake, tmp_path).poll([card(), card("Q2", id="second"), card("Q3", id="third")])
+    result = channel(fake, tmp_path).poll([card(), card("Q2", id="second"), card("Q3", id="third")]).answers
     assert len(result) == 1 and result[0].card_id == "second" and result[0].approved
     assert "Q1" in capsys.readouterr().err
 
@@ -364,7 +377,8 @@ def test_thirty_day_cleanup_returns_cancelled(fake, tmp_path):
     local = c._read("old")
     local["sent_at"] = rows[0]["sent_at"]
     c._save("old", local)
-    answer, = c.poll([card(id="old")])
+    configure(fake, legacy_list=True)
+    answer, = c.poll([card(id="old")]).answers
     assert answer.cancelled and not answer.approved and answer.value == ""
     assert len(calls(fake, "ask")) == 1
 
@@ -517,15 +531,16 @@ def test_rejection_needs_both_send_exit_two_and_upstream_marker(fake, tmp_path, 
 def test_query_failure_never_rejects_sent_card(fake, tmp_path, operation):
     c = channel(fake, tmp_path)
     c.ask("sent", question("选择方案"))
-    configure(fake, errors={operation: [2, "usage: ask-kun；尚未发送"]}, answers={"Q1": [0, "yes"]})
+    configure(fake, errors={operation: [2, "usage: ask-kun；尚未发送"]}, answers={"Q1": [0, "yes"]}, legacy_list=True)
     # cancel 需要 waiting 状态，避免已答的合法幂等短路。
     if operation == "cancel":
         configure(fake, errors={operation: [2, "usage: ask-kun；尚未发送"]})
-    with pytest.raises(RuntimeError):
-        if operation == "cancel":
+    if operation == "cancel":
+        with pytest.raises(RuntimeError):
             c.cancel("sent", "Q1")
-        else:
-            c.poll([card()])
+    else:
+        result = c.poll([card()])
+        assert not result.answers and "usage: ask-kun" in result.errors["core-card"]
     assert c._read("sent")["external"] == "Q1" and not c._read("sent").get("rejected")
 
 
@@ -548,18 +563,17 @@ def test_http_403_requires_complete_absent_list(fake, tmp_path):
     record = c._read("core-card")
     record["sent_at"] = "2000-01-01T00:00:00+00:00"
     c._save("core-card", record)
-    configure(fake, answers={"Q1": [4, ""]})
-    with pytest.raises(RuntimeError):
-        c.poll([card()])  # 编号还在，不得把权限/读取故障当成作废。
-    configure(fake, answers={"Q1": [4, ""]}, remove_on_wait=True)
-    answer, = c.poll([card()])
+    configure(fake, answers={"Q1": [4, ""]}, legacy_list=True)
+    assert c.poll([card()]).errors  # 编号还在，不得把权限/读取故障当成作废。
+    configure(fake, answers={"Q1": [4, ""]}, remove_on_wait=True, legacy_list=True)
+    answer, = c.poll([card()]).answers
     assert answer.cancelled
     assert len(calls(fake, "wait")) == 2
 
 
 def test_poll_lists_once_and_only_waits_terminal_cards(fake, tmp_path):
     configure(fake, answers={"Q1": [3, ""], "Q2": [3, ""], "Q3": [0, "yes"], "Q4": [6, ""]})
-    result = channel(fake, tmp_path).poll([card(f"Q{i}", id=str(i)) for i in range(1, 5)])
+    result = channel(fake, tmp_path).poll([card(f"Q{i}", id=str(i)) for i in range(1, 5)]).answers
     assert len(calls(fake, "list")) == 1
     assert [row["args"][1] for row in calls(fake, "wait")] == ["Q3", "Q4"]
     assert [a.card_id for a in result] == ["3", "4"]
@@ -568,8 +582,8 @@ def test_poll_lists_once_and_only_waits_terminal_cards(fake, tmp_path):
 
 def test_incomplete_list_does_not_cancel_any_card(fake, tmp_path):
     configure(fake, empty_list=True, has_more=True)
-    with pytest.raises(RuntimeError, match="列表不完整"):
-        channel(fake, tmp_path).poll([card()])
+    result = channel(fake, tmp_path).poll([card()])
+    assert not result.answers and "列表不完整" in result.errors["core-card"]
     assert not calls(fake, "wait")
 
 
@@ -637,13 +651,13 @@ def test_missing_card_only_expires_after_known_twenty_nine_days(fake, tmp_path, 
     if lookup == "list":
         configure(fake, empty_list=True)
     else:
-        configure(fake, answers={"Q1": [4, ""]}, remove_on_wait=True)
+        configure(fake, answers={"Q1": [4, ""]}, remove_on_wait=True, legacy_list=True)
     if age == 30:
-        answer, = c.poll([card(id="tracked")])
+        answer, = c.poll([card(id="tracked")]).answers
         assert answer.cancelled and not answer.approved
     else:
-        with pytest.raises(RuntimeError, match="不能确认清理"):
-            c.poll([card(id="tracked")])
+        result = c.poll([card(id="tracked")])
+        assert not result.answers and "不能确认清理" in result.errors["tracked"]
         assert "Q1" in capsys.readouterr().err
         assert not c._read("tracked").get("cancelled")
     assert len(calls(fake, "ask")) == 1
@@ -653,7 +667,7 @@ def test_new_hidden_card_does_not_drop_visible_answer(fake, tmp_path, capsys):
     c = channel(fake, tmp_path)
     c.ask("hidden", question("审批方案", approval=True))
     configure(fake, missing_ids=["Q1"], answers={"Q2": [0, "yes"]})
-    answers = c.poll([card(id="hidden"), card("Q2", id="visible")])
+    answers = c.poll([card(id="hidden"), card("Q2", id="visible")]).answers
     assert len(answers) == 1 and answers[0].card_id == "visible" and answers[0].approved
     assert "Q1" in capsys.readouterr().err
 
@@ -751,3 +765,127 @@ def test_tick_alert_retries_same_incident_after_delivery_failure(fake, tmp_path)
     state = watch.run(NOW + timedelta(minutes=3))
     assert state["active"]["tick"]["reported"]
     assert calls(fake, "notify")[0] == calls(fake, "notify")[1]
+
+
+@pytest.mark.parametrize('change', [
+    {'status': 'waiting', 'choice': 'yes'}, {'status': 'waiting', 'choice': ''},
+    {'choice': ''}, {'choice': 'unknown'}, {'choice': None},
+    {'from': '车间:someone-else'}, {'subject': '另一张卡'}, {'answer_format': 'label'},
+    {'status': 'broken'}, {'status': 'defaulted', 'choice': 'yes'},
+])
+def test_list_answer_boundaries(fake, tmp_path, change):
+    c = channel(fake, tmp_path)
+    q = question('批准方案', approval=True)
+    c.ask('core-card', q)
+    path = fake.parent / 'questions.json'
+    rows = json.loads(path.read_text())
+    rows[0].update(status='answered', choice='yes')
+    rows[0].update(change)
+    path.write_text(json.dumps(rows))
+    configure(fake, errors={'wait': [4, 'HTTP 403']})
+    result = c.poll([card(payload=q)])
+    assert not result.answers
+    if change.get('status') == 'waiting':
+        assert not result.errors
+    else:
+        assert result.errors
+    assert not calls(fake, 'wait')
+
+
+@pytest.mark.parametrize('damage', ['missing', 'malformed', 'wrong-card', 'changed-payload'])
+def test_list_answers_require_original_send_record(fake, tmp_path, damage):
+    c = channel(fake, tmp_path)
+    q = question('批准方案', approval=True)
+    c.ask('core-card', q)
+    path = fake.parent / 'questions.json'
+    rows = json.loads(path.read_text())
+    rows[0].update(status='answered', choice='yes')
+    path.write_text(json.dumps(rows))
+    local = c._read('core-card')
+    if damage == 'missing':
+        c._path('core-card').unlink()
+    elif damage == 'malformed':
+        c._path('core-card').write_text('{')
+    else:
+        if damage == 'wrong-card':
+            local['external'] = 'Q2'
+        else:
+            local['payload']['context'] = 'changed'
+        c._save('core-card', local)
+    result = c.poll([card(payload=q)])
+    assert not result.answers and result.errors
+
+
+def test_real_channel_mixed_results_and_one_time_core_consumption(fake, engine):
+    from conftest import event, item
+    from workshop.core.report import status
+    engine.ingest(event())
+    c = AskKun(fake, engine.log.path.parent)
+    engine.plugins.register('channel', 'channel', c)
+    first = engine.card(item(engine), 'bad', 'ask', question('批准方案甲', approval=True))
+    second = engine.card(item(engine), 'good', 'ask', question('批准方案乙', approval=True))
+    engine.change(item(engine), state='等你')
+    engine.channels()
+    path = fake.parent / 'questions.json'
+    rows = json.loads(path.read_text())
+    rows[0].update(status='answered', choice='unknown')
+    rows[1].update(status='answered', choice='no', answer_claimed=True)
+    path.write_text(json.dumps(rows))
+    configure(fake, errors={'wait': [4, 'HTTP 403']})
+    for _ in range(10):
+        engine.channels()
+    assert 'Q1 连续 10 次读取失败' in status(engine.log)
+    assert engine.log.get('cards', second)['answer'] == 'no'
+    assert not engine.log.get('cards', second)['approved']
+    assert not engine.log.get('cards', first)['answered']
+    rows[0]['choice'] = 'yes'
+    path.write_text(json.dumps(rows))
+    engine.channels()
+    engine.channels()
+    assert engine.log.get('cards', first)['approved']
+    assert item(engine)['state'] == '空闲'
+    assert '连续 10 次读取失败' not in status(engine.log)
+    assert len([f for f in engine.log.facts() if f['kind'] == 'answer']) == 2
+    assert not calls(fake, 'wait')
+
+
+def test_answer_read_does_not_invalidate_its_own_background_result(fake, engine, monkeypatch):
+    from conftest import event, item
+    from workshop.core.jobs import Jobs, encode, write
+    from workshop.core.wake import Mailbox, Wake
+    engine.ingest(event())
+    c = AskKun(fake, engine.log.path.parent)
+    engine.plugins.register('channel', 'channel', c)
+    cid = engine.card(item(engine), 'answer', 'ask', question('批准方案', approval=True))
+    engine.change(item(engine), state='等你')
+    engine.channels()
+    watched = fake.parent / 'questions.json'
+    rows = json.loads(watched.read_text())
+    rows[0].update(status='answered', choice='yes', answer_claimed=True)
+    watched.write_text(json.dumps(rows))
+    configure(fake, answers={'Q1': [0, 'yes']})
+    # 使用真实文件变化检测，不需要 kqueue 或墙钟等待。
+    box = Mailbox.__new__(Mailbox)
+    box.paths = {watched: Mailbox.signature(watched)}
+    jobs = Jobs(engine.log.path.parent / 'jobs', [], clock=lambda: 1.0)
+    def start(path, spec):
+        path.mkdir(parents=True, exist_ok=True)
+        write(path / 'spec.json', spec)
+    monkeypatch.setattr(jobs, 'start', start)
+    engine.jobs = jobs
+    try:
+        engine.channels()  # 登记后台读取；主循环不等待。
+        result = c.poll([engine.log.get('cards', cid)])
+        path = jobs.path('channel', 'channel', 'poll', ['poll'])
+        # 旧 wait 会重写 watched；结果即使成功也会被 awaken 标记丢弃。
+        engine.awaken(Wake(paths=box.changed_paths()), {watched: {('channel', 'channel', ('poll',))}})
+        write(path / 'result.json', {'ok': encode(result), 'finished': 1.0})
+        engine.channels()
+        assert engine.log.get('cards', cid)['answered']
+        assert item(engine)['state'] == '空闲'
+        for _ in range(3):
+            engine.channels()  # 同一缓存结果也只消费一次。
+        assert len([f for f in engine.log.facts() if f['kind'] == 'answer']) == 1
+        assert not calls(fake, 'wait')
+    finally:
+        jobs.launcher.shutdown(wait=True)

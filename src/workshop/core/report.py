@@ -10,9 +10,14 @@ from .flows import configured
 
 def status(log):
     items = log.all("items")
+    unreadable = [c for c in log.all("cards") if c["mode"] == "ask" and not c["answered"]
+                  and not c.get("cancelled") and not c.get("rejected") and c.get("read_failures", 0) >= 10]
+    blocked_reads = {c["item"] for c in unreadable}
+    # 读取故障是卡片的状态，投影到总览；不覆盖活已有的等待/故障，恢复后自然消失。
+    read_states = {i["id"] for i in items if i["id"] in blocked_reads and i["state"] == "等你"}
     running = sum(i["state"] == "跑着" for i in items)
-    waiting = sum(i["state"] == "等你" for i in items)
-    blocked = sum(i["state"] == "卡住" for i in items)
+    waiting = sum(i["state"] == "等你" for i in items) - len(read_states)
+    blocked = sum(i["state"] == "卡住" for i in items) + len(read_states)
     queued = sum(i["state"] == "排队" for i in items)
     lines = [f"活 {len(items)} 件 · 跑着 {running} · 等你 {waiting} · 卡住 {blocked}" + (f" · 排队 {queued}" if queued else ""),
              "活\t阶段\t状态\t谁在推\t下一步\t卡在谁手里"]
@@ -22,12 +27,20 @@ def status(log):
         row = log.get("rounds", item.get("round", ""))
         who = row["executor"] if row else "车间"
         control = log.get("controls", item["target"]) or {}
-        state = "暂停" if control.get("paused") else jobs.get(item["id"], item["state"])
-        lines.append("\t".join((item["id"], item["stage"], state, who, item["next"], item["blocked_by"] or "—")))
+        state = "暂停" if control.get("paused") else jobs.get(item["id"], "卡住" if item["id"] in read_states else item["state"])
+        next_step, blocker = item["next"], item["blocked_by"] or "—"
+        if item["id"] in read_states:
+            next_step, blocker = "负责会话核对卡片读取错误（见卡住清单）", "通道"
+        lines.append("\t".join((item["id"], item["stage"], state, who, next_step, blocker)))
     lines.append("卡住清单（负责会话处理）\n活\t阶段\t原因\t建议动作")
     for item in items:
         if item["state"] == "卡住":
             lines.append("\t".join((item["id"], item["stage"], one_line(item["blocked_by"]), one_line(item["next"]))))
+    by_id = {i["id"]: i for i in items}
+    for card in unreadable:
+        lines.append("\t".join((card["item"], by_id.get(card["item"], {}).get("stage", ""),
+                     one_line(f"{card.get('external') or card['id']} 连续 {card['read_failures']} 次读取失败：{card.get('read_error', '')}"),
+                     "负责会话核对通道读取权限和状态；恢复后自动收取原卡回答")))
     lines.append("等回答的问卡")
     for card in log.all("cards"):
         if card["mode"] == "ask" and not card["answered"] and not card.get("cancelled") and not card.get("rejected"):
@@ -176,6 +189,9 @@ def why(log, item_id, rules=None, plugins=None, raw=False):
             detail = f'挑选逻辑没选出执行者 {body["reason"]}'
         elif kind in ("card_rejected", "card_cancelled_external"):
             detail = f'卡片{ "拒收" if kind == "card_rejected" else "作废"} {body["id"]}：{body["reason"]}'
+        elif kind == "card_changed" and body.get("read_failures") == 10:
+            card = log.get("cards", body["id"]) or {}
+            detail = f'卡片 {card.get("external") or body["id"]} 连续 10 次读取失败：{body.get("read_error", "")}'
         elif kind == "invalid_answer":
             detail = f'非选项回答 卡片 {body["card"]}「{body["title"]}」收到「{body["value"]}」，仍等原卡'
         elif kind == "answer":

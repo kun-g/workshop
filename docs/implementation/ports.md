@@ -198,7 +198,7 @@ subject ≤30、decision ≤42、reason ≤60；choices 必须 2–3 个，key/l
 
 ask-kun ask 没有 request-id，适配器不能声称直接幂等。可先持久保存 key 到唯一 from 标记（如 `车间:<key哈希>`）和 subject 的映射，调用 ask 时使用该 from；重启后用 `ask-kun list` 按 from+subject 对账。列表不完整或请求可能仍在处理中时返回 null，不能返回 absent。相同 subject 的不同轮必须用不同稳定 from 区分。notify 若支持上游幂等标识也照样要实现对账。
 
-`poll(cards) -> list[Answer(card_id, value, approved=False)]`，card_id 是核心卡号，value 必须是用户所选的 key。核心动作/计费审批只认 value="yes"，不信 approved；其他插件问题的明确批准才给 approved=True。kind=approval 的卡收到不在 choices.key 中的 value，记一次投递故障并继续等原卡，不当作批准或拒绝；有效回答到达后清故障。`cancel(key, external)` 按核心 key 幂等作废，外部编号不明时先对账。返工时核心先把旧问题标 cancelled，再通知通道作废；晚到答案忽略，取消失败会保留待处理记录。每张卡每次故障只记一条 delivery_failed，恢复后再坏会再记；通道整体查询失败也按事件段去重。通道故障不阻塞其他活。
+`poll(cards) -> ChannelPoll(answers, checked, errors, token)`，其中 answers 是 `list[Answer(card_id, value, approved=False)]`，checked 是本次已读的核心卡号，errors 按卡号记录错误；兼容旧通道直接返回回答列表。token 标识一次完成的读取，后台缓存重复返回时不重复计数。card_id 是核心卡号，value 必须是用户所选的 key。核心动作/计费审批只认 value="yes"，不信 approved；其他插件问题的明确批准才给 approved=True。kind=approval 的卡收到不在 choices.key 中的 value，记一次投递故障并继续等原卡，不当作批准或拒绝；有效回答到达后清故障。`cancel(key, external)` 按核心 key 幂等作废，外部编号不明时先对账。返工时核心先把旧问题标 cancelled，再通知通道作废；晚到答案忽略，取消失败会保留待处理记录。每张卡每次故障只记一条 delivery_failed，恢复后再坏会再记；通道整体查询失败也按事件段去重。通道故障不阻塞其他活。
 
 ### 通道拒收与上游作废（W2-C 修改轮 3）
 
@@ -210,7 +210,11 @@ ask-kun ask 没有 request-id，适配器不能声称直接幂等。可先持久
 
 `Answer.cancelled` 默认 false，明确作废或确认已清理的卡返回 `Answer(card_id, "", cancelled=True)`。核心记 `card_cancelled_external`、标 cancelled/cancel_done，按上述问题终态规则保留等待；如果该卡承载授权，清除旧续接记录，修复放行后重走原阶段，不把没有回答说成 Kun 拒绝。
 
-poll 每批先调用一次 `list --all`，列表中 waiting/sending 的卡不再调用 wait；已答/作废卡才 wait。ask 成功时记录 sent_at，丢回包后找回原卡时保留上游发送时间。list 可能按调用者会话过滤，缺号只有本地发送时间早于 29 天才按已清理作废；未满 29 天、恰好 29 天、发送时间缺失或无效都记逐卡查询失败，不作废。逐卡错误记 stderr，其余答案照常返回，全部失败才抛查询异常。接线台 wait 返回 4 且 stderr 含 HTTP 403，须重查完整列表，确认编号缺失且已知发送时间早于 29 天才作废；同样处理旧版缺号提示，不能把权限或未确认发送当作废。列表格式不完整或分页/截断时保留所有卡。
+poll 每批先调用一次 `list --all`，列表中 waiting/sending/queued 的卡不再调用 wait。现代列表的已答卡直接取 choice，核对本通道发送记录的核心卡号、外部编号、原始 payload、from、subject 和 answer_format=key，并要求 choice 是原卡的合法选项；缺失、无效或不匹配只记读取错误。取消不当批准，defaulted 不当人工回答。旧列表不含 answer_format/choice 时才沿用 wait 的鉴权读法。读现代列表不认领答案、不写上游状态，避免 wait 写回被监听文件后使自身作业结果失效。
+
+ask 成功时记录 sent_at，丢回包后找回原卡时保留上游发送时间。list 可能按调用者会话过滤，缺号只有本地发送时间早于 29 天才按已清理作废；未满 29 天、恰好 29 天、发送时间缺失或无效都记逐卡查询失败，不作废。旧读法 wait 返回 4 且 stderr 含 HTTP 403 时，仍须重查完整列表及发送时间，不能把权限故障当作废。列表格式不完整或分页/截断时保留所有卡并逐卡记错。
+
+读取错误与其他卡的答案一起经作业结果传给核心。每卡连续 10 次已完成读取失败，在 status 的卡住清单显示活、卡号、最近错误和建议动作，why 记下达到阈值的那次；正常 waiting 读取会清零，作业尚未完成和缓存重放都不计失败。读取故障保存在卡上，status 把等回答的活显示为卡住，不覆盖活原有状态或无关阻塞；恢复后自动收取原卡、继续原活。沿用投递故障事实与看门通知，不另发问卡或反复通知。
 
 通知的 external 保存实际传给 ask-kun `--request-id` 的稳定键（含状态目录及数据库文件身份哈希），不再只存核心 key；通知回复归件在后续工作接入，本轮不处理。
 

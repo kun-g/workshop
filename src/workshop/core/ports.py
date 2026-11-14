@@ -1,7 +1,7 @@
 """同步短时端口；不等待人或一轮结束。守护进程把每次调用放进独立的作业进程（jobs.py），一拍不等它。字段和恢复时序见接入文档。"""
 from typing import Callable, Literal, Protocol
 from .cards import Question, Notice
-from .models import After, Answer, Brief, FlowBrief, Classification, Evidence, Event, Poll, Receipt, Release, Started, RoundUsage, Selection
+from .models import After, Answer, Brief, ChannelPoll, FlowBrief, Classification, Evidence, Event, Poll, Receipt, Release, Started, RoundUsage, Selection
 
 
 class ChannelRejected(Exception):
@@ -112,8 +112,8 @@ class Channel(Protocol):
     def reconcile(self, key: str, card: dict) -> str | Literal["absent"] | None:
         """返回已发外部编号；absent 表示确定未发，可重试；None 表示不确定，禁止重发。"""
         ...
-    def poll(self, cards: list[dict]) -> list[Answer]:
-        """只查未作废卡；value 返回所选 key。核心自己的审批只认 yes，approved 仅供插件问题使用。"""
+    def poll(self, cards: list[dict]) -> ChannelPoll | list[Answer]:
+        """逐卡读取结果带唯一 token；兼容旧通道的回答列表。value 返回所选 key；核心审批只认 yes。"""
         ...
     def cancel(self, key: str, external: str | None) -> None:
         """按核心 key 幂等作废旧问题；external 不明时先对账，失败后重试。"""
