@@ -109,7 +109,7 @@ targets:
       signer: [~/workspace/runtime/repos/workshop/.venv/bin/python, -m, workshop.github_token,
                --config, ~/workspace/runtime/tools/agent_github_identity/config.json,
                --app, lambdatheory-agent, --key-service, lambdatheory-agent, --key-account, private-key]
-    requirement_docs: ['docs/requirements/核心.md', 'docs/requirements/issue交付.md', 'docs/requirements/定时发版.md']
+    requirement_docs: ['docs/requirements/']
     checkout: ~/workspace/runtime/repos/workshop
     skill: issue-delivery
     permissions: repository
