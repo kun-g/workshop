@@ -52,7 +52,10 @@ class Flow(Protocol):
         """可信说明；item.history 含每轮结论，gate_reason 含需要修正的关口理由。"""
         ...
     def assess(self, item: dict, receipt: Receipt, target: dict) -> Evidence:
-        """短时只读核对证据；paths/reviewers 决定需要几家审；未知动作类别是插件错误。"""
+        """短时只读核对证据；paths/reviewers 决定需要几家审；未知动作类别是插件错误。
+
+        无下一步的 nothing 可返回 recheck_after；核心定时调用 after，完成后只重跑本阶段。
+        """
         ...
     def prepare_recovery(self, item: dict, options: dict, target: dict) -> dict:
         """可选。命令行追加核验前只读验证并固定计划；核心记为恢复事实，由流程消费一次。
@@ -61,7 +64,10 @@ class Flow(Protocol):
         """
         ...
     def after(self, item: dict, completed_stage: str, key: str, target: dict) -> After | list[str] | None:
-        """准许推进后调用，item.result 含本轮回执，key 必须持久幂等；After 可绑定别名或仍留本阶段。"""
+        """准许推进或核实等待到期后调用，item.result 含本轮回执，key 必须持久幂等。
+
+        After 可绑定别名、仍留本阶段或返回 blocked 停下；回查完成不等于准许推进。
+        """
         ...
     def hold_workdir(self, item: dict, target: dict) -> str:
         """可选。活已收尾完成，执行者开过的工作目录还要不要留：返回留着的原因，空串表示可以收回。

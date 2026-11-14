@@ -1459,3 +1459,186 @@ def test_incremental_feed_pagination_and_custom_overlap(world):
     urls = source_urls(world, before)
     assert 'since=2026-11-12T23%3A59%3A00Z' in urls[0]
     assert feed + '&page=2' in urls
+
+
+def tag_run(world, status='queued', conclusion=None, **extra):
+    return {'id': 401, 'workflow_id': 10, 'run_attempt': 1, 'event': 'push',
+            'head_branch': 'v1.2.3', 'head_sha': world['sha'], 'status': status,
+            'conclusion': conclusion, **extra}
+
+
+def delivery_wait_engine(world):
+    cfg = configuration()
+    cfg.pop('taskhome')
+    cfg['targets']['alpha'] = {**world['target'], 'plugin': 'issue_delivery', 'sources': [], 'release': 'tag'}
+    engine = build(world['root'] / 'tag-wait', cfg)
+    engine.plugins.register('flow', 'issue_delivery', world['flow'])
+    engine.ingest(Event('github', 'start', 'alpha', '7', 'test', {}, action='ready'))
+    engine.tick()
+    engine.tick()
+    for stage in ['执行', '证据', '审查', '交付']:
+        finish(engine, stage, key='7', evidence=[result(world, checks=[['scripts/check.sh']], must_fix=[], suggestions=[])])
+    finish(engine, '验收', key='7', evidence=[result(world)])
+    assert current(engine, '7')['stage'] == '交付'
+    return engine, cfg
+
+
+@pytest.mark.parametrize('pending', ['queued', 'in_progress'])
+@pytest.mark.parametrize('with_blocked', [False, True])
+def test_missing_later_waits_for_tag_ci_then_resumes_same_stage(world, pending, with_blocked):
+    from workshop.core.report import why
+    engine, cfg = delivery_wait_engine(world)
+    edit(world, workflow_runs=[tag_run(world, pending)])
+    evidence = [result(world, blocked={'reason': 'CI 还在排队', 'next': '等 CI'})] if with_blocked else []
+    row = finish(engine, key='7', outcome='nothing', evidence=evidence)
+    waiting = item(engine, '7')
+    assert waiting['stage'] == '交付' and waiting['state'] == '定时'
+    assert waiting['blocked_by'] == '' and not engine.active()
+    assert datetime.fromisoformat(waiting['after_wait']['at']) == engine.clock.now + timedelta(minutes=5)
+    assert waiting['after_wait']['to'] == '交付' and not waiting['after_wait']['complete']
+    log = why(engine.log, 'alpha:7')
+    assert all(v in log for v in ['kun-g/workshop', 'v1.2.3', '401', pending])
+    timers = engine.log.all('timers')
+    engine.submit(row['token'], {'outcome': 'nothing', 'summary': '完成交付', 'advance': None, 'evidence': evidence})
+    engine.tick()
+    assert engine.log.all('timers') == timers
+    assert not engine.active()
+    # 等待与原回执能在重启后认回；成功只重派本阶段。
+    engine.log.close()
+    engine = build(world['root'] / 'tag-wait', cfg)
+    engine.plugins.register('flow', 'issue_delivery', world['flow'])
+    edit(world, workflow_runs=[tag_run(world, 'completed', 'success')])
+    engine.clock.now = datetime.fromisoformat(waiting['after_wait']['at'])
+    engine.tick()
+    assert current(engine, '7')['stage'] == '交付'
+    finish(engine, key='7', outcome='nothing')
+    assert item(engine, '7')['state'] == '卡住'
+    assert 'success' in item(engine, '7')['blocked_by']
+    assert not engine.active()
+    engine.log.close()
+
+
+@pytest.mark.parametrize('later_failure', [False, True])
+def test_tag_ci_failure_blocks_with_actual_conclusion(world, later_failure):
+    from workshop.core.report import why
+    engine, _ = delivery_wait_engine(world)
+    edit(world, workflow_runs=[tag_run(world, 'queued' if later_failure else 'completed', None if later_failure else 'failure')])
+    finish(engine, key='7', outcome='nothing')
+    if later_failure:
+        waiting = item(engine, '7')['after_wait']
+        edit(world, workflow_runs=[tag_run(world, 'completed', 'failure')])
+        engine.clock.now = datetime.fromisoformat(waiting['at'])
+        engine.tick()
+    stopped = item(engine, '7')
+    assert stopped['stage'] == '交付' and stopped['state'] == '卡住'
+    assert '401' in stopped['blocked_by'] and 'failure' in stopped['blocked_by']
+    assert not stopped.get('after_wait') and not engine.active()
+    assert 'failure' in why(engine.log, 'alpha:7')
+    engine.log.close()
+
+
+def test_tag_ci_still_running_rechecks_without_executor(world):
+    engine, _ = delivery_wait_engine(world)
+    edit(world, workflow_runs=[tag_run(world)])
+    finish(engine, key='7', outcome='nothing')
+    prior = item(engine, '7')['after_wait']['at']
+    engine.clock.now = datetime.fromisoformat(prior)
+    edit(world, workflow_runs=[tag_run(world, 'in_progress')])
+    engine.tick()
+    assert item(engine, '7')['state'] == '定时'
+    assert item(engine, '7')['after_wait']['at'] > prior
+    assert not engine.active()
+    assert 'in_progress' in item(engine, '7')['gate_reason']
+    engine.log.close()
+
+
+@pytest.mark.parametrize('control', [
+    {'later': [{'key': 'external', 'at': '+5m', 'about': '等授权'}]},
+    {'ask': [{'key': 'choice', 'title': '请选择'}]},
+    {'leave': {'kind': '工序', 'owner': '车间', 'at': '+5m', 'about': '再看'}},
+])
+def test_tag_ci_fallback_does_not_override_explicit_next_step(world, control):
+    engine, _ = delivery_wait_engine(world)
+    before = len(calls(world))
+    finish(engine, key='7', outcome='nothing', **control)
+    assert item(engine, '7')['state'] == ('等你' if 'ask' in control else '定时')
+    assert not item(engine, '7').get('after_wait')
+    assert not any('/actions/runs?' in arg for call in calls(world)[before:] for arg in call)
+    engine.log.close()
+
+
+def saved_tag(world):
+    data = snapshot(world, '交付')
+    target = {**world['target'], 'release': 'tag'}
+    state = world['io'].read(data, target)
+    state.update(tag='v1.2.3', merge=world['sha'])
+    world['io'].save(data, target, state)
+    return data, target
+
+
+def test_tag_ci_filters_identity_and_uses_latest_workflow_across_pages(world):
+    data, target = saved_tag(world)
+    wrong_tag = tag_run(world, 'completed', 'success', id=990, head_branch='other')
+    wrong_sha = tag_run(world, 'completed', 'success', id=991, head_sha='0' * 40)
+    wrong_event = tag_run(world, 'completed', 'success', id=992, event='pull_request')
+    stale_failure = tag_run(world, 'completed', 'failure', id=400)
+    edit(world, workflow_pages=[{'workflow_runs': [wrong_tag, wrong_sha, wrong_event, stale_failure]},
+                                {'workflow_runs': [tag_run(world)]}])
+    receipt = Receipt('nothing', '')
+    evidence = world['flow'].assess(data, receipt, target)
+    assert evidence.recheck_after == '+5m' and '401' in evidence.reason
+    assert '990' not in evidence.reason and 'failure' not in evidence.reason
+    call = next(c for c in calls(world) if any('/actions/runs?' in a for a in c))
+    assert '--paginate' in call and '--slurp' in call
+    assert f'branch=v1.2.3&head_sha={world["sha"]}' in call[-1]
+    edit(world, workflow_pages=[{'workflow_runs': [wrong_tag, wrong_sha, wrong_event]}])
+    assert '没有对应提交' in world['flow'].assess(data, receipt, target).blocked
+
+
+@pytest.mark.parametrize('missing', ['tag', 'merge', 'runs'])
+def test_tag_ci_missing_facts_do_not_guess_waiting(world, missing):
+    data, target = saved_tag(world)
+    if missing != 'runs':
+        state = world['io'].read(data, target)
+        state.pop(missing)
+        world['io'].save(data, target, state)
+    evidence = world['flow'].assess(data, Receipt('nothing', 'CI 还在跑'), target)
+    assert evidence.blocked and not evidence.recheck_after
+
+
+def test_tag_ci_query_failure_uses_existing_retry_path(world):
+    data, target = saved_tag(world)
+    edit(world, workflow_error='gh: unavailable')
+    with pytest.raises(Retryable, match='unavailable'):
+        world['flow'].assess(data, Receipt('nothing', ''), target)
+    with pytest.raises(Retryable, match='unavailable'):
+        world['flow'].after({**data, 'result': Receipt('nothing', '').json()}, '交付', 'recheck', target)
+
+
+@pytest.mark.parametrize('stage,release', [('执行', 'tag'), ('交付', 'none')])
+def test_tag_ci_fallback_does_not_apply_to_other_work(world, stage, release):
+    data = snapshot(world, stage)
+    before = calls(world)
+    evidence = world['flow'].assess(data, Receipt('nothing', ''), {**world['target'], 'release': release})
+    assert not evidence.recheck_after and not evidence.blocked
+    assert calls(world) == before
+
+
+def test_delivery_brief_requires_later_for_external_waits(world):
+    brief = world['flow'].brief(snapshot(world, '交付'), '交付', world['target'])
+    assert '等外部任务（CI、授权）时必须交 later（key/at/about）并退出' in brief
+
+
+@pytest.mark.parametrize('conclusion', ['failure', 'cancelled', 'timed_out'])
+def test_tag_ci_failure_is_not_hidden_by_another_pending_workflow(world, conclusion):
+    data, target = saved_tag(world)
+    edit(world, workflow_runs=[tag_run(world), tag_run(world, 'completed', conclusion, id=402, workflow_id=11)])
+    evidence = world['flow'].assess(data, Receipt('nothing', ''), target)
+    assert evidence.blocked and conclusion in evidence.blocked and not evidence.recheck_after
+
+
+def test_tag_ci_bad_response_does_not_guess_waiting(world):
+    data, target = saved_tag(world)
+    edit(world, workflow_pages=[{'unexpected': []}])
+    with pytest.raises(Retryable, match='查询返回格式异常'):
+        world['flow'].assess(data, Receipt('nothing', ''), target)

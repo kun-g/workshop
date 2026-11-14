@@ -158,6 +158,9 @@ class Engine:
             self.fact("effect", {"id": key, "done": False})
         value = self.effect(key, invoke)
         result = After(**value) if isinstance(value, dict) else After(aliases=value or [])
+        if (not isinstance(result.blocked, str) or result.blocked and
+                (result.pending or not isinstance(result.next, str) or not result.next.strip())):
+            raise ValueError("回查阻塞须有下一步，不能同时继续等待")
         if (type(result.pending) is not bool or type(result.rerun) is not bool or not isinstance(result.reason, str)
                 or not isinstance(result.next, str) or result.pending and (not result.reason or not result.next)):
             raise ValueError("仍留本阶段须有原因和下一步")
@@ -222,7 +225,11 @@ class Engine:
         try:
             result = self.after({**item, "result": hook["receipt"]}, item["stage"], hook["key"], target, recheck=True)
             with self.log.transaction():
-                if result.pending:
+                if result.blocked:
+                    self.fact("gate_blocked", {"gate_reason": result.blocked}, item["id"])
+                    self.change(item, state="卡住", blocked_by=result.blocked, gate_reason=result.blocked,
+                                next=result.next, after_wait=None, leave=self.blocked_leave(result.next))
+                elif result.pending:
                     self.change(item, **self.pending_changes(item, result, target, hook))
                 else:
                     self.change(item, stage=hook["to"], state="完成" if hook["complete"] else "空闲",
@@ -1585,6 +1592,8 @@ class Engine:
             advancing = (receipt.outcome == "done" and decision.allowed and not missing_leave
                          and not receipt.ask and not self.waiting(item) and not wait_ready and not another_review and not rejected and not evidence.blocked)
             after_result = After()
+            rechecking = (bool(evidence.recheck_after) and receipt.outcome == "nothing" and not receipt.advance
+                          and not receipt.ask and not receipt.later and not receipt.leave and not self.waiting(item))
             if advancing:
                 key = f"after:{token}"
                 after_result = self.after({**item, "result": receipt.json()}, row["stage"], key, target)
@@ -1620,6 +1629,16 @@ class Engine:
                 if evidence.blocked:
                     changes.update(state="卡住", blocked_by=evidence.blocked, next=evidence.next,
                                    leave=self.blocked_leave(evidence.next))
+                elif rechecking:
+                    # 新的一段等待，沿用完成钩子的定时、退避与恢复；不能推进到下一阶段。
+                    changes.update(self.pending_changes({**item, "after_pending_count": 0},
+                        After(pending=True, reason=evidence.reason, next=evidence.next,
+                              recheck_after=evidence.recheck_after), target,
+                        {"key": f"after:{token}", "receipt": receipt.json(), "to": row["stage"], "complete": False}))
+                    changes["blocked_by"] = ""
+                elif after_result.blocked:
+                    changes.update(state="卡住", blocked_by=after_result.blocked, next=after_result.next,
+                                   after_wait=None, leave=self.blocked_leave(after_result.next))
                 elif after_result.pending:
                     changes.update(self.pending_changes(item, after_result, target,
                         {"key": key, "receipt": receipt.json(), "to": decision.stage, "complete": decision.complete}))
