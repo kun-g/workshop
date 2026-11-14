@@ -38,6 +38,13 @@ def parser():
     abandon = commands.add_parser("abandon", help="放弃一件活：停在当前阶段、让出串行路径，要再做就返工；活写成 <短名>#<编号> 或 <交付对象>:<对象键>")
     abandon.add_argument("item")
     abandon.add_argument("--reason", required=True, help="为什么不做了，记进这件活")
+    recover = commands.add_parser("recover", help="恢复一件停止的活；记录原因，不删除历史或代替审批")
+    recover.add_argument("item")
+    recover.add_argument("--mode", required=True, choices=("rework", "wait", "verify"),
+                         help="rework 标准返工；wait 超限后续等；verify 追加一次验收")
+    recover.add_argument("--reason", required=True, help="本次恢复原因，不能留空")
+    recover.add_argument("--quote", default="", help="Kun 原话；rework 必填")
+    recover.add_argument("--ref", choices=("main",), help="verify 时在包含原合并提交的当前 main 上验收")
     answer = commands.add_parser("answer", help="把 Kun 在会话里给的回答记到一张问卡上（飞书 Q 号或卡号），和点卡同样生效")
     answer.add_argument("card", help="飞书 Q 号（如 Q1847）或车间卡号")
     answer.add_argument("choice", help="选项的 key")
@@ -116,6 +123,10 @@ def main(argv=None):
             elif args.command == "answer":
                 card = engine.answer_here(args.card, args.choice, args.quote, args.session)
                 print(f'已记到 {card["item"]} 的卡 {card.get("external") or card["id"]}：{args.choice}')
+            elif args.command == "recover":
+                item_id = resolve(log, rules.data["targets"], args.item)
+                recovery = engine.recover(item_id, args.mode, args.reason, args.quote, args.ref)
+                print(f'已登记恢复 {item_id}：{recovery["mode"]}；原因及恢复计划见 why')
             elif args.command == "pause":
                 engine.pause(args.target)
                 print(f"已暂停 {args.target}；当前一轮继续收尾")

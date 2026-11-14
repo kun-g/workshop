@@ -249,7 +249,7 @@ def finish(engine, advance=None, key="one", target="alpha", **extra):
         if name in extra:
             extra[name] = [{**(question(v["title"]) if name == "ask" else notice(v["text"])), "key": v["key"]}
                            if "subject" not in v else v for v in extra[name]]
-    data = dict(outcome="done", summary=f"完成{row['stage']}", advance=advance, **extra)
+    data = {"outcome": "done", "summary": f"完成{row['stage']}", "advance": advance, **extra}
     engine.submit(row["token"], data)
     engine.tick()
     return row

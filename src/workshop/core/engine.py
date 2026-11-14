@@ -70,7 +70,17 @@ class Engine:
         return self.log.append(kind, body, item, at=stamp(self.clock()), **kwargs)
 
     def change(self, item, kind="item_changed", **changes):
+        # 等回答必须有本活仍有效的问题。通知、已作废的卡不能充当问题。
+        if changes.get("state") == "等你" and not self.answerable(item):
+            reason = changes.get("gate_reason") or (changes.get("leave") or {}).get("about") or changes.get("next") or "缺少有效问卡"
+            changes.update(state="卡住", blocked_by=reason,
+                           next="负责会话处理阻塞；需要 Kun 判断时提交带推荐的问卡")
+        if changes.get("state") == "卡住" and (changes.get("leave") or {}).get("kind") == "等你":
+            changes["leave"] = self.blocked_leave(changes.get("next") or "负责会话处理阻塞")
         self.fact(kind, changes, item["id"])
+
+    def blocked_leave(self, action):
+        return {"kind": "工序", "owner": "负责会话", "at": stamp(self.clock()), "about": action}
 
     def control(self, target):
         return self.log.get("controls", target) or {}
@@ -96,7 +106,7 @@ class Engine:
         def invoke():
             # 同一完成钩子每次回查是一次新调用；回查次数进身份，免得认回上一次的结果。
             result = self.call("flow", target["plugin"], "after", item, stage, key, target,
-                               identity=[key, item.get("after_pending_count", 0)], item=item["id"])
+                               identity=[key, item.get("pending_episode", 0), item.get("after_pending_count", 0)], item=item["id"])
             return asdict(result) if isinstance(result, After) else result
         if recheck and (self.log.get("effects", key) or {}).get("done"):
             self.fact("effect", {"id": key, "done": False})
@@ -107,6 +117,13 @@ class Engine:
             raise ValueError("仍留本阶段须有原因和下一步")
         if type(result.restart) is not bool or not isinstance(result.notice, str):
             raise ValueError("重启标记须是布尔值，通知须是字符串")
+        if not isinstance(result.recovery_id, str):
+            raise ValueError("恢复标识必须是字符串")
+        if result.recovery_id:
+            if result.recovery_id != (item.get("recovery") or {}).get("id"):
+                raise ValueError("流程消费的不是本活当前恢复计划")
+            self.fact("recovery_applied", {"id": result.recovery_id}, item["id"],
+                      source="recovery", ext_id="applied:" + result.recovery_id)
         if result.notice.strip():
             self.card(item, f"after-notice:{key}", "notice", notice(result.notice))
         if result.restart:
@@ -133,14 +150,17 @@ class Engine:
         if count >= target.get("pending_limit", 5):
             self.card(item, f"pending:{item['stage']}:{item.get('pending_episode', 0)}", "notice",
                       notice(result.reason + "；" + result.next))
-            changes.update(state="卡住", blocked_by="阶段等待达到上限", leave={"kind": "等你", "about": result.reason})
+            changes.update(state="卡住", blocked_by="阶段等待达到上限",
+                           after_wait={**hook, "delay": result.recheck_after, "rerun": result.rerun},
+                           next=result.next + "；处理后用 recover --mode wait --reason 续等",
+                           leave=self.blocked_leave(result.next))
         elif result.rerun:
             changes.update(state="空闲", leave={"kind": "工序", "owner": "车间", "at": stamp(self.clock()), "about": result.next})
         else:
             # 取插件建议与核心指数退避较晚者，等待不占执行者。
             at = max(due(result.recheck_after, self.clock()),
                      stamp(self.clock() + timedelta(seconds=min(300 * 2 ** (count - 1), 3600))))
-            self.timer(item, f"{hook['key']}:{count}", at, result.next)
+            self.timer(item, f"{hook['key']}:{item.get('pending_episode', 0)}:{count}", at, result.next)
             changes.update(state="定时", after_wait={**hook, "at": at},
                            leave={"kind": "工序", "owner": "车间", "at": at, "about": result.next})
         return changes
@@ -383,6 +403,85 @@ class Engine:
                         pending_rework=False, plugin_blocked=False, before_plugin_failure=None,
                         leave={"kind": "等你", "about": "已放弃；要再做就返工"})
 
+    def recover(self, item_id, mode, reason, quote="", ref=None):
+        """恢复追加事实；不删除历史，不替代审批，不与正在跑的一轮并发。"""
+        if mode not in ("rework", "wait", "verify"):
+            raise ValueError("恢复方式只能是 rework、wait、verify")
+        if not isinstance(reason, str) or not reason.strip():
+            raise ValueError("恢复必须写非空 --reason")
+        if mode == "rework" and (not isinstance(quote, str) or not quote.strip()):
+            raise ValueError("返工恢复必须写 Kun 原话 --quote")
+        if ref is not None and (mode != "verify" or ref != "main"):
+            raise ValueError("只有 verify 可以指定 --ref main")
+        item = self.log.get("items", item_id)
+        if not item:
+            raise ValueError(f"找不到活：{item_id}")
+        if any(r["item"] == item_id for r in self.active()):
+            raise ValueError("还有一轮没结束，不能恢复")
+        if item["state"] not in ("卡住", "放弃", "等你", "空闲"):
+            raise ValueError("只能恢复已停止的活")
+        if item.get("pending_rework"):
+            raise ValueError("已经登记返工，不能重复恢复")
+        if self.control(item["target"]).get("broken"):
+            raise ValueError("插件尚在隔离，先修复插件")
+        if self.waiting(item) and mode != "rework":
+            raise ValueError("仍有有效问卡，不能用恢复代替回答")
+        target = self.rules.target(item["target"])
+        plan = {}
+        if mode == "wait":
+            hook = item.get("after_wait")
+            if not hook and item.get("blocked_by") == "阶段等待达到上限":
+                # 旧版超限时没有保留回查入口，从已结束轮及完成钩子的事实恢复。
+                rows = sorted((r for r in self.log.all("rounds") if r["item"] == item_id
+                               and r["stage"] == item["stage"] and r.get("status") == "ended"),
+                              key=lambda r: r.get("ended", ""), reverse=True)
+                for row in rows:
+                    key = f'after:{row["token"]}'
+                    effect = self.log.get("effects", key) or {}
+                    value = effect.get("result") or {}
+                    receipt = row.get("receipt") or {}
+                    if isinstance(value, dict) and value.get("pending") and not value.get("rerun") and receipt.get("advance"):
+                        hook = {"key": key, "receipt": receipt, "to": receipt["advance"], "complete": False,
+                                "delay": value.get("recheck_after", "+5m"), "rerun": False}
+                        break
+            if (item["state"] != "卡住" or item.get("blocked_by") != "阶段等待达到上限"
+                    or not hook or hook.get("rerun")):
+                raise ValueError("不是可续等的阶段回查；需要重新执行时使用 rework")
+            at = max(due(hook.get("delay", "+5m"), self.clock()),
+                     stamp(self.clock() + timedelta(minutes=5)))
+            plan = {"at": at}
+        elif mode == "verify":
+            flow = self.plugins.get("flow", target["plugin"])
+            prepare = getattr(flow, "prepare_recovery", None)
+            if not prepare:
+                raise ValueError("本流程不支持追加核验")
+            plan = prepare(item, {"ref": ref}, target)
+            if not isinstance(plan, dict):
+                raise ValueError("流程恢复计划必须是对象")
+        recovery = {"id": str(uuid.uuid4()), "mode": mode, "reason": reason.strip(),
+                    "quote": quote.strip(), "plan": plan}
+        with self.exclusive(), self.log.transaction():
+            current = self.log.get("items", item_id)
+            if current != item or any(r["item"] == item_id for r in self.active()):
+                raise ValueError("活已变化，请重新核对后恢复")
+            self.fact("recovery_requested", {**recovery, "from_state": item["state"],
+                      "stage": item["stage"]}, item_id)
+            changes = dict(recovery=recovery, blocked_by="", wait_for_ready=False, retry_at=None,
+                           failures=0, gate_count=0, plugin_blocked=False, before_plugin_failure=None,
+                           gate_reason=reason.strip() + (f"；Kun 原话：{quote.strip()}" if quote else ""))
+            if mode == "wait":
+                self.timer(item, "recover:" + recovery["id"], at, hook["receipt"]["summary"])
+                changes.update(state="定时", after_wait={**hook, "at": at}, after_pending_count=0,
+                               pending_episode=item.get("pending_episode", 0) + 1,
+                               next="按原退避继续阶段回查", leave={"kind": "工序", "owner": "车间", "at": at,
+                                                                       "about": "按原退避继续阶段回查"})
+            else:
+                self.cancel_questions(item)
+                changes.update(state="空闲", pending_rework=True, next="按恢复事实返工",
+                               leave={"kind": "工序", "owner": "车间", "at": stamp(self.clock()), "about": "恢复后返工"})
+            self.change(item, **changes)
+        return recovery
+
     def pause(self, target):
         self.rules.target(target)
         self.fact("control", {"id": target, "paused": True})
@@ -522,7 +621,7 @@ class Engine:
 
         完成通知按 Evidence.done_key 只发一张，不看执行者用什么 key；其余的不发卡，记 notice_held 供 why 查看。
         """
-        waiting = bool(receipt.leave and receipt.leave.get("kind") == "等你")
+        waiting = bool(receipt.leave and receipt.leave.get("kind") == "等你" and self.answerable(item))
         done = f'notice:完成:{evidence.done_key}' if evidence.done_key else "notice:完成"
         for entry in receipt.notice:
             if waiting:
@@ -550,7 +649,7 @@ class Engine:
             saved = item.get("before_plugin_failure")
             if plugin and not item.get("plugin_blocked"):
                 saved = {k: item.get(k) for k in ("state", "next", "blocked_by", "leave")}
-            self.change(item, "work_blocked", state="卡住", next="等你介入", blocked_by=reason,
+            self.change(item, "work_blocked", state="卡住", next="负责会话修复阻塞后恢复", blocked_by=reason,
                         plugin_blocked=plugin, before_plugin_failure=saved, leave={"kind": "等你", "about": reason})
 
     def broken(self, target, port, name, exc):
@@ -572,8 +671,13 @@ class Engine:
                         self.block(item, f"{port}/{name}: {exc}", plugin=True)
 
     def waiting(self, item):
+        # 拒收/作废后的待放行也阻止自动执行，但它不属于「等你」。
+        return self.answerable(item) or any(c["item"] == item["id"] and c.get("awaiting_release")
+                                          for c in self.log.all("cards"))
+
+    def answerable(self, item):
         return any(c["item"] == item["id"] and c["mode"] == "ask" and not c["answered"]
-                   and (c.get("awaiting_release") or not c.get("cancelled") and not c.get("rejected"))
+                   and not c.get("cancelled") and not c.get("rejected")
                    for c in self.log.all("cards"))
 
     def sources(self):
@@ -792,6 +896,8 @@ class Engine:
                         leave={"kind": "等你", "about": "调整执行者或授权后放行"})
         elif item["state"] == "等你" and not item.get("wait_for_ready") and not self.waiting(item):
             self.change(item, state="空闲", next="按回答继续", blocked_by="")
+        elif item["state"] == "等你" and not self.answerable(item):
+            self.change(item, state="等你", next="卡片无法继续，需要检查后放行")
 
     def apply_timer(self, timer, item):
         if item["state"] == "放弃":
@@ -950,15 +1056,13 @@ class Engine:
                     self.fact("selection_failed", {"reason": reason, "selector": selector_name}, item["id"])
                     raise Retryable(reason)
             if chosen is None:
-                # 挑选逻辑可用 Selection(None, 理由) 说明为什么一个都没选；理由进事实和卡片，why 能看到。
+                # 没有候选属于操作阻塞；按量计费授权已在前面单独发问卡。
                 why_none = choice.reason.strip() if choice is not None and isinstance(choice.reason, str) else ""
-                payload = question("现有订阅没有可用执行者")
                 if why_none:
                     self.fact("selection_none", {"reason": why_none, "selector": selector_name}, item["id"])
-                    payload["context"] = "挑选逻辑没有选出执行者：" + why_none
-                self.card(item, f'capacity:{item["revision"]}', "ask", payload)
-                self.change(item, state="等你", next="等现有订阅恢复", blocked_by="Kun",
-                            leave={"kind": "等你", "about": "执行者不可用" + (f"：{why_none}" if why_none else "")})
+                self.change(item, state="卡住", next="负责会话核对执行者和订阅恢复后重试",
+                            blocked_by="执行者不可用" + (f"：{why_none}" if why_none else ""),
+                            leave=self.blocked_leave("核对执行者和订阅后恢复"))
                 return
             port, name = "executor", chosen["use"]
             token = str(uuid.uuid4())
@@ -1148,7 +1252,7 @@ class Engine:
         if failures == 3:
             self.card(item, f"failing:{episode}", "notice", notice(f'{item["title"]} 连续 3 次没跑成'))
         if failures >= 10:
-            changes.update(state="卡住", next="等你介入", blocked_by="连续 10 次没跑成",
+            changes.update(state="卡住", next="负责会话处理失败原因后恢复", blocked_by="连续 10 次没跑成",
                            leave={"kind": "等你", "about": "连续失败"})
         else:
             at = stamp(self.clock() + timedelta(seconds=min(300 * 2 ** (failures - 1), 3600)))
@@ -1166,8 +1270,8 @@ class Engine:
                        leave={"kind": "工序", "owner": "车间", "at": stamp(self.clock()), "about": reason})
         self.fact("gate_blocked", {"gate_reason": reason}, item["id"])
         if count >= 3:
-            self.card(item, f"gate:{row['token']}", "ask", question(reason))
-            changes.update(state="等你", next=reason, blocked_by="Kun", leave={"kind": "等你", "about": reason})
+            changes.update(state="卡住", next="负责会话修正关口失败原因后恢复", blocked_by=reason,
+                           leave=self.blocked_leave("修正关口失败原因后恢复"))
         return changes
 
     def settle_executor(self, row):
@@ -1235,11 +1339,11 @@ class Engine:
             if reviewing and row["config"]["family"] not in reviews:
                 reviews.append(row["config"]["family"])
             another_review = reviewing and len(reviews) < required
-            rejected = item["stage"] == "验收" and not evidence.passed and not row.get("automatic_failure")
-            wait_ready = receipt.leave and receipt.leave["kind"] == "等你" and not receipt.ask
+            rejected = item["stage"] == "验收" and not evidence.passed and not evidence.blocked and not row.get("automatic_failure")
+            wait_ready = receipt.leave and receipt.leave["kind"] == "等你" and not receipt.ask and not self.answerable(item)
             missing_leave = decision.complete and not (receipt.leave or receipt.ask or receipt.later)
             advancing = (receipt.outcome == "done" and decision.allowed and not missing_leave
-                         and not receipt.ask and not wait_ready and not another_review and not rejected)
+                         and not receipt.ask and not self.waiting(item) and not wait_ready and not another_review and not rejected and not evidence.blocked)
             after_result = After()
             if advancing:
                 key = f"after:{token}"
@@ -1270,7 +1374,10 @@ class Engine:
                 if evidence.paths:
                     # 说清楚时登记的预计路径和之后实际改动的并集，串行路径排队按它判。
                     changes["paths"] = sorted(set(item.get("paths", [])) | set(evidence.paths))
-                if after_result.pending:
+                if evidence.blocked:
+                    changes.update(state="卡住", blocked_by=evidence.blocked, next=evidence.next,
+                                   leave=self.blocked_leave(evidence.next))
+                elif after_result.pending:
                     changes.update(self.pending_changes(item, after_result, target,
                         {"key": key, "receipt": receipt.json(), "to": decision.stage, "complete": decision.complete}))
                     if after_result.rerun:
@@ -1283,7 +1390,8 @@ class Engine:
                 elif receipt.outcome == "failed":
                     changes.update(self.failure_changes(item, row))
                 elif wait_ready:
-                    changes.update(state="等你", wait_for_ready=True, next="等待放行事件", blocked_by="Kun", leave=receipt.leave)
+                    changes.update(state="卡住", wait_for_ready=True, next="负责会话处理阻塞；需要判断时提交问卡",
+                                   blocked_by=receipt.leave["about"], leave=self.blocked_leave(receipt.leave["about"]))
                 elif another_review:
                     changes.update(stage="审查", state="空闲", next="另一家审查", gate_count=0,
                                    leave={"kind": "工序", "owner": "车间", "at": stamp(self.clock()), "about": "另一家审查"})
@@ -1466,6 +1574,10 @@ class Engine:
         control = self.control(item["target"])
         if control.get("paused") or control.get("broken"):
             return
+        if item["state"] == "等你" and not self.answerable(item):
+            self.change(item, state="等你", next=item.get("next"), leave=item.get("leave"),
+                        gate_reason=item.get("gate_reason") or item.get("blocked_by"))
+            item = self.log.get("items", item["id"])
         if (item["pending_rework"] and item["depth"] <= self.rules.data["limits"]["chain_depth"]
                 and not any(r["item"] == item["id"] for r in self.active())):
             if self.jobs and item.get("workdir") and not item.get("workdir_released"):

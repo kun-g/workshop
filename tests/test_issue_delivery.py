@@ -262,7 +262,7 @@ def test_acceptance_gets_readonly_merge_copy_and_merge_check_output(world):
     assert isinstance(brief, FlowBrief) and brief.readonly
     assert Path(brief.workdir).stat().st_mode & 0o222 == 0
     assert subprocess.check_output(['/usr/bin/git', '-C', brief.workdir, 'rev-parse', 'HEAD'], text=True).strip() == world['sha']
-    assert f"只验交付提交 {world['sha']}" in brief.instructions and 'raw check output' in brief.instructions
+    assert f"只验固定检查提交 {world['sha']}" in brief.instructions and 'raw check output' in brief.instructions
     state = world['io'].read(data, world['target'])
     assert state['merge_runs']['head'] == world['sha'] and state['merge_runs']['runs'][-1]['stdout'] == 'raw check output\n'
     # 同一交付提交再生成说明不重跑检查。
@@ -365,10 +365,10 @@ def test_relabel_after_unclear_resumes_same_item(world):
     engine.tick()
     finish(engine, '说清楚', key='7')
     finish(engine, key='7', notice=[{'key': 'clarify', 'text': '先聊清楚标准'}], leave={'kind': '等你', 'about': '改 issue 后重打标签'})
-    assert item(engine, '7')['state'] == '等你'
+    assert item(engine, '7')['state'] == '卡住'
     engine.ingest(Event('github', 'comment', 'alpha', '7', 'test', {}))
     engine.tick()
-    assert item(engine, '7')['state'] == '等你'
+    assert item(engine, '7')['state'] == '卡住'
     engine.ingest(Event('github', 'relabel', 'alpha', '7', 'test', {}, action='ready'))
     engine.tick()
     assert current(engine, '7')['stage'] == '说清楚' and len(engine.log.all('items')) == 1

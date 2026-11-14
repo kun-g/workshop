@@ -307,7 +307,7 @@ def test_16_gate_retries_same_executor_then_escalates(engine):
         if n < 2:
             assert current(engine)["executor"] == "writer" and not engine.log.all("cards")
             assert "能跑的检查" in item(engine)["gate_reason"]
-    assert item(engine)["state"] == "等你" and len(engine.log.all("cards")) == 1
+    assert item(engine)["state"] == "卡住" and not engine.log.all("cards")
 
 
 def test_17_transient_source_backoff_then_fault(engine, monkeypatch):
@@ -417,11 +417,11 @@ def test_26_no_card_wait_only_explicit_ready_event_releases(engine):
     reach(engine, "说清楚")
     finish(engine, leave={"kind": "等你", "about": "需要聊清楚验收标准"},
            notice=[{"key": "clarify", **notice("验收标准没说清，先等放行，不用回卡")}])
-    assert item(engine)["state"] == "等你" and not engine.active()
-    assert len(engine.log.all("cards")) == 1 and engine.log.all("cards")[0]["mode"] == "notice"
+    assert item(engine)["state"] == "卡住" and not engine.active()
+    assert not engine.log.all("cards")
     engine.ingest(event(ext_id="comment", action="update"))
     engine.tick()
-    assert item(engine)["state"] == "等你"
+    assert item(engine)["state"] == "卡住"
     engine.ingest(event(ext_id="ready", action="ready"))
     engine.tick()
     assert current(engine)["stage"] == "说清楚" and len(engine.log.all("items")) == 1

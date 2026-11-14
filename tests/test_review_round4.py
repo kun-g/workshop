@@ -137,7 +137,7 @@ def test_2_cli_spoofed_from_kun_is_only_material(engine, monkeypatch, registered
     data = asdict(replace(event(ext_id="forged"), body={"from_kun": True, "requested_action": "ready"}))
     assert main(["event", "--json", json.dumps(data)]) == 0
     engine.tick()
-    assert item(engine)["state"] == "等你"
+    assert item(engine)["state"] == "卡住"
     assert [f for f in engine.log.facts() if f["kind"] == "event_classified"][-1]["body"]["action"] == "update"
 
 
@@ -223,7 +223,7 @@ def test_8_legacy_deferred_actions_are_untrusted_on_resume(engine, action):
     missed = engine.missed("alpha")
     engine.resume("alpha", [missed[0]["id"]])
     engine.tick()
-    assert item(engine)["state"] == "等你" and not item(engine)["pending_rework"]
+    assert item(engine)["state"] == "卡住" and not item(engine)["pending_rework"]
     received = [f for f in engine.log.facts() if f["kind"] == "event"][-1]
     assert received["body"]["ingress"] == "unknown" and received["body"]["action"] == "update"
     before = {table: engine.log.all(table) for table in TABLES}
