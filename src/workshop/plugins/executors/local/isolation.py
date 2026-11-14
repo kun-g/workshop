@@ -1,6 +1,7 @@
 """Strip ambient deployment credentials while keeping the CLI's original subscription login."""
 import os
 from pathlib import Path
+from workshop.github_identity import environment as identity_environment
 
 
 def environment(gh_config: Path, source=None):
@@ -24,6 +25,10 @@ def session_environment(spec, base=None):
     env.update(spec['env'])
     if spec['readonly']:
         env = environment(Path(spec['gh_config']), env)
+    elif spec.get('github_identity', {}).get('mode') == 'app':
+        config = spec['github_identity']
+        env = identity_environment(config, spec['repo'], env)
+        env['PATH'] = str(Path(config['gh']).expanduser().parent) + os.pathsep + env.get('PATH', '')
     for key in ('CLAUDECODE', 'WORKSHOP_RULES'):
         env.pop(key, None)
     if spec.get('billing') == 'subscription':

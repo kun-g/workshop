@@ -17,6 +17,7 @@ from urllib.parse import quote
 from .requirements import registered_paths
 
 from workshop.core.ports import Retryable
+from workshop import github_identity
 
 # 审查只读副本刚建或刚复用后这么久内不清：派活说明（建副本）和预订这一轮在不同的拍，
 # 清理作业又和它们并行跑，副本可能还没登进「在用」名单。
@@ -44,7 +45,7 @@ def failure(argv, result):
 def run(argv, *, cwd=None, env=None, timeout=20, check=True):
     try:
         # 输出解不了码也不能变成插件故障：坏字节换成替代字符。
-        result = subprocess.run(argv, cwd=cwd, env=env, text=True, errors="replace", capture_output=True, timeout=timeout)
+        result = github_identity.run(argv, cwd=cwd, env=env, text=True, errors="replace", capture_output=True, timeout=timeout)
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise Retryable(f"命令未确认完成：{argv[0]}") from exc
     if check and result.returncode:
@@ -146,7 +147,7 @@ class IO:
         if data is None:
             return json.loads(run(argv).stdout)
         # JSON 经 stdin，外部文字不进入 shell 或参数选项。
-        result = subprocess.run(argv + ["--method", "POST", "--input", "-"],
+        result = github_identity.run(argv + ["--method", "POST", "--input", "-"],
                                 input=json.dumps(data), text=True, capture_output=True, timeout=20)
         if result.returncode:
             detail = tail(result.stderr)

@@ -43,6 +43,7 @@ def engine_for(world, name, **target):
     engine.plugins.register('flow', 'issue_delivery', world['flow'])
     engine.ingest(Event('github', 'start', 'alpha', '7', 'test', {}, action='ready'))
     engine.tick()
+    engine.tick()
     return engine
 
 
@@ -95,7 +96,7 @@ def test_run_failure_message_carries_stderr_tail():
 ])
 def test_merge_conflict_goes_back_to_execution_without_isolating_flow(world, merge_state, stderr, precheck):
     engine = engine_for(world, 'conflict-' + merge_state)
-    walk(engine, world, ['说清楚', '执行', '证据', '审查', '交付'])
+    walk(engine, world, ['执行', '证据', '审查', '交付'])
     pr = remote(world)['pr']
     pr.update(mergeable=merge_state != 'dirty', mergeable_state=merge_state)
     edit(world, pr=pr, merge_error=stderr)
@@ -133,7 +134,7 @@ def test_unexplained_merge_failure_stays_retryable_with_stderr(world):
 
 def test_merged_item_reruns_acceptance_once_then_blocks(world):
     engine = engine_for(world, 'rerun')
-    walk(engine, world, ['说清楚', '执行', '证据', '审查', '交付', '验收'])
+    walk(engine, world, ['执行', '证据', '审查', '交付', '验收'])
     sha = remote(world)['pr']['merge_commit_sha']
     fail_acceptance(engine, world, sha)
     assert f'合并提交 {sha}' in brief(engine) and 'rerun_acceptance' in brief(engine)
@@ -221,7 +222,7 @@ def test_rerun_refuses_merged_commit_whose_release_did_not_finish(world):
     git(repo, 'checkout', '-q', 'main')
     edit(world, app={'status': {'sync': {'status': 'Synced', 'revision': 'e' * 40}, 'health': {'status': 'Healthy'}}}, deployed_sha=a)
     engine = engine_for(world, 'a-then-b', release='tag')
-    walk(engine, world, ['说清楚', '执行', '证据', '审查', '交付', '验收'])
+    walk(engine, world, ['执行', '证据', '审查', '交付', '验收'])
     assert world['io'].read(item(engine, '7'), world['target'])['delivered'] == [a]
     first = remote(world)['pr']
     fail_acceptance(engine, world, a)
@@ -282,7 +283,7 @@ def test_self_release_fast_forwards_clean_main_and_requests_restart(world, main_
 def test_self_release_asks_core_to_restart_after_this_tick(world, main_checkout):
     repo, merged = main_checkout
     engine = engine_for(world, 'self-engine', release='self')
-    walk(engine, world, ['说清楚', '执行', '证据', '审查', '交付'])
+    walk(engine, world, ['执行', '证据', '审查', '交付'])
     assert not engine.restart_requested
     finish(engine, '验收', key='7', evidence=[result(world)])
     assert engine.restart_requested and current(engine, '7')['stage'] == '验收'
@@ -308,7 +309,7 @@ def test_self_release_leaves_unclean_main_alone_and_notifies_once(world, main_ch
         commit(repo, 'local.txt', 'Kun 本地的提交\n')
     before = git(repo, 'rev-parse', 'HEAD')
     engine = engine_for(world, 'self-' + problem, release='self')
-    walk(engine, world, ['说清楚', '执行', '证据', '审查', '交付'])
+    walk(engine, world, ['执行', '证据', '审查', '交付'])
     finish(engine, '验收', key='7', evidence=[result(world)])
     assert current(engine, '7')['stage'] == '验收' and not engine.restart_requested
     assert git(repo, 'rev-parse', 'HEAD') == before
@@ -330,7 +331,7 @@ def test_self_release_prepare_failure_leaves_new_code_without_restart(world, mai
     # 只在主检出里失败；证据阶段在干净副本里跑同一组准备命令要成功。
     failing = f'[ "$(pwd -P)" != "{Path(repo).resolve()}" ] || {{ echo 依赖装不上 >&2; exit 1; }}'
     engine = engine_for(world, 'self-prepare', release='self', prepare=[{'argv': ['/bin/sh', '-c', failing]}])
-    walk(engine, world, ['说清楚', '执行', '证据', '审查', '交付'])
+    walk(engine, world, ['执行', '证据', '审查', '交付'])
     finish(engine, '验收', key='7', evidence=[result(world)])
     assert current(engine, '7')['stage'] == '验收' and not engine.restart_requested
     assert git(repo, 'rev-parse', 'HEAD') == merged
@@ -347,7 +348,7 @@ def test_round_started_in_the_restart_tick_survives_the_new_daemon(world, main_c
     """请求重启的那一拍派出的验收轮，守护进程换了新进程后接着跑，不重派、只读副本不被清掉。"""
     repo, merged = main_checkout
     engine = engine_for(world, 'self-restart', release='self')
-    walk(engine, world, ['说清楚', '执行', '证据', '审查', '交付'])
+    walk(engine, world, ['执行', '证据', '审查', '交付'])
     finish(engine, '验收', key='7', evidence=[result(world)])
     row = current(engine, '7')
     assert engine.restart_requested and row['stage'] == '验收' and Path(row['brief']['workdir']).is_dir()
@@ -413,7 +414,7 @@ def quarantine(engine):
 def test_recover_ws5_waiting_after_nothing(world, release):
     """ws#5：已合并、验收两次没过，执行交 nothing 等你，又被插件隔离。重打标签或在 issue 下评论「不对」都能重走验收收尾。"""
     engine = engine_for(world, 'ws5-' + release)
-    walk(engine, world, ['说清楚', '执行', '证据', '审查', '交付', '验收'])
+    walk(engine, world, ['执行', '证据', '审查', '交付', '验收'])
     sha = remote(world)['pr']['merge_commit_sha']
     fail_acceptance(engine, world, sha)
     card = {**notice('ws#7 验收要重走，需你定路径'), 'key': 'rerun-acceptance'}
@@ -438,7 +439,7 @@ def test_recover_ws5_waiting_after_nothing(world, release):
 def test_recover_ws18_delivery_stuck_on_closed_duplicate_pr(world, release):
     """ws#18：#11 已合并，验收没过后执行者又开了重复的 #23；合并 #23 失败隔离了插件，Kun 已关 #23。"""
     engine = engine_for(world, 'ws18-' + release)
-    walk(engine, world, ['说清楚', '执行', '证据', '审查', '交付', '验收'])
+    walk(engine, world, ['执行', '证据', '审查', '交付', '验收'])
     first = remote(world)['pr']
     sha = first['merge_commit_sha']
     fail_acceptance(engine, world, sha)
@@ -477,7 +478,7 @@ def test_completion_notice_goes_out_once_per_merge_commit(world):
     """ws#46：验收、重走验收、收尾里执行者各自发的完成通知，同一合并提交只出一张卡；进度通知不出卡。"""
     engine = engine_for(world, 'quiet')
     progress = {'notice': [{'key': 'opened', 'text': 'ws#7 PR #11 已开'}]}
-    finish(engine, '说清楚', key='7', evidence=[result(world)], notice=[{'key': 'intake', 'text': 'ws#7 已接单'}])
+    assert not any(r['stage'] == '接单' for r in engine.log.all('rounds'))
     finish(engine, '执行', key='7', evidence=[result(world, checks=[['scripts/check.sh']])])
     finish(engine, '证据', key='7', evidence=[result(world)], **progress)
     walk(engine, world, ['审查', '交付', '验收'])
@@ -495,7 +496,7 @@ def test_completion_notice_goes_out_once_per_merge_commit(world):
     cards = [c for c in engine.log.all('cards') if c['mode'] == 'notice']
     assert [(c['key'], c['payload']['text']) for c in cards] == [(f'notice:完成:{sha}', 'ws#7 已验收')]
     held = [f['body'] for f in engine.log.facts('alpha:7') if f['kind'] == 'notice_held']
-    assert [h['key'] for h in held] == ['intake', 'opened', 'accepted', 'accepted-2']
+    assert [h['key'] for h in held] == ['opened', 'accepted', 'accepted-2']
     engine.log.close()
 
 

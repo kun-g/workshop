@@ -50,6 +50,10 @@ def parser():
     answer.add_argument("choice", help="选项的 key")
     answer.add_argument("--quote", required=True, help="Kun 的原话，逐字")
     answer.add_argument("--session", required=True, help="Kun 说这句话的会话号")
+    release = commands.add_parser('release', help='登记 Kun 在会话里的放行；支持新对象或已有活')
+    release.add_argument('item', help='<短名>#<对象键> 或 <交付对象>:<对象键>')
+    release.add_argument('--quote', required=True, help='Kun 的原话，逐字')
+    release.add_argument('--session', required=True, help='Kun 说这句话的会话号')
     commands.add_parser("pause").add_argument("target")
     resume = commands.add_parser("resume")
     resume.add_argument("target")
@@ -130,6 +134,9 @@ def main(argv=None):
                 item_id = resolve(log, rules.data["targets"], args.item)
                 recovery = engine.recover(item_id, args.mode, args.reason, args.quote, args.ref)
                 print(f'已登记恢复 {item_id}：{recovery["mode"]}；原因及恢复计划见 why')
+            elif args.command == 'release':
+                item_id = engine.release_here(args.item, args.quote, args.session)
+                print(f'已登记会话放行：{item_id}')
             elif args.command == "pause":
                 engine.pause(args.target)
                 print(f"已暂停 {args.target}；当前一轮继续收尾")

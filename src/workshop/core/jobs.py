@@ -27,7 +27,7 @@ import time
 import traceback
 
 from .models import After, Answer, Brief, Classification, Event, Evidence, FlowBrief, Poll, Receipt, Release, RoundUsage, Selection, Started, Usage
-from .ports import ChannelRejected, Retryable, Unavailable
+from .ports import ChannelRejected, Retryable, Unavailable, TargetBlocked
 from .wake import ring
 from .records import StoredBrief, RoundHistory, ResultHistory, materialize
 
@@ -70,7 +70,8 @@ LABELS = {
     ("flow", "brief"): "等检查",
 }
 
-ERRORS = {"Retryable": Retryable, "Unavailable": Unavailable, "ChannelRejected": ChannelRejected}
+ERRORS = {"Retryable": Retryable, "Unavailable": Unavailable, "ChannelRejected": ChannelRejected,
+          "TargetBlocked": TargetBlocked}
 TYPES = {cls.__name__: cls for cls in (After, Answer, Brief, Classification, Event, Evidence, FlowBrief, Poll,
                                         Receipt, Release, RoundUsage, Selection, Started, Usage, StoredBrief, RoundHistory, ResultHistory)}
 KEEP_SECONDS = 86400

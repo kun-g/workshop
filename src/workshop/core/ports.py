@@ -16,6 +16,10 @@ class Retryable(Exception):
     """暂时故障；启动方法仅在确认没有启动副作用时使用。核心退避，连续三次升级故障。"""
 
 
+class TargetBlocked(Exception):
+    """当前交付对象缺少动作前提；不重试、不影响其他交付对象。"""
+
+
 class Source(Protocol):
     def wake_paths(self, target: dict | None = None) -> list[str]:
         """可选、纯本地查询（也兼容无参数实现）。返回文件路径；文件变化使本来源在该交付对象的 poll 缓存过期。"""
@@ -38,6 +42,12 @@ class Flow(Protocol):
         """
         ...
     def stages(self, target: dict) -> tuple[str, ...]: ...
+    def automatic(self, item: dict, stage: str, target: dict) -> bool:
+        """可选、只读。为真时由程序完成本阶段，仍经 assess、核心关口和 after。
+
+        不挑执行者、不启动会话、不记录执行轮；未实现或返回 False 保持原路径。
+        """
+        ...
     def brief(self, item: dict, stage: str, target: dict) -> str | FlowBrief:
         """可信说明；item.history 含每轮结论，gate_reason 含需要修正的关口理由。"""
         ...

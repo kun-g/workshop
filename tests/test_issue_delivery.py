@@ -280,8 +280,11 @@ def test_engine_eight_stages_with_real_flow_and_fake_executor(world):
     engine.plugins.register('flow', 'issue_delivery', world['flow'])
     engine.ingest(Event('github', 'labeled', 'alpha', '7', 'test', {}, action='ready'))
     engine.tick()
+    assert item(engine, '7')['stage'] == '说清楚'
+    assert not engine.log.all('rounds')
+    engine.tick()
     stages = list(world['flow'].stages(world['target']))
-    for stage in stages:
+    for stage in stages[1:]:
         assert current(engine, '7')['stage'] == stage
         payload = {'head': world['sha'], 'checks': [['scripts/check.sh']], 'must_fix': [], 'suggestions': [],
                    'acceptance': {'passed': True, 'output': 'acceptance raw output', 'head': world['sha']}}
@@ -363,7 +366,9 @@ def test_relabel_after_unclear_resumes_same_item(world):
     engine.plugins.register('flow', 'issue_delivery', world['flow'])
     engine.ingest(Event('github', 'start', 'alpha', '7', 'test', {}, action='ready'))
     engine.tick()
-    finish(engine, '说清楚', key='7')
+    assert item(engine, '7')['stage'] == '说清楚'
+    assert not engine.log.all('rounds')
+    engine.tick()
     finish(engine, key='7', notice=[{'key': 'clarify', 'text': '先聊清楚标准'}], leave={'kind': '等你', 'about': '改 issue 后重打标签'})
     assert item(engine, '7')['state'] == '卡住'
     engine.ingest(Event('github', 'comment', 'alpha', '7', 'test', {}))
@@ -385,7 +390,10 @@ def test_sensitive_paths_require_two_reviewers_before_delivery(world):
     engine.plugins.register('flow', 'issue_delivery', world['flow'])
     engine.ingest(Event('github', 'start', 'alpha', '7', 'test', {}, action='ready'))
     engine.tick()
-    for stage in ['说清楚', '执行', '证据', '审查']:
+    assert item(engine, '7')['stage'] == '说清楚'
+    assert not engine.log.all('rounds')
+    engine.tick()
+    for stage in ['执行', '证据', '审查']:
         finish(engine, stage, key='7', evidence=[result(world, checks=[['scripts/check.sh']])])
     assert current(engine, '7')['config']['family'] == 'b'
     finish(engine, '交付', key='7', evidence=[result(world, must_fix=[], suggestions=['optional'])])
@@ -462,6 +470,9 @@ def test_orca_steering_records_existing_item_without_action_depth_or_dispatch(wo
     engine.plugins.register('flow', 'issue_delivery', world['flow'])
     engine.ingest(Event('github', 'start', 'alpha', '7', 'test', {}, depth=2, action='ready'))
     engine.tick()
+    assert item(engine, '7')['stage'] == '说清楚'
+    assert not engine.log.all('rounds')
+    engine.tick()
     token = current(engine, '7')['token']
     # 与 W2-B 钩子一致：事件携带对象键及活 id，不传 round_token。
     steering = Event('orca', 'prompt-1', 'alpha', '7', 'Orca 插话',
@@ -471,7 +482,7 @@ def test_orca_steering_records_existing_item_without_action_depth_or_dispatch(wo
     recorded = item(engine, '7')
     assert len(engine.log.all('items')) == 1
     assert recorded['depth'] == 2 and not recorded['pending_rework']
-    assert recorded['stage'] == '接单' and current(engine, '7')['token'] == token
+    assert recorded['stage'] == '说清楚' and current(engine, '7')['token'] == token
     assert recorded['materials'][-1]['source'] == 'cli:orca'
     assert recorded['materials'][-1]['body'] == steering.body
     classification = [f for f in engine.log.facts() if f['kind'] == 'event_classified'][-1]
@@ -644,7 +655,10 @@ def test_delivery_ci_pending_does_not_isolate_flow_or_launch_executor(world):
     engine.plugins.register('flow', 'issue_delivery', world['flow'])
     engine.ingest(Event('github', 'start', 'alpha', '7', 'test', {}, action='ready'))
     engine.tick()
-    for stage in ['说清楚', '执行', '证据', '审查', '交付']:
+    assert item(engine, '7')['stage'] == '说清楚'
+    assert not engine.log.all('rounds')
+    engine.tick()
+    for stage in ['执行', '证据', '审查', '交付']:
         finish(engine, stage, key='7', evidence=[result(world, checks=[['scripts/check.sh']], must_fix=[], suggestions=[])])
     edit(world, checks=[])
     finish(engine, '验收', key='7', evidence=[result(world)])
@@ -721,7 +735,10 @@ def test_gate_feedback_sends_failed_work_back_to_execution_without_card(world, f
     engine.plugins.register('flow', 'issue_delivery', world['flow'])
     engine.ingest(Event('github', 'start', 'alpha', '7', 'test', {}, action='ready'))
     engine.tick()
-    for stage in ['说清楚', '执行', '证据']:
+    assert item(engine, '7')['stage'] == '说清楚'
+    assert not engine.log.all('rounds')
+    engine.tick()
+    for stage in ['执行', '证据']:
         finish(engine, stage, key='7', evidence=[result(world, checks=[['scripts/check.sh']])])
     if failure == 'check':
         # 创建真实失败提交，流程必须实际运行到非零退出码。
@@ -854,7 +871,10 @@ def test_waiting_for_release_authorization_does_not_advance_or_resubmit(world):
     engine.plugins.register('flow', 'issue_delivery', world['flow'])
     engine.ingest(Event('github', 'start', 'alpha', '7', 'test', {}, action='ready'))
     engine.tick()
-    for stage in ['说清楚', '执行', '证据', '审查', '交付']:
+    assert item(engine, '7')['stage'] == '说清楚'
+    assert not engine.log.all('rounds')
+    engine.tick()
+    for stage in ['执行', '证据', '审查', '交付']:
         finish(engine, stage, key='7', evidence=[result(world, checks=[['scripts/check.sh']], must_fix=[], suggestions=[])])
     finish(engine, '验收', key='7', evidence=[result(world)])
     assert current(engine, '7')['stage'] == '交付'
@@ -906,7 +926,10 @@ def test_renaming_out_of_frozen_path_still_stops(world):
     engine.plugins.register('flow', 'issue_delivery', world['flow'])
     engine.ingest(Event('github', 'start', 'alpha', '7', 'test', {}, action='ready'))
     engine.tick()
-    for stage in ['说清楚', '执行', '证据', '审查']:
+    assert item(engine, '7')['stage'] == '说清楚'
+    assert not engine.log.all('rounds')
+    engine.tick()
+    for stage in ['执行', '证据', '审查']:
         finish(engine, stage, key='7', evidence=[result(world, checks=[['scripts/check.sh']])])
     waiting = item(engine, '7')
     assert waiting['stage'] == '证据' and waiting['state'] == '等你'
@@ -973,7 +996,10 @@ def test_engine_without_review_merges_evidence_head(world):
     engine.plugins.register('flow', 'issue_delivery', world['flow'])
     engine.ingest(Event('github', 'labeled', 'alpha', '7', 'test', {}, action='ready'))
     engine.tick()
-    for stage in NO_REVIEW:
+    assert item(engine, '7')['stage'] == '说清楚'
+    assert not engine.log.all('rounds')
+    engine.tick()
+    for stage in NO_REVIEW[1:]:
         assert current(engine, '7')['stage'] == stage
         payload = {'head': world['sha'], 'checks': [['scripts/check.sh']], 'must_fix': [], 'suggestions': [],
                    'acceptance': {'passed': True, 'output': 'acceptance raw output', 'head': world['sha']}}
@@ -995,8 +1021,11 @@ def test_item_waiting_in_review_moves_on_when_rules_drop_review(world):
     engine.plugins.register('flow', 'issue_delivery', world['flow'])
     engine.ingest(Event('github', 'labeled', 'alpha', '7', 'test', {}, action='ready'))
     engine.tick()
+    assert item(engine, '7')['stage'] == '说清楚'
+    assert not engine.log.all('rounds')
+    engine.tick()
     payload = {'head': world['sha'], 'checks': [['scripts/check.sh']], 'must_fix': [], 'suggestions': []}
-    for stage, advance in (('接单', '说清楚'), ('说清楚', '执行'), ('执行', '证据'), ('证据', '审查')):
+    for stage, advance in (('说清楚', '执行'), ('执行', '证据'), ('证据', '审查')):
         assert current(engine, '7')['stage'] == stage
         finish(engine, advance, key='7', evidence=[result(world, **payload)])
     assert current(engine, '7')['stage'] == '审查'
@@ -1015,8 +1044,11 @@ def test_item_retrying_review_skips_it_without_a_round_when_rules_drop_review(wo
     engine.plugins.register('flow', 'issue_delivery', world['flow'])
     engine.ingest(Event('github', 'labeled', 'alpha', '7', 'test', {}, action='ready'))
     engine.tick()
+    assert item(engine, '7')['stage'] == '说清楚'
+    assert not engine.log.all('rounds')
+    engine.tick()
     payload = {'head': world['sha'], 'checks': [['scripts/check.sh']], 'must_fix': [], 'suggestions': []}
-    for advance in ('说清楚', '执行', '证据', '审查'):
+    for advance in ('执行', '证据', '审查'):
         finish(engine, advance, key='7', evidence=[result(world, **payload)])
     review = current(engine, '7')
     engine.submit(review['token'], {'outcome': 'failed', 'summary': '审查者没交回执'})

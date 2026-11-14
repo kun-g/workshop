@@ -11,6 +11,7 @@ import uuid
 
 from workshop.core.models import Receipt, Release, Started
 from workshop.core.ports import Retryable, Unavailable
+from workshop.github_identity import configuration as identity_configuration
 from .storage import alive, identity, lock, read, write
 from .runner import RECEIPT_REJECTED, VENDOR_SESSION
 from .processes import stop_round
@@ -161,6 +162,7 @@ class Executor:
                 if self.driver.stdin_arg:
                     retry_argv += ['-']
             spec = {'kind': self.kind, 'driver': config['driver'], 'profile_fingerprint': self.fingerprint(config), 'token': token, 'session': session, 'session_file': str(session_file),
+                    'github_identity': identity_configuration(target), 'repo': target.get('repo'),
                     'workdir': workdir, 'trust_workdir': trust_workdir,
                     'public_workdir': (item.get('workdir') if readonly else workdir),
                     'readonly': readonly, 'gh_config': str(directory / 'gh-config'),

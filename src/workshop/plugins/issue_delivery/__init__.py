@@ -12,6 +12,7 @@ from .io import IO, executable, failure, run, tail
 from .requirements import (approval_answer, changed_requirement, change_documents,
                            check_references, quoted_approval, section)
 from workshop.core.ports import Retryable
+from workshop.github_identity import scoped as github_scope
 
 # 合并失败后回查 PR，这些状态是要执行者动手的业务原因：退回执行，不算插件故障。
 BUSINESS_MERGE_STATES = ("dirty", "behind", "blocked", "unstable")
@@ -68,14 +69,19 @@ class IssueDelivery:
     def __init__(self, io=None):
         self.io = io or IO()
 
+    @github_scope
     def hold_workdir(self, item, target):
         """收尾后还有打开的 PR，执行者的 worktree 和分支先留着。"""
         opened = [row["number"] for row in self.io.item_prs(item, target) if row["state"] == "open"]
         return f'PR #{opened[0]} 还开着' if opened else ""
 
+    @github_scope
     def cleanup(self, target, keep):
         self.io.cleanup_reviews(target, keep)
         self.io.cleanup_copies(target)
+
+    def automatic(self, item, stage, target):
+        return stage == "接单"
 
     def stages(self, target):
         """阶段由规则的 stages 开关（Kun 11-13：流程用配置文件开关节点）；不写就是全部。
@@ -225,6 +231,7 @@ class IssueDelivery:
             raise ValueError("接单还没有登记 issue")
         return self.io.api(f'repos/{target["repo"]}/issues/{number}')
 
+    @github_scope
     def brief(self, item, stage, target):
         state = self.io.read(item, target)
         common = (
@@ -402,6 +409,7 @@ class IssueDelivery:
         selected = state.get("acceptance_target") or {}
         return selected["head"] if selected.get("merge") == state.get("merge") else state["merge"]
 
+    @github_scope
     def prepare_recovery(self, item, options, target):
         """只读准备；核心将计划持久化，after 再幂等消费，避免两份状态半写成功。"""
         if not self._reached_acceptance(item):
@@ -471,6 +479,7 @@ class IssueDelivery:
         return (f'<!-- workshop-item: {item["id"]} -->' in body
                 and not re.search(r"\b(?:close[sd]?|fix(?:es|ed)?|resolve[sd]?)(?:\s*:\s*|\s+)(?:(?:[\w.-]+/[\w.-]+)?#\d+|https://github\.com/[^/]+/[^/]+/issues/\d+)", (pr.get("title") or "") + "\n" + body, re.I))
 
+    @github_scope
     def assess(self, item, receipt, target):
         data, stage = report(receipt), item["stage"]
         checks = item.get("checks", [])
@@ -482,6 +491,8 @@ class IssueDelivery:
                         or not all(isinstance(blocked.get(k), str) and blocked[k].strip() for k in ("reason", "next"))):
                     raise ValueError("blocked 要 reason/next，且 outcome=nothing、不带 advance")
                 return Evidence(checks, blocked=blocked["reason"], next=blocked["next"], reason=blocked["reason"])
+            if receipt.outcome == 'nothing' and not receipt.advance:
+                return Evidence(reason=receipt.summary)
             if stage == "接单":
                 if item["object_key"].isdigit():
                     self._issue(item, target)
@@ -788,6 +799,7 @@ class IssueDelivery:
         state["self_update"] = {"merge": sha, "updated": True, "restart": True}
         return After(restart=True)
 
+    @github_scope
     def after(self, item, completed_stage, key, target):
         try:
             return self._after(item, completed_stage, key, target)

@@ -15,7 +15,7 @@ from .gates import advance_problem, decide, overlaps, validate_stages
 from .models import STAGES as ALL_STAGES
 from .log import Log
 from .models import Brief, Event, Receipt, STAGES, Started, due, stamp, utcnow
-from .ports import Unavailable, Retryable, ChannelRejected
+from .ports import Unavailable, Retryable, ChannelRejected, TargetBlocked
 from .cards import frozen_question, question, notice, validate_question, validate_notice
 from .models import After, Answer, FlowBrief, Classification, Evidence, Release, Usage, RoundUsage
 from .jobs import Pending
@@ -143,6 +143,9 @@ class Engine:
                     raise ValueError(f"别名冲突：{identity}")
                 self.fact("alias_bound", {"id": identity, "object_key": item["object_key"],
                           "item": item["id"]}, item["id"], source="alias", ext_id=f"{key}:{alias}")
+        if key.startswith("after:program:"):
+            self.fact("program_after", {"stage": stage, "result": asdict(result)}, item["id"],
+                      source="program-after", ext_id=f"{key}:{item.get('pending_episode', 0)}:{item.get('after_pending_count', 0)}")
         return result
 
     def pending_changes(self, item, result, target, hook):
@@ -379,7 +382,7 @@ class Engine:
             timers = [t for t in self.log.all("timers") if t.get("item") == item_id and not t.get("fired")]
             effects = [e for e in self.log.all("effects") if e.get("item") == item_id and not e.get("done")]
             aliases = [a for a in self.log.all("aliases") if a.get("item") == item_id]
-            if item["state"] != "空闲" or item.get("history") or item.get("sessions") or rounds or cards or timers or effects or aliases:
+            if item.get("program") or item["state"] != "空闲" or item.get("history") or item.get("sessions") or rounds or cards or timers or effects or aliases:
                 raise ValueError(f"{item_id} 已经跑过轮次或有未了的卡、定时、别名，不能清掉")
             self.fact("item_dropped", {"id": item_id}, item_id)
 
@@ -394,6 +397,8 @@ class Engine:
                 raise ValueError(f"找不到活：{item_id}")
             if item["state"] in ("完成", "放弃"):
                 raise ValueError(f"{item_id} 已经{item['state']}，不用放弃")
+            if item.get("program"):
+                raise ValueError("程序阶段还没结算，不能放弃")
             if any(r["item"] == item_id for r in self.active()):
                 raise ValueError(f"{item_id} 还有一轮没结束，先用 abort 结束那一轮再放弃")
             self.fact("item_abandoned", {"id": item_id, "reason": reason.strip()}, item_id)
@@ -417,6 +422,8 @@ class Engine:
         item = self.log.get("items", item_id)
         if not item:
             raise ValueError(f"找不到活：{item_id}")
+        if item.get("program"):
+            raise ValueError("程序阶段还没结算，不能恢复")
         if any(r["item"] == item_id for r in self.active()):
             raise ValueError("还有一轮没结束，不能恢复")
         if item["state"] not in ("卡住", "放弃", "等你", "空闲"):
@@ -527,12 +534,15 @@ class Engine:
                         if timer:
                             self.apply_timer(timer, replayed)
             # 恢复只解除插件故障；重试耗尽和连锁上限须由新决定处理。
-            for item in self.log.all("items"):
-                if item["target"] == target and item.get("plugin_blocked"):
-                    restored = dict(item["before_plugin_failure"])
-                    if restored["state"] == "等你" and not item.get("wait_for_ready") and not self.waiting(item):
-                        restored.update(state="空闲", next="按已收到的回答继续", blocked_by="")
-                    self.change(item, **restored, plugin_blocked=False, before_plugin_failure=None)
+            self.restore_target(target)
+
+    def restore_target(self, target):
+        for item in self.log.all("items"):
+            if item["target"] == target and item.get("plugin_blocked"):
+                restored = dict(item["before_plugin_failure"])
+                if restored["state"] == "等你" and not item.get("wait_for_ready") and not self.waiting(item):
+                    restored.update(state="空闲", next="按已收到的回答继续", blocked_by="")
+                self.change(item, **restored, plugin_blocked=False, before_plugin_failure=None)
 
     def submit(self, token: str, data: dict) -> bool:
         try:
@@ -656,7 +666,7 @@ class Engine:
     def broken(self, target, port, name, exc):
         # 流程插件共享的所有类一起隔离；其他端口按本次受影响的交付对象隔离。
         targets = [target]
-        if port == "flow":
+        if port == "flow" and not isinstance(exc, TargetBlocked):
             targets = [t for t, rule in self.rules.data["targets"].items() if rule["plugin"] == name]
         with self.log.transaction():
             for affected in targets:
@@ -664,7 +674,8 @@ class Engine:
                     self.fact("plugin_failed", {"target": affected, "port": port, "name": name,
                                                  "error": repr(exc)})
                     incident = self.log.db.execute("SELECT max(seq) FROM facts").fetchone()[0]
-                    self.fact("control", {"id": affected, "broken": True})
+                    self.fact("control", {"id": affected, "broken": True,
+                                          "action_blocked": isinstance(exc, TargetBlocked)})
                     pseudo = {"id": f"@{affected}"}
                     self.card(pseudo, f"plugin:{port}:{name}:{incident}", "notice", notice(f"{affected} 插件故障：{exc}"))
                 for item in self.log.all("items"):
@@ -688,6 +699,9 @@ class Engine:
             # 先结算已经开始的完成钩子，再读新变化，避免别名尚未绑定时另开活。
             if any(r["target"]["name"] == target and r["status"] == "finishing"
                    and self.log.get("effects", f'after:{r["token"]}') for r in self.active()):
+                continue
+            if any(i["target"] == target and i.get("program")
+                   and self.log.get("effects", f"after:{i['program']['token']}") for i in self.log.all("items")):
                 continue
             for name in rule.get("sources", []):
                 key = f"{target}:{name}"
@@ -997,6 +1011,17 @@ class Engine:
                             retry_executor=None, review_required=1, reviews=[],
                             gate_reason=f'规则已去掉「{item["stage"]}」阶段，直接进{following}')
                 return
+            automatic = False
+            if callable(getattr(self.plugins.get(port, name), "automatic", None)):
+                automatic = self.call(port, name, "automatic", item, item["stage"], target,
+                                      identity=[item["id"], item["stage"], item["revision"]], item=item["id"])
+                if type(automatic) is not bool:
+                    raise ValueError("程序阶段声明须返回布尔值")
+            if automatic:
+                self.start_program(item, stages)
+                return
+            if self.occupied() >= self.rules.data["limits"]["concurrent"]:
+                return
             content = self.call(port, name, "brief", item, item["stage"], target, item=item["id"])
             content = FlowBrief(content) if isinstance(content, str) else content
             if (not isinstance(content, FlowBrief) or not isinstance(content.instructions, str)
@@ -1092,6 +1117,23 @@ class Engine:
             self.start_retry(item, locals().get("row"), port, name, exc)
         except Exception as exc:
             self.broken(item["target"], port, name, exc)
+
+    def start_program(self, item, stages):
+        """程序阶段只持久化结算意图，复用关口和完成钩子，不创建执行轮。"""
+        following = next((s for s in stages if ALL_STAGES.index(s) > ALL_STAGES.index(item["stage"])), None)
+        receipt = Receipt(outcome="done", summary="程序完成", advance=following)
+        if following is None:
+            receipt = replace(receipt, leave={"kind": "工序", "owner": "车间", "at": stamp(self.clock()), "about": "已收尾"})
+        row = dict(program=True, token="program:" + str(uuid.uuid4()), item=item["id"],
+                   stage=item["stage"], executor=None, received=stamp(self.clock()),
+                   receipt=receipt.json(), receipt_seq=item["cause"])
+        with self.log.transaction():
+            latest = self.log.get("items", item["id"])
+            if (latest["state"] != "空闲" or latest["revision"] != item["revision"]
+                    or any(r["item"] == item["id"] for r in self.active())):
+                return
+            self.change(item, program=row, state="跑着", next="程序完成后过关口")
+        self.finish(row)
 
     def recently_unavailable(self, item, minutes=10):
         """这件活最近几轮启动时说没法用的执行者；启动作业晚一拍才出结果，重新挑时要避开它们。"""
@@ -1199,6 +1241,21 @@ class Engine:
             self.record_answer(card, Answer(card["id"], value, approved),
                                provenance={"channel": "session", "session": session, "quote": quote})
         return card
+
+    def release_here(self, ref, quote, session):
+        """会话确认的放行；外部正文不能通过自报来源调用此入口。"""
+        from .report import resolve
+        if not quote.strip() or not session.strip():
+            raise ValueError("要写 Kun 的原话和会话号")
+        with self.log.transaction():
+            item_id = resolve(self.log, self.rules.data['targets'], ref, allow_new=True)
+            target, key = item_id.split(':', 1)
+            if self.control(target).get('action_blocked'):
+                self.fact('control', {'id': target, 'broken': False, 'action_blocked': False})
+                self.restore_target(target)
+            self.ingest(Event('session', str(uuid.uuid4()), target, key, f'会话放行 {item_id}',
+                              {'channel': 'session', 'session': session, 'quote': quote}, action='ready'))
+        return item_id
 
     def abort(self, token, reason="人手动结束这一轮"):
         with self.log.transaction():
@@ -1313,7 +1370,8 @@ class Engine:
         return False
 
     def finish(self, row):
-        if not self.settle_executor(row):
+        program = row.get("program", False)
+        if not program and not self.settle_executor(row):
             return
         item = self.log.get("items", row["item"])
         if self.control(item["target"]).get("broken") or not self.retry_due(f"finish:{row['token']}"):
@@ -1333,10 +1391,14 @@ class Engine:
             evidence.validate()
             stages = self.call(port, name, "stages", target)
             decision = decide(item, receipt, evidence, stages, self.rules)
-            self.fact("round_changed", {"token": token, "assessment": asdict(evidence)}, item["id"])
+            if program:
+                row = {**row, "assessment": asdict(evidence)}
+                self.change(item, program=row)
+            else:
+                self.fact("round_changed", {"token": token, "assessment": asdict(evidence)}, item["id"])
             required = self.required_reviews(item, evidence, target)
             reviews = list(item.get("reviews", []))
-            reviewing = item["stage"] == "审查" and evidence.passed and receipt.outcome == "done" and not receipt.ask
+            reviewing = not program and item["stage"] == "审查" and evidence.passed and receipt.outcome == "done" and not receipt.ask
             if reviewing and row["config"]["family"] not in reviews:
                 reviews.append(row["config"]["family"])
             another_review = reviewing and len(reviews) < required
@@ -1353,7 +1415,7 @@ class Engine:
                 item = self.log.get("items", item["id"])
                 # 本轮结果写完整原因：交过被拒的回执时，具体字段和合法取值一并记下（代交的摘要里常没有）。
                 summary = self.failure_reason(row, receipt) or receipt.summary
-                self.fact("round_result", {"token": token, "stage": row["stage"], "outcome": receipt.outcome,
+                self.fact("program_result" if program else "round_result", {"token": token, "stage": row["stage"], "outcome": receipt.outcome,
                           "summary": summary, "evidence": receipt.evidence, "reason": evidence.reason},
                           item["id"], source="result", ext_id=token)
                 for ask in receipt.ask:
@@ -1413,7 +1475,7 @@ class Engine:
                                    pending_advance={"token": token, "card": card_id, "from": item["stage"], "to": receipt.advance,
                                                     "evidence": asdict(evidence), "receipt": row["receipt"], "stages": list(stages)})
                     self.fact("gate_blocked", {"gate_reason": decision.reason}, item["id"])
-                elif receipt.ask or receipt.later or receipt.leave:
+                elif not program and (receipt.ask or receipt.later or receipt.leave):
                     leave = receipt.leave
                     if not leave and receipt.later:
                         first = receipt.later[0]
@@ -1430,13 +1492,16 @@ class Engine:
                     changes.update(state="等你", next="等回答", blocked_by="Kun", leave={"kind": "等你", "about": "等回答"})
                 elif receipt.later and changes["state"] == "空闲":
                     changes.update(state="定时", next="等约好的时间")
-                self.fact("round_changed", {"token": token, "status": "ended", "ended": stamp(self.clock()),
-                           "outcome": receipt.outcome, "summary": summary,
-                           "passed": evidence.passed if row["stage"] in ("审查", "验收") and receipt.outcome != "nothing" and not row.get("automatic_failure") else None}, item["id"])
+                if program:
+                    changes["program"] = None
+                else:
+                    self.fact("round_changed", {"token": token, "status": "ended", "ended": stamp(self.clock()),
+                               "outcome": receipt.outcome, "summary": summary,
+                               "passed": evidence.passed if row["stage"] in ("审查", "验收") and receipt.outcome != "nothing" and not row.get("automatic_failure") else None}, item["id"])
                 if item.get("plugin_blocked") and self.control(item["target"]).get("broken"):
                     changes["before_plugin_failure"] = {k: changes.get(k, item.get(k)) for k in ("state", "next", "blocked_by", "leave")}
                     changes.update(state="卡住", next="修复插件后继续", blocked_by=item["blocked_by"])
-                self.change(item, "round_finished", **changes)
+                self.change(item, "item_changed" if program else "round_finished", **changes)
                 for index, data in enumerate(receipt.events):
                     self.ingest(Event(**{**data, "source": f"round:{token}", "ext_id": str(index)}), round_token=token)
             self.retry_clear(f"finish:{token}")
@@ -1637,6 +1702,9 @@ class Engine:
             self.change(item, state="等你", next=item.get("next"), leave=item.get("leave"),
                         gate_reason=item.get("gate_reason") or item.get("blocked_by"))
             item = self.log.get("items", item["id"])
+        if item.get("program"):
+            self.finish(item["program"])
+            return
         if (item["pending_rework"] and item["depth"] <= self.rules.data["limits"]["chain_depth"]
                 and not any(r["item"] == item["id"] for r in self.active())):
             if self.jobs and item.get("workdir") and not item.get("workdir_released"):
@@ -1662,5 +1730,5 @@ class Engine:
         item = self.log.get("items", item["id"])
         if item["state"] in ("空闲", "排队") and not item.get("after_wait"):
             item = self.serial_queue(item)
-        if item["state"] == "空闲" and not item.get("after_wait") and self.occupied() < self.rules.data["limits"]["concurrent"]:
+        if item["state"] == "空闲" and not item.get("after_wait"):
             self.reserve(item)
