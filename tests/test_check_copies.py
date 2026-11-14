@@ -297,3 +297,36 @@ def test_second_prepare_with_same_lock_hits_cache_offline(tmp_path, checkout):
     second = flow.verify(offline, sha, [['scripts/check.sh']])
     assert [r['exit_code'] for r in second] == [0, 0], second
     assert second[-1]['stdout'] == '1\n'
+
+
+def test_cleanup_leaves_other_targets_review_copies(tmp_path, checkout):
+    # 11-14 事故：两个交付对象的只读副本在同一目录，A 清理时把 B 正在用的副本也删了，两边同时删还撞出 ENOENT 隔离了插件。
+    other = tmp_path / 'other'
+    subprocess.run([GIT, 'init', '-q', '-b', 'main', str(other)], check=True)
+    commit(other, {'README': 'b\n'}, 'b')
+    flow = io(tmp_path)
+    mine = Path(flow.review_copy({'id': 'alpha:1'}, target(checkout), git(checkout, 'rev-parse', 'HEAD')))
+    theirs = Path(flow.review_copy({'id': 'beta:1'}, {**target(other), 'name': 'beta'}, git(other, 'rev-parse', 'HEAD')))
+    old = time.time() - 2 * 3600
+    for path in (mine, theirs):
+        os.utime(path, (old, old))
+    flow.cleanup_reviews(target(checkout), keep=[])
+    assert not mine.exists() and theirs.exists()
+    assert str(theirs) in worktrees(other)
+
+
+def test_readonly_and_writable_skip_files_removed_midway(tmp_path, monkeypatch):
+    from workshop.plugins.issue_delivery import io as module
+    tree = tmp_path / 'tree'
+    (tree / 'a').mkdir(parents=True)
+    (tree / 'a/gone').write_text('x')
+    real = Path.stat
+
+    def vanishing(self, *args, **kwargs):
+        if self.name == 'gone':
+            raise FileNotFoundError(str(self))
+        return real(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, 'stat', vanishing)
+    module.readonly(tree)
+    module.writable(tree)

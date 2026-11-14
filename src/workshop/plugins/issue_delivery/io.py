@@ -52,17 +52,40 @@ CACHE_KEEP = 5
 STALE_COPY_SECONDS = 6 * 3600
 
 
+def _chmod(entry, change):
+    # 遍历途中文件被别的作业删掉（同时收回同一副本）不算错，跳过即可。
+    try:
+        if not entry.is_symlink():
+            entry.chmod(change(entry.stat().st_mode))
+    except FileNotFoundError:
+        pass
+
+
 def writable(path):
     """恢复目录树的属主读写执行位（不追随文件链接），以便删除只读副本。"""
     for entry in [path, *path.rglob("*")]:
-        if not entry.is_symlink():
-            entry.chmod(entry.stat().st_mode | 0o700)
+        _chmod(entry, lambda mode: mode | 0o700)
 
 
 def readonly(path):
     for entry in [*path.rglob("*"), path]:
-        if not entry.is_symlink():
-            entry.chmod(entry.stat().st_mode & ~0o222)
+        _chmod(entry, lambda mode: mode & ~0o222)
+
+
+def worktree_owner(directory):
+    """副本是哪个主检出开的 worktree：读 .git 文件里的 gitdir，返回主检出的 .git 目录；看不出来返回 None。
+
+    改名前的临时目录（review-*/repo）也算。"""
+    for candidate in (directory / ".git", directory / "repo" / ".git"):
+        try:
+            text = candidate.read_text()
+        except (FileNotFoundError, IsADirectoryError, NotADirectoryError):
+            continue
+        if text.startswith("gitdir:"):
+            gitdir = Path(text.split(":", 1)[1].strip())
+            if gitdir.parent.name == "worktrees":
+                return gitdir.parent.parent.resolve()
+    return None
 
 
 def clean_env(home, cache=None):
@@ -149,6 +172,10 @@ class IO:
         checkout = Path(target["checkout"]).expanduser().resolve()
         return [self.git, "-C", str(checkout), "-c", "core.hooksPath=/dev/null"]
 
+    def _git_common_dir(self, target):
+        out = run(self._checkout_git(target) + ["rev-parse", "--path-format=absolute", "--git-common-dir"]).stdout
+        return Path(out.strip()).resolve()
+
     @contextmanager
     def _copies_locked(self, target):
         """同一主检出上的 fetch、worktree add/remove/prune 串行；跑检查不持锁。"""
@@ -182,7 +209,7 @@ class IO:
         with self._copies_locked(target):
             if path.exists() and run(git + ["worktree", "remove", "--force", str(path)], check=False, timeout=120).returncode:
                 writable(path)
-                shutil.rmtree(path)
+                shutil.rmtree(path, ignore_errors=True)
             run(git + ["worktree", "prune"])
 
     def dependency_cache(self, target, copy):
@@ -247,8 +274,13 @@ class IO:
         if not root.exists():
             return
         keep = {str(Path(p).resolve()) for p in keep if p}
+        mine = self._git_common_dir(target)
         for directory in root.iterdir():
             if str(directory.resolve()) in keep or not directory.is_dir() or directory.is_symlink():
+                continue
+            # 所有交付对象的只读副本在同一目录；只收本对象主检出开的，别的对象的留给它自己清。
+            owner = worktree_owner(directory)
+            if owner is not None and owner != mine:
                 continue
             if time.time() - directory.stat().st_mtime < REVIEW_GRACE_SECONDS:
                 continue
