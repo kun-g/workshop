@@ -7,6 +7,7 @@ import re
 from urllib.parse import quote
 
 from workshop.core.gates import allowed_advances
+from workshop.core.cards import question_example
 from workshop.core.models import After, Classification, Evidence, FlowBrief, OUTCOMES, Receipt, STAGES
 from .io import IO, executable, failure, run, tail
 from .requirements import (approval_answer, changed_requirement, change_documents,
@@ -285,7 +286,9 @@ class IssueDelivery:
             "说清楚": (
                 "按 docs/issue写法.md 把同一个 issue 写清：Kun 的原话、依据、可判定的验收标准、验收步骤、能跑的检查、要不要亲眼看。"
                 f'依据中的编号从规则 requirement_docs={target.get("requirement_docs", [])} 登记的文档核对。'
-                "需求变更须写需求原文和文档位置；未确认时发 key=requirement-change 的 ask，选项 yes/no，context 逐字放依据，带推荐和理由，不推进。"
+                "需求变更须写需求原文和文档位置；未确认时发 key=requirement-change 的 ask，kind=approval，context 逐字放完整依据，带推荐和理由，不推进。"
+                "choices 必须是含 key、label、effect 的对象，key 分别为 yes/no；recommend 引用一个选项 key。完整格式示例（替换 context 为完整依据）：\n"
+                + question_example("requirement-change", context="请确认以下完整需求依据。", approval=True) +
                 "Kun 答 no：不推进、不重复问，交 outcome=nothing，evidence JSON 写 blocked={reason:需求变更未获批准,next:负责会话调整需求后重新确认}。"
                 "原话已认过的可免卡：evidence JSON 的 requirement_approval 写 basis（完整依据节）和 quote（原话节中含确认及上下文的逐字引用）；"
                 "执行者须判断引用确实同意这条需求，不可把问题描述或 agent 的理解当批准，验收者复核。"
@@ -322,7 +325,9 @@ class IssueDelivery:
             ),
             "验收": (
                 "由另一家照 issue 的验收步骤逐项验，evidence 那条 JSON 给 acceptance={passed:布尔,output:原样输出,head:本轮固定的检查提交号}。"
-                "不过退回执行。只有 issue 明写亲眼看=是时才发 key=visual-acceptance 的 ask 验收卡，选项 yes/no，不能自填批准；答复 no 退回执行。"
+                "不过退回执行。只有 issue 明写亲眼看=是时才发 key=visual-acceptance 的 ask 验收卡，kind=approval，不能自填批准；答复 no 退回执行。"
+                "choices 必须是含 key、label、effect 的对象，key 分别为 yes/no；recommend 引用一个选项 key。完整格式示例（按实际验收证据填写）：\n"
+                + question_example("visual-acceptance", context="机器检查已通过，请按登记步骤亲眼验收。", approval=True)
             ),
             "收尾": (
                 "登记后面的事到 leave（工序含 owner/at/about，或送回含 at/about，或等你）；无后续则留七天后的送回复看。"

@@ -14,7 +14,7 @@ import time
 from .gates import advance_problem, decide, overlaps, validate_stages
 from .models import STAGES as ALL_STAGES
 from .log import Log
-from .models import Brief, Event, Receipt, STAGES, Started, due, stamp, utcnow
+from .models import Brief, Event, Receipt, ReceiptError, STAGES, Started, due, stamp, utcnow
 from .ports import Unavailable, Retryable, ChannelRejected, TargetBlocked
 from .cards import frozen_question, question, notice, validate_question, validate_notice
 from .models import After, Answer, FlowBrief, Classification, Evidence, Release, Usage, RoundUsage
@@ -632,6 +632,10 @@ class Engine:
                 self.change(item, **restored, plugin_blocked=False, before_plugin_failure=None)
 
     def submit(self, token: str, data: dict) -> bool:
+        row = self.log.get("rounds", token) if isinstance(token, str) else None
+        if row and row.get("question_blocked") and row.get("receipt") is not None:
+            if data == row["question_rejections"][-1]["receipt"]:
+                return False  # 第二次坏卡已结算；调用方重发原文也不能再结算。
         try:
             try:
                 receipt = Receipt.parse(data, self.clock())
@@ -648,8 +652,25 @@ class Engine:
             if extra:
                 raise ValueError(extra)
         except (ValueError, TypeError, KeyError) as exc:
-            # 原因记在这一轮上：执行者没改对就退出时，自动失败的结果里仍看得到。
-            self.receipt_rejected(token, exc)
+            ask_only = isinstance(exc, ReceiptError) and exc.ask_only
+            if ask_only:
+                # 先核对其余协议和动态约束，不能把阶段错误或未知目标藏在坏卡后面。
+                clean = {**data, "ask": [], "leave": None}
+                try:
+                    candidate = Receipt.parse(clean, self.clock())
+                    for event in candidate.events:
+                        self.rules.target(event["target"])
+                    if self.advance_error(token, candidate.advance):
+                        ask_only = False
+                except (ValueError, TypeError, KeyError):
+                    ask_only = False
+            with self.log.transaction():
+                count = self.receipt_rejected(token, exc, data=data, ask_only=ask_only)
+                if ask_only and count >= 2:
+                    # 保存原证据，但不执行这份回执要求的任何动作；由负责会话修复后恢复。
+                    self.fact("round_changed", {"token": token, "question_blocked": True}, row["item"])
+                    return self.submit(token, {"outcome": "nothing", "summary": "问卡格式不对，修正后恢复",
+                                               "evidence": candidate.evidence})
             raise
         with self.log.transaction():
             row = self.log.get("rounds", token)
@@ -690,12 +711,15 @@ class Engine:
             return f"{receipt.summary}；这一轮交的回执被拒过：{rejected}"
         return receipt.summary
 
-    def receipt_rejected(self, token, exc):
+    def receipt_rejected(self, token, exc, *, data=None, ask_only=False):
         row = self.log.get("rounds", token) if isinstance(token, str) else None
         if not row or row.get("receipt") is not None or row["status"] not in ("starting", "running"):
-            return
+            return 0
         with self.log.transaction():
-            self.fact("round_changed", {"token": token, "receipt_rejected": str(exc)}, row["item"])
+            rejected = [*row.get("question_rejections", []), {"receipt": data, "reason": str(exc)}] if ask_only else []
+            self.fact("round_changed", {"token": token, "receipt_rejected": str(exc),
+                      "question_rejections": rejected}, row["item"])
+            return len(rejected)
 
     def card(self, item, key, mode, payload, **extra):
         if mode == "ask":
@@ -1492,7 +1516,8 @@ class Engine:
             receipt = Receipt.parse(row["receipt"], received_at)
             target = self.item_target(item)
             port, name = "flow", target["plugin"]
-            evidence = (Evidence(**row["assessment"]) if row.get("assessment") else
+            evidence = (Evidence(blocked="问卡格式不对", next="负责会话修正问卡格式后恢复当前阶段") if row.get("question_blocked") else
+                        Evidence(**row["assessment"]) if row.get("assessment") else
                         Evidence() if row.get("automatic_failure") else
                         self.call(port, name, "assess", item, receipt, target,
                                   identity=[item["id"], item["stage"], token, row["receipt"]], item=item["id"]))
