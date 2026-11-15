@@ -158,7 +158,10 @@ def main(directory: Path):
         argv = driver.initial_argv(spec, directory, prompt, external)
         output = directory / 'output.log'
         child = None
+        stopping = False
         def forward(signum, frame):
+            nonlocal stopping
+            stopping = True
             if child is not None:
                 # Do not call Popen.poll/send_signal from a signal handler: wait() may
                 # hold its non-reentrant waitpid lock when the signal interrupts it.
@@ -170,6 +173,8 @@ def main(directory: Path):
             signal.signal(sig, forward)
         def run(argv, prompt_path):
             nonlocal child
+            if stopping or (directory / 'stopping.json').exists():
+                return -signal.SIGTERM
             try:
                 with output.open('a') as stream, Path(prompt_path).open('rb') as prompt_input:
                     child = subprocess.Popen(argv, cwd=spec['workdir'], env=env,
@@ -184,6 +189,21 @@ def main(directory: Path):
                     stream.write('\n启动或等待失败: ' + repr(exc))
                 return -1
         code = run(argv, spec['prompt'])
+        if (spec.get('fresh_argv') and not stopping and not (directory / 'stopping.json').exists()
+                and driver.missing_session(spec, output, code)):
+            recovery = {'vendor_id': spec['vendor_id'], 'exit_code': code,
+                        'output': 'resume-failed.log', 'action': 'fresh-session'}
+            write(directory / 'session-recovery.json', recovery)
+            # Keep the failed attempt separate: its thread.started must never win
+            # session recovery or receipt parsing after the fresh process finishes.
+            output.replace(directory / 'resume-failed.log')
+            Path(spec['session_file']).unlink(missing_ok=True)
+            fresh_argv = spec['fresh_argv']
+            spec.update(vendor_id=None, fresh_session=True, fresh_argv=None)
+            write(directory / 'spec.json', spec)
+            code = run(fresh_argv, spec['prompt'])
+            write(directory / 'session-recovery.json', {**recovery, 'fresh_exit_code': code,
+                                                       'fresh_vendor_id': vendor_session(output, spec)})
         real_id = vendor_session(output, spec)
         if real_id:
             write(Path(spec['session_file']), {'vendor_id': real_id, 'model': spec.get('model')})

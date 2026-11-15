@@ -1,6 +1,7 @@
 """Codex command, session hooks and rollout accounting."""
 from datetime import datetime
 import json
+import re
 from pathlib import Path
 import shlex
 import subprocess
@@ -147,6 +148,23 @@ class Driver(Base):
         elif not executor.interactive and 'sandbox' in config:
             argv += ['--sandbox', config['sandbox']]
         return argv
+
+    def missing_session(self, spec, output, code):
+        session = spec.get('vendor_id')
+        if code <= 0 or spec['interactive'] or not session or not output.exists():
+            return False
+        pattern = r'(?:Error: )?no rollout found for thread id[ :]+[\x27\"]?' + re.escape(session) + r'[\x27\"]?\.?'
+        for line in output.read_text(errors='replace').splitlines():
+            try:
+                row = json.loads(line)
+            except ValueError:
+                message = line.strip()
+            else:
+                # Task output quoting an error is not a failed resume.
+                message = row.get('message', '') if isinstance(row, dict) and row.get('type') == 'error' else ''
+            if isinstance(message, str) and re.fullmatch(pattern, message):
+                return True
+        return False
 
     def session_from_output(self, output):
         if not output.exists():

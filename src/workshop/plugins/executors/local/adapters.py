@@ -156,17 +156,23 @@ class Executor:
                     write(session_file, {'vendor_id': vendor_id, 'model': self.model(config)})
             argv = self._argv(config, workdir, vendor_id, resume and not fresh, directory, readonly, trust_workdir)
             retry_argv = None
+            fresh_argv = None
             if not self.interactive:
                 # 回执被拒时，包装进程在同一轮接回厂商会话，把原因发回去重交一次。
                 retry_argv = self._argv(config, workdir, VENDOR_SESSION, True, directory, readonly)
                 if self.driver.stdin_arg:
                     retry_argv += ['-']
+                if resume and not fresh:
+                    new_id = None if self.driver.allocated_session else str(uuid.uuid4())
+                    fresh_argv = self._argv(config, workdir, new_id, False, directory, readonly, trust_workdir)
+                    if self.driver.stdin_arg:
+                        fresh_argv += ['-']
             spec = {'kind': self.kind, 'driver': config['driver'], 'profile_fingerprint': self.fingerprint(config), 'token': token, 'session': session, 'session_file': str(session_file),
                     'github_identity': identity_configuration(target), 'repo': target.get('repo'),
                     'workdir': workdir, 'trust_workdir': trust_workdir,
                     'public_workdir': (item.get('workdir') if readonly else workdir),
                     'readonly': readonly, 'gh_config': str(directory / 'gh-config'),
-                    'env': env, 'argv': argv, 'retry_argv': retry_argv, 'vendor_id': vendor_id,
+                    'env': env, 'argv': argv, 'retry_argv': retry_argv, 'fresh_argv': fresh_argv, 'vendor_id': vendor_id,
                     'fresh_session': fresh, 'prompt': str(prompt_path),
                     'receipt_command': runtime['command'], 'interactive': self.interactive,
                     'billing': config.get('billing'), 'model': self.model(config), 'item': {k: item[k] for k in ('id', 'target', 'object_key')}}
