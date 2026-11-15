@@ -8,6 +8,7 @@ from workshop.core.models import After, Classification, Evidence
 from workshop.core.ports import Retryable
 from workshop.github_identity import scoped
 from .io import IO, read, write
+from .cluster import ClusterRelease
 
 STAGES = ('接单', '说清楚', '执行', '证据', '交付', '验收', '收尾')
 CHECKS = [['scripts/check.sh']]
@@ -155,6 +156,8 @@ class ScheduledRelease:
 
     @scoped
     def after(self, item, completed_stage, key, target):
+        if target.get('scheduled_release_mode', 'self') == 'cluster':
+            return ClusterRelease(self.io).after(item, completed_stage, key, target, self.intent(item))
         with self.io.locked(target):
             path = self.path(item, target)
             state = read(path) or {**self.intent(item), 'status': 'new', 'effects': {}}

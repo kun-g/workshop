@@ -316,6 +316,7 @@ class IssueDelivery:
                 "合并和打 tag 只由流程 after 做，本轮不要做。给回执 pr/head 并推进验收。"
                 "合并冲突或 PR 已关闭没合并时，本轮只交 advance=\"执行\"，到执行阶段再合 main、解冲突。"
                 "车间自己的 issue 合并即交付；上线由定时发版流程处理，本轮不要动主检出、不要重启。"
+                "release=scheduled 时只合并并等待整点批次上线，本活禁止自己打 tag、推 production 或发授权卡。"
                 f"若已合并且 release=tag，{self._runbook(target, state) if stage == '交付' else '照规则 release_runbook 指向的发版手册'}完成发布；集群授权只用 "
                 "~/workspace/runtime/repos/grant-console/scripts/request_grant.py，--requested-by 带本活 id。"
                 "要发哪些卡以发版手册为准；手册要求的卡都要 Kun 批，一张都不能代批或跳过。"
@@ -400,7 +401,7 @@ class IssueDelivery:
         """
         if "delivered" in state:
             return sha in state["delivered"]
-        return target.get("release", "none") != "tag" or self._deployed(target, sha)
+        return target.get("release", "none") not in ("tag", "scheduled") or self._deployed(target, sha)
 
     def _rerun_block(self, target, state, opened, latest, request=None, item=None):
         """不能直接重走验收的原因；None 表示可以走。
@@ -415,7 +416,7 @@ class IssueDelivery:
         if request is not None and request != sha:
             return f"回执请求的提交 {request} 不是本活最近的合并提交 {sha}，不能重走验收"
         if not self._delivery_done(target, state, sha):
-            return (f"最近的合并提交 {sha} 还没交付完成（release=tag 时线上还没核对到它），不能重走验收；"
+            return (f"最近的合并提交 {sha} 还没交付完成（release=tag/scheduled 时线上还没核对到它），不能重走验收；"
                     "交 outcome=nothing，evidence JSON 写 blocked={reason:原因,next:完成交付后再验收}")
         if state.get("accepted") and state.get("merge") == sha:
             return f"合并提交 {sha} 已验收通过；要改就从最新 main 开新 PR"
@@ -942,6 +943,10 @@ class IssueDelivery:
                     if not self._deployed(target, state["merge"]):
                         result = After(pending=True, rerun=not state.get("release_submitted", False),
                                        reason="线上版本尚未核对通过", next="按发版手册发布" if not state.get("release_submitted") else "定时回查线上版本")
+                elif target.get("release") == "scheduled":
+                    if not self._deployed(target, state["merge"]):
+                        result = After(pending=True, reason="合并提交等待整点批次上线", next="定时回查线上版本包含该提交",
+                                       recheck_after="+5m")
                 elif target.get("release", "none") not in ("none", "self"):
                     raise BusinessWait("未知 release 类型")
                 # 在途作业可能持有旧 release=self 快照：兼容为只合并，不再自更新。

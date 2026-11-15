@@ -20,12 +20,17 @@ targets:
     default_flow: issue_delivery
     flows:
       issue_delivery: {triggers: *issue_triggers}
+      scheduled_release:
+        triggers: [{source: main_branch, when: {kind: ahead}, action: ready}]
+        pending_limit: 24
+        scheduled_release_mode: cluster
+        scheduled_release_state_dir: ~/.local/state/workshop/grant-console-release
     selector: quota
     # 本机 ai_quota 快照（和 ai-quota MCP 同一数据源），只读；最近一次成功采集超过 45 分钟算过期（和 ai_quota 提醒同一条线）。
     quota_snapshot: &quota_snapshot {path: ~/.local/state/ai_quota/quota.db, max_age_minutes: 45}
     # 阶段开关：去掉审查（Kun 11-13：「先跳过 Review 加快交付，反正现在的系统是我自己在用」）。要恢复就把审查加回证据和交付之间。
     stages: [接单, 说清楚, 执行, 证据, 交付, 验收, 收尾]
-    sources: [github]
+    sources: {github: {}, main_branch: {every: 1h}}
     github_overlap_seconds: 60
     repo: kun-g/grant-console
     github_identity: {mode: inherit}
@@ -40,7 +45,7 @@ targets:
     feishu_profile: tuan
     kun_feishu_open_id: ou_43456ed5ae17472375fcbb6ec0fc4661
     ask_kun_state: ~/.local/state/ask-kun/asks.json
-    pending_limit: 5
+    pending_limit: 24
     short_name: gc
     ci: [check-and-build]
     prepare:
@@ -61,7 +66,8 @@ targets:
       source_field: source_commit
       # 回查要求这个 Deployment 换版完成（同 kubectl rollout status 的判定）；只读 get，不删 Pod。
       rollout: {namespace: agent-ops, name: grant-console}
-    release: tag
+    # 合并后只回查线上；固定整点批次统一发版和申请集群授权。
+    release: scheduled
     # 交付说明里的发版手册：交付提交里有这个文件就照它发；没有（grant-console#143 合并前）就用回退文本。
     release_runbook: docs/runbooks/sync-production.md
     release_runbook_fallback: 照 issue kun-g/grant-console#143 正文的步骤
