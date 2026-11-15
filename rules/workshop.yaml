@@ -111,8 +111,7 @@ targets:
     stages: [接单, 说清楚, 执行, 证据, 交付, 验收, 收尾]
     sources: {github: {}, main_branch: {every: 1h}, watch_updates: {}}
     watch_updates:
-      # 11-15 首份周报不可用（Kun：「整个报告都是垃圾」），按新版样例返工（ws#102）期间暂停，返工合并时再打开，免得周一再发旧格式的报告。
-      enabled: false
+      enabled: true
       timezone: Asia/Singapore
       hour: 9
       weekday: 0
