@@ -238,3 +238,15 @@ def test_release_vocabulary_is_not_mistaken_for_hedging():
     value = judgment()
     value['instances'][0].update(headline='SSH 转发隔离和角色校验有修复', points=[{'version': '2.0.0', 'text': 'TLS 校验拒绝非规范 IP 地址'}])
     validate_judgment(value, software(), [release('2.0.0')], [], [{'id': 'project'}])
+
+
+def test_same_feature_on_several_instances_is_asked_once():
+    from workshop.plugins.watch_updates.presentation import targets
+    report, versions = report_fixture()
+    for source in (versions, report['snapshot']):
+        rows = source['Sentry-1.40.0']['judgment']['instances']
+        rows.append({**rows[0], 'id': 'second'})
+        for row in rows:
+            row['features'] = [{'id': 'queue-alert', 'summary': '队列耗尽预警', 'direction': 'project'}]
+    found = [t for t in targets(report, versions, []).values() if t['kind'] == 'feature']
+    assert len(found) == 1
