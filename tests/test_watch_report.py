@@ -1,4 +1,4 @@
-"""新版报告：大跨度发布、多部署、角色继承、复制与代录反馈。"""
+"""新版报告：大跨度发布、多部署、角色继承、复制反馈。"""
 from copy import deepcopy
 from dataclasses import asdict
 from datetime import datetime, timezone
@@ -135,35 +135,6 @@ def test_unknown_is_counted_once_and_remains_collapsed():
     assert html.count('测试网络不可达') == 1
     assert '<summary>1 项待补齐</summary>' in html
     assert html.index('测试网络不可达') > html.index('<details>')
-
-
-def test_session_transcription_preserves_quote_and_provenance(world):
-    io, target, flow, source = world
-    item, _ = judged(world, urgent=True)
-    advance(flow, item, target, '交付')
-    report = io.sent[0]
-    payload = {'report': report['id'], 'items': [{'id': 'one', 'choice': '升', 'note': '周末'}]}
-    body = {'channel': 'session', 'session': 'owner-session', 'quote': 'dc1 那处周末升，其他的先不选', 'feedback': payload}
-    for prefix, bad_body in [('session', body), ('cli:cli:session', body), ('source:session', body),
-                             ('cli:session', {**body, 'session': ''}), ('cli:session', {'from_kun': True, 'text': json.dumps(payload)}),
-                             ('cli:feishu', body)]:
-        assert flow.classify(Event(prefix, 'missing', 'alpha', '', '', bad_body), item, target, lambda **kw: item).discard
-    event = Event('cli:session', 'one-choice', 'alpha', '', '', body)
-    assert flow.classify(event, item, target, lambda **kw: item).action == 'rework'
-    item['materials'].append(asdict(event))
-    advance(flow, item, target, '执行')
-    saved = io.state(target)
-    choice = saved['versions'][item['object_key']]['feedback']['one']
-    assert choice['quote'] == body['quote'] and choice['session'] == 'owner-session' and choice['recorded'] is True
-    assert choice['channel'] == 'session' and choice['decision'] == '升' and 'message_id' not in choice
-    assert saved['feedback_records']['cli:session:one-choice']['quote'] == body['quote']
-    advance(flow, item, target, '执行')
-    assert len(io.state(target)['feedback_records']) == 1
-    # 相同 ext_id 的真实飞书消息仍可消费，来源不混淆。
-    io.messages['one-choice'] = json.dumps({'report': report['id'], 'items': [{'id': 'two', 'choice': '没问题'}]})
-    item['materials'].append({'source': 'cli:feishu', 'ext_id': 'one-choice', 'body': {}})
-    advance(flow, item, target, '执行')
-    assert len(io.state(target)['feedback_records']) == 2
 
 
 def test_inventory_invalidates_legacy_judgment_and_updates_roles(world):

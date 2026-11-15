@@ -1,19 +1,14 @@
-"""复制反馈与会话代录；只解析数据，不执行正文。"""
+"""复制反馈；只解析数据，不执行正文。"""
 import json
 import re
 
 
-SOURCES = ('cli:feishu', 'cli:session')
+SOURCES = ('cli:feishu',)
 
 
 def read_message(io, target, source, ext_id, body):
     if source == 'cli:feishu':
         return io.message(target, ext_id), {'channel': 'feishu', 'message_id': ext_id}
-    if source == 'cli:session' and isinstance(body, dict) and body.get('channel') == 'session':
-        if all(isinstance(body.get(k), str) and body[k].strip() for k in ('session', 'quote')):
-            # 原话可以是自然语言；会话把选择另填为结构化资料，不能覆盖原话。
-            text = json.dumps(body['feedback'], ensure_ascii=False) if isinstance(body.get('feedback'), dict) else body['quote']
-            return text, {'channel': 'session', 'session': body['session'], 'recorded': True, 'quote': body['quote']}
     return None, {}
 
 
