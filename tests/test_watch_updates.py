@@ -390,7 +390,7 @@ def test_unknown_version_snapshot_and_git_commit(world):
     io.time += timedelta(minutes=61)
     advance(flow, item, target, '交付')
     assert 'version command exit 1' not in io.sent[0]['summary']
-    assert 'version command exit 1' in Path(io.sent[0]['path']).read_text()
+    assert '处版本不明' in Path(io.sent[0]['path']).read_text()
     assert source.poll(target, after.cursor).events == []
 
 
@@ -432,7 +432,7 @@ def test_unknown_deployment_does_not_block_known_deployment_or_invent_judgment(w
     assert 'n8n · 1.1.0→2.0.0 · 该升 · 2 个实例' in report['summary']
     assert 'ssh 连不上' not in report['summary']
     html = Path(report['path']).read_text()
-    assert 'ssh 连不上' in html and '版本不明' in html and 'second.example' in html
+    assert 'ssh 连不上' not in html and '版本不明' in html and 'second.example' in html
     known_only = {'instances': [judgment()['instances'][1]]}
     assert len(validate_judgment(known_only, row, io.upstream, io.needs(target), io.directions(target))['instances']) == 2
 
@@ -474,7 +474,7 @@ def test_manual_upstream_skips_daily_fetch_and_appears_in_empty_weekly(world, un
     assert io.sent[0]['versions'] == []
     assert io.sent[0]['blind'][0]['kind'] == 'manual'
     assert io.sent[0]['summary'].endswith('盲区 ' + str(3 if unknown else 1) + ' 项')
-    assert 'DSM：没有公开版本查询接口' in Path(io.sent[0]['path']).read_text()
+    assert '没有版本接口' in Path(io.sent[0]['path']).read_text()
     io.time += timedelta(days=1)
     assert source.poll(target, poll.cursor).events == []
     assert io.release_calls == []

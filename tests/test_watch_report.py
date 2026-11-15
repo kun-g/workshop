@@ -135,9 +135,9 @@ def test_unknown_is_counted_once_and_remains_collapsed():
     report['feedback_targets'] = targets(report, versions, [])
     assert len(blind_spots(report['versions'], versions, report['blind'])) == 1
     html = render(report, versions, [], datetime.now(timezone.utc))
-    assert html.count('测试网络不可达') == 1
-    assert '<summary>1 项待补齐</summary>' in html
-    assert html.index('测试网络不可达') > html.index('<details>')
+    # 原始错误留在对账记录里，页面只按类计数、列名字（Kun 11-15：写给程序看的长段不上页面）。
+    assert '测试网络不可达' not in html
+    assert '<summary>1 处版本不明</summary>' in html
 
 
 def test_inventory_invalidates_legacy_judgment_and_updates_roles(world):
@@ -199,7 +199,7 @@ def test_legacy_judgment_waits_then_appears_as_blind_spot(world):
     assert io.sent[0]['versions'] == []
     assert io.sent[0]['blind'] == [{'judgment_pending': item['object_key']}]
     html = Path(io.sent[0]['path']).read_text()
-    assert '长篇校验自证不应渲染' not in html and '判断未完成' in html
+    assert '长篇校验自证不应渲染' not in html and '个软件没判成' in html
 
 
 def test_waiting_age_appears_only_after_first_day():
@@ -212,3 +212,23 @@ def test_waiting_age_appears_only_after_first_day():
     assert '已等 7 天' in render(report, versions, [], now)
     snapshot['feedback'] = {p['id']: {'decision': '升'} for p in snapshot['software']['instances']}
     assert '已等 7 天' not in render(report, versions, [], now)
+
+
+def test_blind_spots_are_grouped_with_short_names():
+    from workshop.plugins.watch_updates.report import blind_groups
+    blind = [{'id': 'servers', 'ok': False, 'evidence': 'ssh 全部 Operation not permitted，详见 collector/ssh-*.json'},
+             {'software': 'GitLab（自建，git.example）', 'host': 'gitlab-1 (aws i-0123)', 'service': 'gitlab',
+              'version': '版本不明', 'reason': 'DNS no such host'},
+             {'software': 'NetBird', 'host': 'dc1', 'service': 'netbird', 'version': '版本不明', 'reason': 'x'},
+             {'software': 'NetBird', 'host': 'dc2', 'service': 'netbird', 'version': '版本不明', 'reason': 'x'}]
+    groups = blind_groups(blind, {})
+    assert groups == [('3 处版本不明', '对账没连上：服务器，这些部署沿用上次读数或读不到版本。',
+                       ['GitLab · gitlab-1', 'NetBird ×2'])]
+    assert 'Operation not permitted' not in str(groups)
+
+
+def test_version_only_changes_are_not_listed():
+    report, versions = report_fixture()
+    report['changes'] = [{'id': 'a', 'name': 'Alpha', 'action': '更新'}, {'id': 'b', 'name': 'Beta', 'action': '加入'}]
+    html = render(report, versions, [], datetime.now(timezone.utc))
+    assert '清单变化 1 项' in html and 'Alpha' not in html and 'Beta · 加入' in html

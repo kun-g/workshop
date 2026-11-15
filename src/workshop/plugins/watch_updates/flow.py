@@ -7,7 +7,7 @@ import sys
 
 from workshop.core.models import After, Classification, Evidence, FlowBrief
 from .io import IO, read, write
-from .model import SCHEMA, current_judgment, digest, reconcile, required, upstream, validate_judgment
+from .model import SCHEMA, current_judgment, digest, reconcile, release_range, required, upstream, validate_judgment
 from .report import blind_spots, render, summary
 from .presentation import targets
 from .feedback import SOURCES, feedback, read_message
@@ -33,6 +33,13 @@ def origin(item):
         if material.get('source') == 'watch_updates' and isinstance(body, dict) and body.get('kind') in ('version', 'reconcile', 'failure'):
             return body
     raise ValueError('没有盯更新来源的初始资料')
+
+
+def caught_up(value):
+    try:
+        return not release_range(value['software'], value['releases'])
+    except (ValueError, KeyError, TypeError):
+        return False
 
 
 def request(text):
@@ -122,7 +129,7 @@ version=unknown 的部署不猜，其他部署照常。只有 tag 没有发布�
 给人看的 headline 先说原因，一句话，不超过 40 字，不出现 profile、need、direction 等字段名。points 最多 3 条，每条 {version,text}，按重要性只写跟我们有关的变化；version 用资料里的版本号，页面会链接到原文。
 每条 text 只写一个变化，不超过 45 字，像「数据库从 PostgreSQL 14 换到 18，存储布局有破坏性变化」「修命令注入、SSH 私钥泄漏、跨组织越权」。
 headline 和 points 是给 Kun 看的：不写资料缺什么、什么没证实、为什么不标紧急、容器数；这些依据放进给程序的 references、signals、links，这些字段不显示给人。基础设施看安全、兼容、支持期限，agent 工具看功能及已碰到的问题；落后多少不是该升理由。
-紧急只限对外开放且影响在用版本的高危漏洞，或两端断连；重要是修复已碰到问题或当前要用的功能。新功能对上在做的事时写 features，summary 写清功能跟哪件事有关，没有则省略。
+紧急只限对外开放且影响在用版本的高危漏洞，或两端断连；重要是修复已碰到问题或当前要用的功能。新功能对上在做的事时写 features，summary 一句话写清功能跟哪件事有关，不超过 50 字，没有则省略。
 反馈「判错了」后按 correction 原话重判。回执 outcome=done、advance=证据，evidence 内 JSON 字符串：schema=watch-updates/v1，judgment={instances:[{id,verdict,priority,headline,points:[{version,text}],links:[发布说明链接],references:[依据id],signals:{high_risk_vulnerability:false,connection_failure:false},features:[{id,summary,direction}]}]}。
 不能判断就交 outcome=nothing，在同一证据 JSON 写 blocked={reason,next}；不能猜。'''
         return FlowBrief(instructions, workdir=self.io.workdir(target, 'reader'), readonly=True, materials=[{'source': 'watch_updates_snapshot', 'body': {
@@ -288,6 +295,10 @@ headline 和 points 是给 Kun 看的：不写资料缺什么、什么没证实�
         old = state['reports'].get(report_id)
         if missing and not old and elapsed < self.io.config(target).get('report_wait_minutes', 60) * 60:
             return After(pending=True, reason='同批软件仍在判断', next='汇齐判断后合成一份报告', recheck_after='+5m')
+        for value in versions.values():
+            # 对账已把部署升到最新：这个版本不用再报（Claude Code 2.1.325→2.1.325）。
+            if value.get('status') != 'done' and caught_up(value):
+                value['status'] = 'done'
         chosen = [k for k, v in versions.items() if current_judgment(v) and not v.get('needs_judgment') and v.get('status') != 'done'
                   and (weekly or (not v.get('report') and any(j['priority'] in ('紧急', '重要') for j in v['judgment']['instances'])))]
         if not weekly and not chosen:

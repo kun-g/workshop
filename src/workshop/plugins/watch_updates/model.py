@@ -215,6 +215,8 @@ def validate_judgment(value, software, releases, needs, directions):
                 raise ValueError('紧急须有对外暴露的高危漏洞或断连证据')
         for feature in row.get('features', []):
             required(feature, ('id', 'summary', 'direction'))
+            if len(feature['summary']) > 50 or HEDGE.search(feature['summary']) or '不构成' in feature['summary']:
+                raise ValueError('新功能 summary 一句话写清功能和对应的事，不超过 50 字，不写为何不提高优先级等给校验的话')
             if feature['direction'] not in {d['id'] for d in directions}:
                 raise ValueError('新功能须对上在做的事')
     unknown = [

@@ -63,6 +63,49 @@ def blind_text(value, versions):
     return str(value.get('name') or value.get('id') or '') + '：' + str(value.get('reason') or value.get('evidence') or '尚未查全')
 
 
+def short(text):
+    """标签里只留名字：去掉括号里的补充说明。"""
+    import re
+    return re.split(r'\s*[（(]', str(text))[0].strip() or str(text)
+
+
+SOURCES = {'local': '本机', 'servers': '服务器', 'clusters': '集群', 'needs': '需要来源'}
+
+
+def blind_groups(blind, versions):
+    """盲区按类归并成「标题 · 一句话 · 名字标签」，原始错误留在对账记录里，不上页面。"""
+    pending, unknown, sources, manual, other = [], {}, [], [], []
+    for value in blind:
+        if not isinstance(value, dict):
+            other.append(str(value))
+        elif value.get('judgment_pending'):
+            key = value['judgment_pending']
+            pending.append(short(versions.get(key, {}).get('software', {}).get('name', key.rsplit('-', 1)[0])))
+        elif value.get('version') == '版本不明':
+            unknown.setdefault(short(value['software']), []).append(short(value['host']))
+        elif value.get('kind') == 'manual':
+            manual.append(short(value['software']))
+        elif value.get('id') in SOURCES or 'ok' in value:
+            sources.append(SOURCES.get(value.get('id'), value.get('id', '')))
+        else:
+            other.append(blind_text(value, versions))
+    groups = []
+    if pending:
+        groups.append((f'{len(pending)} 个软件没判成 · 下周补', '有新版，但发布说明没读成或上游只有 tag 没有说明。', list(dict.fromkeys(pending))))
+    if unknown:
+        count = sum(len(v) for v in unknown.values())
+        note = ('对账没连上：' + '、'.join(sources) + '，这些部署沿用上次读数或读不到版本。') if sources else '这些部署读不到版本号。'
+        groups.append((f'{count} 处版本不明', note,
+                       [f'{name} ×{len(hosts)}' if len(hosts) > 1 else f'{name} · {hosts[0]}' for name, hosts in unknown.items()]))
+    elif sources:
+        groups.append((f'{len(sources)} 类来源没查全', '原因见本周对账记录。', sources))
+    if manual:
+        groups.append((f'{len(manual)} 个软件没有版本接口', '上游不提供可查的发布接口，需要人工看。', manual))
+    if other:
+        groups.append((f'{len(other)} 项其他', '', other))
+    return groups
+
+
 def render(report, versions, needs, now):
     views = software_views(report, versions)
     registry = report.get('feedback_targets') or targets(report, versions, needs)
@@ -78,8 +121,7 @@ def render(report, versions, needs, now):
             return '<li>' + h(value['text']) + '</li>'
         return f'<li><a href="{h(point_link(value["version"], releases))}" rel="noreferrer">{h(value["version"])}</a> {h(value["text"])}</li>'
 
-    up, wait, unseen = [], [], []
-    rendered_unknown = set()
+    up, wait = [], []
     for view in views:
         lead = view['lead']
         started = [datetime.fromisoformat(value['first_reported']) for _, value in view['entries']
@@ -100,8 +142,6 @@ def render(report, versions, needs, now):
                 label = ('服务端 ' if view['agents'] else '') + h(place['host']) + ' · ' + h(place['service'])
                 label += f' <small>{h(place["version"])}</small>' if len(view['servers']) > 1 else ''
                 if place['version'] == 'unknown':
-                    unseen.append(row(identity, target, h(target['label']) + '：版本不明，' + h(place['error'])))
-                    rendered_unknown.add((view['name'], place['host'], place['service']))
                     continue
             if target['role'] == 'server' and view['judged'].get(target['place']['id'], {}).get('verdict') != lead['verdict']:
                 label += ' <small>' + h(view['judged'].get(target['place']['id'], {}).get('verdict', '尚未判断')) + '</small>'
@@ -114,35 +154,36 @@ def render(report, versions, needs, now):
 <span class="count">{h(count_instances(view))}</span><span class="tag {'up' if is_up else 'wait'}">{h(lead['verdict'])}</span>{waited}</div>
 <p class="why">{h(lead['headline'])}</p>{points}{'<div class="inst">'+''.join(instance_rows)+'</div>' if instance_rows else ''}</section>'''
         if lead['verdict'] == '版本不明':
-
-            if instance_rows:
-                unseen.append(body)
+            continue
         elif is_up:
             up.append(body)
         else:
             wait.append(body)
     sections = ('<h2>该升</h2>' + ''.join(up) if up else '') + ('<h2>可以等</h2>' + ''.join(wait) if wait else '')
+    # 新功能和新需要要 Kun 作答，但不是本周重点，默认折起。
     features = [row(k, t) for k, t in registry.items() if t['kind'] == 'feature']
     if features:
-        sections += '<h2>可能用得上的新功能</h2><section class="card">' + ''.join(features) + '</section>'
+        sections += f'<details><summary>可能用得上的新功能 <span>{len(features)} 项</span></summary>' + ''.join(features) + '</details>'
     new_needs = [row(k, t) for k, t in registry.items() if t['kind'] == 'need']
     if new_needs:
-        sections += '<h2>需要确认</h2><section class="card">' + ''.join(new_needs) + '</section>'
+        sections += f'<details><summary>需要确认 <span>{len(new_needs)} 项</span></summary>' + ''.join(new_needs) + '</details>'
     blind = blind_spots(report['versions'], report.get('snapshot', versions), report.get('blind', []))
-    changes = report.get('changes', [])
-    if blind or unseen or changes:
+    groups = blind_groups(blind, versions)
+    # 版本号变化不算清单变化，只列新加和移出的软件。
+    changes = [c for c in report.get('changes', []) if c.get('action') != '更新']
+    if groups or changes:
         sections += '<h2>这周没看全的</h2>'
-    if blind or unseen:
-        content = ''.join(f'<p>{h(blind_text(b, versions))}</p>' for b in blind
-                          if (b.get('software'), b.get('host'), b.get('service')) not in rendered_unknown) + ''.join(unseen)
-        sections += f'<details><summary>{len(blind)} 项待补齐</summary>{content}</details>'
+    for title, note, chips in groups:
+        sections += f'<details><summary>{h(title)}</summary>' + (f'<p>{h(note)}</p>' if note else '')
+        sections += '<div class="chips">' + ''.join(f'<span>{h(c)}</span>' for c in chips) + '</div></details>'
     if changes:
         sections += '<details><summary>清单变化 ' + str(len(changes)) + ' 项</summary><div class="chips">'
         sections += ''.join(f'<span>{h(c.get("name") or c["id"])} · {h(c["action"])}</span>' for c in changes) + '</div></details>'
     stats = []
-    for count, text in ((len(up), '个软件该升'), (len(wait), '个可以等'), (len(blind), '项没看全'), (len(changes), '项清单变化')):
+    for count, text in ((len(up), '个软件该升'), (len(wait), '个可以等'), (len(changes), '项清单变化')):
         if count:
             stats.append(f'<b>{count}</b> {text}')
+    stats += [h(title.split(' · ')[0]) for title, _, _ in groups]
     top = ' · '.join(stats)
     if not up:
         top = '没有该升的项' + (' · ' + top if top else '')
