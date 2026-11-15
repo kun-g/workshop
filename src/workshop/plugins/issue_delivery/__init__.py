@@ -14,6 +14,7 @@ from .requirements import (approval_answer, changed_requirement, change_document
                            check_references, quoted_approval, section)
 from workshop.core.ports import Retryable
 from workshop.github_identity import scoped as github_scope
+from workshop.path_policy import only_ignored_paths
 
 # 合并失败后回查 PR，这些状态是要执行者动手的业务原因：退回执行，不算插件故障。
 BUSINESS_MERGE_STATES = ("dirty", "behind", "blocked", "unstable")
@@ -393,6 +394,14 @@ class IssueDelivery:
         opened = [row for row in rows if row["state"] == "open"]
         merged = [row for row in rows if row.get("merged_at") and row.get("merge_commit_sha")]
         return opened, max(merged, key=lambda row: (row["merged_at"], row["number"])) if merged else None
+
+    def _no_release_needed(self, target, pr):
+        if not target.get('release_ignored_paths'):
+            return False
+        files = self.io.pages(f"repos/{target['repo']}/pulls/{pr['number']}/files?per_page=100")
+        # pull files 上限 3000；少页、截断或缺总数不能当作无服务变化。
+        return (len(files) < 3000 and type(pr.get('changed_files')) is int
+                and len(files) == pr['changed_files'] and only_ignored_paths(files, target['release_ignored_paths']))
 
     def _delivery_done(self, target, state, sha):
         """这个提交交付完成过没有：after(交付) 走完时按提交号记在 delivered。
@@ -936,7 +945,9 @@ class IssueDelivery:
                     raise BusinessWait("合并结果未确认")
                 state["merge"] = pr["merge_commit_sha"]
                 self.io.save(item, target, state)
-                if target.get("release", "none") == "tag":
+                if target.get('release') in ('tag', 'scheduled') and self._no_release_needed(target, pr):
+                    state['non_release_merge'] = state['merge']
+                elif target.get("release", "none") == "tag":
                     self._tag(item, target, state)
                     if report(Receipt(**item.get("result", {"outcome": "done", "summary": ""}))).get("release_submitted") is True:
                         state["release_submitted"] = True

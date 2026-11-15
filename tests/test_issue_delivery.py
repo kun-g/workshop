@@ -1663,3 +1663,28 @@ def test_scheduled_delivery_merges_once_and_waits_for_deployment_without_tag(wor
     assert not world['flow'].after(data, '交付', 'scheduled', target).pending
     assert len([c for c in calls(world) if c[1:3] == ['pr', 'merge']]) == 1
     assert not any(c[0] == 'tag-release.sh' for c in calls(world))
+
+
+@pytest.mark.parametrize('files,changed,wait', [
+    ([{'filename': 'docs/guide.txt'}, {'filename': 'README.md'}, {'filename': 'services/api/tests/test_api.py'}], 3, False),
+    ([{'filename': 'src/api.py'}, {'filename': 'tests/test_api.py'}], 2, True),
+    ([{'filename': 'docs/guide.txt'}], 2, True),
+    ([{'filename': 'docs/guide.txt'}], None, True),
+    ([{'filename': 'docs/old.py', 'status': 'renamed', 'previous_filename': 'src/old.py'}], 1, True),
+])
+def test_non_runtime_merge_delivers_without_waiting_for_release(world, monkeypatch, files, changed, wait):
+    target = {**world['target'], 'release': 'scheduled', 'release_ignored_paths': ['docs/', '**/tests/', '*.md']}
+    data = snapshot(world, '交付')
+    remote = edit(world)
+    remote['pr']['changed_files'] = changed
+    edit(world, pr=remote['pr'])
+    world['io'].save(data, target, {'effects': {}, 'issue': 7, 'reviewed_head': world['sha']})
+    pages = world['io'].pages
+    monkeypatch.setattr(world['io'], 'pages', lambda endpoint: files if '/files?' in endpoint else pages(endpoint))
+    result = world['flow'].after(data, '交付', 'docs-only', target)
+    assert result.pending is wait
+    assert not any(c[0] == 'tag-release.sh' for c in calls(world))
+    state = world['io'].read(data, target)
+    assert (world['sha'] in state.get('delivered', [])) is (not wait)
+    if not wait:
+        assert not any(c[0] == 'kubectl' for c in calls(world))

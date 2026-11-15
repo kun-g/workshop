@@ -148,7 +148,7 @@ class Runner:
             raise Failure('推 production 的结果未确认')
         production = match[1]
         write(self.directory / 'production.json', {'revision': production, 'source_commit': self.sha})
-        synced = self.command(['scripts/sync-production.sh', production, '--session-id', self.spec['item'],
+        synced = self.command(['scripts/sync-production.sh', production, '--require-exec', '--session-id', self.spec['item'],
                                '--release-dir', str(self.directory), '--reason', f"车间整点批次 {self.spec['item']}"],
                               cwd=self.checkout, timeout=3600, check=False)
         grant = self.grant()
@@ -156,7 +156,7 @@ class Runner:
             # 3 也可能只是本地等待超时；只有服务端确认拒绝/过期才释放批次。
             status = self.grant_status(grant) if synced['exit_code'] == 3 else None
             terminal = status in ('denied', 'rejected', 'expired', 'expired-unfetched')
-            return {'status': 'rejected' if terminal else 'awaiting_grant' if status in ('pending', 'decision_in_progress') else 'blocked', 'grant': grant,
+            return {'status': 'rejected' if terminal else 'awaiting_grant' if status in ('pending', 'decision_in_progress', 'approved-executing') else 'blocked', 'grant': grant,
                     'grant_status': status, 'production': production,
                     'reason': f"同步退出 {synced['exit_code']}；授权状态 {status or '未确认为拒绝/过期'}；日志 {self.directory}"}
         self.verify(production)
@@ -168,7 +168,8 @@ class Runner:
     def grant_status(self, grant):
         if not grant.get('id'):
             return None
-        result = self.command(['python3', 'scripts/request_grant.py', 'status', grant['id']],
+        result = self.command(['python3', 'scripts/request_grant.py', 'status', grant['id'],
+                               *(['--kind', 'exec'] if grant.get('kind') == 'exec' else [])],
                               cwd=self.checkout, check=False)
         for stream in ('stdout', 'stderr'):
             try:
