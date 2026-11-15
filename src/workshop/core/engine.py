@@ -21,6 +21,7 @@ from .models import After, Answer, ChannelPoll, FlowBrief, Classification, Evide
 from .jobs import Pending
 from .records import StoredBrief, defer_items, materialize
 from .flows import entries, default_flow, matches
+from . import beat
 
 
 def gate(ingress):
@@ -1833,25 +1834,7 @@ class Engine:
         return min(waits)
 
     def tick(self, received_at=None):
-        began = time.monotonic()
-        self.tick_started = self.clock()
-        self.wake_ms = round(max(0, began - received_at) * 1000, 3) if received_at is not None else None
-        try:
-            self._tick(began)
-        except Exception as exc:
-            try:
-                with self.log.transaction():
-                    state = self.control("@tick")
-                    errors = [f["body"]["error"] for f in self.log.facts()
-                              if f["kind"] == "tick_failed" and f["seq"] >= state.get("since", 0)] if state.get("failures") else []
-                    if repr(exc) not in errors:
-                        self.fact("tick_failed", {"error": repr(exc)})
-                    self.tick_failures = min(10, max(self.tick_failures, state["failures"]) + 1) if state.get("failures") else 1
-                    if self.tick_failures in (1, 3, 10) and self.tick_failures != state.get("failures"):
-                        since = state.get("since") if state.get("failures") else self.log.db.execute("SELECT max(seq) FROM facts").fetchone()[0]
-                        self.fact("control", {"id": "@tick", "since": since, "failures": self.tick_failures})
-            except Exception as recording_error:
-                print(f"车间 tick 失败且暂时无法记录：{exc!r}; {recording_error!r}", file=sys.stderr)
+        beat.tick(self, received_at)
 
     def heartbeat(self, began=None):
         now = stamp(self.clock())
@@ -1874,88 +1857,7 @@ class Engine:
         self.tick_failures = 0
 
     def _tick(self, began=None):
-        with self.exclusive():
-            if self.jobs:
-                self.jobs.reap()
-            if not getattr(self, "cleaned_flows", False):
-                self.cleanup_flows()
-                self.cleaned_flows = True
-            self.sources()
-            self.classify_events()
-            self.channels()
-            self.timers()
-            for row in self.active():
-                item = self.log.get("items", row["item"])
-                try:
-                    expired = row.get("deadline", "9999") <= stamp(self.clock())
-                    if row["status"] == "starting" and not row.get("started") and not row.get("abort_requested") and not expired:
-                        if self.flow_broken(item["target"], item.get("flow", "")):
-                            continue
-                        try:
-                            self.launch(row)
-                        except Unavailable:
-                            # 启动作业晚于预订出结果：放开这一轮，避开最近没法用的执行者另挑。
-                            self.release_unavailable(row)
-                            self.reserve(self.log.get("items", item["id"]))
-                            continue
-                        row = self.log.get("rounds", row["token"])
-                    if row["status"] == "starting" and (row.get("abort_requested") or expired):
-                        self.automatic_failure(row["token"], row.get("abort_requested") or "这一轮超过规则期限")
-                    else:
-                        self.check_round(row)
-                    row = self.log.get("rounds", row["token"])
-                    if row["status"] == "finishing":
-                        self.finish(row)
-                except Pending:
-                    continue  # 这一轮在等作业出结果，下一拍再看。
-                except Retryable as exc:
-                    self.start_retry(item, row, "executor", row["executor"], exc)
-                except Exception as exc:
-                    self.broken(item["target"], "executor", row["executor"], exc)
-            for item in self.log.all("items"):
-                try:
-                    self.advance(item)
-                except Pending:
-                    continue  # 这件活在等作业出结果，下一拍再看；别的活照常推进。
-            self.release_workdirs()
-            self.channels()
-            self.heartbeat(began)
+        beat.one(self, began)
 
     def advance(self, item):
-        control = self.control(item["target"])
-        if control.get("paused") or self.flow_broken(item["target"], item.get("flow", "")):
-            return
-        if item["state"] == "等你" and not self.answerable(item):
-            self.change(item, state="等你", next=item.get("next"), leave=item.get("leave"),
-                        gate_reason=item.get("gate_reason") or item.get("blocked_by"))
-            item = self.log.get("items", item["id"])
-        if item.get("program"):
-            self.finish(item["program"])
-            return
-        if (item["pending_rework"] and item["depth"] <= self.rules.data["limits"]["chain_depth"]
-                and not any(r["item"] == item["id"] for r in self.active())):
-            if self.jobs and item.get("workdir") and not item.get("workdir_released"):
-                identity = [item["id"], item.get("pending_episode", 0), item["workdir"], item.get("release_at")]
-                if any(self.jobs.exists("executor", name, "release", identity)
-                       for name in item.get("sessions") or {}):
-                    # 正在收回的目录不能同时给新一轮用；本拍末尾先结算收回结果。
-                    return
-            with self.log.transaction():
-                self.cancel_questions(item)
-                self.change(item, stage="执行" if item["checks"] else "说清楚", state="空闲",
-                            **({} if item["checks"] else {"serial_hold": False}),
-                            pending_rework=False, approved=[], pending_advance=None, reviews=[], review_required=1,
-                            after_pending_count=0, after_wait=None, pending_episode=item.get("pending_episode", 0) + 1,
-                            wait_for_ready=False, retry_executor=None, gate_count=0, next="按新事件返工")
-            item = self.log.get("items", item["id"])
-        self.recheck_after(item)
-        item = self.log.get("items", item["id"])
-        self.complete_approval(item)
-        item = self.log.get("items", item["id"])
-        if not self.taskhome(item):
-            return
-        item = self.log.get("items", item["id"])
-        if item["state"] in ("空闲", "排队") and not item.get("after_wait"):
-            item = self.serial_queue(item)
-        if item["state"] == "空闲" and not item.get("after_wait"):
-            self.reserve(item)
+        beat.advance(self, item)
