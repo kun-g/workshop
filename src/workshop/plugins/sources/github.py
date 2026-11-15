@@ -15,7 +15,7 @@ import tempfile
 from urllib.parse import urlencode
 
 from workshop.core.models import Event, Poll
-from workshop.core.ports import Retryable
+from workshop.core.ports import Retryable, TargetBlocked
 from workshop.github_identity import scoped, run as identity_run
 
 
@@ -93,6 +93,9 @@ class GitHubSource:
             args += ["-H", f'If-None-Match: {old["etag"]}']
         try:
             result = identity_run(args, text=True, capture_output=True, timeout=min(12, remaining))
+        except TargetBlocked as exc:
+            # 此处只发 GET；签发失败和读取结果未确认均可重试，写入仍保留原阻塞语义。
+            raise Retryable(str(exc)) from None
         except (OSError, subprocess.TimeoutExpired) as exc:
             raise Retryable("GitHub 读取暂时不可用") from exc
         raw = result.stdout.replace("\r\n", "\n")

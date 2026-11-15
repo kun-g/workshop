@@ -13,7 +13,7 @@ class Unavailable(Exception):
 
 
 class Retryable(Exception):
-    """暂时故障；启动方法仅在确认没有启动副作用时使用。核心退避，连续三次升级故障。"""
+    """暂时故障；启动方法仅在确认没有启动副作用时使用。来源退避至30分钟，其余连续三次升级故障。"""
 
 
 class TargetBlocked(Exception):

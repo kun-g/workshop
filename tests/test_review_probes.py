@@ -324,7 +324,10 @@ def test_17_transient_source_backoff_then_fault(engine, monkeypatch):
     engine.tick()
     engine.clock.now += timedelta(minutes=10)
     engine.tick()
-    assert len(calls) == 3 and engine.control("alpha")["broken"]
+    assert len(calls) == 3 and not engine.control("alpha").get("broken")
+    engine.clock.now += timedelta(minutes=15)
+    engine.tick()
+    assert len(calls) == 4 and engine.control("alpha")["broken"]
 
 
 def test_18_cli_event_infers_chain_depth(engine, tmp_path):

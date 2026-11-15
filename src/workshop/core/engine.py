@@ -856,9 +856,27 @@ class Engine:
                 except Pending:
                     continue
                 except Retryable as exc:
-                    self.retry_failure(target, "source", name, f"source:{key}", exc)
+                    self.source_retry(target, name, exc)
                 except Exception as exc:
                     self.broken(target, "source", name, exc)
+
+    def source_retry(self, target, name, exc):
+        """只读来源按持续时长退避；其他端口仍沿用各自的失败处理。"""
+        key = f"retry:source:{target}:{name}"
+        with self.log.transaction():
+            state = self.control(key)
+            now = self.clock()
+            since = state.get("since") if state.get("count") else None
+            since = datetime.fromisoformat(since) if since else now
+            count = state.get("count", 0) + 1
+            elapsed = (now - since).total_seconds()
+            delay = (60, 120, 300, 600)[min(count - 1, 3)]
+            at = stamp(min(now + timedelta(seconds=delay), since + timedelta(minutes=30))) if elapsed < 1800 else None
+            self.fact("plugin_retry", {"target": target, "port": "source", "name": name,
+                      "count": count, "error": str(exc), "since": stamp(since), "elapsed_seconds": elapsed, "at": at})
+            self.fact("control", {"id": key, "count": count, "since": stamp(since), "at": at})
+            if elapsed >= 1800:
+                self.broken(target, "source", name, Retryable(f"来源连续失败 {elapsed:.0f} 秒；最后错误：{exc}"))
 
     def delivery_error(self, key, exc, item=None):
         state = self.control(f"delivery:{key}")
@@ -1368,7 +1386,7 @@ class Engine:
 
     def retry_clear(self, key):
         if self.control(f"retry:{key}").get("count"):
-            self.fact("control", {"id": f"retry:{key}", "count": 0, "at": None})
+            self.fact("control", {"id": f"retry:{key}", "count": 0, "at": None, "since": None})
 
     def retry_failure(self, target, port, name, key, exc):
         count = self.control(f"retry:{key}").get("count", 0) + 1
