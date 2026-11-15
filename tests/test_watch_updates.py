@@ -402,17 +402,17 @@ def test_report_delivery_journal_survives_partial_failure(world):
     calls = []
     def command(argv, **kwargs):
         calls.append(argv)
-        fail = '--file' in argv and len(calls) == 2
+        fail = '--file' in argv and len(calls) == 1
         return subprocess.CompletedProcess(argv, 1 if fail else 0, json.dumps({'ok': not fail, 'data': {'message_id': 'om_sent'}}), '')
     real.command = command
     report = {'id': 'weekly', 'path': str(Path(c['reports'])/'weekly.html'), 'summary': 'summary'}
     with pytest.raises(ValueError, match='发送未确认'):
         real.send_report(target, report)
     real.send_report(target, report)
-    assert sum('--text' in a for a in calls) == 1
+    assert sum('--text' in a for a in calls) == 0
     assert sum('--file' in a for a in calls) == 2
     real.send_report(target, report)
-    assert len(calls) == 3
+    assert len(calls) == 2
 
 
 def test_unknown_deployment_does_not_block_known_deployment_or_invent_judgment(world):
@@ -564,7 +564,7 @@ def test_bad_upstream_is_rejected_and_gitlab_failure_is_deduplicated(world, monk
     assert source.poll(target, poll.cursor).events == []
 
 
-def test_feishu_summary_has_one_line_per_software_and_reaches_text_sender(world):
+def test_feishu_gets_only_the_attachment_and_summary_stays_on_record(world):
     io, target, flow, source = world
     item, poll = judged(world, urgent=True)
     advance(flow, item, target, '交付')
@@ -580,8 +580,8 @@ def test_feishu_summary_has_one_line_per_software_and_reaches_text_sender(world)
         return subprocess.CompletedProcess(argv, 0, '{"ok":true}', '')
     real.command = send
     real.send_report(target, report)
-    assert calls[0][calls[0].index('--text') + 1] == report['summary']
-    assert '--file' in calls[1]
+    # R14（11-15）：飞书只发附件，逐行摘要只留在报告记录里。
+    assert len(calls) == 1 and '--file' in calls[0] and '--text' not in calls[0]
 
 
 def test_real_engine_wait_feedback_rework_completion_and_replay(world, tmp_path):
