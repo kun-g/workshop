@@ -131,6 +131,7 @@ version=unknown 的部署不猜，其他部署照常。只有 tag 没有发布�
 headline 和 points 是给 Kun 看的：不写资料缺什么、什么没证实、为什么不标紧急、容器数；这些依据放进给程序的 references、signals、links，这些字段不显示给人。基础设施看安全、兼容、支持期限，agent 工具看功能及已碰到的问题；落后多少不是该升理由。
 紧急只限对外开放且影响在用版本的高危漏洞，或两端断连；重要是修复已碰到问题或当前要用的功能。新功能对上在做的事时写 features，summary 一句话写清功能跟哪件事有关，不超过 50 字，没有则省略。
 verdict 只能填 该升、可以等、不用升；priority 只能填 紧急、重要、普通（都用中文原词）。
+references 只能填资料里 needs 的 id、directions 的 id 或 profile，该升至少填一个，重要须有 needs 或 directions 的 id；links 原样用 releases 里的 html_url；features.direction 只能填 directions 的 id。
 反馈「判错了」后按 correction 原话重判。回执 outcome=done、advance=证据，evidence 内 JSON 字符串：schema=watch-updates/v1，judgment={instances:[{id,verdict,priority,headline,points:[{version,text}],links:[发布说明链接],references:[依据id],signals:{high_risk_vulnerability:false,connection_failure:false},features:[{id,summary,direction}]}]}。
 不能判断就交 outcome=nothing，在同一证据 JSON 写 blocked={reason,next}；不能猜。'''
         return FlowBrief(instructions, workdir=self.io.workdir(target, 'reader'), readonly=True, materials=[{'source': 'watch_updates_snapshot', 'body': {

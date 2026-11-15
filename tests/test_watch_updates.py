@@ -299,7 +299,7 @@ def test_validation_requires_matching_need_and_actual_vulnerability_exposure(wor
         validate_judgment(j, s, io.upstream, io.needs(target), io.directions(target))
     s['profile']['exposed'] = True
     j['instances'][0]['references'] = ['invented']
-    with pytest.raises(ValueError, match='须引用'):
+    with pytest.raises(ValueError, match='references'):
         validate_judgment(j, s, io.upstream, io.needs(target), io.directions(target))
 
 
