@@ -200,7 +200,7 @@ def validate_judgment(value, software, releases, needs, directions):
             if point['text'] != UPGRADE_ORDER and (len(point['text']) > 45 or HEDGE.search(point['text'])):
                 raise ValueError('每条要点只写一个变化，不超过 45 字（版本号另列，不算在内），不写资料缺口、未证实、为何不标紧急等给校验的话')
         if row.get('verdict') not in ('该升', '可以等', '不用升') or row.get('priority') not in ('紧急', '重要', '普通'):
-            raise ValueError('结论或紧急程度无效')
+            raise ValueError('verdict 只能是 该升/可以等/不用升，priority 只能是 紧急/重要/普通（中文原词）')
         if not row.get('links') or not set(row['links']).issubset(links):
             raise ValueError('判断须引用本次发布说明')
         if row['verdict'] == '该升' and (not row.get('references') or not set(row['references']).issubset(references)):
