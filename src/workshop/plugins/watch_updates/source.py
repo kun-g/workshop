@@ -67,8 +67,7 @@ class Source:
                     releases = release_range(row, self.io.releases(target, row))
                     if not releases:
                         continue
-                    # 键带 notes-file：11-15 起事件不再带发布说明正文，换键让旧格式的活不再挡住重发。
-                    key = row['id'] + '-' + digest(['notes-file', releases[-1]['tag_name']])
+                    key = row['id'] + '-' + digest(releases[-1]['tag_name'])
                     if key in old['seen']:
                         continue
                     batch.append(key)
