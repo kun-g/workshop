@@ -32,8 +32,11 @@ def path(value):
 
 
 def read(file, default=None):
+    # 状态、快照是 JSON，用 json 读：PyYAML 读 11-15 首跑时 98MB 的 state.json 要几分钟，
+    # 每个流程作业都要读一遍，整条流程被拖住。清单、台账是 YAML。
     try:
-        return yaml.safe_load(Path(file).read_text())
+        text = Path(file).read_text()
+        return json.loads(text) if Path(file).suffix == '.json' else yaml.safe_load(text)
     except FileNotFoundError:
         return {} if default is None else default
 
