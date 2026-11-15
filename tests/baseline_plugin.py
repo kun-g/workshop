@@ -503,9 +503,20 @@ def _replace_roots(text, roots):
     for root, label in sorted(roots.items(), key=lambda item: len(item[0]), reverse=True):
         if root and root in text:
             text = text.replace(root, label)
-    executable = sys.executable
-    if executable and executable in text:
-        text = text.replace(executable, "$python")
+    raw = Path(sys.executable)
+    spellings = {sys.executable, str(raw.resolve())}
+    for root, label in roots.items():
+        if label != "$repo":
+            continue
+        repo = Path(root)
+        for candidate in (raw, raw.resolve()):
+            try:
+                spellings.add(label + "/" + candidate.relative_to(repo).as_posix())
+            except ValueError:
+                continue
+    for spelling in sorted(spellings, key=len, reverse=True):
+        if spelling and spelling in text:
+            text = text.replace(spelling, "$python")
     for directory in _WAKE_TMP.findall(text):
         text = text.replace(directory, "$tmpdir")
     return text

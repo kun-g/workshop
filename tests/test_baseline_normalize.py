@@ -1,5 +1,7 @@
 """归一化要保住注入时钟的时刻，并且认 macOS 的 /private/tmp。"""
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
+import sys
 
 from baseline_plugin import _clock_instants, _note_instant, canonicalize
 from workshop.core.models import due, stamp
@@ -72,6 +74,15 @@ def test_numbered_pytest_directory_collapses():
         {"/tmp/pytest-of-x": "$pytest", "/tmp/pytest-of-x/test_tick_reads_do_not_grow_wi4": "$testtmp"},
     )
     assert first == second == "$testtmp/0100/workshop.db"
+
+
+def test_interpreter_inside_repo_becomes_python_token():
+    raw = Path(sys.executable)
+    repo = next(parent for parent in raw.parents if (parent / "pyproject.toml").is_file())
+    assert canonicalize(str(raw), {str(repo): "$repo"}) == "$python"
+    relative = "$repo/" + raw.relative_to(repo).as_posix()
+    assert canonicalize(relative, {str(repo): "$repo"}) == "$python"
+    assert canonicalize(str(raw.resolve()), {str(repo): "$repo"}) == "$python"
 
 
 def test_wake_directory_matches_private_tmp():
