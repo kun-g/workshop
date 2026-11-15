@@ -6,7 +6,7 @@ from zoneinfo import ZoneInfo
 
 from workshop.core.models import Event, Poll
 from .io import IO
-from .model import digest, release_range, validate_software
+from .model import digest, release_range, upstream, validate_software
 
 
 class Source:
@@ -52,6 +52,8 @@ class Source:
             for row in software:
                 try:
                     validate_software(row)
+                    if upstream(row)['kind'] == 'manual':
+                        continue
                     releases = release_range(row, self.io.releases(target, row))
                     if not releases:
                         continue

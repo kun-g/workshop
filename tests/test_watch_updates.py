@@ -10,7 +10,7 @@ import pytest
 from workshop.core.models import Event, Receipt
 from workshop.plugins.watch_updates.flow import Flow, feedback
 from workshop.plugins.watch_updates.io import IO, read, write
-from workshop.plugins.watch_updates.model import SCHEMA, reconcile, release_range, validate_judgment, version
+from workshop.plugins.watch_updates.model import SCHEMA, reconcile, release_range, validate_judgment, validate_software, version
 from workshop.plugins.watch_updates.report import render
 from workshop.plugins.watch_updates.source import Source
 
@@ -376,7 +376,11 @@ def test_unknown_version_snapshot_and_git_commit(world):
     state = io.state(target)
     assert state['weeks'][item['object_key']]['commit']
     after = source.poll(target, poll.cursor)
-    assert len(after.events) == 1 and after.events[0].body['error'] == 'version command exit 1'
+    assert after.events == []  # 单处版本不明不再另开失败活，周报列盲区。
+    advance(flow, item, target, '执行')
+    io.time += timedelta(minutes=61)
+    advance(flow, item, target, '交付')
+    assert 'version command exit 1' in io.sent[0]['summary']
     assert source.poll(target, after.cursor).events == []
 
 
@@ -399,6 +403,161 @@ def test_report_delivery_journal_survives_partial_failure(world):
     assert sum('--file' in a for a in calls) == 2
     real.send_report(target, report)
     assert len(calls) == 3
+
+
+def test_unknown_deployment_does_not_block_known_deployment_or_invent_judgment(world):
+    io, target, flow, source = world
+    row = software()
+    row['instances'][0].update(version='unknown', error='ssh 连不上')
+    write(io.file(target, 'watchlist'), {'schema': SCHEMA, 'software': [row]})
+    assert [r['tag_name'] for r in release_range(row, io.upstream)] == ['2.0.0']
+    item, poll = judged(world, urgent=True)
+    assert not any(e.body['kind'] == 'failure' for e in poll.events)
+    saved = io.state(target)['versions'][item['object_key']]['judgment']['instances']
+    unknown = next(r for r in saved if r['id'] == 'one')
+    assert unknown['verdict'] == '版本不明' and unknown['reason'] == 'ssh 连不上'
+    assert unknown['features'] == []  # 即使模型给这处「紧急该升」，也不能猜。
+    advance(flow, item, target, '交付')
+    report = io.sent[0]
+    assert 'n8n · dc1/first.example · 版本不明 → 2.0.0 · 版本不明（普通）：ssh 连不上' in report['summary']
+    assert 'n8n · dc2/second.example · 1.1.0 → 2.0.0 · 该升（紧急）' in report['summary']
+    html = Path(report['path']).read_text()
+    assert 'ssh 连不上' in html and '版本不明' in html and 'second.example' in html
+    known_only = {'instances': [judgment()['instances'][1]]}
+    assert len(validate_judgment(known_only, row, io.upstream, io.needs(target), io.directions(target))['instances']) == 2
+
+
+def test_all_unknown_deployments_fail_once_without_guessing(world):
+    io, target, flow, source = world
+    row = software()
+    for place in row['instances']:
+        place.update(version='unknown', error='ssh 连不上')
+    write(io.file(target, 'watchlist'), {'schema': SCHEMA, 'software': [row]})
+    first = source.poll(target, None)
+    failures = [e for e in first.events if e.body['kind'] == 'failure']
+    assert len(failures) == 1 and '所有部署版本不明' in failures[0].body['error']
+    assert not any(e.body['kind'] == 'version' for e in first.events)
+    io.time += timedelta(days=1)
+    assert source.poll(target, first.cursor).events == []
+
+
+@pytest.mark.parametrize('unknown', [False, True])
+def test_manual_upstream_skips_daily_fetch_and_appears_in_empty_weekly(world, unknown):
+    io, target, flow, source = world
+    row = software('DSM', upstream={'kind': 'manual', 'reason': '没有公开版本查询接口'})
+    row.pop('tag_pattern')
+    row.pop('prerelease')
+    row['instances'][0]['version'] = 'DSM 7.3-81180'
+    if unknown:
+        for place in row['instances']:
+            place.update(version='unknown', error='未取得版本')
+    validate_software(row)
+    write(io.file(target, 'watchlist'), {'schema': SCHEMA, 'software': [row]})
+    io.upstream = AssertionError('manual 不应调用任何上游')
+    poll = source.poll(target, None)
+    assert [e.body['kind'] for e in poll.events] == ['reconcile'] and io.release_calls == []
+    item = item_for(poll.events[0])
+    proposal = {'sources': [{'id': 'server', 'ok': True, 'evidence': 'read'}], 'software': [row], 'needs': []}
+    advance(flow, item, target, '说清楚', {'inventory': proposal})
+    advance(flow, item, target, '执行')
+    advance(flow, item, target, '交付')
+    assert io.sent[0]['versions'] == []
+    assert io.sent[0]['blind'][0]['kind'] == 'manual'
+    assert 'DSM' in io.sent[0]['summary'] and '没有公开版本查询接口' in io.sent[0]['summary']
+    assert '人工核对上游' in Path(io.sent[0]['path']).read_text()
+    io.time += timedelta(days=1)
+    assert source.poll(target, poll.cursor).events == []
+    assert io.release_calls == []
+
+
+@pytest.mark.parametrize('kind', ['github_releases', 'github_tags'])
+def test_github_upstream_adapters_paginate_and_normalize(monkeypatch, kind):
+    import workshop.plugins.watch_updates.io as module
+    calls = []
+    tags = ['1.1.0', '2.0.0', '3.0.0-rc.1', 'stable']
+    rows = [{'name': t} for t in tags] if kind == 'github_tags' else [release(t) for t in tags]
+    def command(argv, **kwargs):
+        calls.append(argv)
+        return subprocess.CompletedProcess(argv, 0, json.dumps([rows[:1], rows[1:]]), '')
+    monkeypatch.setattr(module, 'run', command)
+    row = software(upstream={'kind': kind, 'repo': 'example/n8n'})
+    validate_software(row)
+    releases = IO().releases({}, row)
+    assert [r['tag_name'] for r in release_range(row, releases)] == ['1.1.0', '2.0.0']
+    endpoint = 'tags' if kind == 'github_tags' else 'releases'
+    assert calls == [['gh', 'api', '--paginate', '--slurp', f'repos/example/n8n/{endpoint}?per_page=100']]
+    if kind == 'github_tags':
+        assert releases[1]['html_url'] == 'https://github.com/example/n8n/tree/2.0.0'
+        assert releases[1]['notes_missing'] and '没有发布说明' in releases[1]['body']
+    else:
+        assert releases[1]['body'] == 'Release notes 2.0.0'
+    # 首版字符串清单继续按 GitHub Releases 查。
+    IO().releases({}, software())
+    assert '/releases?' in calls[-1][-1]
+
+
+def test_gitlab_public_releases_paginate_encode_project_and_preserve_notes(monkeypatch):
+    import io as streams
+    import workshop.plugins.watch_updates.io as module
+    calls = []
+    def fetch(url, timeout):
+        calls.append(url)
+        page = len(calls)
+        tag = '1.1.0' if page == 1 else '2.0.0'
+        response = streams.BytesIO(json.dumps([{'tag_name': tag, 'description': '完整发布说明 ' + tag,
+            '_links': {'self': 'https://gitlab.com/group/sub/repo/-/releases/' + tag}}]).encode())
+        response.headers = {'X-Next-Page': '2' if page == 1 else ''}
+        return response
+    monkeypatch.setattr(module, 'urlopen', fetch)
+    monkeypatch.setattr(module, 'run', lambda *a, **kw: pytest.fail('GitLab 不使用 gh 或其凭据'))
+    row = software(upstream={'kind': 'gitlab_releases', 'project': 'group/sub/repo'})
+    validate_software(row)
+    rows = IO().releases({}, row)
+    assert [r['tag_name'] for r in release_range(row, rows)] == ['1.1.0', '2.0.0']
+    assert rows[1]['body'] == '完整发布说明 2.0.0'
+    assert rows[1]['html_url'].endswith('/-/releases/2.0.0')
+    assert calls == [f'https://gitlab.com/api/v4/projects/group%2Fsub%2Frepo/releases?per_page=100&page={p}' for p in (1, 2)]
+
+
+def test_bad_upstream_is_rejected_and_gitlab_failure_is_deduplicated(world, monkeypatch):
+    from urllib.error import URLError
+    import workshop.plugins.watch_updates.io as module
+    for upstream in ({'kind': 'shell', 'repo': 'x/y'}, {'kind': 'manual'},
+                     {'kind': 'gitlab_releases', 'project': 'https://private.example/x'}):
+        with pytest.raises(ValueError):
+            validate_software(software(upstream=upstream))
+    io, target, flow, source = world
+    row = software(upstream={'kind': 'gitlab_releases', 'project': 'group/repo'})
+    write(io.file(target, 'watchlist'), {'schema': SCHEMA, 'software': [row]})
+    io.releases = IO.releases.__get__(io)
+    def fail(*args, **kwargs):
+        raise URLError('连接失败')
+    monkeypatch.setattr(module, 'urlopen', fail)
+    poll = source.poll(target, None)
+    assert len([e for e in poll.events if e.body['kind'] == 'failure']) == 1
+    io.time += timedelta(days=1)
+    assert source.poll(target, poll.cursor).events == []
+
+
+def test_feishu_summary_has_one_line_per_deployment_and_reaches_text_sender(world):
+    io, target, flow, source = world
+    item, poll = judged(world, urgent=True)
+    advance(flow, item, target, '交付')
+    report = io.sent[0]
+    lines = [line for line in report['summary'].splitlines() if line.startswith('n8n ·')]
+    assert len(lines) == 2
+    assert 'dc1/first.example · 1.0.0 → 2.0.0 · 该升（紧急）' in lines[0]
+    assert 'dc2/second.example · 1.1.0 → 2.0.0 · 该升（紧急）' in lines[1]
+    target['watch_updates'].update(lark='lark-cli', profile='test', kun_open_id='test')
+    real = IO(io.clock)
+    calls = []
+    def send(argv, **kwargs):
+        calls.append(argv)
+        return subprocess.CompletedProcess(argv, 0, '{"ok":true}', '')
+    real.command = send
+    real.send_report(target, report)
+    assert calls[0][calls[0].index('--text') + 1] == report['summary']
+    assert '--file' in calls[1]
 
 
 def test_real_engine_wait_feedback_rework_completion_and_replay(world, tmp_path):
