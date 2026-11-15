@@ -232,3 +232,9 @@ def test_version_only_changes_are_not_listed():
     report['changes'] = [{'id': 'a', 'name': 'Alpha', 'action': '更新'}, {'id': 'b', 'name': 'Beta', 'action': '加入'}]
     html = render(report, versions, [], datetime.now(timezone.utc))
     assert '清单变化 1 项' in html and 'Alpha' not in html and 'Beta · 加入' in html
+
+
+def test_release_vocabulary_is_not_mistaken_for_hedging():
+    value = judgment()
+    value['instances'][0].update(headline='SSH 转发隔离和角色校验有修复', points=[{'version': '2.0.0', 'text': 'TLS 校验拒绝非规范 IP 地址'}])
+    validate_judgment(value, software(), [release('2.0.0')], [], [{'id': 'project'}])

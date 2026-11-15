@@ -7,7 +7,7 @@ import re
 SCHEMA = 'watch-updates/v1'
 UPGRADE_ORDER = '先升服务端，agent 跟着升；agent 不能比服务端新。'
 # 给人看的字段里不许出现写给校验程序的辩护（Kun 11-15：报告里的理由「是给人看的？重点是什么？」）。
-HEDGE = re.compile(r'profile|needs?|directions?|资料|证实|核实|不能(认定|据此|按|假定|当作|确定)|不标紧急|判紧急|校验|个容器|[\r\n]', re.I)
+HEDGE = re.compile(r'profile|needs?|directions?|资料|证实|核实|不能(认定|据此|按|假定|当作|确定)|不标紧急|判紧急|个容器|[\r\n]', re.I)
 
 
 def digest(value):
