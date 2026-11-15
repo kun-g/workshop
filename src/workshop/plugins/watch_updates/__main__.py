@@ -1,22 +1,61 @@
-"""可以独立运行的清单和需要台账检查，不访问网络。"""
+"""清单检查、私有预览、补发周报；只有显式 resend-weekly 会发送。"""
 import argparse
+import json
+import sys
 
 from .flow import Flow
-from .io import IO
+from .io import IO, path, read
+from .operations import prepare_preview, render_preview, resend_weekly
 
 
-def main():
+def configured(args):
+    rules = read(path(args.rules))
+    if args.target not in rules.get('targets', {}):
+        raise ValueError('规则中不存在交付对象：' + args.target)
+    return {**rules['targets'][args.target], 'name': args.target}
+
+
+def main(argv=None):
     parser = argparse.ArgumentParser()
-    parser.add_argument('--watchlist', required=True)
-    parser.add_argument('--needs', required=True)
-    args = parser.parse_args()
-    target = {'watch_updates': vars(args)}
-    io = IO()
-    rows = io.watchlist(target)['software']
-    needs = io.needs(target)
-    Flow.validate_needs(needs)
-    print(f'清单与需要台账检查通过：{len(rows)} 个软件、{len(needs)} 条需要')
+    # 保留原独立检查命令，Flow.checks 和旧脚本仍可使用。
+    parser.add_argument('--watchlist')
+    parser.add_argument('--needs')
+    commands = parser.add_subparsers(dest='command')
+    prepare = commands.add_parser('prepare-preview', help='从真实状态导出 1–2 个版本的新判断资料，不发送')
+    prepare.add_argument('--version', action='append', required=True)
+    prepare.add_argument('--output', required=True, help='尚不存在的私有输出目录')
+    render = commands.add_parser('render-preview', help='校验新判断并渲染隔离周报，不发送')
+    render.add_argument('--preview', required=True)
+    render.add_argument('--judgments', required=True)
+    resend = commands.add_parser('resend-weekly', help='显式补发本周周报；同 request 重试不重复发')
+    resend.add_argument('--request', required=True, help='稳定请求标识；重试必须用相同标识')
+    for sub in (prepare, resend):
+        sub.add_argument('--rules', default='rules/workshop.yaml')
+        sub.add_argument('--target', required=True)
+    args = parser.parse_args(argv)
+    try:
+        if args.command == 'prepare-preview':
+            result = prepare_preview(configured(args), args.version, args.output)
+        elif args.command == 'render-preview':
+            result = render_preview(args.preview, args.judgments)
+        elif args.command == 'resend-weekly':
+            result = resend_weekly(configured(args), args.request)
+        else:
+            if not args.watchlist or not args.needs:
+                parser.error('检查清单须提供 --watchlist 和 --needs')
+            target = {'watch_updates': {'watchlist': args.watchlist, 'needs': args.needs}}
+            io = IO()
+            rows, needs = io.watchlist(target)['software'], io.needs(target)
+            Flow.validate_needs(needs)
+            print(f'清单与需要台账检查通过：{len(rows)} 个软件、{len(needs)} 条需要')
+            return 0
+        print(json.dumps(result, ensure_ascii=False))
+        return 0 if result['status'] != 'pending' else 2
+    except (ValueError, OSError, KeyError, TypeError) as exc:
+        context = f' request={args.request}' if args.command == 'resend-weekly' else ''
+        print(f'盯更新失败{context}：{exc}', file=sys.stderr)
+        return 1
 
 
 if __name__ == '__main__':
-    main()
+    sys.exit(main())

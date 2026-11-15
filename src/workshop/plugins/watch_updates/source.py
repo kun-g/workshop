@@ -1,11 +1,10 @@
 """每天读上游，每周发一次对账事件；游标与事件由核心同时确认。"""
-from datetime import timedelta
 import json
 import subprocess
-from zoneinfo import ZoneInfo
 
 from workshop.core.models import Event, Poll
 from .io import IO
+from .calendar import period
 from .model import digest, release_range, upstream, validate_software
 
 
@@ -31,9 +30,7 @@ class Source:
         if not c.get('enabled', False):
             return Poll([], cursor)
         old = json.loads(cursor) if cursor else {'seen': [], 'outbox': [], 'day': '', 'week': ''}
-        now = self.io.clock().astimezone(ZoneInfo(c['timezone']))
-        day = (now if now.hour >= c['hour'] else now - timedelta(days=1)).date()
-        week = day - timedelta(days=(day.weekday() - c['weekday']) % 7)
+        day, week = period(c, self.io.clock())
         events = []
         state = self.io.state(target)
 

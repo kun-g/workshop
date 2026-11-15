@@ -5,9 +5,44 @@ import re
 
 
 SCHEMA = 'watch-updates/v1'
+VERDICTS = ('该升', '可以等', '不用升')
+PRIORITIES = ('紧急', '重要', '普通')
+HEADLINE_LIMIT = 40
+POINT_LIMIT = 45
+POINTS_LIMIT = 3
+FEATURE_LIMIT = 50
+PROFILE_REFERENCE = 'profile'
+
 UPGRADE_ORDER = '先升服务端，agent 跟着升；agent 不能比服务端新。'
 # 给人看的字段里不许出现写给校验程序的辩护（Kun 11-15：报告里的理由「是给人看的？重点是什么？」）。
 HEDGE = re.compile(r'profile|needs?|directions?|资料|证实|核实|不能(认定|据此|按|假定|当作|确定)|不标紧急|判紧急|个容器|[\r\n]', re.I)
+
+
+def judgment_sources(releases, needs, directions):
+    """说明与校验共享本轮可引用值，不从外部正文解释出新规则。"""
+    return {
+        'links': {r['html_url'] for r in releases},
+        'references': {n['id'] for n in needs} | {d['id'] for d in directions} | {PROFILE_REFERENCE},
+        'directions': {d['id'] for d in directions},
+    }
+
+
+def judgment_spec(releases, needs, directions):
+    sources = judgment_sources(releases, needs, directions)
+    return f'''verdict 只能填 {'、'.join(VERDICTS)}；priority 只能填 {'、'.join(PRIORITIES)}（中文原词）。
+instances 必须逐处覆盖全部已知版本的 server，id 来自 software.instances，不重复、不添加部署；agent 和 unknown 的结论由程序派生。
+每项 id、headline 必填且为非空字符串；headline 先说原因，不超过 {HEADLINE_LIMIT} 字。
+points 必须是列表，最多 {POINTS_LIMIT} 条；每条 {{version,text}} 都是非空字符串，text 不超过 {POINT_LIMIT} 字。
+points.version 必须对应本轮 releases.tag_name（可省略 v 前缀），且该发布的 html_url 是 HTTPS 链接。
+links 必填非空列表，原样取 releases.html_url：{json.dumps(sorted(sources['links']), ensure_ascii=False)}。
+references 引用 needs.id、directions.id 或 {PROFILE_REFERENCE}，本轮可用：{json.dumps(sorted(sources['references']), ensure_ascii=False)}；该升至少填一个且全部合法。
+紧急、重要须为该升；重要的 references 至少含一个 needs.id 或 directions.id，不能仅有 {PROFILE_REFERENCE}。
+紧急须 signals.high_risk_vulnerability 为真且 software.profile.exposed 为真，或 signals.connection_failure 为真；必须有影响在用版本的漏洞或断连证据。
+features 可省略；每条 id、summary、direction 都为非空字符串；summary 说明功能和对应的事，不超过 {FEATURE_LIMIT} 字。
+features.direction 只能取 directions.id：{json.dumps(sorted(sources['directions']), ensure_ascii=False)}。
+headline、points.text、features.summary 不写校验辩护，不含换行或以下模式：{HEDGE.pattern}；features.summary 还不能含「不构成」。
+程序补的升级顺序要点「{UPGRADE_ORDER}」不受 text 长度和上述模式限制。'''
+
 
 
 def digest(value):
@@ -184,41 +219,41 @@ def validate_judgment(value, software, releases, needs, directions):
             or len({r.get('id') for r in rows}) != len(rows)):
         raise ValueError('判断必须逐处覆盖全部已知版本的部署，不得重复或添加部署')
     rows = [r for r in rows if r['id'] in known]
-    links = {r['html_url'] for r in releases}
-    references = {n['id'] for n in needs} | {d['id'] for d in directions} | {'profile'}
+    sources = judgment_sources(releases, needs, directions)
+    links, references = sources['links'], sources['references']
     for row in rows:
         required(row, ('id', 'headline'))
-        if len(row['headline']) > 40 or HEDGE.search(row['headline']):
-            raise ValueError('headline 须不超过 40 字，只写给人看的原因，不写资料缺口、未证实、为何不标紧急等给校验的话')
+        if len(row['headline']) > HEADLINE_LIMIT or HEDGE.search(row['headline']):
+            raise ValueError(f'headline 须不超过 {HEADLINE_LIMIT} 字，只写给人看的原因，不写资料缺口、未证实、为何不标紧急等给校验的话')
         points = row.get('points')
-        if not isinstance(points, list) or len(points) > 3:
-            raise ValueError('points 须为最多三条要点')
+        if not isinstance(points, list) or len(points) > POINTS_LIMIT:
+            raise ValueError(f'points 须为最多 {POINTS_LIMIT} 条要点')
         for point in points:
             required(point, ('version', 'text'))
             if point_link(point['version'], releases) is None:
                 raise ValueError('要点版本须对应本次发布记录')
-            if point['text'] != UPGRADE_ORDER and (len(point['text']) > 45 or HEDGE.search(point['text'])):
-                raise ValueError('每条要点只写一个变化，不超过 45 字（版本号另列，不算在内），不写资料缺口、未证实、为何不标紧急等给校验的话')
-        if row.get('verdict') not in ('该升', '可以等', '不用升') or row.get('priority') not in ('紧急', '重要', '普通'):
-            raise ValueError('verdict 只能是 该升/可以等/不用升，priority 只能是 紧急/重要/普通（中文原词）')
+            if point['text'] != UPGRADE_ORDER and (len(point['text']) > POINT_LIMIT or HEDGE.search(point['text'])):
+                raise ValueError(f'每条要点只写一个变化，不超过 {POINT_LIMIT} 字（版本号另列，不算在内），不写资料缺口、未证实、为何不标紧急等给校验的话')
+        if row.get('verdict') not in VERDICTS or row.get('priority') not in PRIORITIES:
+            raise ValueError(f'verdict 只能是 {"/".join(VERDICTS)}，priority 只能是 {"/".join(PRIORITIES)}（中文原词）')
         if not row.get('links') or not set(row['links']).issubset(links):
             raise ValueError('links 须原样取自本次 releases 的 html_url')
         if row['verdict'] == '该升' and (not row.get('references') or not set(row['references']).issubset(references)):
             raise ValueError('该升的 references 只能取 ' + '、'.join(sorted(references)) + '，至少一个')
         if row['priority'] in ('紧急', '重要') and row['verdict'] != '该升':
             raise ValueError('紧急、重要须是该升的项')
-        if row['priority'] == '重要' and not set(row.get('references', [])).intersection(references - {'profile'}):
-            raise ValueError('重要的 references 须含 ' + '、'.join(sorted(references - {'profile'})) + ' 之一')
+        if row['priority'] == '重要' and not set(row.get('references', [])).intersection(references - {PROFILE_REFERENCE}):
+            raise ValueError('重要的 references 须含 ' + '、'.join(sorted(references - {PROFILE_REFERENCE})) + ' 之一')
         if row['priority'] == '紧急':
             reasons = row.get('signals', {})
             if not ((reasons.get('high_risk_vulnerability') and software['profile']['exposed']) or reasons.get('connection_failure')):
                 raise ValueError('紧急须有对外暴露的高危漏洞或断连证据')
         for feature in row.get('features', []):
             required(feature, ('id', 'summary', 'direction'))
-            if len(feature['summary']) > 50 or HEDGE.search(feature['summary']) or '不构成' in feature['summary']:
-                raise ValueError('新功能 summary 一句话写清功能和对应的事，不超过 50 字，不写为何不提高优先级等给校验的话')
-            if feature['direction'] not in {d['id'] for d in directions}:
-                raise ValueError('features.direction 只能取 ' + '、'.join(sorted(d['id'] for d in directions)))
+            if len(feature['summary']) > FEATURE_LIMIT or HEDGE.search(feature['summary']) or '不构成' in feature['summary']:
+                raise ValueError(f'新功能 summary 一句话写清功能和对应的事，不超过 {FEATURE_LIMIT} 字，不写为何不提高优先级等给校验的话')
+            if feature['direction'] not in sources['directions']:
+                raise ValueError('features.direction 只能取 ' + '、'.join(sorted(sources['directions'])))
     unknown = [
         {'id': p['id'], 'verdict': '版本不明', 'priority': '普通', 'headline': '在用版本未确认，先补齐版本',
          'reason': p['error'], 'points': [], 'links': [], 'references': [], 'features': []}
