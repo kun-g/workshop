@@ -101,6 +101,10 @@ class Driver:
     def session_from_output(self, output):
         return None
 
+    def missing_session(self, spec, output, code):
+        """Whether a failed resume proves the stored session cannot be used."""
+        return False
+
     def recover_session(self, executor, directory, spec):
         found = self.session_from_output(directory / 'output.log')
         if found:

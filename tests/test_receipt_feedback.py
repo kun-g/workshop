@@ -30,7 +30,8 @@ prompt = sys.stdin.read()
 calls = root / 'agents'
 count = len(calls.read_text().splitlines()) if calls.exists() else 0
 with calls.open('a') as f:
-    f.write(json.dumps({'name': name, 'args': args, 'prompt': prompt, 'pid': os.getpid()}) + '\n')
+    f.write(json.dumps({'name': name, 'args': args, 'prompt': prompt, 'pid': os.getpid(),
+                        'token': os.environ.get('WORKSHOP_ROUND_TOKEN'), 'cwd': os.getcwd()}) + '\n')
 scenario = (root / 'scenario').read_text().strip()
 resumed = '--resume' in args or 'resume' in args
 if name == 'codex':
@@ -42,7 +43,27 @@ else:
 good = {'outcome': 'done', 'summary': '审查通过，没有必须改。', 'advance': '交付',
         'evidence': [json.dumps({'schema': 'issue-delivery/v1', 'head': 'abc', 'must_fix': [], 'suggestions': []})]}
 bad = {'outcome': 'success', 'summary': '审查通过', 'advance': '验收', 'head': 'abc', 'must_fix': [], 'suggestions': []}
-if scenario in ('typed-example', 'two-types-then-fixed'):
+if scenario.startswith('missing-'):
+    if count == 0:
+        print('input too long', flush=True)
+        sys.exit(1)  # thread.started 已输出，但没有 rollout。
+    if resumed and session == 'codex-session-0':
+        message = 'no rollout found for thread id ' + session
+        if scenario == 'missing-network':
+            message = 'network unavailable'
+        if scenario == 'missing-task-text':
+            print(json.dumps({'type': 'item.completed', 'item': {'type': 'agent_message', 'text': message}}))
+        else:
+            print('Error: ' + message, flush=True)
+        if scenario == 'missing-stop':
+            (pathlib.Path(os.environ['WORKSHOP_EXECUTOR_ROUND'])/'stopping.json').write_text('{}')
+        if scenario != 'missing-success-text':
+            sys.exit(1)
+    if scenario == 'missing-fresh-fails' and not resumed:
+        print('fresh launch failed', flush=True)
+        sys.exit(1)
+    text = json.dumps(good, ensure_ascii=False)
+elif scenario in ('typed-example', 'two-types-then-fixed'):
     samples = [json.loads(v) for v in re.findall(r'```json\n(.*?)\n```', prompt, re.S)]
     example = next(v for v in samples if 'outcome' in v)
     notification = next(v for v in samples if 'notice' in v)
@@ -260,3 +281,75 @@ def test_readonly_claude_uses_example_and_fixes_both_types(rig, scenario_name, a
         assert '--resume' in calls()[1]['args']
         assert read(directory / 'fallback-receipt.json')['evidence'] == '{}'
         assert read(directory / 'fallback-receipt-2.json') == row['receipt']
+
+
+@pytest.mark.parametrize('name,reopened,outcome', [
+    ('missing-recover', True, 'done'),
+    ('missing-fresh-fails', True, 'failed'),
+    ('missing-network', False, 'failed'),
+    ('missing-task-text', False, 'failed'),
+    ('missing-success-text', False, 'done'),
+    ('missing-stop', False, 'failed'),
+])
+def test_codex_missing_resume_recovers_once_without_a_failed_round(rig, name, reopened, outcome):
+    engine, make, target, scenario, calls, repo = rig
+    reach(engine, '审查')
+    scenario(name)
+    executor = make('codex')
+    first, _, started = run_round(engine, executor, target, repo)
+    assert first['receipt']['outcome'] == 'failed'
+    engine.tick()
+    engine.clock.now += timedelta(hours=1)
+    engine.tick()
+    row, directory, recovered = run_round(engine, executor, target, repo, session=started.session)
+    assert row['receipt']['outcome'] == outcome
+    assert len(calls()) == (3 if reopened else 2)
+    assert (directory / 'session-recovery.json').exists() == reopened
+    if reopened:
+        resumed, fresh = calls()[1:]
+        assert 'resume' in resumed['args'] and 'resume' not in fresh['args']
+        assert 'codex-session-0' not in fresh['args']
+        assert fresh['prompt'] == resumed['prompt']
+        assert fresh['token'] == resumed['token'] == row['token']
+        assert fresh['cwd'] == resumed['cwd'] == str(repo)
+        assert 'sandbox_mode="read-only"' in fresh['args']
+        assert fresh['args'][fresh['args'].index('--model') + 1] == CONFIG['model']
+        assert recovered.session == started.session
+        assert 'no rollout found' in (directory / 'resume-failed.log').read_text()
+        assert 'codex-session-0' not in (directory / 'output.log').read_text()
+        record = read(directory / 'session-recovery.json')
+        assert record['vendor_id'] == 'codex-session-0' and record['fresh_vendor_id'] == 'codex-session-2'
+        assert record['fresh_exit_code'] == (0 if outcome == 'done' else 1)
+        assert read(Path(read(directory / 'spec.json')['session_file']))['vendor_id'] == 'codex-session-2'
+    if outcome == 'done':
+        assert not (directory / 'failed-receipt.json').exists()
+        engine.tick()
+        assert core_item(engine)['stage'] == '交付'
+        assert core_item(engine)['last_failure'] is None
+    if name == 'missing-recover':
+        # Restarting the adapter recovers from the fresh output, never the old ID.
+        executor = make('codex')
+        executor.resume('next-probe', recovered.session, Brief('next', []),
+                        {**core_item(engine), 'workdir': str(repo)}, CONFIG, target('next-probe'))
+        next_dir = executor.directory('next-probe')
+        wait_for(lambda: (next_dir / 'exited.json').exists())
+        assert calls()[-1]['args'][calls()[-1]['args'].index('resume') + 1] == 'codex-session-2'
+
+
+def test_codex_missing_session_only_matches_cli_error_for_current_id(tmp_path):
+    from workshop.plugins.executors.local.drivers.codex import Driver
+    output = tmp_path / 'output.log'
+    spec = {'interactive': False, 'vendor_id': 'old-id'}
+    driver = Driver()
+    for value, expected in [
+        ('Error: no rollout found for thread id old-id', True),
+        (json.dumps({'type': 'error', 'message': 'no rollout found for thread id old-id'}), True),
+        ('Error: no rollout found for thread id another-id', False),
+        (json.dumps({'type': 'item.completed', 'item': {'text': 'no rollout found for thread id old-id'}}), False),
+        ('Error: authentication failed', False),
+        ('Error: quota exceeded', False),
+    ]:
+        output.write_text(value)
+        assert driver.missing_session(spec, output, 1) == expected
+        assert not driver.missing_session(spec, output, 0)
+        assert not driver.missing_session({**spec, 'interactive': True}, output, 1)
