@@ -1,4 +1,5 @@
 """按认可样例输出私密离线报告：结论、要点、部署反馈。"""
+from datetime import datetime
 from html import escape
 from pathlib import Path
 
@@ -81,6 +82,11 @@ def render(report, versions, needs, now):
     rendered_unknown = set()
     for view in views:
         lead = view['lead']
+        started = [datetime.fromisoformat(value['first_reported']) for _, value in view['entries']
+                   if value.get('first_reported') and any(p['id'] not in value.get('feedback', {})
+                                                        for p in value['software']['instances'])]
+        days = max((now - min(started)).days, 0) if started else 0
+        waited = f'<span class="count">已等 {days} 天</span>' if days else ''
         is_up = lead['verdict'] == '该升'
         instance_rows = []
         for identity, target in registry.items():
@@ -105,7 +111,7 @@ def render(report, versions, needs, now):
             points = '<ul>' + ''.join(point(p, view['releases']) for p in lead['points'][:3]) + '</ul>'
         body = f'''<section class="card {'upgrade' if is_up else 'waiting'}" data-software="{h(view['id'])}"><div class="{'head' if is_up else 'mini'}">
 <span class="name">{h(view['name'])}</span><span class="ver"><b>{h(view['installed'])}</b> → <b>{h(view['latest'])}</b></span>
-<span class="count">{h(count_instances(view))}</span><span class="tag {'up' if is_up else 'wait'}">{h(lead['verdict'])}</span></div>
+<span class="count">{h(count_instances(view))}</span><span class="tag {'up' if is_up else 'wait'}">{h(lead['verdict'])}</span>{waited}</div>
 <p class="why">{h(lead['headline'])}</p>{points}{'<div class="inst">'+''.join(instance_rows)+'</div>' if instance_rows else ''}</section>'''
         if lead['verdict'] == '版本不明':
 

@@ -226,3 +226,15 @@ def test_legacy_judgment_waits_then_appears_as_blind_spot(world):
     assert io.sent[0]['blind'] == [{'judgment_pending': item['object_key']}]
     html = Path(io.sent[0]['path']).read_text()
     assert '长篇校验自证不应渲染' not in html and '判断未完成' in html
+
+
+def test_waiting_age_appears_only_after_first_day():
+    report, versions = report_fixture()
+    now = datetime(2026, 11, 16, tzinfo=timezone.utc)
+    snapshot = report['snapshot']['Teleport-1.40.0']
+    snapshot['first_reported'] = now.isoformat()
+    assert '已等 0 天' not in render(report, versions, [], now)
+    snapshot['first_reported'] = '2026-11-09T00:00:00+00:00'
+    assert '已等 7 天' in render(report, versions, [], now)
+    snapshot['feedback'] = {p['id']: {'decision': '升'} for p in snapshot['software']['instances']}
+    assert '已等 7 天' not in render(report, versions, [], now)
