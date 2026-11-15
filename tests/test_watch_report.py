@@ -250,3 +250,80 @@ def test_same_feature_on_several_instances_is_asked_once():
             row['features'] = [{'id': 'queue-alert', 'summary': '队列耗尽预警', 'direction': 'project'}]
     found = [t for t in targets(report, versions, []).values() if t['kind'] == 'feature']
     assert len(found) == 1
+
+
+def test_generated_spec_covers_every_accepted_enum_without_old_answer(world):
+    from itertools import product
+    from workshop.plugins.watch_updates import model
+    io, target, flow, source = world
+    item, _ = judged(world)
+    brief = flow.brief(item, '执行', target)
+    materials = brief.materials[0]['body']
+    assert 'judgment' not in materials
+    accepted_verdicts, accepted_priorities = set(), set()
+    for verdict, priority in product(model.VERDICTS, model.PRIORITIES):
+        value = judgment(True)
+        for row in value['instances']:
+            row.update(verdict=verdict, priority=priority, references=['need'])
+        args = (value, materials['software'], materials['releases'], materials['needs'], materials['directions'])
+        if verdict != '该升' and priority != '普通':
+            with pytest.raises(ValueError, match='须是该升'):
+                validate_judgment(*args)
+        else:
+            validate_judgment(*args)
+            accepted_verdicts.add(verdict)
+            accepted_priorities.add(priority)
+    assert accepted_verdicts == set(model.VERDICTS)
+    assert accepted_priorities == set(model.PRIORITIES)
+    assert all(value in brief.instructions for value in accepted_verdicts | accepted_priorities)
+    for source_value in ('need', 'project', 'profile', 'https://example.com/2.0.0'):
+        assert source_value in brief.instructions
+
+
+@pytest.mark.parametrize('field,limit', [('headline', 40), ('point', 45), ('feature', 50), ('points', 3)])
+def test_spec_limits_accept_boundary_and_reject_one_more(field, limit):
+    from workshop.plugins.watch_updates.model import judgment_spec
+    instructions = judgment_spec([release('2.0.0')], [], [{'id': 'project'}])
+    assert str(limit) in instructions
+    for length in (limit, limit + 1):
+        value = judgment()
+        row = value['instances'][0]
+        if field == 'headline':
+            row['headline'] = '字' * length
+        elif field == 'point':
+            row['points'] = [{'version': '2.0.0', 'text': '字' * length}]
+        elif field == 'feature':
+            row['features'][0]['summary'] = '字' * length
+        else:
+            row['points'] = [{'version': '2.0.0', 'text': '修复连接问题'}] * length
+        if length == limit:
+            validate_judgment(value, software(), [release('2.0.0')], [], [{'id': 'project'}])
+        else:
+            with pytest.raises(ValueError):
+                validate_judgment(value, software(), [release('2.0.0')], [], [{'id': 'project'}])
+
+
+def test_spec_and_validator_read_same_limits(monkeypatch):
+    from workshop.plugins.watch_updates import model
+    monkeypatch.setattr(model, 'HEADLINE_LIMIT', 5)
+    assert '不超过 5 字' in model.judgment_spec([], [], [])
+    value = judgment()
+    value['instances'][0]['headline'] = '字' * 6
+    with pytest.raises(ValueError, match='不超过 5 字'):
+        validate_judgment(value, software(), [release('2.0.0')], [], [{'id': 'project'}])
+
+
+@pytest.mark.parametrize('change', [
+    {'verdict': 'upgrade'}, {'priority': 'important'},
+    {'verdict': '该升', 'references': ['release-review', 'security']},
+    {'verdict': '该升', 'references': []},
+    {'links': ['https://unknown.example/release']},
+    {'features': [{'id': 'new', 'summary': '新功能', 'direction': 'imaginary'}]},
+    {'verdict': '该升', 'priority': '重要', 'references': ['profile']},
+    {'verdict': '该升', 'priority': '紧急', 'signals': {}},
+])
+def test_spec_refactor_keeps_rejecting_unsupported_claims(change):
+    value = judgment()
+    value['instances'][0].update(change)
+    with pytest.raises(ValueError):
+        validate_judgment(value, software(), [release('2.0.0')], [], [{'id': 'project'}])
