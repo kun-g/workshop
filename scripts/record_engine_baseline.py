@@ -158,7 +158,7 @@ def build_schema(parts):
         "normalization": {
             "uuid": "带横线的 uuid，以及 uuid4().hex 这种 32 位无横线写法，按本测试首次出现顺序换成 $uuid:N；通知标题里被截断的前缀换成同一个记号。不是 uuid4 版式的 32 位十六进制保持原样。ext_id_origin 仍标明它是生成的还是调用方传入的",
             "sha": "40 位十六进制换成 $sha:N，64 位换成 $hash:N，通道范围那 24 位换成 $id:N；截断前缀沿用同一记号",
-            "time": "conftest.Clock 这次真正返回的时刻，以及从这些时刻加上或减去 timedelta 得到的时刻，写成相对起点的偏移，如 +0s、+30m、+2h、-10m。其余时刻，包括恰好落在整秒上的墙上时钟，按本测试首次出现顺序编成 $time:N",
+            "time": "conftest.Clock 这次真正返回的时刻，以及从这些时刻加上或减去 timedelta 得到的时刻，写成相对起点的偏移，如 +0s、+30m、+2h、-10m。其余时刻，包括恰好落在整秒上的墙上时钟，按本测试首次出现顺序编成 $time:N。核心每个模块里绑定的 stamp 都换成记录用的函数，写进事实的时刻仍按这条规则",
             "paths": "pytest 临时目录换成 $pytest，单个测试的 tmp_path 换成 $testtmp，仓库根换成 $repo。当前解释器无论写成绝对路径还是 $repo 下的 .venv 路径，都换成 $python。/tmp 和 /private/tmp 下的 ws-wake-* 都换成 $tmpdir",
             "elapsed": "heartbeat 的 tick_ms、wake_ms 若是数字则换成 $elapsed，null 保持 null",
         },
