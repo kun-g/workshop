@@ -642,7 +642,8 @@ class IssueDelivery:
                 acceptance = data.get("acceptance", {})
                 state = self.io.read(item, target)
                 visual = re.search(r"^## 要不要亲眼看\s*\n\s*是", issue.get("body") or "", re.M)
-                answers = [m for m in item.get("materials", []) if m.get("role") == "Kun 的回答" and str(m.get("key", "")).endswith(":visual-acceptance")
+                answers = [m for m in item.get("materials", []) if m.get("role") == "Kun 的回答"
+                           and (m.get("key") == "visual-acceptance" or str(m.get("key", "")).endswith(":visual-acceptance"))
                            and m.get("seq", 0) > state.get("acceptance_after", -1)]
                 manual = not visual or any(a.get("key") == "visual-acceptance" for a in receipt.ask) or bool(answers and answers[-1]["body"] == "yes")
                 head = self._acceptance_head(state) if state.get("merge") else None
