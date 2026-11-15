@@ -64,6 +64,8 @@ class ReleaseRollback:
                 if local.get("plugin", flow) != "scheduled_release":
                     continue
                 config = {**target, **local}
+                if config.get('scheduled_release_mode', 'self') != 'self':
+                    continue
                 root = Path(config.get("scheduled_release_state_dir", "~/.local/state/workshop")).expanduser().resolve()
                 if root == self.directory:
                     candidates.append((name, config))

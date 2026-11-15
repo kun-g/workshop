@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 import fcntl
 import json
 import os
+import re
 from pathlib import Path
 import subprocess
 import sys
@@ -29,6 +30,15 @@ def write(path, value):
         stream.flush()
         os.fsync(stream.fileno())
     os.replace(stream.name, path)
+
+
+def grant_record(directory):
+    """即使程序意外退出，也从它唯一一次同步留下的日志找回申请编号。"""
+    logs = list(Path(directory).glob('sync-production.*/grant.log'))
+    if len(logs) != 1:
+        return {'log': str(directory), 'id': None}
+    matches = re.findall(r'^request ([A-Za-z0-9._-]+) status=', logs[0].read_text(errors='replace'), re.M)
+    return {'id': matches[0] if matches else None, 'log': str(logs[0])}
 
 
 class IO:

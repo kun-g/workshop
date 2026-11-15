@@ -269,3 +269,13 @@ def test_system_python_can_rollback_without_project_environment(rollback):
     assert result.returncode == 0, result.stderr
     assert read(w)['status'] == 'rolled_back'
     assert git(w['repo'], 'rev-parse', 'HEAD') == w['a']
+
+
+def test_cluster_flow_never_selects_self_rollback_target(rollback):
+    w = rollback
+    w['rules']['targets']['grant-console'] = {'checkout': '/never-touch', 'flows': {
+        'scheduled_release': {'scheduled_release_state_dir': str(w['root']), 'scheduled_release_mode': 'cluster'}}}
+    with sqlite3.connect(w['root'] / 'workshop.db') as db:
+        db.execute("UPDATE controls SET body=? WHERE id='@rules'", (json.dumps({'data': w['rules']}),))
+    name, target, _ = ReleaseRollback(w['root']).configuration()
+    assert name == 'workshop' and target['checkout'] == str(w['repo'])

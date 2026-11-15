@@ -1645,3 +1645,21 @@ def test_tag_ci_bad_response_does_not_guess_waiting(world):
     edit(world, workflow_pages=[{'unexpected': []}])
     with pytest.raises(Retryable, match='查询返回格式异常'):
         world['flow'].assess(data, Receipt('nothing', ''), target)
+
+
+def test_scheduled_delivery_merges_once_and_waits_for_deployment_without_tag(world):
+    target = {**world['target'], 'release': 'scheduled'}
+    data = snapshot(world, '交付')
+    world['io'].save(data, target, {'effects': {}, 'issue': 7, 'reviewed_head': world['sha']})
+    first = world['flow'].after(data, '交付', 'scheduled', target)
+    assert first.pending and not first.rerun
+    assert not any(c[0] == 'tag-release.sh' for c in calls(world))
+    assert not world['flow']._delivery_done(target, world['io'].read(data, target), world['sha'])
+    app = {'status': {'sync': {'status': 'OutOfSync', 'revision': 'e' * 40}, 'health': {'status': 'Healthy'}}}
+    edit(world, app=app, deployed_sha=world['sha'])
+    assert world['flow'].after(data, '交付', 'scheduled', target).pending
+    app['status']['sync']['status'] = 'Synced'
+    edit(world, app=app)
+    assert not world['flow'].after(data, '交付', 'scheduled', target).pending
+    assert len([c for c in calls(world) if c[1:3] == ['pr', 'merge']]) == 1
+    assert not any(c[0] == 'tag-release.sh' for c in calls(world))

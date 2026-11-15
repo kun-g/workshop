@@ -1,5 +1,6 @@
 """每小时比较一次主检出与远端；持久游标由核心随事件一起提交。"""
 from datetime import datetime, timezone
+import base64
 import json
 from pathlib import Path
 import re
@@ -22,6 +23,23 @@ class MainBranchSource:
         slot = self.clock().astimezone(timezone.utc).replace(minute=0, second=0, microsecond=0).isoformat()
         if cursor == slot:
             return Poll([], cursor)
+        # 来源拿到的是对象默认流程配置；批次目录由对应流程配置。
+        configs = [{**target, **local} for flow, local in target.get('flows', {}).items()
+                   if local.get('plugin', flow) == 'scheduled_release']
+        config = configs[0] if len(configs) == 1 else target
+        cluster = config.get('scheduled_release_mode', 'self') == 'cluster'
+        root = Path(config.get('scheduled_release_state_dir', '~/.local/state/workshop')).expanduser().resolve()
+        try:
+            release = json.loads((root / ('cluster-release.json' if cluster else 'release.json')).read_text())
+        except FileNotFoundError:
+            release = {}
+        except (OSError, ValueError) as exc:
+            raise Retryable('无法读取发版记录，未确认是否应跳过失败提交') from exc
+        if not isinstance(release, dict):
+            raise Retryable('发版记录须为对象')
+        if cluster and release and release.get('status') not in ('ok', 'rejected', 'failed'):
+            # pending、结果不明或上线失败都保留占位；不能整点再发一张卡。
+            return Poll([], slot)
         checkout = str(Path(target['checkout']).expanduser().resolve())
         remote = f"https://github.com/{target['repo']}.git"
         def read(argv):
@@ -32,26 +50,24 @@ class MainBranchSource:
             if result.returncode:
                 raise Retryable('整点比较失败：' + result.stderr[-500:])
             return result.stdout.strip()
-        head = read(['git', '-C', checkout, 'rev-parse', 'HEAD'])
         rows = read(['git', 'ls-remote', remote, 'refs/heads/main']).split()
         if len(rows) != 2 or rows[1] != 'refs/heads/main' or not re.fullmatch('[0-9a-f]{40}', rows[0]):
             raise Retryable('远端 main 没有返回完整提交号')
         to = rows[0]
-        # 来源拿到的是对象默认流程配置；发版目录可能只配置在对应流程下。
-        configs = [{**target, **local} for flow, local in target.get('flows', {}).items()
-                   if local.get('plugin', flow) == 'scheduled_release']
-        config = configs[0] if len(configs) == 1 else target
-        root = Path(config.get('scheduled_release_state_dir', '~/.local/state/workshop')).expanduser().resolve()
-        try:
-            release = json.loads((root / 'release.json').read_text())
-        except FileNotFoundError:
-            release = {}
-        except (OSError, ValueError) as exc:
-            raise Retryable('无法读取发版记录，未确认是否应跳过失败提交') from exc
-        if not isinstance(release, dict):
-            raise Retryable('发版记录须为对象')
-        if release.get('status') == 'rolled_back' and release.get('to') == to:
-            return Poll([], slot)
+        if cluster:
+            if release.get('status') in ('rejected', 'failed') and release.get('to') == to:
+                return Poll([], slot)
+            try:
+                record = json.loads(read(['gh', 'api', f"repos/{target['repo']}/contents/release.json?ref=production"]))
+                head = json.loads(base64.b64decode(record['content']))['source_commit']
+                if not isinstance(head, str) or not re.fullmatch('[0-9a-f]{40}', head):
+                    raise ValueError('发布记录没有完整源提交')
+            except (KeyError, ValueError, TypeError) as exc:
+                raise Retryable('无法读取 production 发布记录，未确认是否有新合并') from exc
+        else:
+            head = read(['git', '-C', checkout, 'rev-parse', 'HEAD'])
+            if release.get('status') == 'rolled_back' and release.get('to') == to:
+                return Poll([], slot)
         events = [] if head == to else [Event('main_branch', slot, target['name'], to,
             f'定时发版 {to[:12]}', {'kind': 'ahead', 'from': head, 'to': to})]
         return Poll(events, slot)

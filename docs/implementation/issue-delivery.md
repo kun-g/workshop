@@ -118,3 +118,8 @@ PY
 执行者的 spec 只保存非秘密配置和仓库。runner 在实际启动 agent 前签发并装配环境；只读审查和验收继续清理全部部署凭据，不签写令牌。真实 gh 优先于全局身份 wrapper；git helper 只为 HTTPS github.com 上的同一仓库提供本进程令牌，不存凭据。签发失败时 runner 不起 agent，交等你回执；程序作业的签发失败通过通用 TargetBlocked 端口只隔离本交付对象、通知一次，不影响共用流程的其他交付对象。通知沿用 notices 开关。程序动作的令牌只在一次插件调用的内存范围内复用，离开即释放；返回的命令输出先遮去令牌。检查脚本仍使用干净环境。
 
 `workshop release ws#31 --quote '放' --session <会话号>`（也支持 `workshop:31`）写入可信 session 放行事件；新对象从接单开始，同一对象不重复建活。原话和会话号不能为空，why 显示 channel=session、原话、会话号。外部 event 自报 session 不提升权限。已有卡住/等你的活按放行状态规则继续；接单、说清楚保留原阶段，已有未答审批不被替代。
+
+
+## 整点批次上线（issue #122）
+
+`release: scheduled` 合并后不打 tag、不推 production、不启动发布执行者；只通过既有线上检查确认 Argo Synced/Healthy、production 源提交包含本次合并、Deployment rollout 完成，满足后记录 delivered 并进入验收。同一版可以包含多件 issue 的合并提交，每件分别验收。重走验收也不能仅凭已合并就绕过这条线上条件。发布由独立 scheduled_release 流程处理，等待和恢复见[定时发版](定时发版.md)。
