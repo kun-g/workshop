@@ -105,8 +105,8 @@ targets:
     stages: [接单, 说清楚, 执行, 证据, 交付, 验收, 收尾]
     sources: {github: {}, main_branch: {every: 1h}, watch_updates: {}}
     watch_updates:
-      # 负责会话转换真实清单并对接私聊入口后启用；本 PR 不改 workspace 文件。
-      enabled: false
+      # 11-15 负责会话已转好真实清单（workspace 65e177b42）。反馈先由负责会话手工转进 workshop event，Kun 看过首份报告再定长期入口。
+      enabled: true
       timezone: Asia/Singapore
       hour: 9
       weekday: 0
