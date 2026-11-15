@@ -202,13 +202,13 @@ def validate_judgment(value, software, releases, needs, directions):
         if row.get('verdict') not in ('该升', '可以等', '不用升') or row.get('priority') not in ('紧急', '重要', '普通'):
             raise ValueError('verdict 只能是 该升/可以等/不用升，priority 只能是 紧急/重要/普通（中文原词）')
         if not row.get('links') or not set(row['links']).issubset(links):
-            raise ValueError('判断须引用本次发布说明')
+            raise ValueError('links 须原样取自本次 releases 的 html_url')
         if row['verdict'] == '该升' and (not row.get('references') or not set(row['references']).issubset(references)):
-            raise ValueError('该升须引用需要、在做的事或软件画像')
+            raise ValueError('该升的 references 只能取 ' + '、'.join(sorted(references)) + '，至少一个')
         if row['priority'] in ('紧急', '重要') and row['verdict'] != '该升':
             raise ValueError('紧急、重要须是该升的项')
         if row['priority'] == '重要' and not set(row.get('references', [])).intersection(references - {'profile'}):
-            raise ValueError('重要须引用碰到的问题或现在要用的功能')
+            raise ValueError('重要的 references 须含 ' + '、'.join(sorted(references - {'profile'})) + ' 之一')
         if row['priority'] == '紧急':
             reasons = row.get('signals', {})
             if not ((reasons.get('high_risk_vulnerability') and software['profile']['exposed']) or reasons.get('connection_failure')):
@@ -218,7 +218,7 @@ def validate_judgment(value, software, releases, needs, directions):
             if len(feature['summary']) > 50 or HEDGE.search(feature['summary']) or '不构成' in feature['summary']:
                 raise ValueError('新功能 summary 一句话写清功能和对应的事，不超过 50 字，不写为何不提高优先级等给校验的话')
             if feature['direction'] not in {d['id'] for d in directions}:
-                raise ValueError('新功能须对上在做的事')
+                raise ValueError('features.direction 只能取 ' + '、'.join(sorted(d['id'] for d in directions)))
     unknown = [
         {'id': p['id'], 'verdict': '版本不明', 'priority': '普通', 'headline': '在用版本未确认，先补齐版本',
          'reason': p['error'], 'points': [], 'links': [], 'references': [], 'features': []}
