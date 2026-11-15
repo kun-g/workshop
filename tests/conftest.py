@@ -5,7 +5,13 @@ import subprocess
 from datetime import datetime, timezone
 from dataclasses import asdict
 
+import os
+
 import pytest
+
+# 录基线时才装记录插件；平常测试不经这层包装。
+if os.environ.get("WORKSHOP_RECORD_BASELINE"):
+    pytest_plugins = ["baseline_plugin"]
 
 from workshop.core.engine import Engine
 from workshop.core.log import Log
