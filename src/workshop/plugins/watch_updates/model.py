@@ -44,7 +44,7 @@ def upstream(software):
     elif kind in ('github_releases', 'github_tags'):
         if not isinstance(value.get('repo'), str) or not re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+', value['repo']):
             raise ValueError('GitHub upstream.repo 须是 owner/repo')
-    elif kind == 'gitlab_releases':
+    elif kind in ('gitlab_releases', 'gitlab_tags'):
         project = value.get('project')
         if not isinstance(project, str) or not re.fullmatch(r'[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)+|[0-9]+', project):
             raise ValueError('GitLab upstream.project 须是项目路径或数字 ID（gitlab.com）')
@@ -135,6 +135,17 @@ def reconcile(previous, proposal, now):
     return {'schema': SCHEMA, 'software': list(old.values()), 'excluded': excluded}, changes
 
 
+def tag_version(software, tag):
+    """tag_pattern 可用命名组 version 指出版本号部分，适配 docker-v29.9.3、v19.5.3-ee 这类前后缀。"""
+    match = re.fullmatch(software['tag_pattern'], tag)
+    if not match:
+        return None
+    try:
+        return version(match['version'] if 'version' in match.re.groupindex else tag)
+    except ValueError:
+        return None
+
+
 def release_range(software, releases):
     installed = [version(p['version']) for p in software['instances'] if p['version'] != 'unknown']
     if not installed:
@@ -144,18 +155,15 @@ def release_range(software, releases):
     found = []
     for row in releases:
         tag = row.get('tag_name', '')
-        if row.get('draft') or not re.fullmatch(software['tag_pattern'], tag):
-            continue
-        try:
-            parsed = version(tag)
-        except ValueError:
+        parsed = None if row.get('draft') else tag_version(software, tag)
+        if parsed is None:
             continue
         if (row.get('prerelease') or not parsed[3]) and not software['prerelease']:
             continue
         if parsed > min(installed):
             required(row, ('html_url',))
             found.append(row)
-    return sorted(found, key=lambda r: version(r['tag_name']))
+    return sorted(found, key=lambda r: tag_version(software, r['tag_name']))
 
 
 def validate_judgment(value, software, releases, needs, directions):
