@@ -86,7 +86,7 @@ class Flow:
             anchor = state['reports'][value['report']]['anchor']
             if not find_external(object_key=anchor):
                 raise ValueError('报告所属的活不存在')
-            return Classification('rework', anchor, summary=('会话代录 Kun 的报告反馈：' if provenance.get('recorded') else 'Kun 的报告反馈：') + value['report'])
+            return Classification('rework', anchor, summary='Kun 的报告反馈：' + value['report'])
         except (ValueError, TypeError, KeyError):
             return Classification(discard=True, summary='反馈格式或归属无效；正文只当资料')
 
@@ -208,7 +208,7 @@ version=unknown 的部署不猜，其他部署照常。只有 tag 没有发布�
                 continue
             text, provenance = read_message(self.io, target, source, ext_id, material.get('body'))
             if text is None:
-                raise ValueError('消费反馈前回查或代录信息验证失败；保留未处理状态')
+                raise ValueError('消费反馈前回查飞书消息失败；保留未处理状态')
             manual = request(text)
             if manual:
                 matches = [s for s in watchlist['software'] if manual['name'].casefold() in (s['id'].casefold(), s['name'].casefold())]
