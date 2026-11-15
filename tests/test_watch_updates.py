@@ -604,3 +604,39 @@ def test_real_engine_wait_feedback_rework_completion_and_replay(world, tmp_path)
         assert engine.log.all('items')[0] == before
     finally:
         engine.log.close()
+
+
+def test_tag_pattern_version_group_reads_prefixed_and_suffixed_tags():
+    row = software(tag_pattern=r'docker-v(?P<version>\d+\.\d+\.\d+)')
+    tags = ['docker-v1.0.5', 'docker-v1.2.0', 'docker-v1.3.0-rc.1', 'api/v9.0.0', 'docker-v0.9.0']
+    assert [r['tag_name'] for r in release_range(row, [release(t) for t in tags])] == ['docker-v1.0.5', 'docker-v1.2.0']
+    # 稳定版带固定后缀（GitLab 的 -ee）时，后缀不算预发布。
+    row = software(tag_pattern=r'v(?P<version>\d+\.\d+\.\d+)-ee')
+    assert [r['tag_name'] for r in release_range(row, [release(t) for t in ('v1.1.1-ee', 'v1.1.1-ce', 'v0.9.0-ee')])] == ['v1.1.1-ee']
+
+
+def test_gitlab_tags_read_by_version_desc_and_stop_at_installed(monkeypatch):
+    import io as streams
+    import workshop.plugins.watch_updates.io as module
+    calls = []
+    pages = [[{'name': 'v2.0.0-ee', 'release': {'description': '说明 2.0.0'}}, {'name': 'v1.5.0-ee'}],
+             [{'name': 'v1.0.0-ee'}, {'name': 'v0.9.0-ee'}],
+             [{'name': 'v0.1.0-ee'}]]
+    def fetch(url, timeout):
+        calls.append(url)
+        response = streams.BytesIO(json.dumps(pages[len(calls) - 1]).encode())
+        response.headers = {'X-Next-Page': str(len(calls) + 1)}
+        return response
+    monkeypatch.setattr(module, 'urlopen', fetch)
+    monkeypatch.setattr(module, 'run', lambda *a, **kw: pytest.fail('GitLab 不使用 gh 或其凭据'))
+    row = software(upstream={'kind': 'gitlab_tags', 'project': 'gitlab-org/gitlab'},
+                   tag_pattern=r'v(?P<version>\d+\.\d+\.\d+)-ee')
+    validate_software(row)
+    rows = IO().releases({}, row)
+    # 在用最低 1.0.0，第二页读到它就停，不再翻第三页。
+    assert calls == [('https://gitlab.com/api/v4/projects/gitlab-org%2Fgitlab/repository/tags'
+                      f'?order_by=version&sort=desc&per_page=100&page={p}') for p in (1, 2)]
+    assert [r['tag_name'] for r in release_range(row, rows)] == ['v1.5.0-ee', 'v2.0.0-ee']
+    assert rows[0]['body'] == '说明 2.0.0' and not rows[0]['notes_missing']
+    assert rows[1]['notes_missing'] and '没有发布说明' in rows[1]['body']
+    assert rows[1]['html_url'] == 'https://gitlab.com/gitlab-org/gitlab/-/tags/v1.5.0-ee'
