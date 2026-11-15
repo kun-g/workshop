@@ -54,6 +54,8 @@ def parser():
     release.add_argument('item', help='<短名>#<对象键> 或 <交付对象>:<对象键>')
     release.add_argument('--quote', required=True, help='Kun 的原话，逐字')
     release.add_argument('--session', required=True, help='Kun 说这句话的会话号')
+    commands.add_parser("release-now", help="不等整点，立刻比较主检出与远端；有新合并就走与整点相同的发版流程").add_argument(
+        "target", nargs="?", default="workshop", help="交付对象，默认 workshop")
     commands.add_parser("pause").add_argument("target")
     resume = commands.add_parser("resume")
     resume.add_argument("target")
@@ -95,6 +97,15 @@ def main(argv=None):
             if args.unfiled == (args.item is not None):
                 raise ValueError("why 要么给一件活，要么用 --unfiled 看未归件")
             print(unfiled(log, rules, Registry()) if args.unfiled else why(log, args.item, rules, Registry(), raw=args.raw))
+        elif args.command == "release-now":
+            # 只写请求；比较和发版仍由守护进程按整点同一流程做（集群模式同样读这个目录）。
+            from datetime import datetime, timezone
+            from .plugins.sources.main_branch import MainBranchSource, REQUEST
+            rules = current_rules(args, log.get("controls", "@rules"))
+            root = MainBranchSource.release_config(rules.target(args.target))[1]
+            root.mkdir(parents=True, exist_ok=True)
+            (root / REQUEST).write_text(datetime.now(timezone.utc).isoformat())
+            print("已请求立即发版：守护进程马上比较主检出与远端，有新合并就发版；进度看 workshop status")
         elif args.command == "usage":
             print(usage(log))
         else:
