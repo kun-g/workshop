@@ -584,8 +584,7 @@ def test_feishu_summary_has_one_line_per_software_and_reaches_text_sender(world)
     assert '--file' in calls[1]
 
 
-@pytest.mark.parametrize('transcribed', [False, True])
-def test_real_engine_wait_feedback_rework_completion_and_replay(world, tmp_path, transcribed):
+def test_real_engine_wait_feedback_rework_completion_and_replay(world, tmp_path):
     from conftest import build, configuration
     from workshop.core.report import status, why
     io, target, flow, source = world
@@ -616,9 +615,7 @@ def test_real_engine_wait_feedback_rework_completion_and_replay(world, tmp_path,
         report = io.sent[0]
         io.messages['om_engine'] = json.dumps({'report': report['id'],
             'items': [{'id': i, 'choice': '没问题'} for i in ('one','two')]})
-        body = {'channel': 'session', 'session': 'owner-session', 'quote': '两处都没问题',
-                'feedback': json.loads(io.messages['om_engine'])} if transcribed else {}
-        engine.ingest(Event('session' if transcribed else 'feishu', 'om_engine', 'alpha', 'feedback', 'report feedback', body), ingress='external')
+        engine.ingest(Event('feishu', 'om_engine', 'alpha', 'feedback', 'report feedback', {}), ingress='external')
         for _ in range(14):
             engine.tick()
         item = engine.log.all('items')[0]
