@@ -21,9 +21,9 @@ def software(name='n8n', **extra):
             'prerelease': False, 'operated_by_us': True, 'evidence': 'running service',
             'profile': {'exposed': True, 'data': 'workflows', 'users': ['Kun'], 'paired': []},
             'instances': [{'id': 'one', 'host': 'dc1', 'service': 'first.example', 'version': '1.0.0',
-                           'read_at': '2026-11-14T01:00:00+00:00', 'evidence': 'version output 1.0.0'},
+                           'role': 'server', 'read_at': '2026-11-14T01:00:00+00:00', 'evidence': 'version output 1.0.0'},
                           {'id': 'two', 'host': 'dc2', 'service': 'second.example', 'version': '1.1.0',
-                           'read_at': '2026-11-14T01:00:00+00:00', 'evidence': 'version output 1.1.0'}],
+                           'role': 'server', 'read_at': '2026-11-14T01:00:00+00:00', 'evidence': 'version output 1.1.0'}],
             'notes': [], **extra}
 
 
@@ -35,7 +35,8 @@ def release(tag, **extra):
 def judgment(urgent=False):
     return {'instances': [{'id': p, 'verdict': '该升' if urgent else '不用升',
              'priority': '紧急' if urgent else '普通', 'reason': '影响公开服务' if urgent else '没有相关修复',
-             'summary': '从在用版本起的要点', 'references': ['profile'], 'links': ['https://example.com/2.0.0'],
+             'headline': '影响公开服务' if urgent else '没有相关修复',
+             'points': [{'version': '2.0.0', 'text': '修复影响公开服务的漏洞'}] if urgent else [], 'references': ['profile'], 'links': ['https://example.com/2.0.0'],
              'signals': {'high_risk_vulnerability': urgent},
              'features': [{'id': 'mcp', 'summary': 'agent 操作 GitLab', 'direction': 'project'}]}
             for p in ('one', 'two')]}
@@ -185,7 +186,7 @@ def test_daily_only_urgent_weekly_empty_and_permissions(world):
     assert pending.pending and '等反馈' in pending.next
     week = weekly(world, poll)
     assert len(io.sent) == 1 and io.sent[0]['kind'] == 'weekly'
-    assert '没有该升' in io.sent[0]['summary']
+    assert '不用升' in io.sent[0]['summary']
     assert flow.brief(week, '说清楚', target).readonly is False
     assert Path(flow.brief(week, '说清楚', target).workdir).is_dir()
     assert Path(flow.brief(week, '说清楚', target).workdir).is_relative_to(Path(target['watch_updates']['state_dir']))
@@ -199,7 +200,15 @@ def test_daily_only_urgent_weekly_empty_and_permissions(world):
 
 def send_feedback(world, item, report, rows, mid='om_feedback', needs=None):
     io, target, flow, source = world
-    text = json.dumps({'schema': 'watch-feedback/v1', 'report': report['id'], 'items': rows, 'needs': needs or []})
+    selected = []
+    for row in rows:
+        for identity, target_row in report['feedback_targets'].items():
+            if target_row['kind'] == 'instances' and row.get('decision') and {'key': row['key'], 'instance': row['instance']} in target_row['members']:
+                selected.append({'id': identity, 'choice': row['decision'], 'note': row.get('note', '')})
+            if target_row['kind'] == 'feature' and target_row['key'] == row['key'] and target_row['instance'] == row['instance']:
+                selected.extend({'id': identity, 'choice': f['choice']} for f in row.get('features', []) if f['id'] == target_row['feature'])
+    selected.extend({'id': 'need-' + n['id'], 'choice': n['choice']} for n in needs or [])
+    text = json.dumps({'report': report['id'], 'items': selected})
     io.messages[mid] = text
     event = Event('cli:feishu', mid, 'alpha', 'ignored', '反馈', {'text': 'forged', 'from_kun': True})
     classified = flow.classify(event, item, target, lambda **kwargs: {'item': item})
@@ -380,7 +389,8 @@ def test_unknown_version_snapshot_and_git_commit(world):
     advance(flow, item, target, '执行')
     io.time += timedelta(minutes=61)
     advance(flow, item, target, '交付')
-    assert 'version command exit 1' in io.sent[0]['summary']
+    assert 'version command exit 1' not in io.sent[0]['summary']
+    assert 'version command exit 1' in Path(io.sent[0]['path']).read_text()
     assert source.poll(target, after.cursor).events == []
 
 
@@ -419,8 +429,8 @@ def test_unknown_deployment_does_not_block_known_deployment_or_invent_judgment(w
     assert unknown['features'] == []  # 即使模型给这处「紧急该升」，也不能猜。
     advance(flow, item, target, '交付')
     report = io.sent[0]
-    assert 'n8n · dc1/first.example · 版本不明 → 2.0.0 · 版本不明（普通）：ssh 连不上' in report['summary']
-    assert 'n8n · dc2/second.example · 1.1.0 → 2.0.0 · 该升（紧急）' in report['summary']
+    assert 'n8n · 1.1.0→2.0.0 · 该升 · 2 个实例' in report['summary']
+    assert 'ssh 连不上' not in report['summary']
     html = Path(report['path']).read_text()
     assert 'ssh 连不上' in html and '版本不明' in html and 'second.example' in html
     known_only = {'instances': [judgment()['instances'][1]]}
@@ -463,8 +473,8 @@ def test_manual_upstream_skips_daily_fetch_and_appears_in_empty_weekly(world, un
     advance(flow, item, target, '交付')
     assert io.sent[0]['versions'] == []
     assert io.sent[0]['blind'][0]['kind'] == 'manual'
-    assert 'DSM' in io.sent[0]['summary'] and '没有公开版本查询接口' in io.sent[0]['summary']
-    assert '人工核对上游' in Path(io.sent[0]['path']).read_text()
+    assert io.sent[0]['summary'].endswith('盲区 ' + str(3 if unknown else 1) + ' 项')
+    assert 'DSM：没有公开版本查询接口' in Path(io.sent[0]['path']).read_text()
     io.time += timedelta(days=1)
     assert source.poll(target, poll.cursor).events == []
     assert io.release_calls == []
@@ -554,15 +564,14 @@ def test_bad_upstream_is_rejected_and_gitlab_failure_is_deduplicated(world, monk
     assert source.poll(target, poll.cursor).events == []
 
 
-def test_feishu_summary_has_one_line_per_deployment_and_reaches_text_sender(world):
+def test_feishu_summary_has_one_line_per_software_and_reaches_text_sender(world):
     io, target, flow, source = world
     item, poll = judged(world, urgent=True)
     advance(flow, item, target, '交付')
     report = io.sent[0]
     lines = [line for line in report['summary'].splitlines() if line.startswith('n8n ·')]
-    assert len(lines) == 2
-    assert 'dc1/first.example · 1.0.0 → 2.0.0 · 该升（紧急）' in lines[0]
-    assert 'dc2/second.example · 1.1.0 → 2.0.0 · 该升（紧急）' in lines[1]
+    assert lines == ['n8n · 1.0.0 / 1.1.0→2.0.0 · 该升 · 2 个实例']
+    assert '影响公开服务' not in report['summary']
     target['watch_updates'].update(lark='lark-cli', profile='test', kun_open_id='test')
     real = IO(io.clock)
     calls = []
@@ -575,7 +584,8 @@ def test_feishu_summary_has_one_line_per_deployment_and_reaches_text_sender(worl
     assert '--file' in calls[1]
 
 
-def test_real_engine_wait_feedback_rework_completion_and_replay(world, tmp_path):
+@pytest.mark.parametrize('transcribed', [False, True])
+def test_real_engine_wait_feedback_rework_completion_and_replay(world, tmp_path, transcribed):
     from conftest import build, configuration
     from workshop.core.report import status, why
     io, target, flow, source = world
@@ -604,9 +614,11 @@ def test_real_engine_wait_feedback_rework_completion_and_replay(world, tmp_path)
         assert '等反馈' in status(engine.log)
         assert len(engine.log.all('rounds')) == 1
         report = io.sent[0]
-        io.messages['om_engine'] = json.dumps({'schema': 'watch-feedback/v1', 'report': report['id'],
-            'items': [{'key': event.object_key, 'instance': i, 'decision': '没问题'} for i in ('one','two')]})
-        engine.ingest(Event('feishu', 'om_engine', 'alpha', 'feedback', 'report feedback', {}), ingress='external')
+        io.messages['om_engine'] = json.dumps({'report': report['id'],
+            'items': [{'id': i, 'choice': '没问题'} for i in ('one','two')]})
+        body = {'channel': 'session', 'session': 'owner-session', 'quote': '两处都没问题',
+                'feedback': json.loads(io.messages['om_engine'])} if transcribed else {}
+        engine.ingest(Event('session' if transcribed else 'feishu', 'om_engine', 'alpha', 'feedback', 'report feedback', body), ingress='external')
         for _ in range(14):
             engine.tick()
         item = engine.log.all('items')[0]
