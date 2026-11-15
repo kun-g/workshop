@@ -9,6 +9,7 @@ from .cards import validate_question, validate_notice, question_rules, question_
 
 STAGES = ("接单", "说清楚", "执行", "证据", "审查", "交付", "验收", "收尾", "观察")
 OUTCOMES = ("done", "failed", "nothing")
+DEFAULT_BRIEF_MAX_CHARS = 524288
 
 
 def utcnow() -> datetime:

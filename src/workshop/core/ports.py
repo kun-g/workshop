@@ -20,6 +20,10 @@ class TargetBlocked(Exception):
     """当前交付对象缺少动作前提；不重试、不影响其他交付对象。"""
 
 
+class InputBlocked(Exception):
+    """派活输入无法安全送出，尚未启动执行者；只阻塞当前活，修复后显式恢复。"""
+
+
 class Source(Protocol):
     def wake_paths(self, target: dict | None = None) -> list[str]:
         """可选、纯本地查询（也兼容无参数实现）。返回文件路径；文件变化使本来源在该交付对象的 poll 缓存过期。"""
