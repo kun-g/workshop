@@ -1,4 +1,4 @@
-"""新版报告：大跨度发布、多部署、角色继承、复制与代录反馈。"""
+"""新版报告：大跨度发布、多部署、角色继承、复制反馈。"""
 from copy import deepcopy
 from dataclasses import asdict
 from datetime import datetime, timezone
@@ -68,6 +68,9 @@ def test_large_report_is_short_and_human_readable():
     {'headline': '字' * 41}, {'headline': '根据profile判断'}, {'headline': '分成\n两行'},
     {'points': [{'version': '2.0.0', 'text': '修复'}] * 4},
     {'points': [{'version': '9.0.0', 'text': '没读过的发布'}]},
+    {'points': [{'version': '2.0.0', 'text': '字' * 46}]},
+    {'points': [{'version': '2.0.0', 'text': '修复认证绕过；资料未证实已触发，不标紧急'}]},
+    {'headline': '管着约 47 个容器的面板有漏洞'},
 ])
 def test_human_fields_are_validated(change):
     value = judgment()
@@ -132,38 +135,9 @@ def test_unknown_is_counted_once_and_remains_collapsed():
     report['feedback_targets'] = targets(report, versions, [])
     assert len(blind_spots(report['versions'], versions, report['blind'])) == 1
     html = render(report, versions, [], datetime.now(timezone.utc))
-    assert html.count('测试网络不可达') == 1
-    assert '<summary>1 项待补齐</summary>' in html
-    assert html.index('测试网络不可达') > html.index('<details>')
-
-
-def test_session_transcription_preserves_quote_and_provenance(world):
-    io, target, flow, source = world
-    item, _ = judged(world, urgent=True)
-    advance(flow, item, target, '交付')
-    report = io.sent[0]
-    payload = {'report': report['id'], 'items': [{'id': 'one', 'choice': '升', 'note': '周末'}]}
-    body = {'channel': 'session', 'session': 'owner-session', 'quote': 'dc1 那处周末升，其他的先不选', 'feedback': payload}
-    for prefix, bad_body in [('session', body), ('cli:cli:session', body), ('source:session', body),
-                             ('cli:session', {**body, 'session': ''}), ('cli:session', {'from_kun': True, 'text': json.dumps(payload)}),
-                             ('cli:feishu', body)]:
-        assert flow.classify(Event(prefix, 'missing', 'alpha', '', '', bad_body), item, target, lambda **kw: item).discard
-    event = Event('cli:session', 'one-choice', 'alpha', '', '', body)
-    assert flow.classify(event, item, target, lambda **kw: item).action == 'rework'
-    item['materials'].append(asdict(event))
-    advance(flow, item, target, '执行')
-    saved = io.state(target)
-    choice = saved['versions'][item['object_key']]['feedback']['one']
-    assert choice['quote'] == body['quote'] and choice['session'] == 'owner-session' and choice['recorded'] is True
-    assert choice['channel'] == 'session' and choice['decision'] == '升' and 'message_id' not in choice
-    assert saved['feedback_records']['cli:session:one-choice']['quote'] == body['quote']
-    advance(flow, item, target, '执行')
-    assert len(io.state(target)['feedback_records']) == 1
-    # 相同 ext_id 的真实飞书消息仍可消费，来源不混淆。
-    io.messages['one-choice'] = json.dumps({'report': report['id'], 'items': [{'id': 'two', 'choice': '没问题'}]})
-    item['materials'].append({'source': 'cli:feishu', 'ext_id': 'one-choice', 'body': {}})
-    advance(flow, item, target, '执行')
-    assert len(io.state(target)['feedback_records']) == 2
+    # 原始错误留在对账记录里，页面只按类计数、列名字（Kun 11-15：写给程序看的长段不上页面）。
+    assert '测试网络不可达' not in html
+    assert '<summary>1 处版本不明</summary>' in html
 
 
 def test_inventory_invalidates_legacy_judgment_and_updates_roles(world):
@@ -225,7 +199,7 @@ def test_legacy_judgment_waits_then_appears_as_blind_spot(world):
     assert io.sent[0]['versions'] == []
     assert io.sent[0]['blind'] == [{'judgment_pending': item['object_key']}]
     html = Path(io.sent[0]['path']).read_text()
-    assert '长篇校验自证不应渲染' not in html and '判断未完成' in html
+    assert '长篇校验自证不应渲染' not in html and '个软件没判成' in html
 
 
 def test_waiting_age_appears_only_after_first_day():
@@ -238,3 +212,41 @@ def test_waiting_age_appears_only_after_first_day():
     assert '已等 7 天' in render(report, versions, [], now)
     snapshot['feedback'] = {p['id']: {'decision': '升'} for p in snapshot['software']['instances']}
     assert '已等 7 天' not in render(report, versions, [], now)
+
+
+def test_blind_spots_are_grouped_with_short_names():
+    from workshop.plugins.watch_updates.report import blind_groups
+    blind = [{'id': 'servers', 'ok': False, 'evidence': 'ssh 全部 Operation not permitted，详见 collector/ssh-*.json'},
+             {'software': 'GitLab（自建，git.example）', 'host': 'gitlab-1 (aws i-0123)', 'service': 'gitlab',
+              'version': '版本不明', 'reason': 'DNS no such host'},
+             {'software': 'NetBird', 'host': 'dc1', 'service': 'netbird', 'version': '版本不明', 'reason': 'x'},
+             {'software': 'NetBird', 'host': 'dc2', 'service': 'netbird', 'version': '版本不明', 'reason': 'x'}]
+    groups = blind_groups(blind, {})
+    assert groups == [('3 处版本不明', '对账没连上：服务器，这些部署沿用上次读数或读不到版本。',
+                       ['GitLab · gitlab-1', 'NetBird ×2'])]
+    assert 'Operation not permitted' not in str(groups)
+
+
+def test_version_only_changes_are_not_listed():
+    report, versions = report_fixture()
+    report['changes'] = [{'id': 'a', 'name': 'Alpha', 'action': '更新'}, {'id': 'b', 'name': 'Beta', 'action': '加入'}]
+    html = render(report, versions, [], datetime.now(timezone.utc))
+    assert '清单变化 1 项' in html and 'Alpha' not in html and 'Beta · 加入' in html
+
+
+def test_release_vocabulary_is_not_mistaken_for_hedging():
+    value = judgment()
+    value['instances'][0].update(headline='SSH 转发隔离和角色校验有修复', points=[{'version': '2.0.0', 'text': 'TLS 校验拒绝非规范 IP 地址'}])
+    validate_judgment(value, software(), [release('2.0.0')], [], [{'id': 'project'}])
+
+
+def test_same_feature_on_several_instances_is_asked_once():
+    from workshop.plugins.watch_updates.presentation import targets
+    report, versions = report_fixture()
+    for source in (versions, report['snapshot']):
+        rows = source['Sentry-1.40.0']['judgment']['instances']
+        rows.append({**rows[0], 'id': 'second'})
+        for row in rows:
+            row['features'] = [{'id': 'queue-alert', 'summary': '队列耗尽预警', 'direction': 'project'}]
+    found = [t for t in targets(report, versions, []).values() if t['kind'] == 'feature']
+    assert len(found) == 1

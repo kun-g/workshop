@@ -299,7 +299,7 @@ def test_validation_requires_matching_need_and_actual_vulnerability_exposure(wor
         validate_judgment(j, s, io.upstream, io.needs(target), io.directions(target))
     s['profile']['exposed'] = True
     j['instances'][0]['references'] = ['invented']
-    with pytest.raises(ValueError, match='须引用'):
+    with pytest.raises(ValueError, match='references'):
         validate_judgment(j, s, io.upstream, io.needs(target), io.directions(target))
 
 
@@ -390,7 +390,7 @@ def test_unknown_version_snapshot_and_git_commit(world):
     io.time += timedelta(minutes=61)
     advance(flow, item, target, '交付')
     assert 'version command exit 1' not in io.sent[0]['summary']
-    assert 'version command exit 1' in Path(io.sent[0]['path']).read_text()
+    assert '处版本不明' in Path(io.sent[0]['path']).read_text()
     assert source.poll(target, after.cursor).events == []
 
 
@@ -402,17 +402,17 @@ def test_report_delivery_journal_survives_partial_failure(world):
     calls = []
     def command(argv, **kwargs):
         calls.append(argv)
-        fail = '--file' in argv and len(calls) == 2
+        fail = '--file' in argv and len(calls) == 1
         return subprocess.CompletedProcess(argv, 1 if fail else 0, json.dumps({'ok': not fail, 'data': {'message_id': 'om_sent'}}), '')
     real.command = command
     report = {'id': 'weekly', 'path': str(Path(c['reports'])/'weekly.html'), 'summary': 'summary'}
     with pytest.raises(ValueError, match='发送未确认'):
         real.send_report(target, report)
     real.send_report(target, report)
-    assert sum('--text' in a for a in calls) == 1
+    assert sum('--text' in a for a in calls) == 0
     assert sum('--file' in a for a in calls) == 2
     real.send_report(target, report)
-    assert len(calls) == 3
+    assert len(calls) == 2
 
 
 def test_unknown_deployment_does_not_block_known_deployment_or_invent_judgment(world):
@@ -432,7 +432,7 @@ def test_unknown_deployment_does_not_block_known_deployment_or_invent_judgment(w
     assert 'n8n · 1.1.0→2.0.0 · 该升 · 2 个实例' in report['summary']
     assert 'ssh 连不上' not in report['summary']
     html = Path(report['path']).read_text()
-    assert 'ssh 连不上' in html and '版本不明' in html and 'second.example' in html
+    assert 'ssh 连不上' not in html and '版本不明' in html and 'second.example' in html
     known_only = {'instances': [judgment()['instances'][1]]}
     assert len(validate_judgment(known_only, row, io.upstream, io.needs(target), io.directions(target))['instances']) == 2
 
@@ -474,7 +474,7 @@ def test_manual_upstream_skips_daily_fetch_and_appears_in_empty_weekly(world, un
     assert io.sent[0]['versions'] == []
     assert io.sent[0]['blind'][0]['kind'] == 'manual'
     assert io.sent[0]['summary'].endswith('盲区 ' + str(3 if unknown else 1) + ' 项')
-    assert 'DSM：没有公开版本查询接口' in Path(io.sent[0]['path']).read_text()
+    assert '没有版本接口' in Path(io.sent[0]['path']).read_text()
     io.time += timedelta(days=1)
     assert source.poll(target, poll.cursor).events == []
     assert io.release_calls == []
@@ -564,7 +564,7 @@ def test_bad_upstream_is_rejected_and_gitlab_failure_is_deduplicated(world, monk
     assert source.poll(target, poll.cursor).events == []
 
 
-def test_feishu_summary_has_one_line_per_software_and_reaches_text_sender(world):
+def test_feishu_gets_only_the_attachment_and_summary_stays_on_record(world):
     io, target, flow, source = world
     item, poll = judged(world, urgent=True)
     advance(flow, item, target, '交付')
@@ -580,12 +580,11 @@ def test_feishu_summary_has_one_line_per_software_and_reaches_text_sender(world)
         return subprocess.CompletedProcess(argv, 0, '{"ok":true}', '')
     real.command = send
     real.send_report(target, report)
-    assert calls[0][calls[0].index('--text') + 1] == report['summary']
-    assert '--file' in calls[1]
+    # R14（11-15）：飞书只发附件，逐行摘要只留在报告记录里。
+    assert len(calls) == 1 and '--file' in calls[0] and '--text' not in calls[0]
 
 
-@pytest.mark.parametrize('transcribed', [False, True])
-def test_real_engine_wait_feedback_rework_completion_and_replay(world, tmp_path, transcribed):
+def test_real_engine_wait_feedback_rework_completion_and_replay(world, tmp_path):
     from conftest import build, configuration
     from workshop.core.report import status, why
     io, target, flow, source = world
@@ -616,9 +615,7 @@ def test_real_engine_wait_feedback_rework_completion_and_replay(world, tmp_path,
         report = io.sent[0]
         io.messages['om_engine'] = json.dumps({'report': report['id'],
             'items': [{'id': i, 'choice': '没问题'} for i in ('one','two')]})
-        body = {'channel': 'session', 'session': 'owner-session', 'quote': '两处都没问题',
-                'feedback': json.loads(io.messages['om_engine'])} if transcribed else {}
-        engine.ingest(Event('session' if transcribed else 'feishu', 'om_engine', 'alpha', 'feedback', 'report feedback', body), ingress='external')
+        engine.ingest(Event('feishu', 'om_engine', 'alpha', 'feedback', 'report feedback', {}), ingress='external')
         for _ in range(14):
             engine.tick()
         item = engine.log.all('items')[0]

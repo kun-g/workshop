@@ -1,0 +1,116 @@
+"""完成钩子：阶段走完之后要做的事，以及到点再查一次。"""
+from dataclasses import asdict
+from datetime import timedelta
+from .models import due, stamp
+from .ports import Retryable
+from .cards import notice
+from .models import After
+
+
+def after(engine, item, stage, key, target, *, recheck=False):
+    def invoke():
+        # 同一完成钩子每次回查是一次新调用；回查次数进身份，免得认回上一次的结果。
+        result = engine.call("flow", target["plugin"], "after", item, stage, key, target,
+                           identity=[key, item.get("pending_episode", 0), item.get("after_pending_count", 0)], item=item["id"])
+        return asdict(result) if isinstance(result, After) else result
+    if recheck and (engine.log.get("effects", key) or {}).get("done"):
+        engine.fact("effect", {"id": key, "done": False})
+    value = engine.effect(key, invoke)
+    result = After(**value) if isinstance(value, dict) else After(aliases=value or [])
+    if (not isinstance(result.blocked, str) or result.blocked and
+            (result.pending or not isinstance(result.next, str) or not result.next.strip())):
+        raise ValueError("回查阻塞须有下一步，不能同时继续等待")
+    if (type(result.pending) is not bool or type(result.rerun) is not bool or not isinstance(result.reason, str)
+            or not isinstance(result.next, str) or result.pending and (not result.reason or not result.next)):
+        raise ValueError("仍留本阶段须有原因和下一步")
+    if type(result.restart) is not bool or not isinstance(result.notice, str):
+        raise ValueError("重启标记须是布尔值，通知须是字符串")
+    if not isinstance(result.recovery_id, str):
+        raise ValueError("恢复标识必须是字符串")
+    if result.recovery_id:
+        if result.recovery_id != (item.get("recovery") or {}).get("id"):
+            raise ValueError("流程消费的不是本活当前恢复计划")
+        engine.fact("recovery_applied", {"id": result.recovery_id}, item["id"],
+                  source="recovery", ext_id="applied:" + result.recovery_id)
+    if result.notice.strip():
+        engine.card(item, f"after-notice:{key}", "notice", notice(result.notice))
+    if result.restart:
+        # 只在内存里记；run 循环在这一拍结束后退出，外部守护拉起新代码。
+        engine.restart_requested = True
+    if result.pending and not result.rerun:
+        due(result.recheck_after, engine.clock())
+    aliases = result.aliases
+    if not isinstance(aliases, list) or not all(isinstance(a, str) and a for a in aliases):
+        raise ValueError("流程返回的别名必须是非空字符串列表")
+    with engine.log.transaction():
+        for alias in aliases:
+            identity = f'{engine.prefix(item["target"], item.get("flow", ""))}:{alias}'
+            existing = engine.log.get("aliases", identity) or engine.log.get("items", identity)
+            if existing and existing["object_key"] != item["object_key"]:
+                raise ValueError(f"别名冲突：{identity}")
+            engine.fact("alias_bound", {"id": identity, "object_key": item["object_key"],
+                      "item": item["id"]}, item["id"], source="alias", ext_id=f"{key}:{alias}")
+    if key.startswith("after:program:"):
+        engine.fact("program_after", {"stage": stage, "result": asdict(result)}, item["id"],
+                  source="program-after", ext_id=f"{key}:{item.get('pending_episode', 0)}:{item.get('after_pending_count', 0)}")
+    return result
+
+
+def pending_changes(engine, item, result, target, hook):
+    count = item.get("after_pending_count", 0) + 1
+    changes = dict(next=result.next, gate_reason=result.reason, after_pending_count=count, after_wait=None)
+    if count >= target.get("pending_limit", 5):
+        engine.card(item, f"pending:{item['stage']}:{item.get('pending_episode', 0)}", "notice",
+                  notice(result.reason + "；" + result.next))
+        changes.update(state="卡住", blocked_by="阶段等待达到上限",
+                       after_wait={**hook, "delay": result.recheck_after, "rerun": result.rerun},
+                       next=result.next + "；处理后用 recover --mode wait --reason 续等",
+                       leave=engine.blocked_leave(result.next))
+    elif result.rerun:
+        changes.update(state="空闲", leave={"kind": "工序", "owner": "车间", "at": stamp(engine.clock()), "about": result.next})
+    else:
+        # 取插件建议与核心指数退避较晚者，等待不占执行者。
+        at = max(due(result.recheck_after, engine.clock()),
+                 stamp(engine.clock() + timedelta(seconds=min(300 * 2 ** (count - 1), 3600))))
+        engine.timer(item, f"{hook['key']}:{item.get('pending_episode', 0)}:{count}", at, result.next)
+        changes.update(state="定时", after_wait={**hook, "at": at},
+                       leave={"kind": "工序", "owner": "车间", "at": at, "about": result.next})
+    return changes
+
+
+def recheck_after(engine, item):
+    hook = item.get("after_wait")
+    if not hook or item["state"] != "空闲" or stamp(engine.clock()) < hook["at"] or not engine.retry_due(hook["key"]):
+        return
+    target = engine.item_target(item)
+    try:
+        result = engine.after({**item, "result": hook["receipt"]}, item["stage"], hook["key"], target, recheck=True)
+        with engine.log.transaction():
+            if result.blocked:
+                engine.fact("gate_blocked", {"gate_reason": result.blocked}, item["id"])
+                engine.change(item, state="卡住", blocked_by=result.blocked, gate_reason=result.blocked,
+                            next=result.next, after_wait=None, leave=engine.blocked_leave(result.next))
+            elif result.pending:
+                engine.change(item, **engine.pending_changes(item, result, target, hook))
+            else:
+                engine.change(item, stage=hook["to"], state="完成" if hook["complete"] else "空闲",
+                            next=hook["to"], after_wait=None, after_pending_count=0,
+                            pending_episode=item.get("pending_episode", 0) + 1, blocked_by="",
+                            leave=hook["receipt"].get("leave") or {"kind": "工序", "owner": "车间", "at": stamp(engine.clock()), "about": hook["to"]})
+        engine.retry_clear(hook["key"])
+    except Retryable as exc:
+        engine.retry_failure(item["target"], "flow", target["plugin"], hook["key"], exc)
+    except Exception as exc:
+        engine.broken(item["target"], "flow", target["plugin"], exc)
+
+
+def effect(engine, key, action):
+    entry = engine.log.get("effects", key)
+    if not (entry or {}).get("done"):
+        if entry is None or "done" not in entry:
+            # 作业没出结果时每拍都会回到这里；意图只记一次。
+            engine.fact("effect", {"id": key, "done": False})
+        result = action()
+        engine.fact("effect", {"id": key, "done": True, "result": result})
+    return engine.log.get("effects", key).get("result")
+

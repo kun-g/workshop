@@ -3,7 +3,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import sys
 
-from baseline_plugin import _clock_instants, _note_instant, canonicalize
+from baseline_plugin import _clock_instants, _note_instant, _orig_stamp, _rebind_core_stamps, _recording_stamp, canonicalize
 from workshop.core.models import due, stamp
 
 
@@ -88,3 +88,32 @@ def test_interpreter_inside_repo_becomes_python_token():
 def test_wake_directory_matches_private_tmp():
     assert canonicalize("/tmp/ws-wake-abc/workshop.db", {}) == "$tmpdir/workshop.db"
     assert canonicalize("/private/tmp/ws-wake-abc/workshop.db", {}) == "$tmpdir/workshop.db"
+
+
+def test_recording_stamp_reaches_every_loaded_core_module():
+    import sys
+    from types import ModuleType
+
+    import workshop.core.beat as beat
+    import workshop.core.models as models
+
+    probe = ModuleType("workshop.core._stamp_probe")
+    probe.stamp = _orig_stamp
+    sys.modules[probe.__name__] = probe
+    saved = {}
+    for name, module in list(sys.modules.items()):
+        if module is None:
+            continue
+        if name != "workshop.core" and not name.startswith("workshop.core."):
+            continue
+        if hasattr(module, "stamp"):
+            saved[name] = module.stamp
+    try:
+        _rebind_core_stamps()
+        assert models.stamp is _recording_stamp
+        assert beat.stamp is _recording_stamp
+        assert probe.stamp is _recording_stamp
+    finally:
+        for name, bound in saved.items():
+            sys.modules[name].stamp = bound
+        sys.modules.pop(probe.__name__, None)

@@ -445,3 +445,24 @@ def test_source_corrupt_release_is_not_treated_as_no_failure(world, monkeypatch)
     (root / 'release.json').write_text('{broken')
     with pytest.raises(Retryable, match='无法读取发版记录'):
         MainBranchSource().poll(w['target'], None)
+
+
+def test_release_now_request_compares_immediately_once(world, monkeypatch):
+    w = world
+    real = source_module.run
+    monkeypatch.setattr(source_module, 'run', lambda argv, **kwargs: real(
+        [str(w['remote']) if str(a).startswith('https://github.com/') else a for a in argv], **kwargs))
+    now = datetime(2026, 11, 14, 9, 30, tzinfo=timezone.utc)
+    source = MainBranchSource(lambda: now)
+    request = w['root'] / 'state' / 'release-now'
+    assert source.wake_paths(w['target']) == [str(request.resolve())]
+    slot = now.replace(minute=0).isoformat()
+    # 本小时已经比过：没有请求时不再比较。
+    assert source.poll(w['target'], slot).events == []
+    request.parent.mkdir(parents=True, exist_ok=True)
+    request.write_text('2026-11-14T09:30:00+00:00')
+    asked = source.poll(w['target'], slot)
+    assert [e.body for e in asked.events] == [{'kind': 'ahead', 'from': w['a'], 'to': w['b']}]
+    assert asked.events[0].object_key == w['b'] and asked.events[0].title.startswith('立即发版')
+    assert not request.exists() and asked.cursor == slot
+    assert source.poll(w['target'], asked.cursor).events == []

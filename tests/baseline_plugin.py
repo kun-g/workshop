@@ -17,8 +17,6 @@ import sys
 
 import pytest
 
-from workshop.core import engine as engine_module
-from workshop.core import log as log_module
 from workshop.core import models as models_module
 from workshop.core.engine import Engine
 from workshop.core.log import Log
@@ -123,6 +121,18 @@ def _recording_stamp(value):
     if isinstance(value, _ClockInstant):
         _clock_instants.add(result)
     return result
+
+
+def _rebind_core_stamps():
+    """每个核心模块 from models import stamp 拿到的是当时的函数。装上记录时全部换成记录用的。"""
+    models_module.stamp = _recording_stamp
+    for name, module in list(sys.modules.items()):
+        if module is None:
+            continue
+        if name != "workshop.core" and not name.startswith("workshop.core."):
+            continue
+        if getattr(module, "stamp", None) is _orig_stamp:
+            module.stamp = _recording_stamp
 
 
 def _clock_call(self):
@@ -806,9 +816,7 @@ def install():
     Engine.__init__ = engine_init
     Engine.after = after
     Engine.heartbeat = heartbeat
-    models_module.stamp = _recording_stamp
-    engine_module.stamp = _recording_stamp
-    log_module.stamp = _recording_stamp
+    _rebind_core_stamps()
     _patch_clock()
     subprocess.Popen.__init__ = _popen_init
     # 线程里不一定带得走 pytest 的上下文。同一进程里打开已绑定的库，仍把提交记下。

@@ -59,8 +59,13 @@ def targets(report, versions, needs):
                 'members': members({p['id'] for p in view['agents']}),
                 'choices': ['升', '没问题', '判错了', '不用盯']})
         for key, value in view['entries']:
+            shown = set()
             for judge in value['judgment']['instances']:
                 for feature in judge.get('features', []):
+                    # 同一版本的同一功能，多处部署只问一次。
+                    if (feature['id'], feature['summary']) in shown:
+                        continue
+                    shown.add((feature['id'], feature['summary']))
                     add('feature-' + digest([key, judge['id'], feature['id']]),
                         {'kind': 'feature', 'software': view['id'], 'label': feature['summary'],
                          'key': key, 'instance': judge['id'], 'feature': feature['id'],

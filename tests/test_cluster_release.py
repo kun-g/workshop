@@ -400,7 +400,8 @@ def test_lost_worker_reports_existing_grant_id(cluster, monkeypatch):
     ([{'filename': 'docs/old.py', 'status': 'renamed', 'previous_filename': 'src/old.py'}], True),
     ([{'filename': 'tests/test_app.py'}] * 300, True),
 ])
-def test_cumulative_changes_use_actual_deployment_and_rule_paths(cluster, monkeypatch, files, release):
+@pytest.mark.parametrize('immediate', [False, True])
+def test_cumulative_changes_use_actual_deployment_and_rule_paths(cluster, monkeypatch, files, release, immediate):
     target, _, _ = cluster
     target['release_ignored_paths'] = ['docs/', '**/tests/', '*.md']
     calls = []
@@ -420,9 +421,20 @@ def test_cumulative_changes_use_actual_deployment_and_rule_paths(cluster, monkey
             output = json.dumps({'status': 'ahead', 'files': files})
         return subprocess.CompletedProcess(argv, 0, output, '')
     monkeypatch.setattr(source_module, 'run', command)
-    poll = MainBranchSource().poll(target, None)
+    now = datetime(2026, 11, 15, 12, 30, tzinfo=timezone.utc)
+    source = MainBranchSource(lambda: now)
+    request = Path(target['scheduled_release_state_dir']) / 'release-now'
+    if immediate:
+        request.parent.mkdir(parents=True, exist_ok=True)
+        request.write_text(now.isoformat())
+    poll = source.poll(target, now.replace(minute=0).isoformat() if immediate else None)
     assert bool(poll.events) is release
     assert len(calls) == 4
+    if immediate:
+        assert not request.exists()
+        assert all(e.title.startswith('立即发版') for e in poll.events)
+        assert source.poll(target, poll.cursor).events == []
+        assert len(calls) == 4
 
 
 def test_exec_log_recognizes_request_kind_and_uncertain_does_not_restart(cluster, monkeypatch):
