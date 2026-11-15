@@ -271,12 +271,12 @@ class IO:
         return None
 
     def send_report(self, target, report):
-        """文本与附件各有固定幂等键；未确认发送成功时保留原报告重试。"""
+        """只发 HTML 附件（Kun 11-15：飞书里的逐行文字摘要不用发）；附件有固定幂等键，未确认发送成功时保留原报告重试。"""
         c = self.config(target)
         file = path(report['path'])
         journal_file = self.file(target, 'state_dir') / ('delivery-' + digest(report['id']) + '.json')
         journal = read(journal_file)
-        for kind, argument in [('summary', ['--text', report['summary']]), ('file', ['--file', file.name])]:
+        for kind, argument in [('file', ['--file', file.name])]:
             old = journal.get(kind)
             if old and old.get('sent'):
                 continue
