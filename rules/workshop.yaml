@@ -219,7 +219,7 @@ executors:
   writer: [{use: orca-codex}, {use: orca-claude}]
   reviewer: [{use: codex}, {use: cursor-grok}, {use: claude}]
   acceptor: [{use: codex}, {use: claude}]
-limits: {concurrent: 5, chain_depth: 8, round_timeout_seconds: 7200}
+limits: {concurrent: 5, chain_depth: 8, round_timeout_seconds: 7200, brief_max_chars: 524288}
 # 所有阶段默认用 quota；没有额度门槛时它和 ordered 一样按顺序取第一个。
 selector: quota
 channel: ask_kun

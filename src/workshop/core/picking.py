@@ -8,8 +8,8 @@ import sys
 import hashlib
 from .gates import overlaps, validate_stages
 from .models import STAGES as ALL_STAGES
-from .models import Brief, Receipt, stamp
-from .ports import Unavailable, Retryable
+from .models import Brief, Receipt, stamp, DEFAULT_BRIEF_MAX_CHARS
+from .ports import Unavailable, Retryable, InputBlocked
 from .cards import question
 from .models import FlowBrief, Usage, RoundUsage
 from .jobs import Pending
@@ -22,14 +22,29 @@ def launch(engine, row):
     engine.plugins.get("executor", row["executor"])
     brief = (StoredBrief(str(engine.log.path.resolve()), row["brief_ref"])
              if "brief_ref" in row else Brief(**row["brief"]))
-    if row["session"]:
-        started = engine.call("executor", row["executor"], "resume", row["token"], row["session"], brief, item,
-                            row["config"], row["target"], identity=[row["token"]], item=item["id"])
-        if started.session != row["session"]:
-            raise ValueError("执行者没有接回原会话")
-    else:
-        started = engine.call("executor", row["executor"], "launch", row["token"], brief, item, row["config"],
-                            row["target"], identity=[row["token"]], item=item["id"])
+    # 旧轮的保存内容不改写，但实际启动也使用当前规则的输入预算。
+    target = {**row["target"], "runtime": {**row["target"].get("runtime", {}),
+              "brief_max_chars": engine.rules.data["limits"].get("brief_max_chars", DEFAULT_BRIEF_MAX_CHARS)}}
+    try:
+        if row["session"]:
+            started = engine.call("executor", row["executor"], "resume", row["token"], row["session"], brief, item,
+                                row["config"], target, identity=[row["token"]], item=item["id"])
+            if started.session != row["session"]:
+                raise ValueError("执行者没有接回原会话")
+        else:
+            started = engine.call("executor", row["executor"], "launch", row["token"], brief, item, row["config"],
+                                target, identity=[row["token"]], item=item["id"])
+    except InputBlocked as exc:
+        reason = str(exc)
+        action = "负责会话修复派活输入、原文存储或预算后，按既有授权恢复本活"
+        with engine.log.transaction():
+            engine.fact("round_changed", {"token": row["token"], "status": "ended", "stopped": True,
+                        "outcome": "failed", "summary": reason, "ended": stamp(engine.clock())}, item["id"])
+            engine.fact("round_result", {"token": row["token"], "stage": row["stage"], "outcome": "failed",
+                        "summary": reason, "evidence": [], "reason": "未启动：" + reason}, item["id"])
+            engine.change(item, state="卡住", round=None, retry_at=None, retry_executor=None,
+                          serial_hold=False, blocked_by=reason, next=action, leave=engine.blocked_leave(action))
+        return
     if not started.session or not started.handle:
         raise ValueError("执行者必须返回会话和运行标识")
     with engine.log.transaction():

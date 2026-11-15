@@ -1,7 +1,7 @@
 """唯一规则文件的读取与校验。"""
 from dataclasses import dataclass
 from pathlib import Path
-from .models import STAGES
+from .models import STAGES, DEFAULT_BRIEF_MAX_CHARS
 from .flows import configured, entries as flow_entries, validate as validate_flows
 import yaml
 
@@ -25,6 +25,9 @@ class Rules:
         if not isinstance(data, dict) or not data.get("targets"):
             raise ValueError("规则缺交付对象")
         limits = data.get("limits", {})
+        budget = limits.get("brief_max_chars", DEFAULT_BRIEF_MAX_CHARS)
+        if type(budget) is not int or budget <= 0:
+            raise ValueError("brief_max_chars 必须为正整数字符数")
         if type(limits.get("concurrent")) is not int or limits["concurrent"] < 1:
             raise ValueError("concurrent 必须为正整数")
         if type(limits.get("chain_depth")) is not int or not 0 < limits["chain_depth"] <= 8:
