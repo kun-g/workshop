@@ -63,6 +63,7 @@ class Engine:
             rules = plugins.configure(rules)
         self.log, self.rules, self.plugins, self.clock, self.jobs = log, rules, plugins, clock, jobs
         self.restart_requested = False
+        self.channel_read_tokens = {}
         self.tick_failures = self.control("@tick").get("failures", 0)
         saved = self.log.get("controls", "@rules") or {}
         pinned = dict(self.control("@flow-defaults").get("values", {}))
@@ -1005,6 +1006,9 @@ class Engine:
                     self.delivery_error(card["id"], exc, card["item"])
             cards = [c for c in self.log.all("cards") if c["mode"] == "ask" and c["sent"]
                      and not c["answered"] and not c.get("cancelled")]
+            # 只保留仍待回答的卡，避免内存随历史卡片数增长。
+            self.channel_read_tokens = {c["id"]: self.channel_read_tokens.get(c["id"]) or c.get("read_token")
+                                        for c in cards}
             try:
                 result = self.call("channel", name, "poll", cards, identity=["poll"])
             except Pending:
@@ -1040,20 +1044,26 @@ class Engine:
 
     def channel_reads(self, result):
         """只累计完成的读取；同一作业结果在新鲜期被重复收取不再计数。"""
+        completed = {}
         with self.log.transaction():
             for cid in result.checked:
                 card = self.log.get("cards", cid)
                 if (not card or card["mode"] != "ask" or not card["sent"] or card["answered"]
-                        or card.get("cancelled") or card.get("read_token") == result.token):
+                        or card.get("cancelled") or cid in completed
+                        or (self.channel_read_tokens.get(cid) or card.get("read_token")) == result.token):
                     continue
                 error = result.errors.get(cid, "")
                 count = card.get("read_failures", 0) + 1 if error else 0
-                self.fact("card_changed", {"id": cid, "read_token": result.token,
-                          "read_failures": count, "read_error": error}, card["item"])
+                if count != card.get("read_failures", 0) or error != card.get("read_error", ""):
+                    self.fact("card_changed", {"id": cid, "read_failures": count,
+                              "read_error": error}, card["item"])
                 if error:
                     self.delivery_error(f"read:{cid}", RuntimeError(error), card["item"])
                 else:
                     self.delivery_ok(f"read:{cid}")
+                completed[cid] = result.token
+        # 事务成功才记住结果；诊断没有变化也要去重，不为 token 追加事实。
+        self.channel_read_tokens.update(completed)
 
     def cancel_questions(self, item):
         for card in self.log.all("cards"):

@@ -1,4 +1,8 @@
 """逐卡读取故障：完成次数、缓存重放、混合结果与恢复。"""
+from datetime import timedelta
+
+import pytest
+
 from conftest import event, item
 from workshop.core.cards import question
 from workshop.core.engine import Engine
@@ -34,7 +38,7 @@ def test_mixed_reads_count_completed_attempts_survive_rebuild_and_recover(engine
         response = decode(encode(response))
         engine.channels()
     assert engine.log.get('cards', first)['read_failures'] == 1
-    assert engine.log.get('cards', third)['read_failures'] == 0
+    assert engine.log.get('cards', third).get('read_failures', 0) == 0
     assert len([f for f in engine.log.facts() if f['kind'] == 'answer']) == 1
     for n in range(2, 10):
         response = ChannelPoll(checked=[first, third], errors={first: 'HTTP 403'})
@@ -106,3 +110,90 @@ def test_pending_is_not_a_failure_and_batch_errors_are_per_card(engine):
     assert engine.log.get('cards', first)['read_failures'] == 10
     assert engine.log.get('cards', second)['read_failures'] == 0
     assert not engine.control('delivery:channel:channel').get('failed')
+
+
+def changes(engine, cid):
+    return [f for f in engine.log.facts()
+            if f['kind'] == 'card_changed' and f['body'].get('id') == cid]
+
+
+@pytest.mark.parametrize('explicit_defaults', [False, True])
+def test_successful_empty_reads_do_not_append_facts(engine, explicit_defaults):
+    first, _, _ = setup_cards(engine)
+    if explicit_defaults:
+        engine.fact('card_changed', {'id': first, 'read_failures': 0, 'read_error': ''})
+    before = changes(engine, first)
+    channel = engine.plugins.get('channel', 'channel')
+    channel.poll = lambda cards: ChannelPoll(checked=[first])
+    for _ in range(20):
+        engine.clock.now += timedelta(seconds=6)
+        engine.channels()
+    assert changes(engine, first) == before
+    assert not engine.log.get('cards', first)['answered']
+
+
+def test_failure_replay_and_recovery_write_only_diagnostic_changes(engine):
+    first, _, _ = setup_cards(engine)
+    before = len(changes(engine, first))
+    channel = engine.plugins.get('channel', 'channel')
+    for count in range(1, 11):
+        response = ChannelPoll(checked=[first], errors={first: f'error {count}'})
+        channel.poll = lambda cards: decode(encode(response))
+        for _ in range(3):
+            engine.channels()
+        assert len(changes(engine, first)) == before + count
+        card = engine.log.get('cards', first)
+        assert card['read_failures'] == count
+        assert card['read_error'] == f'error {count}'
+    assert 'Q1 连续 10 次读取失败：error 10' in status(engine.log)
+    response = ChannelPoll(checked=[first])
+    for _ in range(3):
+        engine.channels()
+    assert len(changes(engine, first)) == before + 11
+    card = engine.log.get('cards', first)
+    assert card['read_failures'] == 0 and card['read_error'] == ''
+    assert not card['answered']
+    channel.poll = lambda cards: ChannelPoll(checked=[first])
+    for _ in range(20):
+        engine.channels()
+    assert len(changes(engine, first)) == before + 11
+    assert all('read_token' not in f['body'] for f in changes(engine, first)[before:])
+
+
+def test_success_clears_stale_error_even_when_failure_count_is_zero(engine):
+    first, _, _ = setup_cards(engine)
+    engine.fact('card_changed', {'id': first, 'read_failures': 0, 'read_error': 'old error'})
+    before = len(changes(engine, first))
+    engine.channel_reads(ChannelPoll(checked=[first]))
+    engine.channel_reads(ChannelPoll(checked=[first]))
+    assert len(changes(engine, first)) == before + 1
+    assert engine.log.get('cards', first)['read_error'] == ''
+
+
+def test_legacy_token_skips_cached_failure_then_accepts_new_result(engine):
+    first, _, _ = setup_cards(engine)
+    response = ChannelPoll(checked=[first], errors={first: 'unavailable'})
+    engine.fact('card_changed', {'id': first, 'read_token': response.token,
+                                'read_failures': 1, 'read_error': 'unavailable'})
+    before = len(changes(engine, first))
+    engine.channel_reads(decode(encode(response)))
+    assert len(changes(engine, first)) == before
+    engine.channel_reads(ChannelPoll(checked=[first, first], errors={first: 'unavailable'}))
+    assert engine.log.get('cards', first)['read_failures'] == 2
+    assert len(changes(engine, first)) == before + 1
+    assert 'read_token' not in changes(engine, first)[-1]['body']
+
+
+def test_rolled_back_read_can_be_consumed_again(engine, monkeypatch):
+    first, _, _ = setup_cards(engine)
+    response = ChannelPoll(checked=[first], errors={first: 'unavailable'})
+    before = changes(engine, first)
+    def fail(*args):
+        raise RuntimeError('failed to record diagnostic')
+    with monkeypatch.context() as patch:
+        patch.setattr(engine, 'delivery_error', fail)
+        with pytest.raises(RuntimeError, match='failed to record diagnostic'):
+            engine.channel_reads(response)
+    assert changes(engine, first) == before
+    engine.channel_reads(response)
+    assert engine.log.get('cards', first)['read_failures'] == 1
