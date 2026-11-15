@@ -1,4 +1,7 @@
-"""每小时比较一次主检出与远端；持久游标由核心随事件一起提交。"""
+"""每小时比较一次主检出与远端；持久游标由核心随事件一起提交。
+
+`workshop release-now` 在发版状态目录写 release-now，来源立刻多比较一次，之后的发版流程与整点相同。
+"""
 from datetime import datetime, timezone
 import base64
 import json
@@ -11,9 +14,23 @@ from workshop.core.ports import Retryable
 from workshop.github_identity import scoped, run
 
 
+REQUEST = 'release-now'
+
+
 class MainBranchSource:
     def __init__(self, clock=None):
         self.clock = clock or (lambda: datetime.now(timezone.utc))
+
+    @staticmethod
+    def release_config(target):
+        # 来源拿到的是对象默认流程配置；批次目录由对应流程配置。
+        configs = [{**target, **local} for flow, local in target.get('flows', {}).items()
+                   if local.get('plugin', flow) == 'scheduled_release']
+        config = configs[0] if len(configs) == 1 else target
+        return config, Path(config.get('scheduled_release_state_dir', '~/.local/state/workshop')).expanduser().resolve()
+
+    def wake_paths(self, target):
+        return [str(self.release_config(target)[1] / REQUEST)]
 
     @scoped
     def poll(self, target, cursor):
@@ -21,14 +38,12 @@ class MainBranchSource:
         if config.get('every', '1h') != '1h':
             raise ValueError('main_branch.every 目前只支持 1h')
         slot = self.clock().astimezone(timezone.utc).replace(minute=0, second=0, microsecond=0).isoformat()
-        if cursor == slot:
+        config, root = self.release_config(target)
+        request = root / REQUEST
+        asked = request.read_text().strip() if request.exists() else ''
+        if cursor == slot and not asked:
             return Poll([], cursor)
-        # 来源拿到的是对象默认流程配置；批次目录由对应流程配置。
-        configs = [{**target, **local} for flow, local in target.get('flows', {}).items()
-                   if local.get('plugin', flow) == 'scheduled_release']
-        config = configs[0] if len(configs) == 1 else target
         cluster = config.get('scheduled_release_mode', 'self') == 'cluster'
-        root = Path(config.get('scheduled_release_state_dir', '~/.local/state/workshop')).expanduser().resolve()
         try:
             release = json.loads((root / ('cluster-release.json' if cluster else 'release.json')).read_text())
         except FileNotFoundError:
@@ -68,8 +83,12 @@ class MainBranchSource:
             head = read(['git', '-C', checkout, 'rev-parse', 'HEAD'])
             if release.get('status') == 'rolled_back' and release.get('to') == to:
                 return Poll([], slot)
-        events = [] if head == to else [Event('main_branch', slot, target['name'], to,
-            f'定时发版 {to[:12]}', {'kind': 'ahead', 'from': head, 'to': to})]
+        ext = 'now:' + asked if asked else slot
+        events = [] if head == to else [Event('main_branch', ext, target['name'], to,
+            ('立即发版 ' if asked else '定时发版 ') + to[:12], {'kind': 'ahead', 'from': head, 'to': to})]
+        if asked:
+            # 请求只用一次；本小时不再另比一次。
+            request.unlink(missing_ok=True)
         return Poll(events, slot)
 
 
