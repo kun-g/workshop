@@ -5,6 +5,7 @@ import re
 
 
 SCHEMA = 'watch-updates/v1'
+UPGRADE_ORDER = '先升服务端，agent 跟着升；agent 不能比服务端新。'
 
 
 def digest(value):
@@ -53,7 +54,7 @@ def upstream(software):
     return value
 
 
-def validate_software(row):
+def validate_software(row, *, roles=False):
     if not isinstance(row, dict):
         raise ValueError('软件记录须为对象')
     identifier(row.get('id'))
@@ -75,6 +76,8 @@ def validate_software(row):
     seen = set()
     for place in instances:
         identifier(place.get('id'))
+        if (roles or 'role' in place) and place.get('role') not in ('server', 'agent'):
+            raise ValueError('部署 role 须为 server/agent；客户端也算 agent')
         required(place, ('host', 'service', 'version', 'read_at', 'evidence'))
         if place['id'] in seen:
             raise ValueError('部署标识重复')
@@ -106,7 +109,7 @@ def reconcile(previous, proposal, now):
     excluded = dict(previous.get('excluded', {}))
     changes, present = [], set()
     for row in proposal.get('software', []):
-        validate_software(row)
+        validate_software(row, roles=True)
         if row['id'] in present or row['source'] not in outcomes:
             raise ValueError('软件重复或来源未登记')
         present.add(row['id'])
@@ -115,12 +118,12 @@ def reconcile(previous, proposal, now):
         if row['id'] in excluded or not eligible(row):
             if row['id'] in old:
                 del old[row['id']]
-                changes.append({'id': row['id'], 'action': '移出范围', 'evidence': row['evidence']})
+                changes.append({'id': row['id'], 'name': row['name'], 'action': '移出范围', 'evidence': row['evidence']})
             continue
         prior = old.get(row['id'])
         row = {**row, 'notes': list(dict.fromkeys((prior or {}).get('notes', []) + row.get('notes', [])))}
         if prior != row:
-            changes.append({'id': row['id'], 'action': '更新' if prior else '加入', 'evidence': row['evidence']})
+            changes.append({'id': row['id'], 'name': row['name'], 'action': '更新' if prior else '加入', 'evidence': row['evidence']})
         old[row['id']] = row
     for removal in proposal.get('removed', []):
         required(removal, ('id', 'source', 'evidence'))
@@ -169,7 +172,10 @@ def release_range(software, releases):
 def validate_judgment(value, software, releases, needs, directions):
     rows = value.get('instances')
     places = {p['id'] for p in software['instances']}
-    known = {p['id'] for p in software['instances'] if p['version'] != 'unknown'}
+    validate_software(software, roles=True)
+    servers = [p for p in software['instances'] if p['role'] == 'server']
+    agents = [p for p in software['instances'] if p['role'] == 'agent']
+    known = {p['id'] for p in servers if p['version'] != 'unknown'}
     if (not isinstance(rows, list) or not all(isinstance(r, dict) for r in rows)
             or not known.issubset({r.get('id') for r in rows})
             or not {r.get('id') for r in rows}.issubset(places)
@@ -179,7 +185,16 @@ def validate_judgment(value, software, releases, needs, directions):
     links = {r['html_url'] for r in releases}
     references = {n['id'] for n in needs} | {d['id'] for d in directions} | {'profile'}
     for row in rows:
-        required(row, ('id', 'reason', 'summary'))
+        required(row, ('id', 'headline'))
+        if len(row['headline']) > 40 or re.search(r'profile|needs?|directions?|[\r\n]', row['headline'], re.I):
+            raise ValueError('headline 须不超过 40 字且不含校验字段名')
+        points = row.get('points')
+        if not isinstance(points, list) or len(points) > 3:
+            raise ValueError('points 须为最多三条要点')
+        for point in points:
+            required(point, ('version', 'text'))
+            if point_link(point['version'], releases) is None:
+                raise ValueError('要点版本须对应本次发布记录')
         if row.get('verdict') not in ('该升', '可以等', '不用升') or row.get('priority') not in ('紧急', '重要', '普通'):
             raise ValueError('结论或紧急程度无效')
         if not row.get('links') or not set(row['links']).issubset(links):
@@ -198,9 +213,40 @@ def validate_judgment(value, software, releases, needs, directions):
             required(feature, ('id', 'summary', 'direction'))
             if feature['direction'] not in {d['id'] for d in directions}:
                 raise ValueError('新功能须对上在做的事')
-    # 不让模型猜未知部署的结论；无论模型是否返回这一处，程序都按读取证据补齐。
-    value['instances'] = rows + [
-        {'id': p['id'], 'verdict': '版本不明', 'priority': '普通', 'reason': p['error'],
-         'summary': '未取得在用版本，暂不判断；其余部署照常。', 'links': [], 'references': [], 'features': []}
-        for p in software['instances'] if p['version'] == 'unknown']
+    unknown = [
+        {'id': p['id'], 'verdict': '版本不明', 'priority': '普通', 'headline': '在用版本未确认，先补齐版本',
+         'reason': p['error'], 'points': [], 'links': [], 'references': [], 'features': []}
+        for p in servers if p['version'] == 'unknown']
+    if agents:
+        order = {'不用升': 0, '可以等': 1, '该升': 2}
+        priorities = {'普通': 0, '重要': 1, '紧急': 2}
+        leader = max(rows, key=lambda r: (order[r['verdict']], priorities[r['priority']])) if rows and not unknown else None
+        if leader:
+            for row in rows:
+                row['points'] = [p for p in row['points'] if p['text'] != UPGRADE_ORDER][:2] + [
+                    {'version': releases[-1]['tag_name'], 'text': UPGRADE_ORDER}]
+            derived = [{**leader, 'id': p['id'], 'headline': '跟服务端走，先升服务端', 'features': [],
+                        'inherited': True} for p in agents]
+        else:
+            derived = [{'id': p['id'], 'verdict': '版本不明', 'priority': '普通',
+                        'headline': '服务端版本未确认，先核对服务端', 'points': [], 'links': [],
+                        'references': [], 'features': [], 'inherited': True} for p in agents]
+    else:
+        derived = []
+    value['instances'] = rows + unknown + derived
+    value['format'] = 'watch-judgment/v2'
     return value
+
+
+def point_link(tag, releases):
+    """只把实际读到的版本链接给人看，不从模型给的文字构造地址。"""
+    for release in releases:
+        if tag == release['tag_name'] or tag.removeprefix('v') == release['tag_name'].removeprefix('v'):
+            url = release.get('html_url', '')
+            return url if url.startswith('https://') else None
+    return None
+
+
+def current_judgment(value):
+    return bool(value.get('judgment', {}).get('format') == 'watch-judgment/v2'
+                and all(p.get('role') in ('server', 'agent') for p in value['software']['instances']))

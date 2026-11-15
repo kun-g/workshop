@@ -1,7 +1,9 @@
-"""私密离线报告；反馈只序列化成 JSON，不解释命令或链接。"""
-from datetime import datetime
+"""按认可样例输出私密离线报告：结论、要点、部署反馈。"""
 from html import escape
-import json
+from pathlib import Path
+
+from .model import UPGRADE_ORDER, point_link
+from .presentation import software_views, targets
 
 
 def h(value):
@@ -12,97 +14,138 @@ def line(value):
     return ' '.join(str(value).split())
 
 
-def blind_text(value):
-    if isinstance(value, dict) and value.get('kind') == 'manual':
-        places = '、'.join(f"{p['host']}/{p['service']}" for p in value['instances'])
-        return f"{value['software']} · {places}：人工核对上游；{value['reason']}"
-    if isinstance(value, dict) and value.get('version') == '版本不明':
-        return f"{value['software']} · {value['host']}/{value['service']}：版本不明；{value['reason']}"
-    return str(value)
+def count_instances(view):
+    servers, agents = len(view['servers']), len(view['agents'])
+    return (f'{servers} 个实例' if servers else '') + ((' · ' if servers else '') + f'agent {agents} 处' if agents else '')
+
+
+def blind_spots(chosen, versions, blind):
+    """把版本缺失补进报告；同一部署只计一次，日报和周报共用。"""
+    rows = list(blind)
+    for view in software_views({'versions': chosen}, versions):
+        for place in view['servers'] + view['agents']:
+            if place['version'] == 'unknown':
+                rows.append({'software': view['name'], 'host': place['host'], 'service': place['service'],
+                             'version': '版本不明', 'reason': place['error']})
+        if view['agents'] and not view['servers']:
+            rows.append({'name': view['name'], 'reason': '服务端尚未核实，agent 暂不能判断'})
+    result, seen = [], set()
+    for value in rows:
+        identity = (value.get('software'), value.get('host'), value.get('service')) if value.get('version') == '版本不明' else blind_text(value, versions)
+        if identity not in seen:
+            result.append(value)
+            seen.add(identity)
+    return result
 
 
 def summary(chosen, versions, weekly, blind):
-    rows = [('盯更新周报' if weekly else '盯更新日报') + f'：本次 {len(chosen)} 项更新。']
-    if not any(j['verdict'] == '该升' for k in chosen for j in versions[k]['judgment']['instances']):
-        rows.append('已完成判断的部署中没有该升的项。')
-    for key in chosen:
-        value = versions[key]
-        judgments = {j['id']: j for j in value['judgment']['instances']}
-        for place in value['software']['instances']:
-            judge = judgments[place['id']]
-            installed = '版本不明' if place['version'] == 'unknown' else place['version']
-            rows.append(line(f"{value['software']['name']} · {place['host']}/{place['service']} · "
-                             f"{installed} → {value['releases'][-1]['tag_name']} · "
-                             f"{judge['verdict']}（{judge['priority']}）：{judge['reason']}"))
-    if blind:
-        rows.append('盲区：')
-        rows.extend(line(blind_text(b)) for b in blind)
-    rows.append('发布说明与逐处反馈见私密附件。')
+    views = software_views({'versions': chosen}, versions)
+    rows = ['盯更新周报' if weekly else '盯更新日报']
+    for view in views:
+        rows.append(line(f"{view['name']} · {view['installed']}→{view['latest']} · {view['lead']['verdict']} · {count_instances(view)}"))
+    if not any(v['lead']['verdict'] == '该升' for v in views):
+        rows.append('本周没有该升的项。' if weekly else '没有该升的项。')
+    rows.append(f'盲区 {len(blind_spots(chosen, versions, blind))} 项')
     return '\n'.join(rows)
 
 
+def blind_text(value, versions):
+    if not isinstance(value, dict):
+        return str(value)
+    if value.get('judgment_pending'):
+        key = value['judgment_pending']
+        return versions.get(key, {}).get('software', {}).get('name', key.rsplit('-', 1)[0]) + '：判断未完成'
+    if value.get('kind') == 'manual':
+        return value['software'] + '：' + value['reason']
+    if value.get('version') == '版本不明':
+        return f"{value['software']} · {value['host']} · {value['service']}：版本不明，{value['reason']}"
+    return str(value.get('name') or value.get('id') or '') + '：' + str(value.get('reason') or value.get('evidence') or '尚未查全')
+
+
 def render(report, versions, needs, now):
-    cards = []
-    count = 0
-    for key in report['versions']:
-        value = versions[key]
-        soft = value['software']
-        judged = {p['id']: p for p in value['judgment']['instances']}
-        days = max(0, (now - datetime.fromisoformat(value.get('first_reported', now.isoformat()))).days)
-        rows = []
-        for place in soft['instances']:
-            judge = judged[place['id']]
-            decided = value.get('feedback', {}).get(place['id'], {})
-            features = ''.join(f'<label>{h(f["summary"])}（在做的事：{h(f["direction"])}）'
-                               f'<select data-feature="{h(f["id"])}"><option value="">未反馈</option>'
-                               '<option>想用</option><option>用不上</option></select></label>'
-                               for f in judge.get('features', []))
-            links = ' '.join(f'<a href="{h(link)}" rel="noreferrer">发布说明原文</a>'
-                             for link in judge['links'] if link.startswith('https://'))
-            rows.append(f'''<section data-key="{h(key)}" data-instance="{h(place['id'])}">
-<h3>{h(place['host'])} · {h(place['service'])}</h3>
-<p>{h('版本不明' if place['version'] == 'unknown' else place['version'])} → {h(value['releases'][-1]['tag_name'])} · {h(judge['verdict'])} · {h(judge['priority'])}</p>
-<p>{h(judge['reason'])}</p><p class="summary">{h(judge['summary'])}</p>
-<p>依据：{h(', '.join(judge.get('references', [])))} · 版本读取：{h(place['read_at'])}</p>{links}
-<p>上次反馈：{h(decided.get('decision', '未反馈'))}</p>
-<label>本次反馈 <select data-decision><option value="">保留，未反馈</option><option>没问题</option><option>判错了</option><option>不用盯</option><option>升</option></select></label>
-<label>补充一句 <input data-note maxlength="4000"></label>
-<h4>可能用得上的新功能</h4>{features or '<p>本项没有</p>'}</section>''')
-        content = f'<article><h2>{h(soft["name"])} · 已等 {days} 天</h2>{"".join(rows)}</article>'
-        if all(r['verdict'] == '不用升' for r in judged.values()):
-            content = '<details><summary>' + h(soft['name']) + '：不用升，展开明细及反馈</summary>' + content + '</details>'
-            count += 1
-        cards.append(content)
-    need_cards = ''.join(f'''<section data-need="{h(n['id'])}"><h3>{h(n['statement'])}</h3>
-<p>{h(n['owner'])} · 出处：{h(n['source'])}</p><select><option value="">未反馈，下周继续</option><option>确认</option><option>不要了</option></select></section>'''
-                        for n in needs if n['id'] in report.get('needs', []))
-    payload = json.dumps(report['id']).replace('<', '\\u003c')
-    changes = '\n'.join(str(x) for x in report.get('changes', [])) or '本周没有清单改动'
-    blind = '\n'.join(blind_text(x) for x in report.get('blind', [])) or '本次已登记的来源均已查成'
-    return f'''<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>盯更新报告 · {h(report['id'])}</title><style>
-body{{font:17px/1.6 system-ui;background:#f3f1eb;color:#202b31;max-width:960px;margin:40px auto;padding:0 20px}}
-h1{{font-size:32px}}h2{{font-size:24px}}h3{{font-size:19px}}article,details{{background:white;padding:24px;margin:20px 0;border:1px solid #cfd6cf;border-radius:8px}}
-section{{padding:14px 0;border-top:1px solid #ddd}}label{{display:block;margin:12px 0}}input,select,button,textarea{{font:inherit;padding:8px;max-width:100%}}input{{width:90%}}button{{background:#245b48;color:white;border:0;border-radius:4px;cursor:pointer}}
-pre,.summary{{white-space:pre-wrap;overflow-wrap:anywhere}}footer{{position:sticky;bottom:0;background:#f3f1eb;padding:16px 0}}textarea{{width:95%;min-height:170px}}a{{color:#245b48}}
-</style><h1>盯更新 · {'每周报告' if report['kind']=='weekly' else '紧急与重要更新'}</h1>
-<p>{h(report['id'])} · 仅供 Kun 私密查看</p><p class="summary">{h(report['summary'])}</p>
-<p>不用升：{count} 项。未反馈的排在前面；未选择的会带到下一份周报。</p>
-{''.join(cards)}<h2>需要台账的新条目</h2>{need_cards or '<p>没有新条目</p>'}
-<h2>清单变化</h2><pre>{h(changes)}</pre><h2>盲区</h2><pre>{h(blind)}</pre>
-<footer><button id="copy">复制反馈</button><p id="status">点选后复制，在飞书里粘贴给 Ash。</p><textarea id="output" hidden readonly></textarea></footer>
-<script>
-document.getElementById('copy').onclick=async()=>{{
- document.querySelector('footer').style.position='static';
- const feedback={{schema:'watch-feedback/v1',report:{payload},items:[],needs:[]}};
- document.querySelectorAll('[data-key]').forEach(el=>{{
-  const decision=el.querySelector('[data-decision]').value,note=el.querySelector('[data-note]').value;
-  const features=Array.from(el.querySelectorAll('[data-feature]')).filter(x=>x.value).map(x=>({{id:x.dataset.feature,choice:x.value}}));
-  if(decision||note||features.length)feedback.items.push({{key:el.dataset.key,instance:el.dataset.instance,decision,note,features}});
- }});
- document.querySelectorAll('[data-need]').forEach(el=>{{const choice=el.querySelector('select').value;if(choice)feedback.needs.push({{id:el.dataset.need,choice}})}});
- const output=document.getElementById('output');output.value=JSON.stringify(feedback,null,2);output.hidden=false;
- try{{await navigator.clipboard.writeText(output.value);document.getElementById('status').textContent='已复制，粘贴给 Ash 即可。'}}
- catch(e){{output.focus();output.select();document.getElementById('status').textContent='文字已选中，请手动复制后粘贴给 Ash。'}}
-}};
-</script></html>'''
+    views = software_views(report, versions)
+    registry = report.get('feedback_targets') or targets(report, versions, needs)
+
+    def row(identity, target, label=None):
+        buttons = ''.join(f'<button type="button" aria-pressed="false">{h(c)}</button>' for c in target['choices'])
+        note = '<input class="note" hidden maxlength="4000" placeholder="想说的话（可不填）" aria-label="补充说明">' if target['kind'] == 'instances' else ''
+        return f'<div class="row" data-feedback="{h(identity)}" data-label="{h(target["label"])}"><span class="where">{label or h(target["label"])}</span><span class="opts">{buttons}</span>{note}</div>'
+
+    def point(value, releases):
+        # 升级顺序是程序补的操作约束，不伪装成某版发布说明的摘录。
+        if value['text'] == UPGRADE_ORDER:
+            return '<li>' + h(value['text']) + '</li>'
+        return f'<li><a href="{h(point_link(value["version"], releases))}" rel="noreferrer">{h(value["version"])}</a> {h(value["text"])}</li>'
+
+    up, wait, unseen = [], [], []
+    rendered_unknown = set()
+    for view in views:
+        lead = view['lead']
+        is_up = lead['verdict'] == '该升'
+        instance_rows = []
+        for identity, target in registry.items():
+            if target.get('software') != view['id'] or target['kind'] != 'instances':
+                continue
+            if target['role'] == 'agent':
+                hosts = '、'.join(dict.fromkeys(p['host'] for p in target['places']))
+                label = f'agent <small>{h(hosts)} · 跟服务端走</small>'
+            else:
+                place = target['place']
+                label = ('服务端 ' if view['agents'] else '') + h(place['host']) + ' · ' + h(place['service'])
+                label += f' <small>{h(place["version"])}</small>' if len(view['servers']) > 1 else ''
+                if place['version'] == 'unknown':
+                    unseen.append(row(identity, target, h(target['label']) + '：版本不明，' + h(place['error'])))
+                    rendered_unknown.add((view['name'], place['host'], place['service']))
+                    continue
+            if target['role'] == 'server' and view['judged'].get(target['place']['id'], {}).get('verdict') != lead['verdict']:
+                label += ' <small>' + h(view['judged'].get(target['place']['id'], {}).get('verdict', '尚未判断')) + '</small>'
+            instance_rows.append(row(identity, target, label))
+        points = ''
+        if is_up and lead.get('points'):
+            points = '<ul>' + ''.join(point(p, view['releases']) for p in lead['points'][:3]) + '</ul>'
+        body = f'''<section class="card {'upgrade' if is_up else 'waiting'}" data-software="{h(view['id'])}"><div class="{'head' if is_up else 'mini'}">
+<span class="name">{h(view['name'])}</span><span class="ver"><b>{h(view['installed'])}</b> → <b>{h(view['latest'])}</b></span>
+<span class="count">{h(count_instances(view))}</span><span class="tag {'up' if is_up else 'wait'}">{h(lead['verdict'])}</span></div>
+<p class="why">{h(lead['headline'])}</p>{points}{'<div class="inst">'+''.join(instance_rows)+'</div>' if instance_rows else ''}</section>'''
+        if lead['verdict'] == '版本不明':
+
+            if instance_rows:
+                unseen.append(body)
+        elif is_up:
+            up.append(body)
+        else:
+            wait.append(body)
+    sections = ('<h2>该升</h2>' + ''.join(up) if up else '') + ('<h2>可以等</h2>' + ''.join(wait) if wait else '')
+    features = [row(k, t) for k, t in registry.items() if t['kind'] == 'feature']
+    if features:
+        sections += '<h2>可能用得上的新功能</h2><section class="card">' + ''.join(features) + '</section>'
+    new_needs = [row(k, t) for k, t in registry.items() if t['kind'] == 'need']
+    if new_needs:
+        sections += '<h2>需要确认</h2><section class="card">' + ''.join(new_needs) + '</section>'
+    blind = blind_spots(report['versions'], report.get('snapshot', versions), report.get('blind', []))
+    changes = report.get('changes', [])
+    if blind or unseen or changes:
+        sections += '<h2>这周没看全的</h2>'
+    if blind or unseen:
+        content = ''.join(f'<p>{h(blind_text(b, versions))}</p>' for b in blind
+                          if (b.get('software'), b.get('host'), b.get('service')) not in rendered_unknown) + ''.join(unseen)
+        sections += f'<details><summary>{len(blind)} 项待补齐</summary>{content}</details>'
+    if changes:
+        sections += '<details><summary>清单变化 ' + str(len(changes)) + ' 项</summary><div class="chips">'
+        sections += ''.join(f'<span>{h(c.get("name") or c["id"])} · {h(c["action"])}</span>' for c in changes) + '</div></details>'
+    stats = []
+    for count, text in ((len(up), '个软件该升'), (len(wait), '个可以等'), (len(blind), '项没看全'), (len(changes), '项清单变化')):
+        if count:
+            stats.append(f'<b>{count}</b> {text}')
+    top = ' · '.join(stats)
+    if not up:
+        top = '没有该升的项' + (' · ' + top if top else '')
+    assets = Path(__file__).parent
+    css = (assets / 'report.css').read_text()
+    js = (assets / 'report.js').read_text()
+    title = '盯更新周报' if report['kind'] == 'weekly' else '盯更新日报'
+    return f'''<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{title} · {h(report['id'])}</title><style>{css}</style></head><body data-report="{h(report['id'])}"><main>
+<h1>{title} · {h(report.get('day', now.date().isoformat()))}</h1><div class="top">{top}</div>{sections}
+<div id="out"><textarea id="outText" aria-label="复制反馈内容" readonly></textarea><div id="msg" role="status"></div></div></main>
+<div class="bar"><span id="count">还没选</span><button id="copy" type="button">复制反馈</button></div><script>{js}</script></body></html>'''

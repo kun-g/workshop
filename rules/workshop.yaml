@@ -101,6 +101,7 @@ targets:
           - {source: watch_updates, when: {kind: [version, reconcile, failure]}, action: ready}
           - {source: watch_updates, when: {kind: wake}, action: rework}
           - {source: 'cli:feishu', action: update}
+          - {source: 'cli:session', action: update}
         stage_executors:
           说清楚: [{use: watch-inventory}]
           执行: [{use: codex}]
