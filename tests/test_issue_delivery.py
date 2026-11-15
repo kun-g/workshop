@@ -464,6 +464,9 @@ def test_visual_acceptance_requires_actual_answer_and_bound_commit(world):
     assert world['flow'].assess(data, receipt, world['target']).passed
     data['materials'][0]['body'] = 'no'
     assert not world['flow'].assess(data, receipt, world['target']).passed
+    # 核心视图里回答资料的 key 是卡上的原始 key，不带轮次前缀（ws#102 实际漏认过）。
+    data['materials'] = [{'role': 'Kun 的回答', 'key': 'visual-acceptance', 'seq': 1, 'body': 'yes'}]
+    assert world['flow'].assess(data, receipt, world['target']).passed
 
 
 def test_relabel_after_unclear_resumes_same_item(world):
