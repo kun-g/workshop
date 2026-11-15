@@ -7,11 +7,14 @@ import os
 from pathlib import Path
 import subprocess
 import tempfile
+from time import monotonic
+from urllib.parse import quote
+from urllib.request import urlopen
 
 import yaml
 
 from workshop.github_identity import run, scoped
-from .model import SCHEMA, digest, validate_software
+from .model import SCHEMA, digest, upstream, validate_software
 
 
 def path(value):
@@ -92,11 +95,52 @@ class IO:
 
     @scoped
     def releases(self, target, software):
-        result = run(['gh', 'api', '--paginate', '--slurp', f"repos/{software['upstream']}/releases?per_page=100"],
+        source = upstream(software)
+        if source['kind'] == 'manual':
+            return []
+        if source['kind'] == 'gitlab_releases':
+            return self.gitlab_releases(source['project'])
+        repo = source['repo']
+        endpoint = 'tags' if source['kind'] == 'github_tags' else 'releases'
+        result = run(['gh', 'api', '--paginate', '--slurp', f"repos/{repo}/{endpoint}?per_page=100"],
                      capture_output=True, text=True, timeout=90)
         if result.returncode:
             raise ValueError('上游查不到：' + result.stderr[-500:])
-        return [row for page in json.loads(result.stdout) for row in page]
+        rows = [row for page in json.loads(result.stdout) for row in page]
+        if endpoint == 'tags':
+            return [{'tag_name': r['name'], 'html_url': f"https://github.com/{repo}/tree/{quote(r['name'], safe='')}",
+                     'body': '上游仅提供 tag，没有发布说明；不能据此编造变化或升级理由。',
+                     'notes_missing': True} for r in rows]
+        return rows
+
+    def gitlab_releases(self, project):
+        """只读 gitlab.com 公开接口，不携带本机 GitLab 或 GitHub 凭据。"""
+        rows = []
+        page = 1
+        deadline = monotonic() + 90
+        for _ in range(100):
+            url = f'https://gitlab.com/api/v4/projects/{quote(project, safe="")}/releases?per_page=100&page={page}'
+            remaining = deadline - monotonic()
+            if remaining <= 0:
+                raise TimeoutError('GitLab releases 读取超时，不能用部分结果判断')
+            with urlopen(url, timeout=min(30, remaining)) as response:
+                batch = json.load(response)
+                following = response.headers.get('X-Next-Page')
+            if not isinstance(batch, list):
+                raise ValueError('GitLab releases 返回格式不正确')
+            if any(not isinstance(r, dict) or not isinstance(r.get('tag_name'), str)
+                   or not isinstance(r.get('_links'), dict) or not isinstance(r['_links'].get('self'), str)
+                   for r in batch):
+                raise ValueError('GitLab releases 缺少 tag_name 或发布说明链接')
+            rows.extend({'tag_name': r['tag_name'], 'html_url': r['_links']['self'],
+                         'body': r.get('description') or '', 'draft': r.get('upcoming_release', False)} for r in batch)
+            if following == '' or not batch or (following is None and len(batch) < 100):
+                return rows
+            next_page = int(following) if following is not None else page + 1
+            if next_page <= page:
+                raise ValueError('GitLab releases 分页没有前进')
+            page = next_page
+        raise ValueError('GitLab releases 超出分页上限，未完成读取，不能用部分结果判断')
 
     def command(self, argv, **kwargs):
         return subprocess.run(argv, capture_output=True, text=True, timeout=90, **kwargs)

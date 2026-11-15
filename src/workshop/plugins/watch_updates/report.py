@@ -8,6 +8,39 @@ def h(value):
     return escape(str(value), quote=True)
 
 
+def line(value):
+    return ' '.join(str(value).split())
+
+
+def blind_text(value):
+    if isinstance(value, dict) and value.get('kind') == 'manual':
+        places = '、'.join(f"{p['host']}/{p['service']}" for p in value['instances'])
+        return f"{value['software']} · {places}：人工核对上游；{value['reason']}"
+    if isinstance(value, dict) and value.get('version') == '版本不明':
+        return f"{value['software']} · {value['host']}/{value['service']}：版本不明；{value['reason']}"
+    return str(value)
+
+
+def summary(chosen, versions, weekly, blind):
+    rows = [('盯更新周报' if weekly else '盯更新日报') + f'：本次 {len(chosen)} 项更新。']
+    if not any(j['verdict'] == '该升' for k in chosen for j in versions[k]['judgment']['instances']):
+        rows.append('已完成判断的部署中没有该升的项。')
+    for key in chosen:
+        value = versions[key]
+        judgments = {j['id']: j for j in value['judgment']['instances']}
+        for place in value['software']['instances']:
+            judge = judgments[place['id']]
+            installed = '版本不明' if place['version'] == 'unknown' else place['version']
+            rows.append(line(f"{value['software']['name']} · {place['host']}/{place['service']} · "
+                             f"{installed} → {value['releases'][-1]['tag_name']} · "
+                             f"{judge['verdict']}（{judge['priority']}）：{judge['reason']}"))
+    if blind:
+        rows.append('盲区：')
+        rows.extend(line(blind_text(b)) for b in blind)
+    rows.append('发布说明与逐处反馈见私密附件。')
+    return '\n'.join(rows)
+
+
 def render(report, versions, needs, now):
     cards = []
     count = 0
@@ -28,7 +61,7 @@ def render(report, versions, needs, now):
                              for link in judge['links'] if link.startswith('https://'))
             rows.append(f'''<section data-key="{h(key)}" data-instance="{h(place['id'])}">
 <h3>{h(place['host'])} · {h(place['service'])}</h3>
-<p>{h(place['version'])} → {h(value['releases'][-1]['tag_name'])} · {h(judge['verdict'])} · {h(judge['priority'])}</p>
+<p>{h('版本不明' if place['version'] == 'unknown' else place['version'])} → {h(value['releases'][-1]['tag_name'])} · {h(judge['verdict'])} · {h(judge['priority'])}</p>
 <p>{h(judge['reason'])}</p><p class="summary">{h(judge['summary'])}</p>
 <p>依据：{h(', '.join(judge.get('references', [])))} · 版本读取：{h(place['read_at'])}</p>{links}
 <p>上次反馈：{h(decided.get('decision', '未反馈'))}</p>
@@ -45,7 +78,7 @@ def render(report, versions, needs, now):
                         for n in needs if n['id'] in report.get('needs', []))
     payload = json.dumps(report['id']).replace('<', '\\u003c')
     changes = '\n'.join(str(x) for x in report.get('changes', [])) or '本周没有清单改动'
-    blind = '\n'.join(str(x) for x in report.get('blind', [])) or '本次已登记的来源均已查成'
+    blind = '\n'.join(blind_text(x) for x in report.get('blind', [])) or '本次已登记的来源均已查成'
     return f'''<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>盯更新报告 · {h(report['id'])}</title><style>
 body{{font:17px/1.6 system-ui;background:#f3f1eb;color:#202b31;max-width:960px;margin:40px auto;padding:0 20px}}
@@ -53,7 +86,7 @@ h1{{font-size:32px}}h2{{font-size:24px}}h3{{font-size:19px}}article,details{{bac
 section{{padding:14px 0;border-top:1px solid #ddd}}label{{display:block;margin:12px 0}}input,select,button,textarea{{font:inherit;padding:8px;max-width:100%}}input{{width:90%}}button{{background:#245b48;color:white;border:0;border-radius:4px;cursor:pointer}}
 pre,.summary{{white-space:pre-wrap;overflow-wrap:anywhere}}footer{{position:sticky;bottom:0;background:#f3f1eb;padding:16px 0}}textarea{{width:95%;min-height:170px}}a{{color:#245b48}}
 </style><h1>盯更新 · {'每周报告' if report['kind']=='weekly' else '紧急与重要更新'}</h1>
-<p>{h(report['id'])} · 仅供 Kun 私密查看</p><p>{h(report['summary'])}</p>
+<p>{h(report['id'])} · 仅供 Kun 私密查看</p><p class="summary">{h(report['summary'])}</p>
 <p>不用升：{count} 项。未反馈的排在前面；未选择的会带到下一份周报。</p>
 {''.join(cards)}<h2>需要台账的新条目</h2>{need_cards or '<p>没有新条目</p>'}
 <h2>清单变化</h2><pre>{h(changes)}</pre><h2>盲区</h2><pre>{h(blind)}</pre>

@@ -31,16 +31,41 @@ def required(row, fields):
         raise ValueError('缺少文字字段：' + ', '.join(fields))
 
 
+def upstream(software):
+    """兼容首版清单；新清单显式记录查询接口或人工盲区。"""
+    value = software.get('upstream')
+    if isinstance(value, str):
+        value = {'kind': 'github_releases', 'repo': value}
+    if not isinstance(value, dict):
+        raise ValueError('upstream 须为带 kind 的对象')
+    kind = value.get('kind')
+    if kind == 'manual':
+        required(value, ('reason',))
+    elif kind in ('github_releases', 'github_tags'):
+        if not isinstance(value.get('repo'), str) or not re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+', value['repo']):
+            raise ValueError('GitHub upstream.repo 须是 owner/repo')
+    elif kind == 'gitlab_releases':
+        project = value.get('project')
+        if not isinstance(project, str) or not re.fullmatch(r'[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)+|[0-9]+', project):
+            raise ValueError('GitLab upstream.project 须是项目路径或数字 ID（gitlab.com）')
+    else:
+        raise ValueError('不支持的 upstream.kind')
+    return value
+
+
 def validate_software(row):
     if not isinstance(row, dict):
         raise ValueError('软件记录须为对象')
     identifier(row.get('id'))
-    required(row, ('name', 'evidence', 'source', 'tag_pattern'))
-    if row.get('kind') not in ('infra', 'agent') or type(row.get('prerelease')) is not bool:
-        raise ValueError('kind 须为 infra/agent，prerelease 须为布尔值')
-    if not re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+', row.get('upstream', '')):
-        raise ValueError('upstream 须是 GitHub owner/repo')
-    re.compile(row['tag_pattern'])
+    required(row, ('name', 'evidence', 'source'))
+    manual = upstream(row)['kind'] == 'manual'
+    if row.get('kind') not in ('infra', 'agent'):
+        raise ValueError('kind 须为 infra/agent')
+    if not manual:
+        required(row, ('tag_pattern',))
+        if type(row.get('prerelease')) is not bool:
+            raise ValueError('prerelease 须为布尔值')
+        re.compile(row['tag_pattern'])
     profile = row.get('profile', {})
     if type(profile.get('exposed')) is not bool or any(k not in profile for k in ('data', 'users', 'paired')):
         raise ValueError('软件画像须写 exposed/data/users/paired')
@@ -54,9 +79,9 @@ def validate_software(row):
         if place['id'] in seen:
             raise ValueError('部署标识重复')
         seen.add(place['id'])
-        if place['version'] != 'unknown':
+        if place['version'] != 'unknown' and not manual:
             version(place['version'])
-        elif not place.get('error'):
+        elif place['version'] == 'unknown' and not place.get('error'):
             raise ValueError('版本不明须注明缺什么')
     return row
 
@@ -111,7 +136,11 @@ def reconcile(previous, proposal, now):
 
 
 def release_range(software, releases):
-    installed = [version(p['version']) for p in software['instances']]
+    installed = [version(p['version']) for p in software['instances'] if p['version'] != 'unknown']
+    if not installed:
+        reasons = '；'.join(f"{p.get('host', p.get('id', ''))}/{p.get('service', '')}：{p.get('error', '未取得版本')}"
+                           for p in software['instances'])
+        raise ValueError('所有部署版本不明：' + reasons)
     found = []
     for row in releases:
         tag = row.get('tag_name', '')
@@ -132,8 +161,13 @@ def release_range(software, releases):
 def validate_judgment(value, software, releases, needs, directions):
     rows = value.get('instances')
     places = {p['id'] for p in software['instances']}
-    if not isinstance(rows, list) or {r.get('id') for r in rows} != places or len(rows) != len(places):
-        raise ValueError('判断必须逐处覆盖全部部署')
+    known = {p['id'] for p in software['instances'] if p['version'] != 'unknown'}
+    if (not isinstance(rows, list) or not all(isinstance(r, dict) for r in rows)
+            or not known.issubset({r.get('id') for r in rows})
+            or not {r.get('id') for r in rows}.issubset(places)
+            or len({r.get('id') for r in rows}) != len(rows)):
+        raise ValueError('判断必须逐处覆盖全部已知版本的部署，不得重复或添加部署')
+    rows = [r for r in rows if r['id'] in known]
     links = {r['html_url'] for r in releases}
     references = {n['id'] for n in needs} | {d['id'] for d in directions} | {'profile'}
     for row in rows:
@@ -156,4 +190,9 @@ def validate_judgment(value, software, releases, needs, directions):
             required(feature, ('id', 'summary', 'direction'))
             if feature['direction'] not in {d['id'] for d in directions}:
                 raise ValueError('新功能须对上在做的事')
+    # 不让模型猜未知部署的结论；无论模型是否返回这一处，程序都按读取证据补齐。
+    value['instances'] = rows + [
+        {'id': p['id'], 'verdict': '版本不明', 'priority': '普通', 'reason': p['error'],
+         'summary': '未取得在用版本，暂不判断；其余部署照常。', 'links': [], 'references': [], 'features': []}
+        for p in software['instances'] if p['version'] == 'unknown']
     return value
