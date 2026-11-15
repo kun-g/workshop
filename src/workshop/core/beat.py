@@ -1,10 +1,15 @@
-"""一拍的顺序：收、判、通道、定时、各轮、推进、收回目录、再读通道、心跳。"""
+"""一拍的顺序。
+
+这一拍只做这些：收作业结果、清一次流程目录、收事件、归类、读通道、定时、结算开着的轮、推进每件活、收回目录、再读通道、写心跳。
+失败记账和心跳放在一起。
+"""
+import json
 import sys
 import time
 
 from .jobs import Pending
 from .models import stamp
-from .ports import Retryable, Unavailable
+from . import rounds
 
 
 def tick(engine, received_at=None):
@@ -14,19 +19,7 @@ def tick(engine, received_at=None):
     try:
         engine._tick(began)
     except Exception as exc:
-        try:
-            with engine.log.transaction():
-                state = engine.control("@tick")
-                errors = [f["body"]["error"] for f in engine.log.facts()
-                          if f["kind"] == "tick_failed" and f["seq"] >= state.get("since", 0)] if state.get("failures") else []
-                if repr(exc) not in errors:
-                    engine.fact("tick_failed", {"error": repr(exc)})
-                engine.tick_failures = min(10, max(engine.tick_failures, state["failures"]) + 1) if state.get("failures") else 1
-                if engine.tick_failures in (1, 3, 10) and engine.tick_failures != state.get("failures"):
-                    since = state.get("since") if state.get("failures") else engine.log.db.execute("SELECT max(seq) FROM facts").fetchone()[0]
-                    engine.fact("control", {"id": "@tick", "since": since, "failures": engine.tick_failures})
-        except Exception as recording_error:
-            print(f"车间 tick 失败且暂时无法记录：{exc!r}; {recording_error!r}", file=sys.stderr)
+        note_tick_failure(engine, exc)
 
 
 def one(engine, began=None):
@@ -40,39 +33,8 @@ def one(engine, began=None):
         engine.classify_events()
         engine.channels()
         engine.timers()
-        for row in engine.active():
-            item = engine.log.get("items", row["item"])
-            try:
-                expired = row.get("deadline", "9999") <= stamp(engine.clock())
-                if row["status"] == "starting" and not row.get("started") and not row.get("abort_requested") and not expired:
-                    if engine.flow_broken(item["target"], item.get("flow", "")):
-                        continue
-                    try:
-                        engine.launch(row)
-                    except Unavailable:
-                        # 启动作业晚于预订出结果：放开这一轮，避开最近没法用的执行者另挑。
-                        engine.release_unavailable(row)
-                        engine.reserve(engine.log.get("items", item["id"]))
-                        continue
-                    row = engine.log.get("rounds", row["token"])
-                if row["status"] == "starting" and (row.get("abort_requested") or expired):
-                    engine.automatic_failure(row["token"], row.get("abort_requested") or "这一轮超过规则期限")
-                else:
-                    engine.check_round(row)
-                row = engine.log.get("rounds", row["token"])
-                if row["status"] == "finishing":
-                    engine.finish(row)
-            except Pending:
-                continue  # 这一轮在等作业出结果，下一拍再看。
-            except Retryable as exc:
-                engine.start_retry(item, row, "executor", row["executor"], exc)
-            except Exception as exc:
-                engine.broken(item["target"], "executor", row["executor"], exc)
-        for item in engine.log.all("items"):
-            try:
-                engine.advance(item)
-            except Pending:
-                continue  # 这件活在等作业出结果，下一拍再看；别的活照常推进。
+        rounds.drive(engine)
+        advance_open(engine)
         engine.release_workdirs()
         engine.channels()
         engine.heartbeat(began)
@@ -116,3 +78,48 @@ def advance(engine, item):
         item = engine.serial_queue(item)
     if item["state"] == "空闲" and not item.get("after_wait"):
         engine.reserve(item)
+
+
+def advance_open(engine):
+    for item in engine.log.all("items"):
+        try:
+            engine.advance(item)
+        except Pending:
+            continue  # 这件活在等作业出结果，下一拍再看；别的活照常推进。
+
+
+def note_tick_failure(engine, exc):
+    try:
+        with engine.log.transaction():
+            state = engine.control("@tick")
+            errors = [f["body"]["error"] for f in engine.log.facts()
+                      if f["kind"] == "tick_failed" and f["seq"] >= state.get("since", 0)] if state.get("failures") else []
+            if repr(exc) not in errors:
+                engine.fact("tick_failed", {"error": repr(exc)})
+            engine.tick_failures = min(10, max(engine.tick_failures, state["failures"]) + 1) if state.get("failures") else 1
+            if engine.tick_failures in (1, 3, 10) and engine.tick_failures != state.get("failures"):
+                since = state.get("since") if state.get("failures") else engine.log.db.execute("SELECT max(seq) FROM facts").fetchone()[0]
+                engine.fact("control", {"id": "@tick", "since": since, "failures": engine.tick_failures})
+    except Exception as recording_error:
+        print(f"车间 tick 失败且暂时无法记录：{exc!r}; {recording_error!r}", file=sys.stderr)
+
+
+def heartbeat(engine, began=None):
+    now = stamp(engine.clock())
+    heartbeat = engine.log.path.parent / "heartbeat.json"
+    temporary = heartbeat.with_suffix(".tmp")
+    failures = [c for c in engine.log.all("controls") if c["id"].startswith("delivery:") and c.get("failed")]
+    for failure in failures:
+        if not failure.get("since"):
+            failure["since"] = now
+            engine.fact("control", {"id": failure["id"], "since": now})
+    # tick_ms：这一拍从进入到写心跳前的耗时；一拍只读写事实库和本地文件，应是毫秒级。
+    elapsed = round((time.monotonic() - began) * 1000) if began is not None else None
+    temporary.write_text(json.dumps({"at": now, "last_ok_at": now, "tick_ms": elapsed, "wake_ms": getattr(engine, "wake_ms", None), "active": engine.occupied(),
+        "delivery_failed_count": len(failures),
+        "delivery_failed_since": min((c.get("since", now) for c in failures), default=None)}))
+    with engine.log.transaction():
+        if engine.control("@tick").get("failures"):
+            engine.fact("control", {"id": "@tick", "failures": 0, "since": None})
+        temporary.replace(heartbeat)
+    engine.tick_failures = 0
