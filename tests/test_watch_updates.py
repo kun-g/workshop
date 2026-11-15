@@ -655,3 +655,27 @@ def test_gitlab_tags_read_by_version_desc_and_stop_at_installed(monkeypatch):
     assert rows[0]['body'] == '说明 2.0.0' and not rows[0]['notes_missing']
     assert rows[1]['notes_missing'] and '没有发布说明' in rows[1]['body']
     assert rows[1]['html_url'] == 'https://gitlab.com/gitlab-org/gitlab/-/tags/v1.5.0-ee'
+
+
+def test_release_notes_go_to_files_and_workdirs_are_git_repos(world):
+    io, target, flow, source = world
+    io.upstream = [release('1.1.0', author={'login': 'x' * 1000}, assets=[{'url': 'y' * 1000}]),
+                   release('2.0.0', body='安全修复 CVE-2026-1 ' * 1000)]
+    poll = source.poll(target, None)
+    event = next(e for e in poll.events if e.body['kind'] == 'version')
+    # 事件只带版本、链接和正文长度，不带正文和 GitHub 元数据。
+    assert event.body['releases'] == [
+        {'tag_name': '1.1.0', 'html_url': 'https://example.com/1.1.0', 'prerelease': False, 'draft': False, 'notes_chars': len('Release notes 1.1.0')},
+        {'tag_name': '2.0.0', 'html_url': 'https://example.com/2.0.0', 'prerelease': False, 'draft': False,
+         'notes_chars': len('安全修复 CVE-2026-1 ' * 1000)}]
+    files = sorted(Path(event.body['notes']).iterdir())
+    assert [f.name for f in files] == ['0001-1.1.0.md', '0002-2.0.0.md']
+    assert 'https://example.com/2.0.0' in files[1].read_text() and 'CVE-2026-1' in files[1].read_text()
+    item = item_for(event)
+    advance(flow, item, target, '接单')
+    advance(flow, item, target, '说清楚')
+    brief = flow.brief(item, '执行', target)
+    assert 'notes' in brief.instructions and 'CVE-2026-1' not in json.dumps(brief.materials, ensure_ascii=False)
+    week = item_for(next(e for e in poll.events if e.body['kind'] == 'reconcile'))
+    for directory in (brief.workdir, flow.brief(week, '说清楚', target).workdir):
+        assert (Path(directory) / '.git').is_dir()
