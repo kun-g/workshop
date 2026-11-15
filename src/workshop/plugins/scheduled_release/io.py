@@ -37,8 +37,9 @@ def grant_record(directory):
     logs = list(Path(directory).glob('sync-production.*/grant.log'))
     if len(logs) != 1:
         return {'log': str(directory), 'id': None}
-    matches = re.findall(r'^request ([A-Za-z0-9._-]+) status=', logs[0].read_text(errors='replace'), re.M)
-    return {'id': matches[0] if matches else None, 'log': str(logs[0])}
+    matches = re.findall(r'^(request|exec) ([A-Za-z0-9._-]+) status=', logs[0].read_text(errors='replace'), re.M)
+    return {'id': matches[0][1] if matches else None, 'log': str(logs[0]),
+            **({'kind': 'exec'} if matches and matches[0][0] == 'exec' else {})}
 
 
 class IO:

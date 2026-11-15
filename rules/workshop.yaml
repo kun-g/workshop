@@ -68,6 +68,8 @@ targets:
       rollout: {namespace: agent-ops, name: grant-console}
     # 合并后只回查线上；固定整点批次统一发版和申请集群授权。
     release: scheduled
+    # 这些路径不改变线上服务；整点累计比较和单件交付共用同一份规则。
+    release_ignored_paths: ["docs/", "**/tests/", "*.md"]
     # 交付说明里的发版手册：交付提交里有这个文件就照它发；没有（grant-console#143 合并前）就用回退文本。
     release_runbook: docs/runbooks/sync-production.md
     release_runbook_fallback: 照 issue kun-g/grant-console#143 正文的步骤

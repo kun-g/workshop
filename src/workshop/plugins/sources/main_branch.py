@@ -12,6 +12,7 @@ import subprocess
 from workshop.core.models import Event, Poll
 from workshop.core.ports import Retryable
 from workshop.github_identity import scoped, run
+from workshop.path_policy import only_ignored_paths
 
 
 REQUEST = 'release-now'
@@ -73,21 +74,42 @@ class MainBranchSource:
             if release.get('status') in ('rejected', 'failed') and release.get('to') == to:
                 return Poll([], slot)
             try:
-                record = json.loads(read(['gh', 'api', f"repos/{target['repo']}/contents/release.json?ref=production"]))
+                deployment = target['deployment']
+                application = json.loads(read(['kubectl', '--request-timeout=20s', '--context', deployment['context'],
+                    '-n', deployment['namespace'], 'get', 'application', deployment['app'], '-o', 'json']))
+                status = application.get('status', {})
+                history = status.get('history') or []
+                revision = (max(history, key=lambda row: row.get('id', -1)).get('revision', '') if history
+                            else status.get('sync', {}).get('revision', '') if status.get('sync', {}).get('status') == 'Synced' else '')
+                if not isinstance(revision, str) or not re.fullmatch('[0-9a-f]{40}', revision):
+                    raise ValueError('没有实际已上线的完整提交号')
+                record = json.loads(read(['gh', 'api', f"repos/{target['repo']}/contents/release.json?ref={revision}"]))
                 head = json.loads(base64.b64decode(record['content']))['source_commit']
                 if not isinstance(head, str) or not re.fullmatch('[0-9a-f]{40}', head):
                     raise ValueError('发布记录没有完整源提交')
-            except (KeyError, ValueError, TypeError) as exc:
-                raise Retryable('无法读取 production 发布记录，未确认是否有新合并') from exc
+            except (KeyError, ValueError, TypeError, AttributeError) as exc:
+                raise Retryable('无法读取已上线的 production 发布记录，未确认是否有新合并') from exc
         else:
             head = read(['git', '-C', checkout, 'rev-parse', 'HEAD'])
             if release.get('status') == 'rolled_back' and release.get('to') == to:
                 return Poll([], slot)
+        needs_release = head != to
+        if cluster and needs_release and target.get('release_ignored_paths'):
+            try:
+                comparison = json.loads(read(['gh', 'api', f"repos/{target['repo']}/compare/{head}...{to}"]))
+                if comparison.get('status') not in ('ahead', 'identical'):
+                    raise ValueError('线上源提交与 main 不能确认是快进关系')
+                files = comparison['files']
+                # GitHub compare 最多返回 300 个文件；达到上限时不能证明全是无需上线的路径。
+                if len(files) < 300 and only_ignored_paths(files, target['release_ignored_paths']):
+                    needs_release = False
+            except (KeyError, ValueError, TypeError) as exc:
+                raise Retryable('无法确认累计改动是否需要上线') from exc
         ext = 'now:' + asked if asked else slot
-        events = [] if head == to else [Event('main_branch', ext, target['name'], to,
+        events = [] if not needs_release else [Event('main_branch', ext, target['name'], to,
             ('立即发版 ' if asked else '定时发版 ') + to[:12], {'kind': 'ahead', 'from': head, 'to': to})]
         if asked:
-            # 请求只用一次；本小时不再另比一次。
+            # 即使全是无需上线的路径，请求也只用一次；本小时不再另比一次。
             request.unlink(missing_ok=True)
         return Poll(events, slot)
 

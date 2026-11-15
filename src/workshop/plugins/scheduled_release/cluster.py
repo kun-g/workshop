@@ -50,7 +50,8 @@ class ClusterRelease:
     def grant_outcome(self, state):
         grant = state['result']['grant']
         checkout = Path(state['built']['checkout'])
-        result = self.io.command(['python3', str(checkout / 'scripts/request_grant.py'), 'status', grant['id']], timeout=30)
+        result = self.io.command(['python3', str(checkout / 'scripts/request_grant.py'), 'status', grant['id'],
+                                  *(['--kind', 'exec'] if grant.get('kind') == 'exec' else [])], timeout=30)
         try:
             status = json.loads(result['stdout']).get('status') if result['exit_code'] == 0 else None
         except (ValueError, AttributeError):
@@ -59,7 +60,7 @@ class ClusterRelease:
         if status in ('denied', 'rejected', 'expired', 'expired-unfetched'):
             state.update(status='rejected', reason=f"授权 {grant['id']} {status}；日志 {grant['log']}")
             return After(notice=state['reason'])
-        if status is None or status in ('pending', 'decision_in_progress'):
+        if status is None or status in ('pending', 'decision_in_progress', 'approved-executing'):
             return After(pending=True, reason=f"已有授权 {grant['id']} 仍未确认终止；日志 {grant['log']}",
                          next='只查询这次申请，不重新发卡', recheck_after='+5m')
         state.update(status='blocked', reason=f"授权 {grant['id']} {status}，原同步程序已退出；日志 {grant['log']}")

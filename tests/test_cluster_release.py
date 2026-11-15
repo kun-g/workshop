@@ -45,13 +45,13 @@ def test_source_production_baseline_hour_slot_and_failures(cluster, monkeypatch)
     production = A
     def command(argv, **kwargs):
         called.append(argv)
-        output = B + '\trefs/heads/main' if argv[0] == 'git' else json.dumps({
+        output = B + '\trefs/heads/main' if argv[0] == 'git' else json.dumps({'status': {'sync': {'status': 'Synced', 'revision': P}}}) if argv[0] == 'kubectl' else json.dumps({
             'content': base64.b64encode(json.dumps({'source_commit': production}).encode()).decode()})
         return subprocess.CompletedProcess(argv, 0, output, '')
     monkeypatch.setattr(source_module, 'run', command)
     first = source.poll(target, None)
     assert first.events[0].body == {'kind': 'ahead', 'from': A, 'to': B}
-    assert source.poll(target, first.cursor).events == [] and len(called) == 2
+    assert source.poll(target, first.cursor).events == [] and len(called) == 3
     production = B
     now += timedelta(hours=1)
     assert source.poll(target, first.cursor).events == []
@@ -82,7 +82,7 @@ def test_terminal_batch_skips_same_sha_but_new_merge_is_eligible(cluster, monkey
     write(io.root(target) / 'cluster-release.json', {'item': data['id'], 'to': B, 'status': status})
     remote = B
     def command(argv, **kwargs):
-        text = remote + '\trefs/heads/main' if argv[0] == 'git' else json.dumps({
+        text = remote + '\trefs/heads/main' if argv[0] == 'git' else json.dumps({'status': {'sync': {'status': 'Synced', 'revision': P}}}) if argv[0] == 'kubectl' else json.dumps({
             'content': base64.b64encode(json.dumps({'source_commit': B}).encode()).decode()})
         return subprocess.CompletedProcess(argv, 0, text, '')
     monkeypatch.setattr(source_module, 'run', command)
@@ -165,6 +165,7 @@ class ScriptRunner(Runner):
         self.commands = []
         self.sync_exit = 0
         self.server_status = 'pending'
+        self.exec_request = False
         self.ci = 'success'
         self.wrong_artifact = False
         self.build_attempt = 2
@@ -194,9 +195,9 @@ class ScriptRunner(Runner):
             exit_code = self.sync_exit
             grant_dir = self.directory / 'sync-production.test'
             grant_dir.mkdir()
-            (grant_dir / 'grant.log').write_text('request req-one status=pending\n')
+            (grant_dir / 'grant.log').write_text('exec exec-one status=pending\n' if self.exec_request else 'request req-one status=pending\n')
         elif 'scripts/request_grant.py' in argv:
-            assert argv[2:] == ['status', 'req-one']
+            assert argv[2:] == (['status', 'exec-one', '--kind', 'exec'] if self.exec_request else ['status', 'req-one'])
             output = json.dumps({'status': self.server_status})
         elif argv[0] == 'kubectl' and 'application' in argv:
             output = json.dumps({'status': {'sync': {'status': self.argo_sync, 'revision': P},
@@ -223,7 +224,8 @@ def test_worker_runbook_sequence_and_success_evidence(runner):
     push = next(i for i, a in enumerate(commands) if a[0] == 'scripts/push-production.sh')
     sync = next(i for i, a in enumerate(commands) if a[0] == 'scripts/sync-production.sh')
     assert download < render < push < sync
-    assert commands[sync][1] == P and commands[sync][3] == runner.spec['item']
+    assert commands[sync][1:4] == [P, '--require-exec', '--session-id']
+    assert commands[sync][4] == runner.spec['item']
     approval = read(runner.directory / 'approval.json')
     assert approval['approval_reference'] == 'policy:cluster-card:2026-11-13'
     assert approval['source_commit'] == B
@@ -390,3 +392,78 @@ def test_lost_worker_reports_existing_grant_id(cluster, monkeypatch):
     result = ClusterRelease(io).worker(target, {'item': data['id']}, 'deploy')
     assert result['status'] == 'blocked' and result['grant']['id'] == 'req-preserved'
     assert result['grant']['log'] == str(evidence / 'grant.log')
+
+
+@pytest.mark.parametrize('files,release', [
+    ([{'filename': 'docs/release.txt'}, {'filename': 'services/console/tests/test_app.py'}, {'filename': 'README.md'}], False),
+    ([{'filename': 'src/service.py'}, {'filename': 'tests/test_app.py'}], True),
+    ([{'filename': 'docs/old.py', 'status': 'renamed', 'previous_filename': 'src/old.py'}], True),
+    ([{'filename': 'tests/test_app.py'}] * 300, True),
+])
+@pytest.mark.parametrize('immediate', [False, True])
+def test_cumulative_changes_use_actual_deployment_and_rule_paths(cluster, monkeypatch, files, release, immediate):
+    target, _, _ = cluster
+    target['release_ignored_paths'] = ['docs/', '**/tests/', '*.md']
+    calls = []
+    def command(argv, **kwargs):
+        calls.append(argv)
+        if argv[0] == 'git':
+            output = B + '\trefs/heads/main'
+        elif argv[0] == 'kubectl':
+            # Desired production has already advanced, but was never deployed.
+            output = json.dumps({'status': {'sync': {'status': 'OutOfSync', 'revision': C},
+                                           'history': [{'id': 3, 'revision': P}]}})
+        elif '/contents/' in argv[-1]:
+            assert argv[-1].endswith('?ref=' + P)
+            output = json.dumps({'content': base64.b64encode(json.dumps({'source_commit': A}).encode()).decode()})
+        else:
+            assert argv[-1].endswith('/compare/' + A + '...' + B)
+            output = json.dumps({'status': 'ahead', 'files': files})
+        return subprocess.CompletedProcess(argv, 0, output, '')
+    monkeypatch.setattr(source_module, 'run', command)
+    now = datetime(2026, 11, 15, 12, 30, tzinfo=timezone.utc)
+    source = MainBranchSource(lambda: now)
+    request = Path(target['scheduled_release_state_dir']) / 'release-now'
+    if immediate:
+        request.parent.mkdir(parents=True, exist_ok=True)
+        request.write_text(now.isoformat())
+    poll = source.poll(target, now.replace(minute=0).isoformat() if immediate else None)
+    assert bool(poll.events) is release
+    assert len(calls) == 4
+    if immediate:
+        assert not request.exists()
+        assert all(e.title.startswith('立即发版') for e in poll.events)
+        assert source.poll(target, poll.cursor).events == []
+        assert len(calls) == 4
+
+
+def test_exec_log_recognizes_request_kind_and_uncertain_does_not_restart(cluster, monkeypatch):
+    from workshop.plugins.scheduled_release.io import grant_record
+    target, data, io = cluster
+    directory = io.root(target) / 'sync-production.test'
+    directory.mkdir(parents=True)
+    (directory / 'grant.log').write_text('exec exec-one status=pending\nexec exec-one status=uncertain\n')
+    grant = grant_record(io.root(target))
+    assert grant['id'] == 'exec-one' and grant['kind'] == 'exec'
+    state = {'built': {'checkout': '/checkout'}, 'result': {'grant': grant}}
+    calls = []
+    status = 'approved-executing'
+    def command(argv, **kwargs):
+        calls.append(argv)
+        return dict(exit_code=0, stdout=json.dumps({'status': status}), stderr='')
+    monkeypatch.setattr(io, 'command', command)
+    controller = ClusterRelease(io)
+    assert controller.grant_outcome(state).pending
+    status = 'uncertain'
+    assert controller.grant_outcome(state).blocked
+    assert state['status'] == 'blocked'
+    assert all(argv[2:] == ['status', 'exec-one', '--kind', 'exec'] for argv in calls)
+
+
+@pytest.mark.parametrize('status,expected', [('approved-executing', 'awaiting_grant'), ('completed', 'blocked'), ('uncertain', 'blocked'), ('failed', 'blocked')])
+def test_exec_wait_after_script_exit_never_repeats_sync(runner, status, expected):
+    runner.exec_request, runner.sync_exit, runner.server_status = True, 3, status
+    result = runner.deploy()
+    assert result['grant']['kind'] == 'exec' and result['grant']['id'] == 'exec-one'
+    assert result['status'] == expected
+    assert sum(a[0] == 'scripts/sync-production.sh' for a in runner.commands) == 1
