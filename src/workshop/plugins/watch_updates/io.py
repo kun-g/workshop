@@ -17,6 +17,13 @@ from workshop.github_identity import run, scoped
 from .model import SCHEMA, digest, tag_version, upstream, validate_software, version
 
 NOTES_MISSING = '上游仅提供 tag，没有发布说明；不能据此编造变化或升级理由。'
+PAGE = 30
+
+
+def floor(software):
+    """在用的最低已知版本；比它旧的发布不影响发布范围，读到就可以停。"""
+    known = [version(p['version']) for p in software['instances'] if p['version'] != 'unknown']
+    return min(known) if known else None
 
 
 def path(value):
@@ -105,17 +112,42 @@ class IO:
         if source['kind'] == 'gitlab_tags':
             return self.gitlab_tags(source['project'], software)
         repo = source['repo']
-        endpoint = 'tags' if source['kind'] == 'github_tags' else 'releases'
-        result = run(['gh', 'api', '--paginate', '--slurp', f"repos/{repo}/{endpoint}?per_page=100"],
+        if source['kind'] == 'github_releases':
+            return self.github_releases(repo, software)
+        result = run(['gh', 'api', '--paginate', '--slurp', f"repos/{repo}/tags?per_page=100"],
                      capture_output=True, text=True, timeout=90)
         if result.returncode:
             raise ValueError('上游查不到：' + result.stderr[-500:])
         rows = [row for page in json.loads(result.stdout) for row in page]
-        if endpoint == 'tags':
-            return [{'tag_name': r['name'], 'html_url': f"https://github.com/{repo}/tree/{quote(r['name'], safe='')}",
-                     'body': NOTES_MISSING,
-                     'notes_missing': True} for r in rows]
-        return rows
+        return [{'tag_name': r['name'], 'html_url': f"https://github.com/{repo}/tree/{quote(r['name'], safe='')}",
+                 'body': NOTES_MISSING, 'notes_missing': True} for r in rows]
+
+    def github_releases(self, repo, software):
+        """发布按创建时间倒序，逐页读到不新于在用最低版本的发布就停。
+
+        大仓库（openai/codex）发布说明很长，per_page=100 时 GitHub 十秒内答不出（504），
+        全量翻页也超出时限，所以每页 30 条、够用即停。实测 openai/codex 从 0.137 读起要 17 页、
+        约 70 秒，总预算给 180 秒（读取在作业子进程里，不占主循环）。没读到这一处就报错，不拿部分结果判断。
+        """
+        low = floor(software)
+        rows = []
+        deadline = monotonic() + 180
+        for page in range(1, 101):
+            remaining = deadline - monotonic()
+            if remaining <= 0:
+                raise TimeoutError('GitHub releases 读取超时，不能用部分结果判断')
+            result = run(['gh', 'api', f'repos/{repo}/releases?per_page={PAGE}&page={page}'],
+                         capture_output=True, text=True, timeout=min(60, remaining))
+            if result.returncode:
+                raise ValueError('上游查不到：' + result.stderr[-500:])
+            batch = json.loads(result.stdout)
+            if not isinstance(batch, list) or any(not isinstance(r, dict) for r in batch):
+                raise ValueError('GitHub releases 返回格式不正确')
+            rows.extend(batch)
+            if (len(batch) < PAGE or low is None
+                    or any(v is not None and v <= low for v in (tag_version(software, r.get('tag_name', '')) for r in batch))):
+                return rows
+        raise ValueError('GitHub releases 超出分页上限，未完成读取，不能用部分结果判断')
 
     def gitlab_pages(self, url, label):
         """按页读 gitlab.com 公开接口，不携带本机 GitLab 或 GitHub 凭据；调用方可提前停。"""
@@ -156,8 +188,7 @@ class IO:
         按版本倒序读，读到不新于在用最低版本的 tag 就停：更旧的 tag 不影响发布范围，
         这样不用翻完上千个 tag。没读到这一处就报错，不拿部分结果判断。
         """
-        known = [version(p['version']) for p in software['instances'] if p['version'] != 'unknown']
-        floor = min(known) if known else None
+        low = floor(software)
         link = (f'https://gitlab.com/api/v4/projects/{project}/repository/tags/' if project.isdigit()
                 else f'https://gitlab.com/{project}/-/tags/')
         rows = []
@@ -171,7 +202,7 @@ class IO:
                 rows.append({'tag_name': r['name'], 'html_url': link + quote(r['name'], safe=''),
                              'body': notes or NOTES_MISSING, 'notes_missing': not notes})
             parsed = [tag_version(software, r['name']) for r in batch]
-            if floor is None or any(v is not None and v <= floor for v in parsed):
+            if low is None or any(v is not None and v <= low for v in parsed):
                 return rows
         return rows
 

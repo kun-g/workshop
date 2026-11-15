@@ -470,30 +470,45 @@ def test_manual_upstream_skips_daily_fetch_and_appears_in_empty_weekly(world, un
     assert io.release_calls == []
 
 
-@pytest.mark.parametrize('kind', ['github_releases', 'github_tags'])
-def test_github_upstream_adapters_paginate_and_normalize(monkeypatch, kind):
+def test_github_tags_paginate_and_mark_missing_notes(monkeypatch):
     import workshop.plugins.watch_updates.io as module
     calls = []
-    tags = ['1.1.0', '2.0.0', '3.0.0-rc.1', 'stable']
-    rows = [{'name': t} for t in tags] if kind == 'github_tags' else [release(t) for t in tags]
+    rows = [{'name': t} for t in ['1.1.0', '2.0.0', '3.0.0-rc.1', 'stable']]
     def command(argv, **kwargs):
         calls.append(argv)
         return subprocess.CompletedProcess(argv, 0, json.dumps([rows[:1], rows[1:]]), '')
     monkeypatch.setattr(module, 'run', command)
-    row = software(upstream={'kind': kind, 'repo': 'example/n8n'})
+    row = software(upstream={'kind': 'github_tags', 'repo': 'example/n8n'})
     validate_software(row)
     releases = IO().releases({}, row)
     assert [r['tag_name'] for r in release_range(row, releases)] == ['1.1.0', '2.0.0']
-    endpoint = 'tags' if kind == 'github_tags' else 'releases'
-    assert calls == [['gh', 'api', '--paginate', '--slurp', f'repos/example/n8n/{endpoint}?per_page=100']]
-    if kind == 'github_tags':
-        assert releases[1]['html_url'] == 'https://github.com/example/n8n/tree/2.0.0'
-        assert releases[1]['notes_missing'] and '没有发布说明' in releases[1]['body']
-    else:
-        assert releases[1]['body'] == 'Release notes 2.0.0'
-    # 首版字符串清单继续按 GitHub Releases 查。
+    assert calls == [['gh', 'api', '--paginate', '--slurp', 'repos/example/n8n/tags?per_page=100']]
+    assert releases[1]['html_url'] == 'https://github.com/example/n8n/tree/2.0.0'
+    assert releases[1]['notes_missing'] and '没有发布说明' in releases[1]['body']
+
+
+def test_github_releases_read_page_by_page_and_stop_at_installed(monkeypatch):
+    import workshop.plugins.watch_updates.io as module
+    calls = []
+    # 发布按创建时间倒序；在用最低 1.0.0，第二页读到它就停，不翻第三页。
+    pages = [[release(f'3.0.{i}') for i in range(module.PAGE)],
+             [release('2.0.0'), release('1.1.0'), release('1.0.0')] + [release(f'0.9.{i}') for i in range(module.PAGE - 3)],
+             [release('0.1.0')]]
+    def command(argv, **kwargs):
+        calls.append(argv)
+        return subprocess.CompletedProcess(argv, 0, json.dumps(pages[len(calls) - 1]), '')
+    monkeypatch.setattr(module, 'run', command)
+    row = software(upstream={'kind': 'github_releases', 'repo': 'example/n8n'})
+    validate_software(row)
+    releases = IO().releases({}, row)
+    assert calls == [['gh', 'api', f'repos/example/n8n/releases?per_page={module.PAGE}&page={p}'] for p in (1, 2)]
+    assert [r['tag_name'] for r in release_range(row, releases)][:3] == ['1.1.0', '2.0.0', '3.0.0']
+    assert releases[0]['body'] == 'Release notes 3.0.0'
+    # 首版字符串清单继续按 GitHub Releases 查；不满一页就是读完了。
+    calls.clear()
+    pages[0] = [release('1.2.0')]
     IO().releases({}, software())
-    assert '/releases?' in calls[-1][-1]
+    assert calls == [['gh', 'api', f'repos/example/n8n/releases?per_page={module.PAGE}&page=1']]
 
 
 def test_gitlab_public_releases_paginate_encode_project_and_preserve_notes(monkeypatch):
