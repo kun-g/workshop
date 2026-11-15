@@ -68,6 +68,9 @@ def test_large_report_is_short_and_human_readable():
     {'headline': '字' * 41}, {'headline': '根据profile判断'}, {'headline': '分成\n两行'},
     {'points': [{'version': '2.0.0', 'text': '修复'}] * 4},
     {'points': [{'version': '9.0.0', 'text': '没读过的发布'}]},
+    {'points': [{'version': '2.0.0', 'text': '字' * 46}]},
+    {'points': [{'version': '2.0.0', 'text': '修复认证绕过；资料未证实已触发，不标紧急'}]},
+    {'headline': '管着约 47 个容器的面板有漏洞'},
 ])
 def test_human_fields_are_validated(change):
     value = judgment()

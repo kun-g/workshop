@@ -6,6 +6,8 @@ import re
 
 SCHEMA = 'watch-updates/v1'
 UPGRADE_ORDER = '先升服务端，agent 跟着升；agent 不能比服务端新。'
+# 给人看的字段里不许出现写给校验程序的辩护（Kun 11-15：报告里的理由「是给人看的？重点是什么？」）。
+HEDGE = re.compile(r'profile|needs?|directions?|资料|证实|核实|不能(认定|据此|按|假定|当作|确定)|不标紧急|判紧急|校验|个容器|[\r\n]', re.I)
 
 
 def digest(value):
@@ -186,8 +188,8 @@ def validate_judgment(value, software, releases, needs, directions):
     references = {n['id'] for n in needs} | {d['id'] for d in directions} | {'profile'}
     for row in rows:
         required(row, ('id', 'headline'))
-        if len(row['headline']) > 40 or re.search(r'profile|needs?|directions?|[\r\n]', row['headline'], re.I):
-            raise ValueError('headline 须不超过 40 字且不含校验字段名')
+        if len(row['headline']) > 40 or HEDGE.search(row['headline']):
+            raise ValueError('headline 须不超过 40 字，只写给人看的原因，不写资料缺口、未证实、为何不标紧急等给校验的话')
         points = row.get('points')
         if not isinstance(points, list) or len(points) > 3:
             raise ValueError('points 须为最多三条要点')
@@ -195,6 +197,8 @@ def validate_judgment(value, software, releases, needs, directions):
             required(point, ('version', 'text'))
             if point_link(point['version'], releases) is None:
                 raise ValueError('要点版本须对应本次发布记录')
+            if point['text'] != UPGRADE_ORDER and (len(point['text']) > 45 or HEDGE.search(point['text'])):
+                raise ValueError('每条要点只写一个变化，不超过 45 字（版本号另列，不算在内），不写资料缺口、未证实、为何不标紧急等给校验的话')
         if row.get('verdict') not in ('该升', '可以等', '不用升') or row.get('priority') not in ('紧急', '重要', '普通'):
             raise ValueError('结论或紧急程度无效')
         if not row.get('links') or not set(row['links']).issubset(links):
