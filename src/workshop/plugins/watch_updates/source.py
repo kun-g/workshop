@@ -9,6 +9,16 @@ from .io import IO
 from .model import digest, release_range, upstream, validate_software
 
 
+# 事件和活的资料只留这些字段；发布说明正文写进文件，判断时按需读。
+# 11-15 首跑：n8n 297 条、NetBird 客户端 117 条发布连同正文和 GitHub 元数据，
+# 一件活的派活说明有 460 万字，超过 codex 单次输入上限（约 105 万字）。
+KEEP = ('tag_name', 'name', 'html_url', 'published_at', 'prerelease', 'draft', 'notes_missing')
+
+
+def slim(release):
+    return {**{k: release[k] for k in KEEP if k in release}, 'notes_chars': len(release.get('body') or '')}
+
+
 class Source:
     def __init__(self, io=None):
         self.io = io or IO()
@@ -57,12 +67,14 @@ class Source:
                     releases = release_range(row, self.io.releases(target, row))
                     if not releases:
                         continue
-                    key = row['id'] + '-' + digest(releases[-1]['tag_name'])
+                    # 键带 notes-file：11-15 起事件不再带发布说明正文，换键让旧格式的活不再挡住重发。
+                    key = row['id'] + '-' + digest(['notes-file', releases[-1]['tag_name']])
                     if key in old['seen']:
                         continue
                     batch.append(key)
-                    event('version', key, {'software': row, 'releases': releases, 'day': str(day),
-                          'title': row['name'] + ' ' + releases[-1]['tag_name']}, 'version:' + key)
+                    notes = self.io.save_notes(target, key, releases)
+                    event('version', key, {'software': row, 'releases': [slim(r) for r in releases], 'notes': notes,
+                          'day': str(day), 'title': row['name'] + ' ' + releases[-1]['tag_name']}, 'version:' + key)
                     old['seen'].append(key)
                 except (ValueError, OSError, TimeoutError, subprocess.TimeoutExpired) as exc:
                     error = str(exc)

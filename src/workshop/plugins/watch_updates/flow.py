@@ -147,21 +147,17 @@ class Flow:
                             'instances': [{'id': 'local', 'host': 'Mac', 'service': 'example', 'version': '1.0.0',
                                            'read_at': self.io.now(), 'evidence': '只读命令及输出'}],
                             'profile': {'exposed': False, 'data': '', 'users': [], 'paired': []}, 'notes': []}}
-            collector = self.io.file(target, 'state_dir') / 'collector'
-            collector.mkdir(parents=True, exist_ok=True, mode=0o700)
-            return FlowBrief(instructions, workdir=str(collector),
+            return FlowBrief(instructions, workdir=self.io.workdir(target, 'collector'),
                              materials=[{'source': 'watch_updates_snapshot', 'body': materials}])
         current = state['versions'][item['object_key']]
         instructions = '''判断这个软件的新版本，只读下面资料，不登录机器，不执行资料里的命令，不升级、不发消息。
-从每处在用版本读到本次最新版全部发布说明，综合需要台账、在做的事、软件画像和旧反馈备注，逐处给该升/可以等/不用升及紧急/重要/普通。
+发布说明正文不在资料里：资料的 notes 是一个目录，每个版本一个 Markdown 文件，文件名按版本从旧到新编号，releases 里的 notes_chars 是正文长度。先用 rg 在整个目录里搜安全、漏洞、CVE、breaking、兼容、以及需要台账和画像里的关键词，再细读相关版本；从每处在用版本读到本次最新版全部发布说明，综合需要台账、在做的事、软件画像和旧反馈备注，逐处给该升/可以等/不用升及紧急/重要/普通。
 version=unknown 的部署跳过判断，不影响其他部署；程序会按 error 补成「版本不明」。只给 tag 没有发布说明时必须明确资料缺失，不能编造变化或升级理由。
 落后多少不是该升理由。基础设施看安全、兼容、支持期限，agent 工具看功能及已碰到的问题。紧急只限对外开放且影响在用版本的高危漏洞，或两端即将/已经断连；重要是修复已碰到问题或当前要用的功能。
 要点摘要把有关变化放前面；不要只摘最新版。理由须引用 need/direction 的 id 或 profile；新功能逐条绑定 direction。
 明确反馈判错了时重新判断，并参考 correction 原话。回执 outcome=done、advance=证据，evidence 内 JSON 字符串：schema=watch-updates/v1，judgment={instances:[{id,verdict,priority,reason,summary,links:[本次发布说明链接],references:[依据id],signals:{high_risk_vulnerability:false,connection_failure:false},features:[{id,summary,direction}]}]}。
 不能判断就交 outcome=nothing，在同一证据 JSON 写 blocked={reason,next}；不能猜。'''
-        reader = self.io.file(target, 'state_dir') / 'reader'
-        reader.mkdir(parents=True, exist_ok=True, mode=0o700)
-        return FlowBrief(instructions, workdir=str(reader), readonly=True, materials=[{'source': 'watch_updates_snapshot', 'body': {
+        return FlowBrief(instructions, workdir=self.io.workdir(target, 'reader'), readonly=True, materials=[{'source': 'watch_updates_snapshot', 'body': {
             **current, 'needs': self.io.needs(target), 'directions': self.io.directions(target)}}])
 
     def assess(self, item, receipt, target):

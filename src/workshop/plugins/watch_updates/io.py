@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 import fcntl
 import json
 import os
+import re
 from pathlib import Path
 import subprocess
 import tempfile
@@ -67,6 +68,27 @@ class IO:
 
     def state_file(self, target):
         return self.file(target, 'state_dir') / 'state.json'
+
+    def save_notes(self, target, key, releases):
+        """每个版本一个 Markdown 文件，按发布范围从旧到新编号；返回目录。"""
+        directory = self.file(target, 'state_dir') / 'notes' / key
+        directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+        for index, row in enumerate(releases, 1):
+            tag = row.get('tag_name', '')
+            name = f"{index:04d}-{re.sub(r'[^A-Za-z0-9_.-]', '_', tag)}.md"
+            text = f"# {tag}\n\n原文：{row.get('html_url', '')}\n\n{row.get('body') or NOTES_MISSING}\n"
+            (directory / name).write_text(text)
+        return str(directory)
+
+    def workdir(self, target, name):
+        """执行者的工作目录。初始化成 git 仓库：codex exec 不在 git 仓库里会拒绝启动。"""
+        directory = self.file(target, 'state_dir') / name
+        directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+        if not (directory / '.git').exists():
+            result = self.command(['git', 'init', '-q', str(directory)])
+            if result.returncode:
+                raise ValueError('工作目录初始化失败：' + result.stderr[-500:])
+        return str(directory)
 
     def state(self, target):
         return read(self.state_file(target), {'versions': {}, 'reports': {}, 'weeks': {}, 'outbox': {}, 'consumed': []})
