@@ -60,7 +60,7 @@ def parser():
     release.add_argument('item', help='<短名>#<对象键> 或 <交付对象>:<对象键>')
     release.add_argument('--quote', required=True, help='Kun 的原话，逐字')
     release.add_argument('--session', required=True, help='Kun 说这句话的会话号')
-    commands.add_parser("release-now", help="不等整点，立刻比较主检出与远端；有新合并就走与整点相同的发版流程").add_argument(
+    commands.add_parser("release-now", help="不等整点，立刻比较在跑的版本与远端；有新合并就走与整点相同的发版流程").add_argument(
         "target", nargs="?", default="workshop", help="交付对象，默认 workshop")
     commands.add_parser("pause").add_argument("target")
     resume = commands.add_parser("resume")
@@ -119,7 +119,7 @@ def main(argv=None):
             root = MainBranchSource.release_config(rules.target(args.target))[1]
             root.mkdir(parents=True, exist_ok=True)
             (root / REQUEST).write_text(datetime.now(timezone.utc).isoformat())
-            print("已请求立即发版：守护进程马上比较主检出与远端，有新合并就发版；进度看 workshop status")
+            print("已请求立即发版：守护进程马上比较在跑的版本与远端，有新合并就发版；进度看 workshop status")
         elif args.command == "usage":
             print(usage(log))
         else:
@@ -131,6 +131,9 @@ def main(argv=None):
             else:
                 rules = current_rules(args, saved)
             jobs = None
+            if args.command == "run":
+                from .running import record
+                record()  # 作业子进程继承；整点发版拿它和远端比
             if args.command == "run" and not args.once:
                 state_dir = str(args.state_dir.resolve())
                 jobs = Jobs(args.state_dir / "jobs", [sys.executable, "-m", "workshop.cli", "--state-dir", state_dir, "job"])
