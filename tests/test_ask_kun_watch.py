@@ -311,6 +311,8 @@ def test_launch_agents_have_absolute_paths_and_independent_schedule(tmp_path):
         else:
             assert plist["KeepAlive"] is True and "StartInterval" not in plist
             assert plist["ProgramArguments"][-1] == "run"
+            # 不声明时 launchd 按 Standard 限流，子进程跑 check.sh 慢约 5 倍（#164 实测 107 秒对 21 秒）。
+            assert plist["ProcessType"] == "Interactive"
     with pytest.raises(ValueError):
         module.payload("com.kun.workshop", {"keep_alive": False})
 

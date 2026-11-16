@@ -35,7 +35,10 @@ def payload(label, spec, *, home=None, repository=None, state_dir=None):
               "StandardErrorPath": str(state / (label + ".stderr.log")),
               "EnvironmentVariables": {"HOME": str(home), "WORKSHOP_STATE_DIR": str(state),
                   "PATH": search_path(home), "PYTHONUNBUFFERED": "1"}}
-    config.update({"KeepAlive": True, "ThrottleInterval": 10} if daemon else {"StartInterval": 60})
+    # 守护进程派生的检查和执行者继承它的进程类型；不声明时 launchd 按 Standard 限流，
+    # 同一份 check.sh 从 21 秒拖到 107 秒（#164）。
+    config.update({"KeepAlive": True, "ThrottleInterval": 10, "ProcessType": "Interactive"} if daemon
+                  else {"StartInterval": 60})
     return plistlib.dumps(config)
 
 
