@@ -36,7 +36,7 @@ def launch(engine, row):
                                 target, identity=[row["token"]], item=item["id"])
     except InputBlocked as exc:
         reason = str(exc)
-        action = "负责会话修复派活输入、原文存储或预算后，按既有授权恢复本活"
+        action = "项目经理修复派活输入、原文存储或预算后，按既有授权恢复本活"
         with engine.log.transaction():
             engine.fact("round_changed", {"token": row["token"], "status": "ended", "stopped": True,
                         "outcome": "failed", "summary": reason, "ended": stamp(engine.clock())}, item["id"])
@@ -156,7 +156,7 @@ def reserve(engine, item, unavailable=()):
             why_none = choice.reason.strip() if choice is not None and isinstance(choice.reason, str) else ""
             if why_none:
                 engine.fact("selection_none", {"reason": why_none, "selector": selector_name}, item["id"])
-            engine.change(item, state="卡住", next="负责会话核对执行者和订阅恢复后重试",
+            engine.change(item, state="卡住", next="项目经理核对执行者和订阅恢复后重试",
                         blocked_by="执行者不可用" + (f"：{why_none}" if why_none else ""),
                         leave=engine.blocked_leave("核对执行者和订阅后恢复"))
             return

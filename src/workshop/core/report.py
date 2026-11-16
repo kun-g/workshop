@@ -30,9 +30,9 @@ def status(log):
         state = "暂停" if control.get("paused") else jobs.get(item["id"], "卡住" if item["id"] in read_states else item["state"])
         next_step, blocker = item["next"], item["blocked_by"] or "—"
         if item["id"] in read_states:
-            next_step, blocker = "负责会话核对卡片读取错误（见卡住清单）", "通道"
+            next_step, blocker = "项目经理核对卡片读取错误（见卡住清单）", "通道"
         lines.append("\t".join((item["id"], item["stage"], state, who, next_step, blocker)))
-    lines.append("卡住清单（负责会话处理）\n活\t阶段\t原因\t建议动作")
+    lines.append("卡住清单（项目经理处理）\n活\t阶段\t原因\t建议动作")
     for item in items:
         if item["state"] == "卡住":
             lines.append("\t".join((item["id"], item["stage"], one_line(item["blocked_by"]), one_line(item["next"]))))
@@ -40,7 +40,7 @@ def status(log):
     for card in unreadable:
         lines.append("\t".join((card["item"], by_id.get(card["item"], {}).get("stage", ""),
                      one_line(f"{card.get('external') or card['id']} 连续 {card['read_failures']} 次读取失败：{card.get('read_error', '')}"),
-                     "负责会话核对通道读取权限和状态；恢复后自动收取原卡回答")))
+                     "项目经理核对通道读取权限和状态；恢复后自动收取原卡回答")))
     lines.append("等回答的问卡")
     for card in log.all("cards"):
         if card["mode"] == "ask" and not card["answered"] and not card.get("cancelled") and not card.get("rejected"):

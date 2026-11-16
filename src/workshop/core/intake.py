@@ -190,7 +190,7 @@ def submit(engine, token: str, data: dict) -> bool:
         with engine.log.transaction():
             count = engine.receipt_rejected(token, exc, data=data, ask_only=ask_only)
             if ask_only and count >= 2:
-                # 保存原证据，但不执行这份回执要求的任何动作；由负责会话修复后恢复。
+                # 保存原证据，但不执行这份回执要求的任何动作；由项目经理修复后恢复。
                 engine.fact("round_changed", {"token": token, "question_blocked": True}, row["item"])
                 return engine.submit(token, {"outcome": "nothing", "summary": "问卡格式不对，修正后恢复",
                                            "evidence": candidate.evidence})

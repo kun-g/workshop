@@ -97,7 +97,7 @@ def test_abandon_running_program_explains_pause_without_mutation(engine, monkeyp
         engine.abandon('alpha:one', '停止')
     assert 'workshop pause alpha' in str(error.value)
     assert '不会自动放弃或取消在跑作业' in str(error.value)
-    assert '负责会话' in str(error.value)
+    assert '项目经理' in str(error.value)
     assert before == {t: engine.log.all(t) for t in TABLES}
     assert engine.log.facts() == facts
 

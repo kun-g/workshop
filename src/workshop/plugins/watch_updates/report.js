@@ -31,7 +31,7 @@
     textarea.value = text; out.style.display = 'block';
     try {
       await navigator.clipboard.writeText(text);
-      document.getElementById('msg').textContent = '已复制，去飞书贴给 Ash，或贴给负责会话。';
+      document.getElementById('msg').textContent = '已复制，去飞书贴给 Ash，或贴给项目经理。';
     } catch (_) {
       textarea.focus(); textarea.select();
       document.getElementById('msg').textContent = '上面的文字已选中，请手动复制。';

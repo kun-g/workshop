@@ -20,7 +20,7 @@ Orca 插话钩子去掉轮次令牌后以 `cli:orca` 进入：流程用核心已
 
 阶段开关：规则里交付对象写 `stages`（按顺序列出阶段）时，`stages()` 照它返回；本流程只允许省掉审查，少了证据或交付就报错。省掉审查时，能合并的头提交是证据检查过的 `evidence_head`；合并前若配了 bot_review，在交付的 after 里补一条 bot 批准，正文写明「未审查」。核心按全局阶段顺序取规则里还在的下一阶段：规则改掉某阶段时，在跑的那一轮交回的推进仍认；闲着的活派轮前直接挪到下一阶段，不起轮。
 
-说清楚时回查 issue 五项，并核对回执检查与 `workshop-checks` 内容一致，包含 `required_checks`（默认 `[["scripts/check.sh"]]`）。回执 JSON 的 `paths` 登记预计会改的路径（仓库根起的相对路径，目录以 / 结尾），作为说清楚的 Evidence.paths 交给核心，规则配了 `serial_paths` 时按它在执行前排队；不是字符串列表时说清楚不过。之后各阶段的实际改动取 PR 文件列表，改名的文件新旧路径都算（冻结、串行、两家审都按它判）。缺少判断时用带推荐的 ask；操作阻塞交 blocked={reason,next}，由负责会话处理。不能仅靠 notice 等你。
+说清楚时回查 issue 五项，并核对回执检查与 `workshop-checks` 内容一致，包含 `required_checks`（默认 `[["scripts/check.sh"]]`）。回执 JSON 的 `paths` 登记预计会改的路径（仓库根起的相对路径，目录以 / 结尾），作为说清楚的 Evidence.paths 交给核心，规则配了 `serial_paths` 时按它在执行前排队；不是字符串列表时说清楚不过。之后各阶段的实际改动取 PR 文件列表，改名的文件新旧路径都算（冻结、串行、两家审都按它判）。缺少判断时用带推荐的 ask；操作阻塞交 blocked={reason,next}，由项目经理处理。不能仅靠 notice 等你。
 
 证据轮在干净副本（见下节）的 detached 完整 SHA 上真实重跑登记检查；环境白名单清除 GitHub/SSH/云凭据，原样 stdout/stderr、退出码、SHA 写入核心证据 reason。每条检查默认限时 60 秒，可在目标配置 `check_timeout`；超时记退出码 124、timed_out=true 和已得到的原样输出，判检查不过，不隔离流程。准备命令由 prepare 的 argv/cwd 指定，cwd 限定在干净副本中；grant-console 先在 services/devops-console 跑 uv sync --locked。这个检查没有业务写入，但会建立临时副本并运行仓库脚本；不是恶意代码安全沙箱。
 
@@ -56,7 +56,7 @@ Orca 插话钩子去掉轮次令牌后以 `cli:orca` 进入：流程用核心已
 - assess(验收)：验收输出要对应固定检查提交（默认原交付提交，追加机会可选当时 main），该提交的实际检查必须通过；原交付提交仍须完成交付，不能用新 main 的检查冒充上线。
 - 核心关口：执行提议直接到验收，只有活到过验收、且流程证据过了才放行（核心改动，见 [ports.md](ports.md)）；没到过验收照旧「不能越过流程阶段和关口」。
 - after(执行)：结算时按回执请求的提交再查一遍（不改选别的提交），把它记进 `acceptance_reruns`，`merge`/`pr` 改成该 PR，`acceptance_after` 移到当前最新资料，清掉 `accepted` 和 `merge_runs`（流程在交付提交上的检查也重跑一次，环境问题可能就出在那一步）。有新增机会时固定其检查提交并记消费，返回 `After(recovery_id=机会号)`；否则返回空的 `After()`，核心把活推到验收。
-- 次数用完后卡住，负责会话核对原因，用 `recover --mode verify --reason` 追加一次；可以用 `--ref main` 固定包含原合并提交的当前 main。历史次数保留，机会由完成钩子幂等消费，why 记录原因、提交和消费。相同关口连续失败 3 次也记卡住，不为操作故障自动发问卡。详见 [恢复与重验](恢复与重验.md)。
+- 次数用完后卡住，项目经理核对原因，用 `recover --mode verify --reason` 追加一次；可以用 `--ref main` 固定包含原合并提交的当前 main。历史次数保留，机会由完成钩子幂等消费，why 记录原因、提交和消费。相同关口连续失败 3 次也记卡住，不为操作故障自动发问卡。详见 [恢复与重验](恢复与重验.md)。
 
 ## 交付和崩溃恢复
 

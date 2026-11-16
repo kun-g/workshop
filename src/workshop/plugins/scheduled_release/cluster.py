@@ -64,7 +64,7 @@ class ClusterRelease:
             return After(pending=True, reason=f"已有授权 {grant['id']} 仍未确认终止；日志 {grant['log']}",
                          next='只查询这次申请，不重新发卡', recheck_after='+5m')
         state.update(status='blocked', reason=f"授权 {grant['id']} {status}，原同步程序已退出；日志 {grant['log']}")
-        return After(blocked=state['reason'], next='负责会话核对已有授权和线上状态；同步脚本不支持续接，不可直接重跑')
+        return After(blocked=state['reason'], next='项目经理核对已有授权和线上状态；同步脚本不支持续接，不可直接重跑')
 
     def after(self, item, stage, key, target, intent):
         with self.io.locked(target):
@@ -86,7 +86,7 @@ class ClusterRelease:
             if state['status'] == 'awaiting_grant':
                 result = self.grant_outcome(state)
             elif state['status'] == 'blocked':
-                result = After(blocked=state['reason'], next='负责会话核对批次日志和已有授权；不得重新调用同步脚本')
+                result = After(blocked=state['reason'], next='项目经理核对批次日志和已有授权；不得重新调用同步脚本')
             elif state['status'] not in ('ok', 'failed', 'rejected'):
                 phase = 'build' if stage == '证据' else 'deploy' if stage == '交付' else None
                 if phase:
@@ -107,7 +107,7 @@ class ClusterRelease:
                                 result = After(pending=True, reason=finished['reason'],
                                                next='只查询已有授权状态，不重新发卡', recheck_after='+5m')
                             elif state['status'] == 'blocked':
-                                result = After(blocked=finished['reason'], next='负责会话核对批次日志和已有授权；不自动回滚或重新发卡')
+                                result = After(blocked=finished['reason'], next='项目经理核对批次日志和已有授权；不自动回滚或重新发卡')
                             else:
                                 result = After(notice=f"整点发版 {state['to']} 停止：{finished['reason']}")
             if stage == '收尾' and state['status'] == 'ok':

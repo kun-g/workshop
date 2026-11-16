@@ -66,7 +66,7 @@ def failure_changes(engine, item, row):
     if failures == 3:
         engine.card(item, f"failing:{episode}", "notice", notice(f'{item["title"]} 连续 3 次没跑成'))
     if failures >= 10:
-        changes.update(state="卡住", next="负责会话处理失败原因后恢复", blocked_by="连续 10 次没跑成",
+        changes.update(state="卡住", next="项目经理处理失败原因后恢复", blocked_by="连续 10 次没跑成",
                        leave={"kind": "等你", "about": "连续失败"})
     else:
         at = stamp(engine.clock() + timedelta(seconds=min(300 * 2 ** (failures - 1), 3600)))
@@ -85,7 +85,7 @@ def gate_retry(engine, item, row, reason):
                    leave={"kind": "工序", "owner": "车间", "at": stamp(engine.clock()), "about": reason})
     engine.fact("gate_blocked", {"gate_reason": reason}, item["id"])
     if count >= 3:
-        changes.update(state="卡住", next="负责会话修正关口失败原因后恢复", blocked_by=reason,
+        changes.update(state="卡住", next="项目经理修正关口失败原因后恢复", blocked_by=reason,
                        leave=engine.blocked_leave("修正关口失败原因后恢复"))
     return changes
 
@@ -143,7 +143,7 @@ def finish(engine, row):
         receipt = Receipt.parse(row["receipt"], received_at)
         target = engine.item_target(item)
         port, name = "flow", target["plugin"]
-        evidence = (Evidence(blocked="问卡格式不对", next="负责会话修正问卡格式后恢复当前阶段") if row.get("question_blocked") else
+        evidence = (Evidence(blocked="问卡格式不对", next="项目经理修正问卡格式后恢复当前阶段") if row.get("question_blocked") else
                     Evidence(**row["assessment"]) if row.get("assessment") else
                     Evidence() if row.get("automatic_failure") else
                     engine.call(port, name, "assess", item, receipt, target,
@@ -228,7 +228,7 @@ def finish(engine, row):
             elif receipt.outcome == "failed":
                 changes.update(engine.failure_changes(item, row))
             elif wait_ready:
-                changes.update(state="卡住", wait_for_ready=True, next="负责会话处理阻塞；需要判断时提交问卡",
+                changes.update(state="卡住", wait_for_ready=True, next="项目经理处理阻塞；需要判断时提交问卡",
                                blocked_by=receipt.leave["about"], leave=engine.blocked_leave(receipt.leave["about"]))
             elif another_review:
                 changes.update(stage="审查", state="空闲", next="另一家审查", gate_count=0,

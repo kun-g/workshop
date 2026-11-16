@@ -36,7 +36,7 @@ def abandon(engine, item_id, reason):
             raise ValueError(f"{item_id} 已经{item['state']}，不用放弃")
         if item.get("program"):
             raise ValueError(f"程序阶段还没结算，不能放弃；先用 workshop pause {item['target']} 暂停。"
-                             "暂停不会自动放弃或取消在跑作业，请由负责会话处理未结算作业后再决定是否放弃")
+                             "暂停不会自动放弃或取消在跑作业，请由项目经理处理未结算作业后再决定是否放弃")
         if any(r["item"] == item_id for r in engine.active()):
             raise ValueError(f"{item_id} 还有一轮没结束，先用 abort 结束那一轮再放弃")
         engine.fact("item_abandoned", {"id": item_id, "reason": reason.strip()}, item_id)
