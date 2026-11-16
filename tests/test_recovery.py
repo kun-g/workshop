@@ -41,11 +41,11 @@ def test_waiting_requires_live_question_and_hold_does_not_hold_ask(tmp_path):
 def test_explicit_operational_block_has_cause_and_action(engine, reason):
     reach(engine, '执行')
     flow = engine.plugins.get('flow', 'flow')
-    flow.assess = lambda *a: Evidence(blocked=reason, next='负责会话修复后恢复')
+    flow.assess = lambda *a: Evidence(blocked=reason, next='项目经理修复后恢复')
     finish(engine, outcome='nothing')
     row = item(engine)
     assert row['state'] == '卡住' and row['blocked_by'] == reason
-    assert row['leave']['kind'] == '工序' and row['leave']['owner'] == '负责会话'
+    assert row['leave']['kind'] == '工序' and row['leave']['owner'] == '项目经理'
     assert reason in status(engine.log) and '修复后恢复' in status(engine.log)
     assert not engine.active() and not engine.log.all('cards')
 

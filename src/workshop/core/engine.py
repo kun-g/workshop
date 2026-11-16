@@ -82,13 +82,13 @@ class Engine:
         if changes.get("state") == "等你" and not self.answerable(item):
             reason = changes.get("gate_reason") or (changes.get("leave") or {}).get("about") or changes.get("next") or "缺少有效问卡"
             changes.update(state="卡住", blocked_by=reason,
-                           next="负责会话处理阻塞；需要 Kun 判断时提交带推荐的问卡")
+                           next="项目经理处理阻塞；需要 Kun 判断时提交带推荐的问卡")
         if changes.get("state") == "卡住" and (changes.get("leave") or {}).get("kind") == "等你":
-            changes["leave"] = self.blocked_leave(changes.get("next") or "负责会话处理阻塞")
+            changes["leave"] = self.blocked_leave(changes.get("next") or "项目经理处理阻塞")
         self.fact(kind, changes, item["id"])
 
     def blocked_leave(self, action):
-        return {"kind": "工序", "owner": "负责会话", "at": stamp(self.clock()), "about": action}
+        return {"kind": "工序", "owner": "项目经理", "at": stamp(self.clock()), "about": action}
 
     def control(self, target):
         return self.log.get("controls", target) or {}

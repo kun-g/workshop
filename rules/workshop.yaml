@@ -73,12 +73,12 @@ targets:
     # 交付说明里的发版手册：交付提交里有这个文件就照它发；没有（grant-console#143 合并前）就用回退文本。
     release_runbook: docs/runbooks/sync-production.md
     release_runbook_fallback: 照 issue kun-g/grant-console#143 正文的步骤
-    # 前缀匹配仓库根起的相对路径。名单由 grant-console 负责会话 11-13 给出。
+    # 前缀匹配仓库根起的相对路径。名单由 grant-console 项目经理 11-13 给出。
     two_reviewers: ['.github/', 'deploy/', 'scripts/', 'services/devops-console/grant_console/',
                     'services/devops-console/k8s/', 'docs/ci.md', 'docs/runbooks/release.md']
-    # 冻结：自动部署那条线收尾前不改，除非 Kun 单独放行（grant-console 负责会话 11-13）。前缀匹配同 two_reviewers。
+    # 冻结：自动部署那条线收尾前不改，除非 Kun 单独放行（grant-console 项目经理 11-13）。前缀匹配同 two_reviewers。
     frozen_paths: ['.github/', 'deploy/', 'docs/ci.md', 'docs/runbooks/release.md']
-    # 串行：审批卡的渲染和回调，碰到的活一件一件过执行（grant-console 负责会话 11-13；按 main e18321a 核过）。
+    # 串行：审批卡的渲染和回调，碰到的活一件一件过执行（grant-console 项目经理 11-13；按 main e18321a 核过）。
     # app.py 的 grant_decision 处理审批卡回调，整份列入：碰 app.py 的活都会排队。
     # 仓库里没有 cards/ 目录，故不列。
     serial_paths: ['services/devops-console/grant_console/notifications.py',

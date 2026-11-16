@@ -290,7 +290,7 @@ class IssueDelivery:
                 "需求变更须写需求原文和文档位置；未确认时发 key=requirement-change 的 ask，kind=approval，context 逐字放完整依据，带推荐和理由，不推进。"
                 "choices 必须是含 key、label、effect 的对象，key 分别为 yes/no；recommend 引用一个选项 key。完整格式示例（替换 context 为完整依据）：\n"
                 + question_example("requirement-change", context="请确认以下完整需求依据。", approval=True) +
-                "Kun 答 no：不推进、不重复问，交 outcome=nothing，evidence JSON 写 blocked={reason:需求变更未获批准,next:负责会话调整需求后重新确认}。"
+                "Kun 答 no：不推进、不重复问，交 outcome=nothing，evidence JSON 写 blocked={reason:需求变更未获批准,next:项目经理调整需求后重新确认}。"
                 "原话已认过的可免卡：evidence JSON 的 requirement_approval 写 basis（完整依据节）和 quote（原话节中含确认及上下文的逐字引用）；"
                 "执行者须判断引用确实同意这条需求，不可把问题描述或 agent 的理解当批准，验收者复核。"
                 "检查使用 workshop-checks 代码块里的 JSON argv 列表，至少 scripts/check.sh 或仓库等价检查；evidence 那条 JSON 的 checks 交回完全相同命令。"
@@ -431,7 +431,7 @@ class IssueDelivery:
             return f"合并提交 {sha} 已验收通过；要改就从最新 main 开新 PR"
         if sha in state.get("acceptance_reruns", []) and not self._recovery_grant(item, state, sha):
             return (f"合并提交 {sha} 已重走过一次验收，不能再走；代码不用改时交 outcome=nothing，"
-                    "evidence JSON 写 blocked={reason:重验次数用完,next:负责会话用 recover --mode verify --reason 追加一次验收}")
+                    "evidence JSON 写 blocked={reason:重验次数用完,next:项目经理用 recover --mode verify --reason 追加一次验收}")
         return None
 
     @staticmethod
@@ -487,7 +487,7 @@ class IssueDelivery:
             return hint + f"代码不用改时不能直接重走验收：{block}。"
         return hint + ('代码不用改（例如验收者拿不到合并提交、只读环境跑不了检查）：不开空 PR，回执 outcome=done、advance="验收"，'
                        f'evidence 的 JSON 加 rerun_acceptance={{"merge":"{sha}","reason":"为什么不用改"}}，'
-                       "流程直接回到验收重走；次数用完后记为卡住，由负责会话核对原因后用 recover --mode verify 追加一次。")
+                       "流程直接回到验收重走；次数用完后记为卡住，由项目经理核对原因后用 recover --mode verify 追加一次。")
 
     def _merge_runs(self, item, target, merge):
         """交付提交上的登记检查只跑一次，按提交号缓存在插件状态里。"""

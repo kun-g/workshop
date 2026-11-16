@@ -49,7 +49,7 @@ def test_mixed_reads_count_completed_attempts_survive_rebuild_and_recover(engine
     engine.channels()
     view = status(engine.log)
     assert 'Q1 连续 10 次读取失败：HTTP 403 latest' in view
-    assert '卡住 1' in view and '负责会话核对通道读取权限和状态' in view
+    assert '卡住 1' in view and '项目经理核对通道读取权限和状态' in view
     assert not [c for c in engine.log.all('cards') if c['mode'] == 'notice']
     assert 'HTTP 403' in why(engine.log, 'alpha:one')
     engine.log.rebuild()

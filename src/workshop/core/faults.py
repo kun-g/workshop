@@ -15,7 +15,7 @@ def block(engine, item, reason, plugin=False):
         saved = item.get("before_plugin_failure")
         if plugin and not item.get("plugin_blocked"):
             saved = {k: item.get(k) for k in ("state", "next", "blocked_by", "leave")}
-        engine.change(item, "work_blocked", state="卡住", next="负责会话修复阻塞后恢复", blocked_by=reason,
+        engine.change(item, "work_blocked", state="卡住", next="项目经理修复阻塞后恢复", blocked_by=reason,
                     plugin_blocked=plugin, before_plugin_failure=saved, leave={"kind": "等你", "about": reason})
 
 

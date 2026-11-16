@@ -224,7 +224,7 @@ ask 成功时记录 sent_at，丢回包后找回原卡时保留上游发送时�
 
 ## 可选工单 TaskHome
 
-第一版规则不配置，核心不发单也不卡活；以后配置才调用 `open(key, item, target) -> ticket`、`update(key, ticket, item, target)`。两者须持久幂等，不能冒充负责会话领单/收单。
+第一版规则不配置，核心不发单也不卡活；以后配置才调用 `open(key, item, target) -> ticket`、`update(key, ticket, item, target)`。两者须持久幂等，不能冒充项目经理领单/收单。
 
 ## SQLite、恢复与看门
 
