@@ -620,3 +620,24 @@ def test_rework_waits_for_active_release_before_launching(world, monkeypatch):
     assert released < launched
     assert len(job_plugins.calls("release-start")) == 1
     engine.log.close()
+
+
+def test_status_reads_spec_only_of_running_jobs(tmp_path, monkeypatch):
+    """跑完待取的作业可能带很大的 spec；状态查询不读它们。"""
+    root = tmp_path / "jobs"
+    for name, finished in (("done", True), ("live", False)):
+        path = root / name
+        path.mkdir(parents=True)
+        write(path / "spec.json", {"item": f"x:{name}", "label": "等检查"})
+        (path / "lock").touch()
+        if finished:
+            write(path / "result.json", {"ok": None, "finished": 0})
+    handle = os.open(root / "live" / "lock", os.O_RDWR)
+    fcntl.flock(handle, fcntl.LOCK_EX)
+    seen = []
+    monkeypatch.setattr(job_module, "read", lambda path: seen.append(path.parent.name) or read(path))
+    try:
+        assert job_module.running(root) == {"x:live": "等检查"}
+    finally:
+        os.close(handle)
+    assert seen == ["live"]
