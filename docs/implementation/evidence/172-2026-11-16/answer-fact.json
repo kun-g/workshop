@@ -1,0 +1,30 @@
+{
+  "seq": 231757,
+  "kind": "event",
+  "source": "session",
+  "ext_id": "8a6c9ff7-8669-4664-bb4d-4ff95259d6d1",
+  "item": "workshop:172",
+  "body": {
+    "source": "session",
+    "ext_id": "8a6c9ff7-8669-4664-bb4d-4ff95259d6d1",
+    "target": "workshop",
+    "object_key": "172",
+    "title": "会话放行 workshop:172",
+    "body": {
+      "channel": "session",
+      "session": "da93d577-1e69-4f3c-b53b-f136f5ba7251",
+      "quote": "放172，180有人在做"
+    },
+    "depth": 0,
+    "action": "ready",
+    "flow": "issue_delivery",
+    "flow_default": true,
+    "action_id": "",
+    "previous_ids": [],
+    "ingress": "source",
+    "pending_classification": false,
+    "initial_stage": "接单",
+    "release_gate": true
+  },
+  "at": "2026-11-16T12:39:26.221913+00:00"
+}

@@ -1,0 +1,161 @@
+{
+  "implementation_commit": "7c84d36104d73b6a5cc2ae83897c1925b617f086",
+  "versions": {
+    "python": "3.13.14 (main, Jun 11 2026, 03:58:32) [Clang 22.1.3 ]",
+    "wheel": "0.1.0"
+  },
+  "wheel": {
+    "file": "/Users/kun/workspace/runtime/worktrees/workshop/ws-d41e9c89208f53ee/.local/issue-172/rework/dist/workshop_intervention-0.1.0-py3-none-any.whl",
+    "sha256": "01dd9b1819ab1abbe1ee23dfe117c4e2a685e44918ac60220ca6139edba8e7aa"
+  },
+  "scripts": {
+    "scripts/verify_intervention.py": "588b593b032e8f3d9bd0c3295004985fac0ff50e6ffab792afe4bfa6010c9332",
+    "scripts/verify_intervention_delivery.py": "8161ef290d40c1c0e5c243ed9ebef7f1d076dd2c9b6446aa31dd06253b3c4196"
+  },
+  "source": {
+    "github": "https://github.com/kun-g/workshop/issues/172",
+    "identity": "lambdatheory-agent App",
+    "fact": 231757,
+    "session": "da93d577-1e69-4f3c-b53b-f136f5ba7251",
+    "quote": "放172，180有人在做"
+  },
+  "runtime": {
+    "wait": "/private/tmp/ws172-qegz6dum",
+    "delivery": "/private/tmp/ws172-send-56bg9ppu"
+  },
+  "operations": {
+    "wait": [
+      {
+        "operation": "verify:create:172",
+        "action": "create"
+      },
+      {
+        "operation": "verify:answer:172",
+        "action": "answer"
+      },
+      {
+        "operation": "ack:verify:bind:172",
+        "action": "ack"
+      }
+    ],
+    "delivery": [
+      {
+        "operation": "verify:permit:recovery",
+        "action": "permit"
+      },
+      {
+        "operation": "verify:enqueue:recovery",
+        "action": "enqueue"
+      },
+      {
+        "operation": "verify:permit:interrupted",
+        "action": "permit"
+      },
+      {
+        "operation": "verify:enqueue:interrupted",
+        "action": "enqueue"
+      },
+      {
+        "operation": "verify:permit:cancelled",
+        "action": "permit"
+      },
+      {
+        "operation": "verify:enqueue:cancelled",
+        "action": "enqueue"
+      },
+      {
+        "operation": "verify:cancel:queued",
+        "action": "cancel"
+      },
+      {
+        "operation": "verify:permit:cancel_uncertain",
+        "action": "permit"
+      },
+      {
+        "operation": "verify:enqueue:cancel_uncertain",
+        "action": "enqueue"
+      },
+      {
+        "operation": "verify:cancel:uncertain",
+        "action": "cancel"
+      }
+    ]
+  },
+  "wait_result": {
+    "ref": "wait:b88cee214c4df69702dbd153ec0c69d910833387844cb6939d5812eee993b660",
+    "token": "result:d32a7255d4c049335d66e9e1edc27075f02777ad0dfa70af0b2588d83031774b",
+    "stage": "接单",
+    "approved": [],
+    "acknowledged": true
+  },
+  "wait_counts": {
+    "plugin": {
+      "acknowledged": 1,
+      "answered": 1,
+      "created": 1
+    },
+    "core": {
+      "wait_bound": 1,
+      "wait_resumed": 1
+    }
+  },
+  "delivery_actions": {
+    "recovery": [
+      "send",
+      "reconcile",
+      "reconcile",
+      "send"
+    ],
+    "interrupted": [
+      "send",
+      "reconcile"
+    ],
+    "cancelled": [],
+    "cancel_uncertain": [
+      "send",
+      "reconcile"
+    ]
+  },
+  "delivery_counts": {
+    "recovery": 1,
+    "interrupted": 1,
+    "cancelled": 0,
+    "cancel_uncertain": 0
+  },
+  "runs": [
+    {
+      "argv": [
+        "/Users/kun/workspace/runtime/worktrees/workshop/ws-d41e9c89208f53ee/.venv/bin/python",
+        "scripts/verify_intervention.py",
+        "--rules",
+        "rules/workshop.yaml",
+        "--issue",
+        ".local/issue-172/rework/inputs/issue.json",
+        "--answer",
+        ".local/issue-172/rework/inputs/answer-fact.json",
+        "--service-python",
+        ".local/issue-172/service-venv/bin/python",
+        "--output",
+        ".local/issue-172/rework/wait"
+      ],
+      "exit_code": 0,
+      "stdout": "wait.stdout.txt",
+      "stderr": "wait.stderr.txt"
+    },
+    {
+      "argv": [
+        "/Users/kun/workspace/runtime/worktrees/workshop/ws-d41e9c89208f53ee/.venv/bin/python",
+        "scripts/verify_intervention_delivery.py",
+        "--rules",
+        "rules/workshop.yaml",
+        "--service-python",
+        ".local/issue-172/service-venv/bin/python",
+        "--output",
+        ".local/issue-172/rework/delivery"
+      ],
+      "exit_code": 0,
+      "stdout": "delivery.stdout.txt",
+      "stderr": "delivery.stderr.txt"
+    }
+  ]
+}
