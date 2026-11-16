@@ -50,7 +50,7 @@ def test_entire_flow_and_material_boundary(engine):
     assert "输入/缓存读/缓存写/输出 token" in usage(engine.log, engine.clock())
     assert "800 / 0 / 0 / 160" in usage(engine.log, engine.clock())
     assert "起因：事实" in why(engine.log, "alpha:one")
-    assert "已收尾" in status(engine.log)
+    assert "已收尾" not in status(engine.log) and "已收尾" in status(engine.log, everything=True)
     assert (engine.log.path.parent / "heartbeat.json").exists()
 
 

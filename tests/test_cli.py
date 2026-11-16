@@ -15,7 +15,14 @@ def test_cli_on_completed_state(tmp_path, capsys, monkeypatch):
     engine.log.close()
     monkeypatch.setenv("WORKSHOP_STATE_DIR", str(tmp_path))
     assert main(["status"]) == 0
-    assert "完成" in capsys.readouterr().out
+    current = capsys.readouterr().out
+    assert "alpha:one" not in current and "另有 1 件没列出（已结束" in current
+    assert main(["status", "--all"]) == 0
+    assert "alpha:one\t收尾\t完成" in capsys.readouterr().out
+    assert main(["status", "--state", "完成", "--target", "alpha"]) == 0
+    assert "alpha:one\t收尾\t完成" in capsys.readouterr().out
+    assert main(["status", "--target", "beta", "--all"]) == 0
+    assert "alpha:one" not in capsys.readouterr().out
     assert main(["why", "alpha:one"]) == 0
     assert "起因：事实" in capsys.readouterr().out
     assert main(["usage"]) == 0
@@ -50,3 +57,21 @@ def test_packaged_command_runs(tmp_path):
     result = subprocess.run(["uv", "run", "workshop", "--state-dir", str(tmp_path), "status"],
                             capture_output=True, text=True, check=True)
     assert "活 0 件" in result.stdout
+
+
+def test_status_html_page(tmp_path, capsys, monkeypatch):
+    engine = build(tmp_path)
+    reach(engine, "收尾")
+    finish(engine, leave={"kind": "工序", "owner": "车间", "at": "+1d", "about": "观察"})
+    engine.log.close()
+    monkeypatch.setenv("WORKSHOP_STATE_DIR", str(tmp_path))
+    assert main(["status", "--html"]) == 0
+    path = Path(capsys.readouterr().out.strip())
+    assert path == tmp_path / "status.html"
+    current = path.read_text()
+    assert current.startswith("<!doctype html>") and "没有卡住的活" in current and "alpha:one" not in current
+    assert "另有 1 件没列出（已结束）" in current
+    target = tmp_path / "all.html"
+    assert main(["status", "--all", "--html", str(target)]) == 0
+    full = target.read_text()
+    assert "已结束 1 件" in full and "<code>alpha:one</code>" in full

@@ -8,46 +8,81 @@ from .models import Event, utcnow
 from .flows import configured
 
 
-def status(log):
+ENDED = ("完成", "放弃")
+
+
+def overview(log, *, everything=False, states=(), targets=(), flows=()):
+    """总览要用的数据，文字和网页共用。默认只取没结束的活；states、targets、flows 是筛选，空表示不筛。"""
     items = log.all("items")
-    unreadable = [c for c in log.all("cards") if c["mode"] == "ask" and not c["answered"]
+    cards = log.all("cards")
+    unreadable = [c for c in cards if c["mode"] == "ask" and not c["answered"]
                   and not c.get("cancelled") and not c.get("rejected") and c.get("read_failures", 0) >= 10]
     blocked_reads = {c["item"] for c in unreadable}
     # 读取故障是卡片的状态，投影到总览；不覆盖活已有的等待/故障，恢复后自然消失。
     read_states = {i["id"] for i in items if i["id"] in blocked_reads and i["state"] == "等你"}
-    running = sum(i["state"] == "跑着" for i in items)
-    waiting = sum(i["state"] == "等你" for i in items) - len(read_states)
-    blocked = sum(i["state"] == "卡住" for i in items) + len(read_states)
-    queued = sum(i["state"] == "排队" for i in items)
-    lines = [f"活 {len(items)} 件 · 跑着 {running} · 等你 {waiting} · 卡住 {blocked}" + (f" · 排队 {queued}" if queued else ""),
-             "活\t阶段\t状态\t谁在推\t下一步\t卡在谁手里"]
     # 守护进程在后台作业里替这件活跑东西（例如流程跑检查）时，状态显示作业的字样；每拍回查，跑完按结果结算。
     jobs = running_jobs(log.path.parent / "jobs")
+    rows = []
     for item in items:
         row = log.get("rounds", item.get("round", ""))
-        who = row["executor"] if row else "车间"
         control = log.get("controls", item["target"]) or {}
-        state = "暂停" if control.get("paused") else jobs.get(item["id"], "卡住" if item["id"] in read_states else item["state"])
+        stuck = item["state"] == "卡住" or item["id"] in read_states
+        shown = "暂停" if control.get("paused") else jobs.get(item["id"], "卡住" if item["id"] in read_states else item["state"])
         next_step, blocker = item["next"], item["blocked_by"] or "—"
         if item["id"] in read_states:
             next_step, blocker = "项目经理核对卡片读取错误（见卡住清单）", "通道"
-        lines.append("\t".join((item["id"], item["stage"], state, who, next_step, blocker)))
+        rows.append({"id": item["id"], "title": item.get("title") or item["id"], "target": item["target"],
+                     "flow": item.get("flow") or "", "stage": item["stage"], "state": item["state"], "shown": shown,
+                     "stuck": stuck, "who": row["executor"] if row else "车间", "next": next_step, "blocker": blocker,
+                     "reason": item["blocked_by"], "advice": item["next"]})
+    filtered = bool(states or targets or flows)
+    picked = [r for r in rows
+              if (everything or states or r["state"] not in ENDED)
+              and (not states or r["shown"] in states or r["state"] in states)
+              and (not targets or r["target"] in targets)
+              and (not flows or r["flow"] in flows)]
+    ids = {r["id"] for r in picked}
+    keep = (lambda card: card["item"] in ids) if filtered else (lambda card: True)
+    by_id = {r["id"]: r for r in rows}
+    unread = [{"item": c["item"], "stage": by_id.get(c["item"], {}).get("stage", ""),
+               "reason": f"{c.get('external') or c['id']} 连续 {c['read_failures']} 次读取失败：{c.get('read_error', '')}"}
+              for c in unreadable if keep(c)]
+    asks = [{"item": c["item"], "card": c.get("external") or c["id"], "decision": c["payload"]["decision"]}
+            for c in cards if c["mode"] == "ask" and not c["answered"] and not c.get("cancelled")
+            and not c.get("rejected") and keep(c)]
+    uncertain = [{"item": c["item"], "card": c["id"]} for c in cards
+                 if c.get("reconcile_failed") and not c["sent"] and not c.get("cancel_done") and keep(c)]
+    return {"rows": picked, "total": len(rows), "ended": sum(r["state"] in ENDED for r in rows),
+            "hidden": len(rows) - len(picked), "everything": everything, "filtered": filtered,
+            "unreadable": unread, "asks": asks, "uncertain": uncertain,
+            "filters": {"states": list(states), "targets": list(targets), "flows": list(flows)}}
+
+
+def status(log, **options):
+    view = overview(log, **options)
+    rows = view["rows"]
+    count = lambda state: sum(r["state"] == state for r in rows)
+    reads = sum(r["stuck"] and r["state"] == "等你" for r in rows)
+    head = f"活 {len(rows)} 件 · 跑着 {count('跑着')} · 等你 {count('等你') - reads} · 卡住 {count('卡住') + reads}"
+    head += f" · 排队 {count('排队')}" if count("排队") else ""
+    head += f" · 定时 {count('定时')}" if count("定时") else ""
+    if view["hidden"]:
+        head += f"\n另有 {view['hidden']} 件没列出" + ("（筛掉的）" if view["filtered"] else "（已结束；workshop status --all 看全部）")
+    lines = [head, "活\t阶段\t状态\t谁在推\t下一步\t卡在谁手里"]
+    for r in rows:
+        lines.append("\t".join((r["id"], r["stage"], r["shown"], r["who"], r["next"], r["blocker"])))
     lines.append("卡住清单（项目经理处理）\n活\t阶段\t原因\t建议动作")
-    for item in items:
-        if item["state"] == "卡住":
-            lines.append("\t".join((item["id"], item["stage"], one_line(item["blocked_by"]), one_line(item["next"]))))
-    by_id = {i["id"]: i for i in items}
-    for card in unreadable:
-        lines.append("\t".join((card["item"], by_id.get(card["item"], {}).get("stage", ""),
-                     one_line(f"{card.get('external') or card['id']} 连续 {card['read_failures']} 次读取失败：{card.get('read_error', '')}"),
-                     "项目经理核对通道读取权限和状态；恢复后自动收取原卡回答")))
+    for r in rows:
+        if r["state"] == "卡住":
+            lines.append("\t".join((r["id"], r["stage"], one_line(r["reason"]), one_line(r["advice"]))))
+    for card in view["unreadable"]:
+        lines.append("\t".join((card["item"], card["stage"], one_line(card["reason"]),
+                                "项目经理核对通道读取权限和状态；恢复后自动收取原卡回答")))
     lines.append("等回答的问卡")
-    for card in log.all("cards"):
-        if card["mode"] == "ask" and not card["answered"] and not card.get("cancelled") and not card.get("rejected"):
-            lines.append(f'{card["item"]}\t{card.get("external") or card["id"]}\t{card["payload"]["decision"]}')
-    uncertain = [c for c in log.all("cards") if c.get("reconcile_failed") and not c["sent"] and not c.get("cancel_done")]
-    for card in uncertain:
-        lines.append(f'通道待对账\t{card["item"]}\t{card["id"]}\t连续 3 次不能确定是否已发送，需检查通道')
+    for card in view["asks"]:
+        lines.append(f'{card["item"]}\t{card["card"]}\t{card["decision"]}')
+    for card in view["uncertain"]:
+        lines.append(f'通道待对账\t{card["item"]}\t{card["card"]}\t连续 3 次不能确定是否已发送，需检查通道')
     return "\n".join(lines)
 
 
