@@ -11,7 +11,7 @@ import time
 
 from .jobs import Pending
 from .models import stamp
-from . import rounds
+from . import rounds, waits
 
 SLOW_TICK_MS = 100
 SLOW_ITEM_MS = 5
@@ -65,6 +65,8 @@ def one(engine, began=None):
                 engine.channels()
             with Span(spans, "timers"):
                 engine.timers()
+            with Span(spans, "waits"):
+                waits.reconcile(engine)
             with Span(spans, "rounds"):
                 rounds.drive(engine)
             with Span(spans, "advance"):
@@ -80,6 +82,8 @@ def one(engine, began=None):
 
 
 def advance(engine, item):
+    if waits.active(engine, item):
+        return
     control = engine.control(item["target"])
     if control.get("paused") or engine.flow_broken(item["target"], item.get("flow", "")):
         return
