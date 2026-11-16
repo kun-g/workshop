@@ -9,6 +9,16 @@ from .view import TABLES, evolve
 from .records import RoundHistory, brief_value, compact, compact_history, defer_items, materialize
 
 
+# 部分索引与查询必须使用同一个表达式，不能退回扫描整份正文。
+OPEN_ITEMS = ("(json_extract(body, '$.state') NOT IN ('完成','放弃') "
+              "OR json_extract(body, '$.pending_rework') = 1 OR json_extract(body, '$.program') IS NOT NULL "
+              "OR json_extract(body, '$.after_wait') IS NOT NULL OR json_extract(body, '$.pending_advance') IS NOT NULL)")
+
+RELEASE_ITEMS = ("(json_extract(body, '$.state') = '完成' AND coalesce(json_extract(body, '$.workdir'), '') != '' "
+                 "AND (coalesce(json_extract(body, '$.workdir_released'), '') = '' "
+                 "OR json_extract(body, '$.workdir_released') = 0))")
+
+
 class Log:
     def __init__(self, path: Path):
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -31,6 +41,16 @@ class Log:
             self.db.execute(f"CREATE TABLE IF NOT EXISTS {table}(id TEXT PRIMARY KEY, body TEXT NOT NULL)")
         self.depth = 0
         self.upgrade()
+        with self.transaction():
+            for table, field in (("effects", "done"), ("timers", "fired")):
+                self.db.execute(f"CREATE INDEX IF NOT EXISTS {table}_pending ON {table}((json_extract(body, '$.{field}') IS NOT 1)) "
+                                f"WHERE (json_extract(body, '$.{field}') IS NOT 1) = 1")
+            self.db.execute(f"CREATE INDEX IF NOT EXISTS items_open ON items({OPEN_ITEMS}) WHERE {OPEN_ITEMS} = 1")
+            self.db.execute(f"CREATE INDEX IF NOT EXISTS items_release ON items({RELEASE_ITEMS}) WHERE {RELEASE_ITEMS} = 1")
+            self.db.execute("CREATE INDEX IF NOT EXISTS items_home ON items(json_extract(body, '$.state'), id, "
+                            "json_extract(body, '$.ticket'), json_extract(body, '$.revision'))")
+            self.db.execute("CREATE INDEX IF NOT EXISTS items_program ON items((json_extract(body, '$.program') IS NOT NULL)) "
+                            "WHERE (json_extract(body, '$.program') IS NOT NULL) = 1")
 
     def upgrade(self):
         """一次性迁移派生视图；旧事实不改、不删。与其他进程的迁移互斥。"""
@@ -122,11 +142,14 @@ class Log:
         clauses, params = [], []
         for (field, value), test in ((where or (None, None), "IS"), (unless or (None, None), "IS NOT")):
             if field:
-                if table == "rounds" and field in ("item", "status"):
+                if ((table == "rounds" and field in ("item", "status"))
+                        or (table, field) in (("effects", "done"), ("timers", "fired"), ("items", "state"))):
                     # SQLite 表达式索引要求路径是同一个字面量，参数化路径不会匹配索引。
                     expression = f"json_extract(body, '$.{field}')"
                     if field == "status" and test == "IS NOT" and value == "ended":
                         clauses.append(f"({expression} IS NOT 'ended') = 1")
+                    elif table in ("effects", "timers") and test == "IS NOT" and value is True:
+                        clauses.append(f"({expression} IS NOT 1) = 1")
                     else:
                         clauses.append(f"{expression} {test} ?")
                         params.append(value)
@@ -135,6 +158,29 @@ class Log:
                     params += [f"$.{field}", value]
         query = f"SELECT body FROM {table}" + (" WHERE " + " AND ".join(clauses) if clauses else "") + " ORDER BY rowid"
         return [json.loads(row[0]) for row in self.db.execute(query, params)]
+
+    def open_items(self):
+        return [json.loads(row[0]) for row in self.db.execute(
+            f"SELECT body FROM items WHERE {OPEN_ITEMS} = 1 ORDER BY rowid")]
+
+    def ended_home_items(self):
+        # 结束的活只在工单尚未同步当前修订时读取正文；覆盖索引不读历史资料。
+        rows = self.db.execute("SELECT id, json_extract(body, '$.ticket'), json_extract(body, '$.revision') "
+                               "FROM items INDEXED BY items_home WHERE json_extract(body, '$.state') IN ('完成','放弃')")
+        ids = []
+        for key, ticket, revision in rows:
+            effect = self.get("effects", f"ticket:{key}:{revision}" if ticket else f"ticket:{key}")
+            if not (effect or {}).get("done") or not ticket:
+                ids.append(key)
+        return [self.get("items", key) for key in ids]
+
+    def release_items(self):
+        return [json.loads(row[0]) for row in self.db.execute(
+            f"SELECT body FROM items WHERE {RELEASE_ITEMS} = 1 ORDER BY rowid")]
+
+    def program_items(self):
+        return [json.loads(row[0]) for row in self.db.execute(
+            "SELECT body FROM items WHERE (json_extract(body, '$.program') IS NOT NULL) = 1 ORDER BY rowid")]
 
     def brief(self, row):
         return brief_value(self.db, row)

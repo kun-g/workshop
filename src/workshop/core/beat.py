@@ -4,6 +4,7 @@
 失败记账和心跳放在一起。
 """
 import json
+import os
 import sys
 import time
 
@@ -81,7 +82,10 @@ def advance(engine, item):
 
 
 def advance_open(engine):
-    for item in engine.log.all("items"):
+    items = {item["id"]: item for item in engine.log.open_items()}
+    if engine.rules.data.get("taskhome"):
+        items.update((item["id"], item) for item in engine.log.ended_home_items())
+    for item in items.values():
         try:
             engine.advance(item)
         except Pending:
@@ -108,6 +112,22 @@ def heartbeat(engine, began=None):
     now = stamp(engine.clock())
     heartbeat = engine.log.path.parent / "heartbeat.json"
     temporary = heartbeat.with_suffix(".tmp")
+    heartbeat_process = getattr(engine, "heartbeat_process", None)
+    if heartbeat_process is None:
+        try:
+            previous = json.loads(heartbeat.read_text())
+        except (OSError, ValueError):
+            previous = {}
+        if not isinstance(previous, dict):
+            previous = {}
+        process = previous.get("process")
+        process = process if isinstance(process, dict) else {}
+        heartbeat_process = {
+            "pid": os.getpid(), "version": os.environ.get("WORKSHOP_RUNNING_COMMIT"), "first_at": now,
+            "previous": {"at": previous.get("at"),
+                         "pid": process.get("pid"),
+                         "version": process.get("version")}}
+
     failures = [c for c in engine.log.all("controls") if c["id"].startswith("delivery:") and c.get("failed")]
     for failure in failures:
         if not failure.get("since"):
@@ -115,11 +135,12 @@ def heartbeat(engine, began=None):
             engine.fact("control", {"id": failure["id"], "since": now})
     # tick_ms：这一拍从进入到写心跳前的耗时；一拍只读写事实库和本地文件，应是毫秒级。
     elapsed = round((time.monotonic() - began) * 1000) if began is not None else None
-    temporary.write_text(json.dumps({"at": now, "last_ok_at": now, "tick_ms": elapsed, "wake_ms": getattr(engine, "wake_ms", None), "active": engine.occupied(),
+    temporary.write_text(json.dumps({"at": now, "last_ok_at": now, "process": heartbeat_process, "tick_ms": elapsed, "wake_ms": getattr(engine, "wake_ms", None), "active": engine.occupied(),
         "delivery_failed_count": len(failures),
         "delivery_failed_since": min((c.get("since", now) for c in failures), default=None)}))
     with engine.log.transaction():
         if engine.control("@tick").get("failures"):
             engine.fact("control", {"id": "@tick", "failures": 0, "since": None})
         temporary.replace(heartbeat)
+    engine.heartbeat_process = heartbeat_process
     engine.tick_failures = 0

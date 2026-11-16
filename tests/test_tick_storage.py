@@ -1,7 +1,7 @@
 """历史轮次增长不增加一拍的存取；计数，不按机器速度判定。"""
 import json
 from contextlib import closing
-from dataclasses import asdict
+from dataclasses import asdict, replace
 import sqlite3
 
 import pytest
@@ -306,3 +306,145 @@ def test_copy_measurement_leaves_source_unchanged_and_starts_no_process(engine, 
     assert (output / 'heartbeat.json').is_file()
     with pytest.raises(FileExistsError):
         module.measure(engine.log.path, output)
+
+
+@pytest.mark.parametrize('home', [False, True])
+def test_tick_reads_do_not_grow_with_abandoned_material_payload(tmp_path, home):
+    measurements = []
+    for size in (100, 100_000):
+        engine = build(tmp_path / str(size))
+        for n in range(20):
+            engine.ingest(replace(event(ext_id=str(n)), body={'text': 'x' * size}))
+        # 真实故障的最大资料来自已放弃的活；没有工单插件时不应再读它们。
+        if not home:
+            engine.rules.data.pop('taskhome', None)
+        engine.change(item(engine), state='放弃', blocked_by='fixture', ticket='ticket:fixture')
+        if home:
+            engine.taskhome(item(engine))
+        jobs = LocalJobs(engine.log.path.parent / 'jobs', ['never-started'])
+        engine.jobs = jobs
+        original = engine.log.db
+        reads = Reads(original)
+        engine.log.db = reads
+        try:
+            engine.tick()
+            assert engine.control('@tick').get('failures', 0) == 0
+            engine.wait_timeout()
+            measurements.append(reads.bytes)
+        finally:
+            engine.log.db = original
+            jobs.launcher.shutdown(wait=True)
+            engine.log.close()
+    print(f'material bytes 100/100000: tick read bytes = {measurements}')
+    assert abs(measurements[1] - measurements[0]) <= 128, measurements
+
+
+def test_tick_and_wake_skip_completed_effects_and_timers(tmp_path):
+    samples = []
+    for count in (100, 2000):
+        engine = build(tmp_path / str(count))
+        engine.ingest(event())
+        engine.change(item(engine), state='卡住', blocked_by='fixture')
+        with engine.log.transaction():
+            for n in range(count):
+                engine.fact('effect', {'id': f'past-{n}', 'done': True})
+                engine.fact('timer_created', {'id': f'past-{n}', 'fired': True})
+        jobs = LocalJobs(engine.log.path.parent / 'jobs', ['never-started'])
+        engine.jobs = jobs
+        original = engine.log.db
+        reads, steps, plans = Reads(original), [], []
+        engine.log.db = reads
+        original.set_progress_handler(lambda: steps.append(1) and 0, 100)
+        try:
+            engine.tick()
+            engine.wait_timeout()
+            assert engine.control('@tick').get('failures', 0) == 0
+            samples.append((reads.bytes, len(steps)))
+            for table, field in [('effects', 'done'), ('timers', 'fired')]:
+                plans.extend(r[3] for r in original.execute(
+                    f"EXPLAIN QUERY PLAN SELECT body FROM {table} "
+                    f"WHERE (json_extract(body, '$.{field}') IS NOT 1) = 1 ORDER BY rowid"))
+            assert all('_pending' in plan for plan in plans), plans
+        finally:
+            original.set_progress_handler(None, 0)
+            engine.log.db = original
+            jobs.launcher.shutdown(wait=True)
+            engine.log.close()
+    assert abs(samples[1][0] - samples[0][0]) <= 128, samples
+    assert samples[1][1] <= samples[0][1] + 20, samples
+
+
+def test_heartbeat_retains_restart_endpoints(engine, monkeypatch):
+    from datetime import timedelta
+    from workshop.core.engine import Engine
+    monkeypatch.setenv('WORKSHOP_RUNNING_COMMIT', 'a' * 40)
+    engine.heartbeat()
+    path = engine.log.path.parent / 'heartbeat.json'
+    engine.clock.now += timedelta(milliseconds=100)
+    engine.heartbeat()
+    old = json.loads(path.read_text())
+    monkeypatch.setenv('WORKSHOP_RUNNING_COMMIT', 'b' * 40)
+    restarted = Engine(engine.log, engine.rules, engine.plugins, engine.clock)
+    engine.clock.now += timedelta(milliseconds=300)
+    restarted.heartbeat()
+    first = json.loads(path.read_text())
+    engine.clock.now += timedelta(seconds=1)
+    restarted.heartbeat()
+    later = json.loads(path.read_text())
+    assert first['process'] == later['process']
+    assert first['process']['first_at'] == first['at']
+    assert first['process']['previous']['at'] == old['at']
+    assert first['process']['previous']['version'] == 'a' * 40
+    import importlib.util
+    from pathlib import Path
+    spec = importlib.util.spec_from_file_location('measure_release_gap',
+        Path(__file__).parents[1] / 'scripts/measure_release_gap.py')
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    result = module.gap(old, later)
+    assert result['passed'] and result['gap_seconds'] == 0.3
+    assert module.gap(first, later) is None  # 采样开始时已经换过代，不能冒充观察到重启。
+    later['process']['previous']['version'] = None
+    assert module.gap(old, later)['passed'] is False
+
+
+def test_ended_items_sync_home_and_rework_remains_runnable(engine):
+    engine.ingest(event())
+    engine.change(item(engine), state='完成', ticket='ticket:fixture')
+    assert engine.log.open_items() == []
+    home = engine.plugins.get('taskhome', 'home')
+    engine.tick()
+    assert home.updates[-1][2]['state'] == '完成'
+    count = len(home.updates)
+    engine.tick()
+    assert len(home.updates) == count
+    engine.ingest(event(ext_id='rework', action='rework'))
+    assert [i['id'] for i in engine.log.open_items()] == ['alpha:one']
+    engine.tick()
+    assert item(engine)['state'] != '完成'
+
+
+def test_pending_item_queries_use_partial_indexes(engine):
+    from workshop.core.log import OPEN_ITEMS, RELEASE_ITEMS
+    for name, expression in [('open', OPEN_ITEMS), ('release', RELEASE_ITEMS),
+                             ('program', "(json_extract(body, '$.program') IS NOT NULL)")]:
+        plans = [r[3] for r in engine.log.db.execute(
+            f'EXPLAIN QUERY PLAN SELECT body FROM items WHERE {expression} = 1 ORDER BY rowid')]
+        assert all(f'items_{name}' in p for p in plans), plans
+
+
+def test_failed_heartbeat_write_does_not_record_a_first_heartbeat(engine, monkeypatch):
+    from pathlib import Path
+    from datetime import timedelta
+    original = Path.replace
+    def fail(path, target):
+        raise OSError('fixture write failed')
+    monkeypatch.setattr(Path, 'replace', fail)
+    with pytest.raises(OSError, match='fixture write failed'):
+        engine.heartbeat()
+    assert not hasattr(engine, 'heartbeat_process')
+    engine.clock.now += timedelta(seconds=2)
+    monkeypatch.setattr(Path, 'replace', original)
+    engine.heartbeat()
+    heartbeat = json.loads((engine.log.path.parent / 'heartbeat.json').read_text())
+    assert heartbeat['process']['first_at'] == heartbeat['at']
