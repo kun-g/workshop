@@ -10,7 +10,7 @@ import time
 
 from .jobs import Pending
 from .models import stamp
-from . import rounds
+from . import rounds, relations
 
 
 def tick(engine, received_at=None):
@@ -45,6 +45,9 @@ def advance(engine, item):
     control = engine.control(item["target"])
     if control.get("paused") or engine.flow_broken(item["target"], item.get("flow", "")):
         return
+    item = relations.admit(engine, item)
+    if item is None:
+        return
     if item["state"] == "等你" and not engine.answerable(item):
         engine.change(item, state="等你", next=item.get("next"), leave=item.get("leave"),
                       gate_reason=item.get("gate_reason") or item.get("blocked_by"))
@@ -72,6 +75,9 @@ def advance(engine, item):
     item = engine.log.get("items", item["id"])
     engine.complete_approval(item)
     item = engine.log.get("items", item["id"])
+    item = relations.admit(engine, item)
+    if item is None:
+        return
     if not engine.taskhome(item):
         return
     item = engine.log.get("items", item["id"])
@@ -85,9 +91,10 @@ def advance_open(engine):
     items = {item["id"]: item for item in engine.log.open_items()}
     if engine.rules.data.get("taskhome"):
         items.update((item["id"], item) for item in engine.log.ended_home_items())
+    relations.refresh(engine, [i for i in items.values() if i["state"] not in ("完成", "放弃")])
     for item in items.values():
         try:
-            engine.advance(item)
+            engine.advance(engine.log.get("items", item["id"]))
         except Pending:
             continue  # 这件活在等作业出结果，下一拍再看；别的活照常推进。
 

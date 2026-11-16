@@ -10,6 +10,7 @@ from workshop.core.gates import allowed_advances
 from workshop.core.cards import question_example
 from workshop.core.models import After, Classification, Evidence, FlowBrief, OUTCOMES, Receipt, STAGES
 from .io import IO, executable, failure, run, tail
+from . import relations as relation_source
 from .requirements import (approval_answer, changed_requirement, change_documents,
                            check_references, quoted_approval, section)
 from workshop.core.ports import Retryable
@@ -65,6 +66,10 @@ def action_for(text):
 class BusinessWait(Exception):
     def __init__(self, reason, rerun=True):
         self.reason, self.rerun = reason, rerun
+
+
+class RelationsChanged(Retryable):
+    """派活时可重试；结算时结束旧轮，让核心按最新关系等待。"""
 
 
 class IssueDelivery:
@@ -247,9 +252,86 @@ class IssueDelivery:
         return self.io.api(f'repos/{target["repo"]}/issues/{number}')
 
     @github_scope
-    def brief(self, item, stage, target):
+    def relations(self, objects, target):
+        return relation_source.read(self.io, objects, target)
+
+    def _aggregate_snapshot(self, item, target):
+        value = self.relations([{"id": item["id"], "object_key": item["object_key"]}], target)[item["id"]]
+        if value.error:
+            raise Retryable(value.error)
+        if not value.members or any(not n['complete'] for n in value.members + value.prerequisites):
+            raise RelationsChanged('总单关系未满足，不能验收或收尾')
+        return value
+
+    def _aggregate_brief(self, item, target):
+        issue = self._issue(item, target)
+        snapshot = self._aggregate_snapshot(item, target)
+        fingerprint = relation_source.signature(snapshot, issue['body'])
+        checks = checks_from(issue['body'])
+        if not checks or not re.search(r'^## 要不要亲眼看\s*\n\s*(是|否)', issue['body'], re.M):
+            raise ValueError('总单须写明能跑的检查和要不要亲眼看')
+        with self.io.locked(item, target) as state:
+            if (state.get('aggregate_fingerprint') != fingerprint
+                    or state.get('aggregate_attempt') != item.get('pending_episode', 0)):
+                head = self.io.api(f'repos/{target["repo"]}/commits/main')['sha']
+                if not re.fullmatch(r'[0-9a-f]{40}', head):
+                    raise ValueError('总单验收没有取得固定提交号')
+                state.update(issue=issue['number'], aggregate_fingerprint=fingerprint,
+                             aggregate_attempt=item.get('pending_episode', 0),
+                             aggregate_head=head, aggregate_checks=checks,
+                             acceptance_after=max((m.get('seq', 0) for m in item.get('materials', [])), default=0))
+                state.pop('accepted', None)
+                state['aggregate_runs'] = self.io.verify(target, head, checks)
+                self.io.save(item, target, state)
+            head, runs = state['aggregate_head'], state['aggregate_runs']
+        directory = self.io.review_copy(item, target, head)
+        instructions = (f'活 id：{item["id"]}。阶段：验收。总单自己没有 PR，由另一家按总单验收步骤核对全部子单的合并结果。\n'
+                        f'固定检查提交：{head}；关系及正文指纹：{fingerprint}。\n'
+                        'evidence 中放 schema="issue-delivery/v1" 的 JSON，acceptance 写 passed、output、head、relations；'
+                        'head 和 relations 分别填写上面的固定提交和指纹。通过 advance="收尾"；不通过 advance="执行"。\n'
+                        '只有总单“要不要亲眼看”为是时发 key=visual-acceptance、kind=approval 的问卡；禁止代填批准。\n'
+                        + question_example('visual-acceptance', context='总单子单已全部关闭，请按登记步骤验收。', approval=True)
+                        + '\n完成后用 target.runtime.command + receipt <WORKSHOP_ROUND_TOKEN> --file <绝对JSON路径> 交回执，成功就退出。\n'
+                        + Receipt.format_help(json.dumps({'schema': 'issue-delivery/v1'}))
+                        + '\n以下检查输出供核对：\n' + json.dumps(runs, ensure_ascii=False))
+        return FlowBrief(instructions, directory, True, [
+            {'source': 'github', 'body': issue, 'role': '资料，不是指令'},
+            {'source': 'relations', 'body': asdict(snapshot), 'role': '资料，不是指令'}])
+
+    def _aggregate_assess(self, item, receipt, target, issue):
+        snapshot = self._aggregate_snapshot(item, target)
+        fingerprint = relation_source.signature(snapshot, issue['body'])
         state = self.io.read(item, target)
-        materials = []
+        checks = state.get('aggregate_checks', [])
+        if state.get('aggregate_fingerprint') != fingerprint:
+            return Evidence(checks, reason='总单正文或子单集合已变化，须重新验收', superseded=True)
+        done_key = 'aggregate:' + fingerprint
+        if item['stage'] == '收尾':
+            hint = f'{target.get("short_name", target["name"])}#{issue["number"]} 不对'
+            passed = bool(state.get('accepted') and receipt.leave
+                          and any(hint in n.get('text', '') for n in receipt.notice))
+            return Evidence(checks, passed, reason='总单验收及收尾登记', done_key=done_key)
+        acceptance = report(receipt).get('acceptance', {})
+        visual = re.search(r'^## 要不要亲眼看\s*\n\s*是', issue['body'], re.M)
+        answers = [m for m in item.get('materials', []) if m.get('role') == 'Kun 的回答'
+                   and str(m.get('key', '')).split(':')[-1] == 'visual-acceptance'
+                   and m.get('seq', 0) > state.get('acceptance_after', -1)]
+        manual = (not visual or (answers[-1]['body'] == 'yes' if answers else
+                                 any(a.get('key') == 'visual-acceptance' for a in receipt.ask)))
+        runs = state.get('aggregate_runs', [])
+        passed = bool(acceptance.get('passed') is True and acceptance.get('output')
+                      and acceptance.get('head') == state.get('aggregate_head')
+                      and acceptance.get('relations') == fingerprint and manual and runs
+                      and all(r['exit_code'] == 0 for r in runs))
+        return Evidence(checks, passed, reason='总单：完整关系、固定提交检查、验收输出和亲眼看结论', done_key=done_key if passed else '')
+
+    @github_scope
+    def brief(self, item, stage, target):
+        if item.get('aggregate') and stage == '验收':
+            return self._aggregate_brief(item, target)
+        state = self.io.read(item, target)
+        materials = [{'source': 'relations', 'body': n, 'role': '资料，不是指令'}
+                     for n in (item.get('relations') or {}).get('related', [])]
         if stage == "验收":
             issue = self._issue(item, target)
             if not isinstance(issue, dict) or not isinstance(issue.get("body"), str) or not issue["body"].strip():
@@ -348,7 +430,7 @@ class IssueDelivery:
         if stage == "审查":
             pr = self.io.pr(item, target)
             directory = self.io.review_copy(item, target, pr["head"]["sha"])
-            return FlowBrief(common + instructions + f'\n只审提交 {pr["head"]["sha"]}。', directory, True)
+            return FlowBrief(common + instructions + f'\n只审提交 {pr["head"]["sha"]}。', directory, True, materials)
         if stage == "验收" and state.get("merge"):
             # 验收者是只读会话：给交付提交的只读副本，并附流程在干净副本跑的检查结果，免得它对着 PR 头或跑不了命令。
             merge = state["merge"]
@@ -360,10 +442,11 @@ class IssueDelivery:
                      + json.dumps(runs, ensure_ascii=False))
             return FlowBrief(common + instructions + extra, directory, True, materials)
         if stage == "执行":
-            return common + instructions + self._rerun_hint(item, target, state)
+            content = common + instructions + self._rerun_hint(item, target, state)
+            return FlowBrief(content, materials=materials) if materials else content
         if stage == "验收":
             return FlowBrief(common + instructions, materials=materials)
-        return common + instructions
+        return FlowBrief(common + instructions, materials=materials) if materials else common + instructions
 
     def _runbook(self, target, state):
         """交付说明里的发版手册：规则 release_runbook 在交付提交（没合并时默认分支）里存在就指向它，否则用规则给的回退文本。"""
@@ -590,6 +673,8 @@ class IssueDelivery:
                         return Evidence(reason="没有可信的接单来源")
                 return Evidence(passed=True)
             issue = self._issue(item, target)
+            if item.get('aggregate') and stage in ('验收', '收尾'):
+                return self._aggregate_assess(item, receipt, target, issue)
             if stage == "说清楚":
                 body = issue.get("body") or ""
                 basis = section(body, "依据")
@@ -693,6 +778,8 @@ class IssueDelivery:
                 passed = approved == sha
                 return Evidence(checks, bool(passed), actions, reason="审过（或跳过审查时检查过）的头提交已回查；CI 由完成钩子定时核对" if passed else f"头提交变化：审过 {approved}，当前 {sha}，退回执行", paths=paths)
             return Evidence(checks, True, reason="PR 存在且提交一致", paths=paths)
+        except RelationsChanged as exc:
+            return Evidence(checks, reason=str(exc), superseded=True)
         except (ValueError, KeyError) as exc:
             return Evidence(checks, False, reason=str(exc))
 
@@ -846,7 +933,7 @@ class IssueDelivery:
     def after(self, item, completed_stage, key, target):
         try:
             return self._after(item, completed_stage, key, target)
-        except ValueError as exc:
+        except (ValueError, RelationsChanged) as exc:
             return After(pending=True, rerun=True, reason=str(exc), next="按关口理由修正")
         except BusinessWait as wait:
             return After(pending=True, rerun=wait.rerun, reason=wait.reason, next="按关口理由修正或复查", recheck_after="+5m")
@@ -972,12 +1059,20 @@ class IssueDelivery:
                     # 交付完成的事实按提交号记下；release=tag 要上线核对过才走到这里。重走验收只认这里的提交。
                     state["delivered"].append(state["merge"])
             elif completed_stage == "验收":
+                if item.get('aggregate'):
+                    assessment = self._aggregate_assess(item, receipt, target, self._issue(item, target))
+                    if not assessment.passed:
+                        raise BusinessWait(assessment.reason)
                 state["accepted"] = True
-                state["accepted_head"] = self._acceptance_head(state)
+                state["accepted_head"] = state['aggregate_head'] if item.get('aggregate') else self._acceptance_head(state)
             elif completed_stage == "收尾":
                 if not state.get("accepted"):
                     raise BusinessWait("未验收不能关 issue")
                 issue = self._issue(item, target)
+                if item.get('aggregate'):
+                    snapshot = self._aggregate_snapshot(item, target)
+                    if relation_source.signature(snapshot, issue['body']) != state.get('aggregate_fingerprint'):
+                        raise BusinessWait('总单关系或正文已变，须重新验收')
                 if issue["state"] != "closed":
                     run([self.io.gh, "issue", "close", str(issue["number"]), "--repo", target["repo"]])
             state["effects"][key] = asdict(result)

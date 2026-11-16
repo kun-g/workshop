@@ -26,7 +26,7 @@ import sys
 import time
 import traceback
 
-from .models import After, Answer, Brief, ChannelPoll, Classification, Event, Evidence, FlowBrief, Poll, Receipt, Release, RoundUsage, Selection, Started, Usage
+from .models import After, Answer, Brief, ChannelPoll, Classification, Event, Evidence, FlowBrief, Poll, Receipt, Relations, Release, RoundUsage, Selection, Started, Usage
 from .ports import ChannelRejected, Retryable, Unavailable, TargetBlocked, InputBlocked
 from .wake import ring
 from .records import StoredBrief, RoundHistory, ResultHistory, materialize
@@ -55,6 +55,7 @@ class JobFailed(Exception):
 
 # 结果新鲜期（秒）；不在表里的结果一直可用。
 FRESH = {
+    ("flow", "relations"): 5,
     ("source", "poll"): 20,
     ("channel", "poll"): 20,
     ("channel", "reconcile"): 0,
@@ -73,7 +74,7 @@ LABELS = {
 ERRORS = {"Retryable": Retryable, "Unavailable": Unavailable, "ChannelRejected": ChannelRejected,
           "TargetBlocked": TargetBlocked, "InputBlocked": InputBlocked}
 TYPES = {cls.__name__: cls for cls in (After, Answer, Brief, ChannelPoll, Classification, Event, Evidence, FlowBrief, Poll,
-                                        Receipt, Release, RoundUsage, Selection, Started, Usage, StoredBrief, RoundHistory, ResultHistory)}
+                                        Receipt, Relations, Release, RoundUsage, Selection, Started, Usage, StoredBrief, RoundHistory, ResultHistory)}
 KEEP_SECONDS = 86400
 SWEEP_SECONDS = 600
 # 一拍最多登记几个新作业；进程创建交给后台，避免系统调用拖住一拍。

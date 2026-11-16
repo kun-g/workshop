@@ -149,6 +149,8 @@ def finish(engine, row):
                     engine.call(port, name, "assess", item, receipt, target,
                               identity=[item["id"], item["stage"], token, row["receipt"]], item=item["id"]))
         evidence.validate()
+        if evidence.superseded:
+            receipt = Receipt("nothing", receipt.summary)
         stages = engine.call(port, name, "stages", target)
         decision = decide(item, receipt, evidence, stages, engine.rules)
         if program:
@@ -162,7 +164,7 @@ def finish(engine, row):
         if reviewing and row["config"]["family"] not in reviews:
             reviews.append(row["config"]["family"])
         another_review = reviewing and len(reviews) < required
-        rejected = item["stage"] == "验收" and not evidence.passed and not evidence.blocked and not row.get("automatic_failure")
+        rejected = item["stage"] == "验收" and not evidence.passed and not evidence.blocked and not evidence.superseded and not row.get("automatic_failure")
         wait_ready = receipt.leave and receipt.leave["kind"] == "等你" and not receipt.ask and not engine.answerable(item)
         missing_leave = decision.complete and not (receipt.leave or receipt.ask or receipt.later)
         advancing = (receipt.outcome == "done" and decision.allowed and not missing_leave
@@ -202,7 +204,14 @@ def finish(engine, row):
             if evidence.paths:
                 # 说清楚时登记的预计路径和之后实际改动的并集，串行路径排队按它判。
                 changes["paths"] = sorted(set(item.get("paths", [])) | set(evidence.paths))
-            if evidence.blocked:
+            if evidence.superseded:
+                engine.cancel_questions(item)
+                changes.update(state="空闲", next=evidence.reason, approved=[], pending_advance=None,
+                               pending_episode=item.get("pending_episode", 0) + 1,
+                               after_wait=None, gate_count=0, blocked_by="", serial_hold=False)
+                if item.get("aggregate") and (item.get("relations") or {}).get("converge"):
+                    changes["stage"] = item["relations"]["converge"]
+            elif evidence.blocked:
                 changes.update(state="卡住", blocked_by=evidence.blocked, next=evidence.next,
                                leave=engine.blocked_leave(evidence.next))
             elif rechecking:
@@ -225,6 +234,10 @@ def finish(engine, row):
                                after_pending_count=0, pending_episode=item.get("pending_episode", 0) + 1,
                                review_required=1, pending_advance=None, gate_count=0,
                                leave={"kind": "工序", "owner": "车间", "at": stamp(engine.clock()), "about": "修正验收问题"})
+                if item.get("aggregate"):
+                    about = "总单验收未通过；修复子单后放行总单，重新固定结果验收"
+                    changes.update(state="卡住", blocked_by=about, next=about, wait_for_ready=True,
+                                   leave=engine.blocked_leave(about))
             elif receipt.outcome == "failed":
                 changes.update(engine.failure_changes(item, row))
             elif wait_ready:
@@ -302,6 +315,9 @@ def complete_approval(engine, item):
             engine.change(item, stage="执行", state="空闲", next=reason, pending_advance=None, reviews=[],
                         review_required=1, approved=[], retry_executor=None, gate_count=0, gate_reason=reason,
                         leave={"kind": "工序", "owner": "车间", "at": stamp(engine.clock()), "about": "按拒绝意见修改"})
+            if (item.get("relations") or {}).get("members"):
+                engine.change(item, state="卡住", blocked_by=reason, wait_for_ready=True,
+                              next="按拒绝意见修改后放行", leave=engine.blocked_leave(reason))
         return
     target = engine.item_target(item)
     try:
