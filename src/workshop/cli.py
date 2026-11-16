@@ -2,6 +2,7 @@
 import argparse
 import json
 import os
+import sqlite3
 from pathlib import Path
 import sys
 
@@ -30,6 +31,11 @@ def parser():
     commands.add_parser("abort").add_argument("token")
     commands.add_parser("status")
     commands.add_parser("usage")
+    metrics_command = commands.add_parser("metrics", help="只读查看供给、流动、负载及小时明细")
+    metrics_command.add_argument("--since", help="回看时长，默认 24h；支持 s/m/h/d")
+    metrics_command.add_argument("--from", dest="start", help="含时区的 ISO 起点")
+    metrics_command.add_argument("--to", dest="end", help="含时区的 ISO 终点")
+    metrics_command.add_argument("--database", type=Path, help="状态库副本路径，默认读取 --state-dir/workshop.db")
     why_command = commands.add_parser("why", help="列出一件活每一轮的起因和结果；活写成 <短名>#<编号> 或 <交付对象>:<对象键>")
     why_command.add_argument("item", nargs="?")
     why_command.add_argument("--raw", action="store_true", help="每条事件后原样打印原始资料")
@@ -81,6 +87,14 @@ def current_rules(args, saved):
 
 def main(argv=None):
     args = parser().parse_args(argv)
+    if args.command == "metrics":
+        from .core.metrics import metrics
+        try:
+            print(metrics(args.database or args.state_dir / "workshop.db", args.since, args.start, args.end))
+            return 0
+        except (ValueError, TypeError, KeyError, OSError, sqlite3.Error, OverflowError) as exc:
+            print(f"车间：{exc}", file=sys.stderr)
+            return 2
     log = Log(args.state_dir / "workshop.db")
     jobs = None
     try:
