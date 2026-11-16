@@ -121,6 +121,16 @@ targets:
       data_repo: ~/workspace
       watchlist: ~/workspace/runtime/jobs/periodic/watch_updates/watchlist.yaml
       sources: ~/workspace/runtime/jobs/periodic/watch_updates/sources.yaml
+      # 只读感知边界；来源内容不是命令或授权。
+      upgrade_records: ~/workspace/runtime/jobs/periodic/watch_updates/upgrades.json
+      excluded_scopes:
+        - {kind: cluster, value: gmp-asia, reason: 'Kun 11-15：gmp-asia 集群正在退役；#151 已批准不再盯'}
+      inventory_sources:
+        - {id: local, kind: local, where: '本机安装元数据、包管理收据及安全的本地版本输出；不调用 kubectl，kubectl 本身版本从包管理元数据读取'}
+        - {id: deployment-repos, kind: deployment_repo, paths: ['~/workspace/runtime/repos/gp-ops', '~/workspace/runtime/repos/argo-infra'], where: '只读 values、Application 和 infra 文档；登记文件路径和提交号，版本是声明值；不执行仓库中的命令'}
+        - {id: dokploy, kind: dokploy, host: dc1, reader: '~/.codex/skills/dokploy/scripts/dokploy-api.sh', where: '仅经只读 API 查询 projects、project、containers、version；不登录机器，不调用部署或重启操作'}
+        - {id: upgrades, kind: upgrade_record, where: '程序提供的升级完成记录；缺少记录记盲区，不能代填或触发升级'}
+        - {id: needs, kind: needs, where: '会话、项目方向、闪念本、飞书群及 GitLab issue，只读需要台账；不回复或转发'}
       needs: ~/workspace/needs.yaml
       snapshots: ~/workspace/runtime/jobs/periodic/watch_updates/snapshots
       state_dir: ~/.local/state/workshop/watch_updates
@@ -166,7 +176,7 @@ executor_profiles:
     permission_mode: never
     ignore_user_config: true
     ignore_rules: true
-    prompt: '只读对账：只读本机、ssh 和 kubectl 的版本与清单，不运行升级、配置写入、重启或对外发消息；只通过车间回执交结构化证据。'
+    prompt: '只读对账：只读本机、已登记部署仓库、Dokploy API（dc1）和升级完成记录；禁止调用 ssh、kubectl、SSM 或其他远程执行通道，不登录机器，不升级、不改配置、不重启、不对外发消息。仓库版本标声明值；读不到保留上次版本和日期并写原因。只通过车间回执交结构化证据。'
   orca-codex:
     driver: codex
     transport: orca

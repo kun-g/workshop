@@ -16,6 +16,7 @@ import yaml
 
 from workshop.github_identity import run, scoped
 from .model import SCHEMA, digest, tag_version, upstream, validate_software, version
+from .inventory import filter_scopes, upgrade_records, with_scopes
 
 NOTES_MISSING = '上游仅提供 tag，没有发布说明；不能据此编造变化或升级理由。'
 PAGE = 30
@@ -107,7 +108,7 @@ class IO:
     def save(self, target, state):
         write(self.state_file(target), state)
 
-    def watchlist(self, target):
+    def watchlist(self, target, *, filtered=True):
         value = read(self.file(target, 'watchlist'))
         if not isinstance(value, dict) or value.get('schema') != SCHEMA or not isinstance(value.get('software'), list):
             raise ValueError('盯更新清单格式不匹配；按实施文档转换后再启用')
@@ -115,7 +116,25 @@ class IO:
             validate_software(row)
         if len({r['id'] for r in value['software']}) != len(value['software']):
             raise ValueError('盯更新清单的软件标识重复')
-        return value
+        value = with_scopes(value, self.config(target).get('excluded_scopes', []))
+        return filter_scopes(value) if filtered else value
+
+    def inventory_sources(self, target):
+        configured = self.config(target).get('inventory_sources')
+        return {'sources': configured} if configured is not None else read(self.file(target, 'sources'))
+
+    def upgrades(self, target):
+        """读取固定登记路径；缺失是盲区，不触发登录，也不伪造完成记录。"""
+        location = self.config(target).get('upgrade_records')
+        if not location:
+            return {'records': [], 'error': '未登记升级完成记录路径'}
+        try:
+            file = path(location)
+            if not file.is_file():
+                return {'records': [], 'error': '尚无升级完成记录：' + str(file)}
+            return {'records': upgrade_records(read(file)['records'])}
+        except (ValueError, OSError, KeyError, TypeError) as exc:
+            return {'records': [], 'error': '升级完成记录不可用：' + str(exc)}
 
     def needs(self, target):
         return read(self.file(target, 'needs'), {'needs': []})['needs']

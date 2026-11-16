@@ -136,13 +136,18 @@ class Driver(Base):
                 additions['web_search'] = value
         # Emit leaf settings, so custom hooks/features don't overwrite the round's hooks.
         def emit(key, value):
-            if isinstance(value, dict) and value:
+            # CLI paths are split on dots, not parsed as TOML keys. Quoted
+            # segments become literal quote characters and are silently ignored.
+            # A map with non-bare names stays an inline TOML table so names such
+            # as plugin@local or an MCP server containing a dot survive intact.
+            if (isinstance(value, dict) and value
+                    and all(re.fullmatch(r'[A-Za-z0-9_-]+', child) for child in value)):
                 for child, content in value.items():
-                    emit(key + '.' + json.dumps(child), content)
+                    emit(key + '.' + child, content)
             else:
                 argv.extend(['-c', key + '=' + toml_value(value)])
         for key, value in additions.items():
-            emit(json.dumps(key), value)
+            emit(key, value)
         if resume:
             argv += [session] if executor.interactive else ['resume', session]
         elif not executor.interactive and 'sandbox' in config:

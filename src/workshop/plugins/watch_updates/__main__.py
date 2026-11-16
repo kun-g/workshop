@@ -5,7 +5,7 @@ import sys
 
 from .flow import Flow
 from .io import IO, path, read
-from .operations import prepare_preview, render_preview, resend_weekly
+from .operations import prepare_preview, preview_inventory, render_preview, resend_weekly
 
 
 def configured(args):
@@ -29,12 +29,17 @@ def main(argv=None):
     render.add_argument('--judgments', required=True)
     resend = commands.add_parser('resend-weekly', help='显式补发本周周报；同 request 重试不重复发')
     resend.add_argument('--request', required=True, help='稳定请求标识；重试必须用相同标识')
-    for sub in (prepare, resend):
+    inventory = commands.add_parser('preview-inventory', help='校验并应用采集提案到隔离目录，不改现役清单')
+    inventory.add_argument('--proposal', required=True)
+    inventory.add_argument('--output', required=True)
+    for sub in (prepare, resend, inventory):
         sub.add_argument('--rules', default='rules/workshop.yaml')
         sub.add_argument('--target', required=True)
     args = parser.parse_args(argv)
     try:
-        if args.command == 'prepare-preview':
+        if args.command == 'preview-inventory':
+            result = preview_inventory(configured(args), args.proposal, args.output)
+        elif args.command == 'prepare-preview':
             result = prepare_preview(configured(args), args.version, args.output)
         elif args.command == 'render-preview':
             result = render_preview(args.preview, args.judgments)
