@@ -251,7 +251,7 @@ class IssueDelivery:
             raise ValueError("接单还没有登记 issue")
         return self.io.api(f'repos/{target["repo"]}/issues/{number}')
 
-    @github_scope
+    @github_scope(relations_read=True)
     def relations(self, objects, target):
         return relation_source.read(self.io, objects, target)
 
