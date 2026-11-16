@@ -32,12 +32,14 @@ def changed_requirement(basis):
 
 
 def change_documents(basis, documents, target):
-    """以文件全路径或无歧义的文件名指明要改哪份文档；目录登记允许新增文档。"""
-    paths = set(re.findall(r"[\w./\-]+\.md", basis))
+    """以文件全路径或无歧义的文件名指明要改哪份文档；目录登记允许新增文档。
+    只看「需求变更：」之后的文字：前面「已有需求」里引用的文档不算要改的。"""
+    change = changed_requirement(basis) or basis
+    paths = set(re.findall(r"[\w./\-]+\.md", change))
     selected = {p for p in paths if registered(p, target)}
     for path in documents:
         stem = PurePosixPath(path).stem
-        if re.search(r"(?<![\w])" + re.escape(stem) + r"(?![\w])", basis):
+        if re.search(r"(?<![\w])" + re.escape(stem) + r"(?![\w])", change):
             matches = [p for p in documents if PurePosixPath(p).stem == stem]
             if len(matches) > 1 and not selected.intersection(matches):
                 raise ValueError(f"依据：需求文档名 {stem} 不唯一，请写完整路径")
