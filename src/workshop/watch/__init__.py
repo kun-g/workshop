@@ -264,7 +264,8 @@ class Watch:
             heartbeat = json.loads((self.directory / "heartbeat.json").read_text())
             at, elapsed = heartbeat["at"], heartbeat["tick_ms"]
             age = (now - timestamp(at)).total_seconds()
-            if type(elapsed) not in (int, float) or not math.isfinite(elapsed) or not 0 <= age <= 180:
+            # 本次开始后才写下的心跳（扫故障期间守护进程又写了几拍）也是新鲜的；只拒绝明显来自未来的时间。
+            if type(elapsed) not in (int, float) or not math.isfinite(elapsed) or not -5 <= age <= 180:
                 raise ValueError("心跳耗时或时间无效")
             if sample.get("at") != at:
                 # 时间倒退也不能接着上一次累计。
