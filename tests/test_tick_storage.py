@@ -450,6 +450,22 @@ def test_failed_heartbeat_write_does_not_record_a_first_heartbeat(engine, monkey
     assert heartbeat['process']['first_at'] == heartbeat['at']
 
 
+def test_idle_blocked_item_is_not_reloaded_without_pending_work(engine, monkeypatch):
+    engine.ingest(event())
+    engine.change(item(engine), state='卡住', blocked_by='fixture')
+    engine.rules.data.pop('taskhome', None)
+    current = item(engine)
+    original = engine.log.get
+    reads = []
+    def get(table, key):
+        if table == 'items':
+            reads.append(key)
+        return original(table, key)
+    monkeypatch.setattr(engine.log, 'get', get)
+    engine.advance(current)
+    assert reads == []
+
+
 def test_fast_tick_does_not_write_a_profile(engine):
     engine.tick()
     assert not (engine.log.path.parent / 'tick-slow.jsonl').exists()
