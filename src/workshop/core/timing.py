@@ -12,7 +12,7 @@ def timer(engine, item, key, at, about, kind="工序", owner="车间", base=None
 
 def timers(engine):
     now = stamp(engine.clock())
-    for timer in engine.log.all("timers"):
+    for timer in engine.log.all("timers", unless=("fired", True)):
         if timer["fired"] or timer["at"] > now:
             continue
         item = engine.log.get("items", timer["item"])

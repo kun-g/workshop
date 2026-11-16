@@ -100,7 +100,7 @@ def classification_intent(engine, event, received_seq=None):
 
 
 def classify_events(engine):
-    for entry in engine.log.all("effects"):
+    for entry in engine.log.all("effects", unless=("done", True)):
         if entry.get("kind") != "classify" or entry["done"]:
             continue
         event = Event(**entry["event"])
@@ -259,7 +259,7 @@ def sources(engine):
                and engine.log.get("effects", f'after:{r["token"]}') for r in engine.active()):
             continue
         if any(i["target"] == target and i.get("program")
-               and engine.log.get("effects", f"after:{i['program']['token']}") for i in engine.log.all("items")):
+               and engine.log.get("effects", f"after:{i['program']['token']}") for i in engine.log.program_items()):
             continue
         for name in rule.get("sources", []):
             key = f"{target}:{name}"

@@ -231,7 +231,7 @@ def release_unavailable(engine, row):
 
 def serial_holder(engine, item):
     """同一交付对象里执行至交付占位的另一件活；验收起让出，完成、放弃、排队不占位。"""
-    return next((other for other in engine.log.all("items")
+    return next((other for other in engine.log.open_items()
                  if other["id"] != item["id"] and other["target"] == item["target"] and other.get("serial_hold")
                  and other["state"] not in ("完成", "放弃", "排队") and serial_stage(other["stage"])), None)
 

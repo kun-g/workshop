@@ -47,7 +47,7 @@ def wait_timeout(engine):
             at = datetime.fromisoformat(value)
             if overdue or at > start:
                 waits.append(max(0, (at - now).total_seconds()))
-    for timer in engine.log.all("timers"):
+    for timer in engine.log.all("timers", unless=("fired", True)):
         if not timer["fired"] and not engine.control(timer["target"]).get("broken"):
             include(timer["at"], overdue=True)
     for control in engine.log.all("controls"):
@@ -55,7 +55,7 @@ def wait_timeout(engine):
             include(control.get("at"))
     for row in engine.active():
         include(row.get("deadline"))
-    for item in engine.log.all("items"):
+    for item in engine.log.open_items() + engine.log.release_items():
         include(item.get("retry_at"))
         include(item.get("release_at"))
     if engine.jobs is not None:

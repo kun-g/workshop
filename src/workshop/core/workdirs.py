@@ -32,7 +32,7 @@ def release_workdirs(engine):
     """
     running = {r["item"] for r in engine.active()}
     now = stamp(engine.clock())
-    for item in engine.log.all("items"):
+    for item in engine.log.release_items():
         if (item["state"] != "完成" or not item.get("workdir") or item.get("workdir_released")
                 or item["id"] in running or (item.get("release_at") or "") > now):
             continue
