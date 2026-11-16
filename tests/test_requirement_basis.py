@@ -134,6 +134,15 @@ def test_all_named_changed_documents_are_required(world):
     assert not evidence.passed and 'docs/requirements/交付.md' in evidence.reason
 
 
+def test_documents_only_cited_before_change_are_not_required(world):
+    world['target']['requirement_docs'] = ['docs/requirements/']
+    edit(world, requirement_contents={'docs/requirements/核心.md': '**R14 需求。**',
+                                      'docs/requirements/交付.md': '**R6 验收。**'})
+    body_with(world, '已有需求：`docs/requirements/交付.md` R6；交付 R6。' + CHANGE)
+    edit(world, files=[{'filename': 'docs/requirements/核心.md', 'status': 'modified'}])
+    assert world['flow'].assess(snapshot(world, '证据'), Receipt('done', '', evidence=[result(world)]), world['target']).passed
+
+
 def test_invalid_rule_is_a_gate_failure(world):
     world['target']['requirement_docs'] = ['../secret.md']
     evidence = world['flow'].assess(snapshot(world, '说清楚'), receipt(world), world['target'])
