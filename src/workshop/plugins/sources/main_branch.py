@@ -1,4 +1,4 @@
-"""每小时比较一次主检出与远端；持久游标由核心随事件一起提交。
+"""每小时比较一次在跑的版本与远端；持久游标由核心随事件一起提交。
 
 `workshop release-now` 在发版状态目录写 release-now，来源立刻多比较一次，之后的发版流程与整点相同。
 """
@@ -13,6 +13,7 @@ from workshop.core.models import Event, Poll
 from workshop.core.ports import Retryable
 from workshop.github_identity import scoped, run
 from workshop.path_policy import only_ignored_paths
+from workshop.running import current as running_commit
 
 
 REQUEST = 'release-now'
@@ -90,7 +91,11 @@ class MainBranchSource:
             except (KeyError, ValueError, TypeError, AttributeError) as exc:
                 raise Retryable('无法读取已上线的 production 发布记录，未确认是否有新合并') from exc
         else:
-            head = read(['git', '-C', checkout, 'rev-parse', 'HEAD'])
+            # 比的是守护进程在跑的版本，不是主检出：主检出可能被别的程序提前快进（#126）。
+            head = running_commit()
+            if head is None:
+                # 启动时没记版本的旧守护进程只能退回比主检出；新版上线后不再走这里。
+                head = read(['git', '-C', checkout, 'rev-parse', 'HEAD'])
             if release.get('status') == 'rolled_back' and release.get('to') == to:
                 return Poll([], slot)
         needs_release = head != to

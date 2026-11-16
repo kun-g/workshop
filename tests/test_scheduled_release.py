@@ -16,6 +16,7 @@ from workshop.plugins.scheduled_release import ScheduledRelease, CHECKS
 from workshop.plugins.scheduled_release.io import IO, read, write
 from workshop.plugins.sources.main_branch import MainBranchSource
 import workshop.plugins.sources.main_branch as source_module
+from workshop import running
 
 
 def git(repo, *args):
@@ -54,7 +55,7 @@ class LocalIO(IO):
 
 
 @pytest.fixture
-def world(tmp_path):
+def world(tmp_path, monkeypatch):
     repo, remote = tmp_path / 'checkout', tmp_path / 'remote.git'
     subprocess.run(['git', 'init', '-q', '-b', 'main', str(repo)], check=True)
     (repo / 'scripts').mkdir()
@@ -65,6 +66,7 @@ def world(tmp_path):
     b = commit(repo, 'readme', 'b')
     subprocess.run(['git', 'clone', '-q', '--bare', str(repo), str(remote)], check=True)
     git(repo, 'reset', '--hard', a)
+    monkeypatch.setenv(running.VARIABLE, a)  # 守护进程在跑 A
     io = LocalIO(tmp_path / 'state', remote)
     flow = ScheduledRelease(io)
     target = {'name': 'alpha', 'repo': 'example/workshop', 'checkout': str(repo),
@@ -102,14 +104,19 @@ def test_source_hour_cursor_and_equal_head_and_network_failure(world, monkeypatc
     source = MainBranchSource(lambda: now)
     first = source.poll(w['target'], None)
     assert first.events[0].body == {'kind': 'ahead', 'from': w['a'], 'to': w['b']}
-    assert source.poll(w['target'], first.cursor).events == [] and len(calls) == 2
+    assert source.poll(w['target'], first.cursor).events == [] and len(calls) == 1
     now += timedelta(seconds=1)
     second = source.poll(w['target'], first.cursor)
-    assert len(second.events) == 1 and second.events[0].object_key == w['b'] and len(calls) == 4
-    assert MainBranchSource(lambda: now).poll(w['target'], second.cursor).events == [] and len(calls) == 4
+    assert len(second.events) == 1 and second.events[0].object_key == w['b'] and len(calls) == 2
+    assert MainBranchSource(lambda: now).poll(w['target'], second.cursor).events == [] and len(calls) == 2
+    # 主检出被别的程序快进到 B（#126），在跑的仍是 A：照样开发版的活。
     git(w['repo'], 'merge', '--ff-only', w['b'])
     now += timedelta(hours=1)
-    assert source.poll(w['target'], second.cursor).events == []
+    moved = source.poll(w['target'], second.cursor)
+    assert [e.body for e in moved.events] == [{'kind': 'ahead', 'from': w['a'], 'to': w['b']}]
+    monkeypatch.setenv(running.VARIABLE, w['b'])
+    now += timedelta(hours=1)
+    assert source.poll(w['target'], moved.cursor).events == []
     monkeypatch.setattr(source_module, 'run', lambda *a, **k: subprocess.CompletedProcess(a, 1, '', 'network down'))
     with pytest.raises(Retryable, match='network down'):
         source.poll(w['target'], second.cursor)
@@ -383,7 +390,7 @@ def test_source_skips_rolled_back_commit_but_releases_new_merge(world, monkeypat
     source = MainBranchSource(lambda: now)
     skipped = source.poll(target, None)
     assert skipped.events == [] and skipped.cursor == now.isoformat()
-    assert not source.poll(target, skipped.cursor).events and len(calls) == 2
+    assert not source.poll(target, skipped.cursor).events and len(calls) == 1
     now += timedelta(hours=1)
     again = source.poll(target, skipped.cursor)
     assert not again.events and again.cursor != skipped.cursor
@@ -395,7 +402,7 @@ def test_source_skips_rolled_back_commit_but_releases_new_merge(world, monkeypat
     next_release = source.poll(target, again.cursor)
     assert len(next_release.events) == 1
     assert next_release.events[0].body == {'kind': 'ahead', 'from': w['a'], 'to': c}
-    assert not source.poll(target, next_release.cursor).events and len(calls) == 6
+    assert not source.poll(target, next_release.cursor).events and len(calls) == 3
     w['data'] = {'id': 'alpha:scheduled_release:' + c, 'object_key': c,
                  'materials': [{'source': 'main_branch', 'body': next_release.events[0].body}]}
     after(w, '证据')
@@ -466,3 +473,33 @@ def test_release_now_request_compares_immediately_once(world, monkeypatch):
     assert asked.events[0].object_key == w['b'] and asked.events[0].title.startswith('立即发版')
     assert not request.exists() and asked.cursor == slot
     assert source.poll(w['target'], asked.cursor).events == []
+
+
+def test_source_without_recorded_version_falls_back_to_checkout(world, monkeypatch):
+    # 启动时没记版本的旧守护进程（本改动上线前）仍按主检出比较。
+    w = world
+    real = source_module.run
+    monkeypatch.setattr(source_module, 'run', lambda argv, **kwargs: real(
+        [str(w['remote']) if str(a).startswith('https://github.com/') else a for a in argv], **kwargs))
+    monkeypatch.delenv(running.VARIABLE)
+    now = datetime(2026, 11, 14, 9, tzinfo=timezone.utc)
+    assert [e.body for e in MainBranchSource(lambda: now).poll(w['target'], None).events] == [
+        {'kind': 'ahead', 'from': w['a'], 'to': w['b']}]
+    git(w['repo'], 'merge', '--ff-only', w['b'])
+    assert MainBranchSource(lambda: now).poll(w['target'], None).events == []
+
+
+def test_release_from_is_running_version_when_checkout_already_moved(world):
+    # 主检出在发版前已被快进到目标提交；退回点仍是在跑的 A，不是 B。
+    w = world
+    git(w['repo'], 'merge', '--ff-only', w['b'])
+    assert after(w, '证据').notice == ''
+    assert after(w, '交付').restart
+    release = read(w['io'].root(w['target']) / 'release.json')
+    assert release['from'] == w['a'] and release['to'] == w['b'] and release['status'] == 'restarting'
+
+
+def test_record_running_version_overrides_inherited_value(monkeypatch):
+    monkeypatch.setenv(running.VARIABLE, '0' * 40)
+    expected = git(Path(running.__file__).resolve().parent, 'rev-parse', 'HEAD')
+    assert running.record() == expected == running.current() == os.environ[running.VARIABLE]

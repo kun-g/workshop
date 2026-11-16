@@ -101,9 +101,6 @@ class ScheduledRelease:
         if ancestor['exit_code']:
             return self.fail(state, '主检出不能快进到检查过的提交')
         daemon = self.io.daemon()
-        if 'deploy_from' not in state:
-            state['deploy_from'] = head
-            save()
         self.io.git(checkout, 'merge', '--ff-only', state['to'])
         prepare = target.get('prepare', [])
         for index, step in enumerate(prepare):
@@ -123,7 +120,8 @@ class ScheduledRelease:
             save()
             if result['exit_code']:
                 return self.fail(state, f"准备命令退出 {result['exit_code']}；已快进但未重启：{result['stderr'][-500:]}")
-        record = {'from': state['deploy_from'], 'to': state['to'], 'at': self.io.now(),
+        # 退回点是发版前在跑的版本；主检出可能早被快进到目标提交（#126）。
+        record = {'from': state['from'], 'to': state['to'], 'at': self.io.now(),
                   'status': 'restarting', 'prepare': [s['argv'] for s in prepare],
                   'prepare_cwds': [s.get('cwd', '.') for s in prepare], 'item': item['id'], 'daemon': daemon}
         write(root / 'release.json', record)
