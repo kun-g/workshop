@@ -464,3 +464,50 @@ def test_idle_blocked_item_is_not_reloaded_without_pending_work(engine, monkeypa
     monkeypatch.setattr(engine.log, 'get', get)
     engine.advance(current)
     assert reads == []
+
+
+def test_fast_tick_does_not_write_a_profile(engine):
+    engine.tick()
+    assert not (engine.log.path.parent / 'tick-slow.jsonl').exists()
+
+
+def test_slow_tick_records_phase_times(engine):
+    import time
+    from workshop.core import beat
+    beat.one(engine, time.monotonic() - 0.2)
+    path = engine.log.path.parent / 'tick-slow.jsonl'
+    row = json.loads(path.read_text().splitlines()[-1])
+    assert row['tick_ms'] >= 100
+    for name in ('lock', 'reap', 'sources', 'classify', 'channels', 'timers', 'rounds', 'advance', 'release', 'channels_2', 'heartbeat'):
+        assert name in row['spans']
+        assert isinstance(row['spans'][name], (int, float))
+    assert row['slow_items'] == []
+    assert isinstance(row['open'], int) and isinstance(row['active'], int)
+
+
+def test_slow_tick_names_the_slow_item(engine, monkeypatch):
+    import time
+    from workshop.core import beat
+    engine.ingest(event())
+    offset = {'v': 0.0}
+    real = time.monotonic
+    monkeypatch.setattr(time, 'monotonic', lambda: real() + offset['v'])
+    original = beat.advance
+
+    def slow(item):
+        offset['v'] += 0.02
+        return original(engine, item)
+
+    monkeypatch.setattr(engine, 'advance', slow)
+    beat.one(engine, time.monotonic() - 0.15)
+    row = json.loads((engine.log.path.parent / 'tick-slow.jsonl').read_text().splitlines()[-1])
+    assert row['slow_items'][0]['id'] == 'alpha:one'
+    assert row['slow_items'][0]['ms'] >= 15
+
+
+def test_slow_tick_log_keeps_the_tail(tmp_path):
+    from workshop.core.beat import append_slow_tick
+    path = tmp_path / 'tick-slow.jsonl'
+    for n in range(10):
+        append_slow_tick(path, {'n': n}, keep=3, limit=1)
+    assert [json.loads(line)['n'] for line in path.read_text().splitlines()] == [7, 8, 9]
