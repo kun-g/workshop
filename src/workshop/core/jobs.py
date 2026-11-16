@@ -143,8 +143,11 @@ def running(directory):
     if not root.is_dir():
         return labels
     for path in root.iterdir():
+        # 跑完的作业留一天待取，spec 可能很大；先用结果文件和锁筛掉，只读在跑的 spec。
+        if (path / "result.json").exists() or not held(path):
+            continue
         spec = read(path / "spec.json")
-        if spec and spec.get("item") and spec.get("label") and not (path / "result.json").exists() and held(path):
+        if spec and spec.get("item") and spec.get("label"):
             labels[spec["item"]] = spec["label"]
     return labels
 
