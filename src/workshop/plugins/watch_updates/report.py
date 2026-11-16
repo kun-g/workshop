@@ -4,6 +4,7 @@ from html import escape
 from pathlib import Path
 
 from .model import UPGRADE_ORDER, point_link
+from .inventory import blind_records
 from .presentation import software_views, targets
 
 
@@ -24,6 +25,7 @@ def blind_spots(chosen, versions, blind):
     """把版本缺失补进报告；同一部署只计一次，日报和周报共用。"""
     rows = list(blind)
     for view in software_views({'versions': chosen}, versions):
+        rows.extend(blind_records(view['software']))
         for place in view['servers'] + view['agents']:
             if place['version'] == 'unknown':
                 rows.append({'software': view['name'], 'host': place['host'], 'service': place['service'],
@@ -75,6 +77,7 @@ SOURCES = {'local': '本机', 'servers': '服务器', 'clusters': '集群', 'nee
 def blind_groups(blind, versions):
     """盲区按类归并成「标题 · 一句话 · 名字标签」，原始错误留在对账记录里，不上页面。"""
     pending, unknown, sources, manual, other = [], {}, [], [], []
+    retained, conflicts = [], []
     for value in blind:
         if not isinstance(value, dict):
             other.append(str(value))
@@ -83,6 +86,8 @@ def blind_groups(blind, versions):
             pending.append(short(versions.get(key, {}).get('software', {}).get('name', key.rsplit('-', 1)[0])))
         elif value.get('version') == '版本不明':
             unknown.setdefault(short(value['software']), []).append(short(value['host']))
+        elif value.get('kind') in ('retained', 'conflict'):
+            (retained if value['kind'] == 'retained' else conflicts).append(blind_text(value, versions))
         elif value.get('kind') == 'manual':
             manual.append(short(value['software']))
         elif value.get('id') in SOURCES or 'ok' in value:
@@ -99,6 +104,10 @@ def blind_groups(blind, versions):
                        [f'{name} ×{len(hosts)}' if len(hosts) > 1 else f'{name} · {hosts[0]}' for name, hosts in unknown.items()]))
     elif sources:
         groups.append((f'{len(sources)} 类来源没查全', '原因见本周对账记录。', sources))
+    if retained:
+        groups.append((f'{len(retained)} 处沿用上次版本', '本轮没有新读数，保留原版本、日期与证据。', retained))
+    if conflicts:
+        groups.append((f'{len(conflicts)} 处版本来源有冲突', '声明值与其他来源不同，尚未确认运行版本。', conflicts))
     if manual:
         groups.append((f'{len(manual)} 个软件没有版本接口', '上游不提供可查的发布接口，需要人工看。', manual))
     if other:

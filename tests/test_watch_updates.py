@@ -149,7 +149,11 @@ def test_reconcile_scope_uninstalled_idle_blind_and_excluded():
     with pytest.raises(ValueError, match='移出'):
         reconcile(old, proposed, 'now')
     proposed['removed'] = []
-    assert reconcile(old, proposed, 'now')[0]['software'] == old['software']
+    retained = reconcile(old, proposed, 'now')[0]['software']
+    for before, after in zip(old['software'], retained):
+        for a, b in zip(before['instances'], after['instances']):
+            assert all(a[k] == b[k] for k in ('version', 'read_at', 'evidence'))
+            assert b['last_attempt'] == {'at': 'now', 'ok': False, 'error': 'read'}
 
 
 def test_source_once_per_version_no_version_command_and_failure_dedup(world):
@@ -390,7 +394,8 @@ def test_unknown_version_snapshot_and_git_commit(world):
     io.time += timedelta(minutes=61)
     advance(flow, item, target, '交付')
     assert 'version command exit 1' not in io.sent[0]['summary']
-    assert '处版本不明' in Path(io.sent[0]['path']).read_text()
+    assert '处沿用上次版本' in Path(io.sent[0]['path']).read_text()
+    assert io.watchlist(target)['software'][0]['instances'][0]['version'] == '1.0.0'
     assert source.poll(target, after.cursor).events == []
 
 
@@ -472,8 +477,8 @@ def test_manual_upstream_skips_daily_fetch_and_appears_in_empty_weekly(world, un
     advance(flow, item, target, '执行')
     advance(flow, item, target, '交付')
     assert io.sent[0]['versions'] == []
-    assert io.sent[0]['blind'][0]['kind'] == 'manual'
-    assert io.sent[0]['summary'].endswith('盲区 ' + str(3 if unknown else 1) + ' 项')
+    assert any(b.get('kind') == 'manual' for b in io.sent[0]['blind'])
+    assert io.sent[0]['summary'].endswith('盲区 ' + str(3) + ' 项')
     assert '没有版本接口' in Path(io.sent[0]['path']).read_text()
     io.time += timedelta(days=1)
     assert source.poll(target, poll.cursor).events == []

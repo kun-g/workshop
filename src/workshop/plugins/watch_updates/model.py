@@ -131,48 +131,10 @@ def eligible(row):
             ('auto_updates', 'business_image', 'lock_dependency', 'bundled_with')))
 
 
-def reconcile(previous, proposal, now):
-    """未查成的来源保留旧记录；明确卸载才移出，冷门不等于卸载。"""
-    sources = proposal.get('sources')
-    if not isinstance(sources, list) or not sources:
-        raise ValueError('对账须列出每个感知来源的结果')
-    outcomes = {}
-    for row in sources:
-        required(row, ('id', 'evidence'))
-        if type(row.get('ok')) is not bool or row['id'] in outcomes:
-            raise ValueError('来源结果无效或重复')
-        outcomes[row['id']] = row['ok']
-    old = {r['id']: r for r in previous.get('software', [])}
-    excluded = dict(previous.get('excluded', {}))
-    changes, present = [], set()
-    for row in proposal.get('software', []):
-        validate_software(row, roles=True)
-        if row['id'] in present or row['source'] not in outcomes:
-            raise ValueError('软件重复或来源未登记')
-        present.add(row['id'])
-        if not outcomes[row['source']]:
-            continue
-        if row['id'] in excluded or not eligible(row):
-            if row['id'] in old:
-                del old[row['id']]
-                changes.append({'id': row['id'], 'name': row['name'], 'action': '移出范围', 'evidence': row['evidence']})
-            continue
-        prior = old.get(row['id'])
-        row = {**row, 'notes': list(dict.fromkeys((prior or {}).get('notes', []) + row.get('notes', [])))}
-        if prior != row:
-            changes.append({'id': row['id'], 'name': row['name'], 'action': '更新' if prior else '加入', 'evidence': row['evidence']})
-        old[row['id']] = row
-    for removal in proposal.get('removed', []):
-        required(removal, ('id', 'source', 'evidence'))
-        if outcomes.get(removal['source']) is not True or removal.get('uninstalled') is not True:
-            raise ValueError('移出必须有成功来源和明确卸载证据')
-        prior = old.get(removal['id'])
-        if prior and prior['source'] != removal['source']:
-            raise ValueError('卸载证据来源与清单不匹配')
-        if prior:
-            del old[removal['id']]
-            changes.append({'id': removal['id'], 'action': '移出', 'evidence': removal['evidence']})
-    return {'schema': SCHEMA, 'software': list(old.values()), 'excluded': excluded}, changes
+def reconcile(previous, proposal, now, **options):
+    # 保留已有调用入口；逐实例合并集中在 inventory 模块。
+    from .inventory import reconcile as merge
+    return merge(previous, proposal, now, **options)
 
 
 def tag_version(software, tag):

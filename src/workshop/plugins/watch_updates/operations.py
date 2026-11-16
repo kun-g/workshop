@@ -163,3 +163,26 @@ def resend_weekly(target, request_id, io=None):
         report = state['reports'][report_id]
         return {'status': 'sent' if report.get('sent') else 'pending', 'week': entry['week'],
                 'request': request_id, 'report': report_id, 'path': report['path']}
+
+
+def preview_inventory(target, proposal_file, output, io=None):
+    """采集提案经正式校验与合并，输出差异；不提交、不发报告、不改现役数据。"""
+    io = io or IO()
+    directory = path(output)
+    protected = [io.file(target, k) for k in
+                 ('state_dir', 'reports', 'snapshots', 'watchlist', 'needs', 'sources')]
+    if io.config(target).get('upgrade_records'):
+        protected.append(io.file(target, 'upgrade_records'))
+    if (Path(output).expanduser().is_symlink() or directory.exists()
+            or any(directory == p or directory.is_relative_to(p) or p.is_relative_to(directory) for p in protected)):
+        raise ValueError('预览输出须是与现役数据不重叠的新目录')
+    proposal = read(path(proposal_file))
+    result, changes = Flow(io).inventory(proposal, target)
+    directory.mkdir(parents=True, mode=0o700)
+    write(directory / 'watchlist.json', result)
+    write(directory / 'sources.json', io.inventory_sources(target))
+    write(directory / 'proposal.json', proposal)
+    write(directory / 'changes.json', changes)
+    write(directory / 'upgrades.json', io.upgrades(target))
+    return {'status': 'previewed', 'sent': False, 'path': str(directory),
+            'software': len(result['software']), 'instances': sum(len(s['instances']) for s in result['software'])}

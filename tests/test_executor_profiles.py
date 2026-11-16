@@ -237,3 +237,34 @@ class Driver(Base):
     assert call['name'] == 'sample-cli' and call['args'] == ['--example', 'custom-model']
     executor.stop('sample-token', started)
     assert all((common/name).read_bytes() == content for name, content in unchanged.items())
+
+
+@pytest.mark.parametrize('transport', ['headless', 'orca'])
+@pytest.mark.parametrize('resume', [False, True])
+def test_codex_overrides_use_cli_paths_not_quoted_toml_keys(tmp_path, transport, resume):
+    import tomllib
+    p = profile('codex', model='test', effort='high',
+                sandbox='workspace-write', permission_mode='never',
+                prompt='只读\n带 "引号"', settings={'sandbox_workspace_write': {'network_access': True}},
+                mcp_config={'mcp_servers': {'docs.test': {'command': '/read/docs'}}},
+                plugins={'review@local': {'enabled': True}})
+    p['transport'] = transport
+    executor = adapters.Executor('probe', profile=p)
+    argv = executor._argv(p, '/repo', 'session', resume, tmp_path, False)
+    settings = [argv[i + 1] for i, v in enumerate(argv[:-1]) if v == '-c']
+    # codex 的路径解析按点拆开，值再按 TOML 读；键上的引号不会被剥掉。
+    effective = {}
+    for setting in settings:
+        key, value = setting.split('=', 1)
+        container = effective
+        parts = key.split('.')
+        for part in parts[:-1]:
+            container = container.setdefault(part, {})
+        container[parts[-1]] = tomllib.loads('value=' + value)['value']
+    assert effective['developer_instructions'] == p['prompt']
+    assert effective['sandbox_workspace_write']['network_access'] is True
+    assert effective['mcp_servers']['docs.test']['command'] == '/read/docs'
+    assert effective['plugins']['review@local']['enabled'] is True
+    if transport == 'orca':
+        assert effective['hooks']['SessionStart'][0]['hooks'][0]['command']
+        assert effective['hooks']['UserPromptSubmit'][0]['hooks'][0]['command']
