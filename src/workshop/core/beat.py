@@ -1,13 +1,15 @@
 """一拍的顺序。
 
-这一拍只做这些：收作业结果、清一次流程目录、收事件、归类、读通道、定时、结算开着的轮、推进每件活、收回目录、再读通道、写心跳。
+这一拍只做这些：收作业结果、清一次流程目录、收事件、归类、读通道、定时、结算开着的轮、推进每件活、收回目录、再读通道、写心跳、状态有变就重写 status.html。
 失败记账和心跳放在一起。
 一拍超过 100 毫秒时，等锁和各步耗时追加到状态目录的 tick-slow.jsonl，只留最近 100 条。
 """
 import json
 import os
+import sqlite3
 import sys
 import time
+from datetime import timedelta
 
 from .jobs import Pending
 from .models import stamp
@@ -77,8 +79,34 @@ def one(engine, began=None):
                 engine.channels()
             with Span(spans, "heartbeat"):
                 engine.heartbeat(began)
+            with Span(spans, "status_page"):
+                refresh_status_page(engine)
         finally:
             note_slow_tick(engine, began, spans, slow, count)
+
+
+PAGE_KINDS = ("item_changed", "card_changed", "round_changed", "control", "answer")
+PAGE_MIN_GAP = timedelta(seconds=5)   # 两次重写至少隔这么久
+PAGE_MAX_AGE = timedelta(minutes=5)   # 没变化也至少这么久重写一次，页面上的生成时间才不会无谓地变旧
+
+
+def refresh_status_page(engine):
+    """状态有变化就重写状态目录里的 status.html（核心 R1 补注：页面反映当前）；写失败不挡这一拍，页面会因此显示「可能已过期」。"""
+    now = engine.clock()
+    last = getattr(engine, "status_page", None)
+    if last and (now - last < PAGE_MIN_GAP or (not engine.page_dirty and now - last < PAGE_MAX_AGE)):
+        return
+    engine.page_dirty = False
+    from .report import overview
+    from .status_page import page
+    path = engine.log.path.parent / "status.html"
+    temporary = path.with_suffix(".tmp")
+    try:
+        temporary.write_text(page(overview(engine.log), now.astimezone()))
+        temporary.replace(path)
+    except (OSError, ValueError, KeyError, TypeError, sqlite3.Error) as exc:
+        print(f"车间 status.html 没写成：{exc!r}", file=sys.stderr)
+    engine.status_page = now
 
 
 def advance(engine, item):

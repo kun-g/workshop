@@ -1,4 +1,9 @@
-"""把总览（report.overview）排成一页自包含的网页：纯规则排版，不调模型，离线能开。"""
+"""把总览（report.overview）排成一页自包含的网页：纯规则排版，不调模型，离线能开。
+
+每件活占一行：标题 · 一句话原因 · 要谁做什么 · 等了多久；原文（下一步、原因、卡在谁手里）折叠在行下。
+生成时间和「等了多久」带着时间戳，页面里的小脚本按打开时的本机时钟重算，页面放旧了看得出。
+"""
+import re
 from collections import Counter, defaultdict
 from datetime import datetime
 from html import escape as e
@@ -8,8 +13,8 @@ ENDED = ("完成", "放弃")
 ORDER = ["卡住", "等你", "跑着", "排队", "定时", "暂停", "完成", "放弃"]
 TONE = {"卡住": "stuck", "等你": "wait", "跑着": "run", "排队": "timer", "定时": "timer", "暂停": "pause",
         "完成": "done", "放弃": "drop"}
-# 下一步相同的活够这么多件，就并成一组，只列名字。
-SAME_NEXT = 3
+LIMIT = 40  # 一句话最多这么多个字
+STALE_MINUTES = 10  # 页面放了这么久就标「可能已过期」
 
 
 def tone(state):
@@ -20,43 +25,60 @@ def lane(row):
     return f'{row["target"]} · {row["flow"]}' if row["flow"] else row["target"]
 
 
-def item(row, *, badge=True):
+def sentence(text, limit=LIMIT):
+    """取第一句（到句号、分号或换行），超过 limit 个字就截断加省略号；不调模型，只切字。"""
+    first = re.split(r"[。；;\n]", (text or "").strip(), maxsplit=1)[0].strip()
+    return first if len(first) <= limit else first[:limit - 1] + "…"
+
+
+def waited(since, now):
+    """等了多久：「N 分钟」或「N 小时」；没有起点写「时长未知」，不拿别的时间冒充。"""
+    try:
+        minutes = int((now - datetime.fromisoformat(since)).total_seconds() // 60)
+    except (TypeError, ValueError):
+        return "时长未知"
+    return "不到 1 分钟" if minutes < 1 else f"{minutes} 分钟" if minutes < 60 else f"{minutes // 60} 小时"
+
+
+def brief(row, asks):
+    """一句话原因，和要谁做什么：只用活里已有的字段拼，缺了退回原文首句。"""
+    state, stage = row["shown"], row["stage"]
+    if row["stuck"]:
+        owner = row.get("owner") or "项目经理"
+        return sentence(row["reason"] or "原因未记录"), f"{owner}：{sentence(row['advice'], LIMIT - len(owner) - 1)}"
+    if state == "等你":
+        decision = asks.get(row["id"]) or row["next"]
+        return f"{stage}阶段等你回答", f"Kun：{sentence(decision, LIMIT - 4)}"
+    if state == "暂停":
+        return f"交付对象已暂停，{stage}阶段不动", "项目经理：恢复后继续"
+    if state in ENDED:
+        return f"{state}，停在{stage}阶段", "无需处理"
+    if state in ("定时", "排队"):
+        return sentence(row["next"]), "车间：到点自动继续"
+    return f"{stage}阶段进行中", f"{row['who']}：{sentence(row['next'], LIMIT - len(row['who']) - 1)}"
+
+
+def item(row, asks, now, *, badge=True):
+    reason, todo = brief(row, asks)
     pill = f'<span class="pill {tone(row["shown"])}">{e(row["shown"])}</span>' if badge else ""
-    reason = row["reason"] if row["state"] == "卡住" else ""
-    blocker = "" if row["blocker"] in ("—", reason) else row["blocker"]
-    extra = "".join(f"<p><b>{k}</b>{e(v)}</p>" for k, v in (("原因", reason), ("卡在谁手里", blocker)) if v)
+    since = row.get("since") or ""
+    raw = (("下一步", row["next"]), ("原因", row["reason"] if row["state"] == "卡住" else ""),
+           ("卡在谁手里", "" if row["blocker"] in ("—", row["reason"]) else row["blocker"]),
+           ("流程", lane(row)), ("阶段", f'{row["stage"]} · {row["who"]}'), ("活", row["id"]))
+    body = "".join(f"<p><b>{k}</b>{e(v)}</p>" for k, v in raw if v)
     return (f'<details class="item"><summary><span class="name">{e(row["title"])}{pill}</span>'
-            f'<span class="meta">{e(row["stage"])} · {e(row["who"])}</span><span class="next">{e(row["next"])}</span></summary>'
-            f'<div class="body"><p><b>活</b><code>{e(row["id"])}</code></p><p><b>下一步</b>{e(row["next"])}</p>{extra}</div></details>')
+            f'<span class="why">{e(reason)}</span><span class="todo">{e(todo)}</span>'
+            f'<span class="since" data-since="{e(since)}">{e(waited(since, now))}</span></summary>'
+            f'<div class="body">{body}</div></details>')
 
 
-def block(rows, *, badge=True):
-    """一个流程里的活：下一步相同的并成一组，其余逐条列。"""
-    same = Counter(r["next"] for r in rows)
-    parts, done = [], set()
-    for r in rows:
-        text = r["next"]
-        if same[text] >= SAME_NEXT and text not in done:
-            done.add(text)
-            members = [x for x in rows if x["next"] == text]
-            chips = "".join(f'<span class="chip">{e(x["title"])}</span>' for x in members)
-            parts.append(f'<div class="same"><p><b>{len(members)} 件下一步相同</b>{e(text)}</p><div class="chips">{chips}</div>'
-                         f'<details class="more"><summary>逐件展开</summary><div class="list">'
-                         + "".join(item(x, badge=badge) for x in members) + "</div></details></div>")
-        elif same[text] < SAME_NEXT:
-            parts.append(item(r, badge=badge))
-    return "".join(parts)
-
-
-def section(title, rows, *, note="", badge=True, folded=False, warn=False):
+def section(title, rows, asks, now, *, note="", badge=True, folded=False, warn=False):
     if not rows:
         return ""
-    groups = defaultdict(list)
-    for r in rows:
-        groups[lane(r)].append(r)
-    body = "".join(f'<div class="group{" warn" if warn else ""}"><h3>{e(name)}<em>{len(rs)}</em></h3><div class="list">{block(rs, badge=badge)}</div></div>'
-                   for name, rs in sorted(groups.items(), key=lambda kv: -len(kv[1])))
+    longest = sorted(rows, key=lambda r: r.get("since") or "9")  # 等得最久的排前面；没起点的排最后
     head = f"{e(title)} {len(rows)} 件"
+    body = f'<div class="group{" warn" if warn else ""}"><div class="cols"><span>标题</span><span>原因</span><span>要谁做什么</span><span>等了多久</span></div>' \
+           + "".join(item(r, asks, now, badge=badge) for r in longest) + "</div>"
     if folded:
         return f'<details class="fold"><summary><h2>{head}</h2></summary>{body}</details>'
     return f'<h2>{head}</h2>' + (f'<p class="note">{e(note)}</p>' if note else "") + body
@@ -83,6 +105,7 @@ def chart(rows):
 def page(view, now=None):
     rows = view["rows"]
     now = now or datetime.now().astimezone()
+    asks = {c["item"]: c["decision"] for c in view["asks"]}
     stuck = [r for r in rows if r["stuck"]]
     waiting = [r for r in rows if r["shown"] == "等你" and not r["stuck"]]
     ended = [r for r in rows if r["state"] in ENDED]
@@ -92,32 +115,44 @@ def page(view, now=None):
                                                           ("流程", view["filters"]["flows"])) if v)
     scope = ("全部活" if view["everything"] else "当前的活") + (f"，筛选：{filters}" if filters else "")
     hidden = (f"另有 {view['hidden']} 件没列出（{'筛掉的' if view['filtered'] else '已结束'}）" if view["hidden"] else "")
-    kpis = "".join(f'<div class="kpi {tone(s)}"><b>{counts[s]}</b><span>{e(s)}</span></div>'
-                   for s in sorted(counts, key=lambda s: ORDER.index(s) if s in ORDER else 2.5))
-    lead = (f"要处理的是 <b>{len(stuck)} 件卡住</b>" if stuck else "没有卡住的活") + (f"、<b>{len(waiting)} 件等你</b>" if waiting else "") + "。"
+    total = f"活 {len(rows)} 件" + "".join(f" · {s} {counts[s]}" for s in sorted(counts, key=lambda s: ORDER.index(s) if s in ORDER else 2.5))
     channel = "".join(
         [f'<p><b>读取失败</b><code>{e(c["item"])}</code>{e(c["reason"])}</p>' for c in view["unreadable"]]
-        + [f'<p><b>等回答</b><code>{e(c["item"])}</code>{e(c["card"])} · {e(c["decision"])}</p>' for c in view["asks"]]
         + [f'<p><b>待对账</b><code>{e(c["item"])}</code>连续 3 次不能确定是否已发送，需检查通道<br><span class="note">卡号 {e(c["card"])}</span></p>'
            for c in view["uncertain"]])
+    overall = chart(rows)
     return f"""<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>车间状态</title>
 <style>{STYLE}</style></head>
 <body><main>
 <h1>车间状态</h1>
-<p class="sub">{e(now.strftime("%Y-%m-%d %H:%M"))} · {e(scope)} · 列出 {len(rows)} 件{(" · " + e(hidden)) if hidden else ""}</p>
-<p class="lead">{lead}</p>
-<div class="kpis">{kpis}</div>
-{chart(rows)}
-{section("卡住", stuck, note="每件点开看原因和建议动作；下一步相同的并成一组。", badge=False, warn=True)}
+<p class="total">{e(total)}</p>
+<p class="stamp" id="stamp" data-at="{e(now.isoformat())}">生成于 <b>{e(now.strftime("%Y-%m-%d %H:%M:%S"))}</b>（<span id="ago">刚刚</span>）<span id="old" hidden>　可能已过期，以 <code>workshop status</code> 为准</span></p>
+<p class="sub">{e(scope)}{(" · " + e(hidden)) if hidden else ""}</p>
+{section("卡住", stuck, asks, now, badge=False, warn=True)}
 {f'<h2>通道</h2><div class="card">{channel}</div>' if channel else ""}
-{section("等你", waiting, badge=False)}
-{section("在动", moving)}
-{section("已结束", ended, folded=True)}
+{section("等你", waiting, asks, now, badge=False)}
+{section("在动", moving, asks, now)}
+{f'<details class="fold"><summary><h2>按流程分布</h2></summary>{overall}</details>' if overall else ""}
+{section("已结束", ended, asks, now, folded=True)}
 <p class="note foot">由 <code>workshop status --html</code> 生成，排版是固定规则，不经模型。</p>
-</main></body></html>
+</main><script>{SCRIPT}</script></body></html>
 """
+
+
+SCRIPT = """
+(function(){
+var stale=%d;
+function span(ms){var m=Math.floor(ms/60000);return m<1?"不到 1 分钟":m<60?m+" 分钟":Math.floor(m/60)+" 小时"}
+function tick(){
+ var s=document.getElementById("stamp"),t=Date.parse(s.dataset.at),ms=Date.now()-t;
+ if(!isNaN(t)){document.getElementById("ago").textContent=(ms<60000?"刚刚":span(ms)+"前");
+  var old=ms>=stale*60000;s.classList.toggle("old",old);document.getElementById("old").hidden=!old}
+ document.querySelectorAll(".since").forEach(function(el){
+  var b=Date.parse(el.dataset.since);if(!isNaN(b)){el.textContent=span(Date.now()-b)}})}
+tick();setInterval(tick,30000)})();
+""" % STALE_MINUTES
 
 
 STYLE = """
@@ -126,14 +161,11 @@ STYLE = """
 @media (prefers-color-scheme:dark){:root{--bg:#17171a;--card:#212125;--ink:#ecebe6;--mute:#9d9b94;--line:#33333a;--timer:#6d7286;--drop:#55534d;color-scheme:dark}}
 body{background:var(--bg);color:var(--ink);font:14px/1.6 -apple-system,"PingFang SC","Helvetica Neue",sans-serif;margin:0}
 main{max-width:960px;margin:0 auto;padding:28px 18px 60px}
-h1{font-size:22px;margin:0 0 4px}h2{font-size:17px;margin:34px 0 8px;display:inline-block}
+h1{font-size:22px;margin:0 0 4px}h2{font-size:17px;margin:28px 0 8px;display:inline-block}
 h3{margin:0 0 4px;font-size:14px}h3 em{font-style:normal;color:var(--mute);margin-left:6px;font-weight:400}
 .sub,.note{color:var(--mute)}.sub{margin:0 0 16px}.note{font-size:12px;margin:0 0 8px}.foot{margin-top:40px}
-.lead{font-size:16px;margin:0 0 16px}
-.kpis{display:flex;flex-wrap:wrap;gap:10px;margin:0 0 20px}
-.kpi{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:8px 14px;min-width:76px}
-.kpi b{display:block;font-size:22px;font-variant-numeric:tabular-nums}.kpi span{color:var(--mute);font-size:12px}
-.kpi.stuck b{color:var(--stuck)}.kpi.wait b{color:var(--wait)}.kpi.run b{color:var(--run)}
+.total{font-size:20px;font-weight:600;margin:0 0 6px}
+.stamp{font-size:15px;margin:0 0 6px}.stamp b{font-variant-numeric:tabular-nums}.stamp.old{color:var(--stuck);font-weight:600}
 .chart,.card,.group{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px 16px;margin:10px 0}
 .group.warn{border-left:4px solid var(--stuck)}
 .lane{display:grid;grid-template-columns:150px 1fr 36px;align-items:center;gap:10px;margin:6px 0}
@@ -147,21 +179,20 @@ h3{margin:0 0 4px;font-size:14px}h3 em{font-style:normal;color:var(--mute);margi
 .legend i{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:5px;vertical-align:-1px}
 .list{padding-left:14px}
 details.item{border-top:1px solid var(--line)}
-details.item>summary{display:grid;grid-template-columns:minmax(140px,260px) auto minmax(0,1fr);gap:4px 12px;align-items:baseline;padding:7px 0;cursor:pointer;list-style:none}
+details.item>summary,.cols{display:grid;grid-template-columns:minmax(120px,1.2fr) minmax(0,1.6fr) minmax(0,1.6fr) 84px;gap:4px 12px;align-items:baseline}
+details.item>summary{padding:7px 0;cursor:pointer;list-style:none}
+.cols{color:var(--mute);font-size:12px;padding-bottom:4px}
+.since{text-align:right;font-variant-numeric:tabular-nums;color:var(--mute)}
 details>summary::-webkit-details-marker{display:none}
 details.item>summary::before{content:"▸";position:absolute;margin-left:-14px;color:var(--mute);font-size:11px}
 details.item[open]>summary::before{content:"▾"}
-.name{font-weight:600;overflow-wrap:anywhere}.meta{color:var(--mute);font-size:12px;white-space:nowrap}
-.next{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--mute)}
+.name{font-weight:600;overflow-wrap:anywhere}.why{color:var(--mute)}.todo{overflow-wrap:anywhere}
 .pill{color:#fff;font-size:11px;border-radius:4px;padding:0 6px;margin-left:6px;font-weight:400}
 .body{padding:2px 0 10px}.body p,.card p{margin:4px 0}
-.body b,.card b,.same b{display:inline-block;min-width:52px;color:var(--mute);font-weight:500;margin-right:8px}
+.body b,.card b{display:inline-block;min-width:52px;color:var(--mute);font-weight:500;margin-right:8px}
 code{font:12px ui-monospace,Menlo,monospace;overflow-wrap:anywhere;margin-right:8px}
-.same{border-top:1px solid var(--line);padding:7px 0}.same p{margin:0}
-.chips{display:flex;flex-wrap:wrap;gap:6px;margin:6px 0 2px}
-.chip{font-size:12px;border:1px solid var(--line);border-radius:999px;padding:1px 9px;background:var(--bg)}
-details.more>summary,details.fold>summary{cursor:pointer;color:var(--mute);font-size:12px;list-style:none}
+details.fold>summary{cursor:pointer;color:var(--mute);font-size:12px;list-style:none}
 details.fold>summary{color:var(--ink);font-size:inherit}details.fold>summary::before{content:"▸ ";color:var(--mute)}
 details.fold[open]>summary::before{content:"▾ "}
-@media (max-width:600px){details.item>summary{grid-template-columns:1fr}.next{white-space:normal}.lane{grid-template-columns:80px 1fr 28px}}
+@media (max-width:600px){details.item>summary{grid-template-columns:1fr}.cols{display:none}.since{text-align:left}.lane{grid-template-columns:80px 1fr 28px}}
 """
