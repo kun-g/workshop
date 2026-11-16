@@ -134,6 +134,8 @@ class After:
     recovery_id: str = ""
     # 回查已经确定不能继续时，留下原因，不再自动等待或推进。
     blocked: str = ""
+    # 流程已持久创建的引用；与 pending=True 一起返回，恢复后重查完成钩子。
+    wait: dict | None = None
 
 
 @dataclass(frozen=True)

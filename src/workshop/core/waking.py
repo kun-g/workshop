@@ -18,12 +18,15 @@ def wake_paths(engine):
                 for path in declared:
                     path = Path(path).expanduser().absolute()
                     paths.setdefault(path, set()).add((port, name, identity))
+    for name, config in engine.rules.data.get('wait_services', {}).items():
+        method = getattr(engine.plugins.get('wait', name), 'wake_paths', None)
+        if method:
+            for path in method(config):
+                paths.setdefault(Path(path).expanduser().absolute(), set()).add(('wait', name, ()))
     return paths
 
 
 def awaken(engine, wake, paths):
-    if engine.jobs is None:
-        return
     affected = set()
     for path in wake.paths:
         affected.update(paths.get(path, ()))
@@ -34,7 +37,14 @@ def awaken(engine, wake, paths):
             if name in engine.rules.data["targets"].get(target, {}).get("sources", []):
                 affected.add(("source", name, (target,)))
     for port, name, identity in affected:
-        engine.jobs.invalidate(port, name, list(identity))
+        if port == 'wait':
+            for row in engine.log.all('waits'):
+                if row['provider'] == name and row['state'] in ('waiting', 'resumed'):
+                    engine.fact('wait_changed', {'id': row['id'], 'next_at': engine.clock().isoformat()}, row['item'])
+                    if engine.jobs is not None:
+                        engine.jobs.invalidate(port, name, [row['id'], row['attempt']])
+        elif engine.jobs is not None:
+            engine.jobs.invalidate(port, name, list(identity))
 
 
 def wait_timeout(engine):
@@ -58,6 +68,9 @@ def wait_timeout(engine):
     for item in engine.log.open_items() + engine.log.release_items():
         include(item.get("retry_at"))
         include(item.get("release_at"))
+    for row in engine.log.all("waits"):
+        if row["state"] in ("waiting", "resumed"):
+            include(row.get("next_at"))
     if engine.jobs is not None:
         waits.append(engine.jobs.wait_timeout())
     return min(waits)

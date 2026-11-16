@@ -5,6 +5,7 @@ from .models import due, stamp
 from .ports import Retryable
 from .cards import notice
 from .models import After
+from . import waits
 
 
 def after(engine, item, stage, key, target, *, recheck=False):
@@ -37,7 +38,11 @@ def after(engine, item, stage, key, target, *, recheck=False):
     if result.restart:
         # 只在内存里记；run 循环在这一拍结束后退出，外部守护拉起新代码。
         engine.restart_requested = True
-    if result.pending and not result.rerun:
+    if result.wait is not None:
+        waits.descriptor(result.wait)
+        if not result.pending or result.rerun or result.blocked:
+            raise ValueError("等待引用须配 pending=True，不得同时要求重跑或阻塞")
+    if result.pending and not result.rerun and result.wait is None:
         due(result.recheck_after, engine.clock())
     aliases = result.aliases
     if not isinstance(aliases, list) or not all(isinstance(a, str) and a for a in aliases):
@@ -57,6 +62,8 @@ def after(engine, item, stage, key, target, *, recheck=False):
 
 
 def pending_changes(engine, item, result, target, hook):
+    if result.wait is not None:
+        return waits.pending(engine, item, result.wait, hook)
     count = item.get("after_pending_count", 0) + 1
     changes = dict(next=result.next, gate_reason=result.reason, after_pending_count=count, after_wait=None)
     if count >= target.get("pending_limit", 5):

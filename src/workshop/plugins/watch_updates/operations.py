@@ -8,7 +8,7 @@ import shutil
 
 from .brief import judgment_brief
 from .calendar import period
-from .flow import Flow
+from .entries import Entries as Flow
 from .io import IO, path, read, write
 from .model import digest, identifier, validate_judgment
 
@@ -142,6 +142,11 @@ def resend_weekly(target, request_id, io=None):
                        state['reports'].get(base))
             # 必须关联已有对账活，否则反馈没有可归属的活。
             anchor = (old or {}).get('anchor')
+            if state.get('checks'):
+                from .checks import destination
+                active, exists = destination(state)
+                if exists:
+                    anchor = active
             if not anchor:
                 candidates = [k for k, v in state['weeks'].items() if v.get('reconciled')]
                 preferred = 'reconcile-' + week

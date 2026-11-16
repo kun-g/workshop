@@ -65,3 +65,6 @@ name = "看门不引用插件"
 type = "forbidden"
 source_modules = ["workshop.watch"]
 forbidden_modules = ["workshop.plugins"]
+
+[project.entry-points."workshop.wait"]
+intervention = "workshop.plugins.intervention.client:make_wait"

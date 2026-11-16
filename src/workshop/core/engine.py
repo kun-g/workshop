@@ -7,7 +7,7 @@ from .log import Log
 from .models import stamp, utcnow
 from .records import defer_items, materialize
 from .stages import serial_stage
-from . import asking, beat, faults, holding, homes, hooks, intake, picking, rounds, timing, waking, workdirs
+from . import asking, beat, faults, holding, homes, hooks, intake, picking, rounds, timing, waking, workdirs, waits
 
 
 def finder(log, target):
@@ -79,7 +79,7 @@ class Engine:
         if "stage" in changes and (not serial_stage(item["stage"]) or not serial_stage(changes["stage"])):
             changes["serial_hold"] = False
         # 等回答必须有本活仍有效的问题。通知、已作废的卡不能充当问题。
-        if changes.get("state") == "等你" and not self.answerable(item):
+        if changes.get("state") == "等你" and not self.answerable({**item, **changes}):
             reason = changes.get("gate_reason") or (changes.get("leave") or {}).get("about") or changes.get("next") or "缺少有效问卡"
             changes.update(state="卡住", blocked_by=reason,
                            next="项目经理处理阻塞；需要 Kun 判断时提交带推荐的问卡")
@@ -211,7 +211,7 @@ class Engine:
                                           for c in self.log.all("cards"))
 
     def answerable(self, item):
-        return any(c["item"] == item["id"] and c["mode"] == "ask" and not c["answered"]
+        return waits.active(self, item) or any(c["item"] == item["id"] and c["mode"] == "ask" and not c["answered"]
                    and not c.get("cancelled") and not c.get("rejected")
                    for c in self.log.all("cards"))
 

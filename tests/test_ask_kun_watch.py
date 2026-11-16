@@ -311,6 +311,8 @@ def test_launch_agents_have_absolute_paths_and_independent_schedule(tmp_path):
         else:
             assert plist["KeepAlive"] is True and "StartInterval" not in plist
             assert plist["ProgramArguments"][-1] == "run"
+            # 不声明时 launchd 按 Standard 限流，子进程跑 check.sh 慢约 5 倍（#164 实测 107 秒对 21 秒）。
+            assert plist["ProcessType"] == "Interactive"
     with pytest.raises(ValueError):
         module.payload("com.kun.workshop", {"keep_alive": False})
 
@@ -749,6 +751,19 @@ def test_tick_same_heartbeat_and_long_gap_do_not_accumulate(fake, tmp_path):
     state = watch.run(NOW + timedelta(hours=8))
     assert state["tick_observation"]["count"] == 1
     assert not calls(fake, "notify")
+
+
+def test_tick_heartbeat_written_after_watch_started_still_counts(fake, tmp_path):
+    # 守护进程一秒写约十次心跳，看门扫完故障再读时，心跳常比本次开始时间新几十毫秒（ws#167）。
+    watch = setup_watch(fake, tmp_path)
+    write_tick(watch, NOW + timedelta(milliseconds=40), 8)
+    assert watch.run(NOW)["tick_observation"]["count"] == 0
+    for n in range(3):
+        write_tick(watch, NOW + timedelta(minutes=n + 1, milliseconds=40), 101)
+        state = watch.run(NOW + timedelta(minutes=n + 1))
+    assert state["tick_observation"]["count"] == 3 and "tick" in state["active"]
+    write_tick(watch, NOW + timedelta(minutes=10), 8)
+    assert "tick_observation" not in watch.run(NOW + timedelta(minutes=4))
 
 
 def test_tick_alert_retries_same_incident_after_delivery_failure(fake, tmp_path):

@@ -3,7 +3,7 @@ import json
 from datetime import datetime
 from .records import compact, compact_history
 
-TABLES = ("items", "rounds", "cards", "timers", "controls", "cursors", "deferred", "effects", "aliases")
+TABLES = ("items", "rounds", "cards", "timers", "controls", "cursors", "deferred", "effects", "aliases", "waits")
 
 
 def evolve(db, fact: dict) -> None:
@@ -17,19 +17,20 @@ def evolve(db, fact: dict) -> None:
                    (key, json.dumps(value, ensure_ascii=False)))
 
     def apply_action(item, action):
+        reference_pending = get("waits", item.get("wait_id", "")).get("state") == "waiting"
         if action == "rework":
             item["pending_rework"] = True
         if action == 'ready' and item['state'] in ('卡住', '等你') and not item.get('plugin_blocked'):
             pending = any((card := json.loads(raw))['item'] == item['id'] and card['mode'] == 'ask'
                           and not card.get('answered') and not card.get('cancelled') and not card.get('rejected')
                           for (raw,) in db.execute('SELECT body FROM cards').fetchall())
-            if not pending:
+            if not pending and not reference_pending:
                 if item['stage'] not in ('接单', '说清楚') and not item.get('wait_for_ready'):
                     item['pending_rework'] = True
                 item.update(state='空闲', next='按放行事件继续', blocked_by='')
         if action == "ready" and item.get("wait_for_ready"):
             # 放行解除拒收/作废问题的等待，但不伪造其他问题的答案。
-            pending = False
+            pending = reference_pending
             for (raw,) in db.execute("SELECT body FROM cards").fetchall():
                 card = json.loads(raw)
                 if card["item"] != item["id"] or card["mode"] != "ask":
@@ -63,6 +64,23 @@ def evolve(db, fact: dict) -> None:
     if kind == "reset":
         for table in TABLES:
             db.execute(f"DELETE FROM {table}")
+    elif kind == 'wait_bound':
+        put('waits', body['id'], body)
+        item = get('items', item_id)
+        item['wait_id'] = body['id']
+        put('items', item_id, item)
+    elif kind == 'wait_changed':
+        row = get('waits', body['id'])
+        row.update(body)
+        put('waits', body['id'], row)
+    elif kind == 'wait_resumed':
+        row = get('waits', body['id'])
+        row.update(body, state='resumed')
+        put('waits', body['id'], row)
+        item = get('items', item_id)
+        item.update(wait_id=None, state='空闲', next='原阶段重新核验外部结果', blocked_by='')
+        item['revision'] += 1
+        put('items', item_id, item)
     elif kind == "alias_bound":
         put("aliases", body["id"], body)
     elif kind == "event":
