@@ -145,3 +145,20 @@ class Selector(Protocol):
                candidates: list[dict]) -> Selection | None:
         """候选含 config 与 available 快照；返回候选配置和理由，None 表示没有可用候选。"""
         ...
+
+
+class WaitService(Protocol):
+    """独立服务端口。content/read 的内容只由流程解释，核心只用引用和完成标识。"""
+    def invoke(self, action: str, content: dict, config: dict) -> dict:
+        """流程调用服务的业务操作；核心不解释或保存 content。"""
+        ...
+    def create(self, operation: str, content: dict, config: dict) -> str:
+        """稳定操作号，先落盘再返回引用；同号改内容必须拒绝。"""
+        ...
+    def read(self, reference: str, config: dict) -> dict: ...
+    def poll(self, reference: str, config: dict) -> dict:
+        """只返回 ref、ready(bool)、token；ready 只代表有结果，不代表批准。"""
+        ...
+    def acknowledge(self, operation: str, reference: str, token: str, config: dict) -> dict:
+        """核心持久记录恢复后才确认；重试同号幂等。"""
+        ...

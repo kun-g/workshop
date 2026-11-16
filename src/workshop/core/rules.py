@@ -24,6 +24,14 @@ class Rules:
     def validate(cls, data: dict) -> "Rules":
         if not isinstance(data, dict) or not data.get("targets"):
             raise ValueError("规则缺交付对象")
+        services = data.get('wait_services', {})
+        if not isinstance(services, dict):
+            raise ValueError('wait_services 必须是对象')
+        for name, service in services.items():
+            if (not isinstance(name, str) or not name or not isinstance(service, dict)
+                    or not isinstance(service.get('endpoint'), str) or not service['endpoint']
+                    or type(service.get('timeout', 5)) not in (int, float) or not 0 < service.get('timeout', 5) <= 30):
+                raise ValueError('等待端口须有名字、本机地址和 0 到 30 秒超时')
         limits = data.get("limits", {})
         budget = limits.get("brief_max_chars", DEFAULT_BRIEF_MAX_CHARS)
         if type(budget) is not int or budget <= 0:

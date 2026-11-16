@@ -10,7 +10,7 @@ import time
 
 from .jobs import Pending
 from .models import stamp
-from . import rounds
+from . import rounds, waits
 
 
 def tick(engine, received_at=None):
@@ -34,6 +34,7 @@ def one(engine, began=None):
         engine.classify_events()
         engine.channels()
         engine.timers()
+        waits.reconcile(engine)
         rounds.drive(engine)
         advance_open(engine)
         engine.release_workdirs()
@@ -42,6 +43,8 @@ def one(engine, began=None):
 
 
 def advance(engine, item):
+    if waits.active(engine, item):
+        return
     control = engine.control(item["target"])
     if control.get("paused") or engine.flow_broken(item["target"], item.get("flow", "")):
         return
