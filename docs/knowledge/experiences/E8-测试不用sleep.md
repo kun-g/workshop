@@ -1,14 +1,14 @@
 ---
-id: S4
+id: E8
 summary: 测试不用 sleep：慢调用用闸门或假时钟，等状态用查条件加总超时的循环。
 written_in: [AGENTS.md]
 mechanism: 只有文字；可加检查：tests/ 里出现 sleep 就报错，确有必要的逐条豁免
 status: 在用
-approved: 待 Kun 过目
+approved: —
 sources: [20261114-测试里用sleep]
 ---
 
-# S4 测试不用 sleep
+# E8 测试不用 sleep
 
 ## 怎么做
 

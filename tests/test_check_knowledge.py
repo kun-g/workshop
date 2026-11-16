@@ -13,7 +13,7 @@ def entry(rule, text, where=("AGENTS.md",), state="在用", sources=("a",)):
 
 def make(tmp_path, agents, entries, lessons, pm=""):
     k = tmp_path / "docs/knowledge"
-    for d in ("lessons", "principles", "standards", "practices"):
+    for d in ("lessons", "principles", "standards", "experiences"):
         (k / d).mkdir(parents=True)
     (tmp_path / "AGENTS.md").write_text(agents)
     (tmp_path / "docs/项目经理.md").write_text(pm)
@@ -24,9 +24,9 @@ def make(tmp_path, agents, entries, lessons, pm=""):
     return check.problems(tmp_path)
 
 
-def test_two_lessons_one_practice(tmp_path):
+def test_two_lessons_one_experience(tmp_path):
     found = make(tmp_path, "- E1 先看第一屏。\n",
-                 {"practices/E1-看第一屏.md": entry("E1", "先看第一屏。", sources=("a", "b"))},
+                 {"experiences/E1-看第一屏.md": entry("E1", "先看第一屏。", sources=("a", "b"))},
                  {"a": "E1", "b": "E1"})
     assert found == []
 
@@ -59,8 +59,8 @@ def test_sources_point_down(tmp_path):
     agents = "- P1 车间自己运转。\n- S1 主检出只读。\n- E1 先看第一屏。\n"
     found = make(tmp_path, agents, {"principles/P1-x.md": entry("P1", "车间自己运转。", sources=("S1", "a")),
                                     "standards/S1-x.md": entry("S1", "主检出只读。", sources=("E1", "P1", "c", "E9")),
-                                    "practices/E1-x.md": entry("E1", "先看第一屏。")}, {"a": ""})
-    assert not any(p.startswith("principles/") or p.startswith("practices/") for p in found)
+                                    "experiences/E1-x.md": entry("E1", "先看第一屏。")}, {"a": ""})
+    assert not any(p.startswith("principles/") or p.startswith("experiences/") for p in found)
     assert any("sources 只能引下级，P1 不比 S1 低" in p for p in found)
     assert any("c.md 不存在" in p for p in found)
     assert any("E9 没有条目文件" in p for p in found)

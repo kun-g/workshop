@@ -3,7 +3,7 @@
 引用只从上往下：原则 > 规范 > 经验 > 教训，条目的 sources 列下级的编号或教训文件名，教训不反指。
 
 用的层：USE_FILES 里以「- P1 」「- S3 」「- E2 」开头的行，一条一行。
-条目文件：docs/knowledge/{principles,standards,practices}/<编号>-<短名>.md，front matter 有
+条目文件：docs/knowledge/{principles,standards,experiences}/<编号>-<短名>.md，front matter 有
   id、summary、written_in、mechanism、status、approved、sources。
 教训：docs/knowledge/lessons/*.md，front matter 有 date、refs。
 """
@@ -15,7 +15,7 @@ import yaml
 
 USE_FILES = ("AGENTS.md", "docs/项目经理.md", "docs/协调对话.md")
 KNOWLEDGE = "docs/knowledge"
-KIND_DIR = {"P": "principles", "S": "standards", "E": "practices"}
+KIND_DIR = {"P": "principles", "S": "standards", "E": "experiences"}
 LINE = re.compile(r"^- ([PSE]\d+) (.+)$")
 QUOTE = re.compile(r"[「」“”]")
 DATE = re.compile(r"\d{1,2}-\d{1,2}\b|\d{4}-\d{2}-\d{2}|\d+ ?月 ?\d+ ?日")

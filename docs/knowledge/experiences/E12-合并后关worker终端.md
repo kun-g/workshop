@@ -1,14 +1,14 @@
 ---
-id: S8
+id: E12
 summary: Orca worker 的 PR 合并后，同一步关掉它的终端。
 written_in: [docs/项目经理.md, docs/协调对话.md]
 mechanism: 只有文字
 status: 在用
-approved: 待 Kun 过目
+approved: —
 sources: [20261113-合并后worker终端还开着]
 ---
 
-# S8 合并后关 worker 终端
+# E12 合并后关 worker 终端
 
 ## 怎么做
 

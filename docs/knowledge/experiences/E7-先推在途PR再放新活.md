@@ -1,14 +1,14 @@
 ---
-id: S3
+id: E7
 summary: 有 PR 卡着时，新单不打开工标签，先解在途 PR 的卡点。
 written_in: [docs/项目经理.md, docs/协调对话.md]
 mechanism: 只有文字；可做成 `workshop release` 放行前列出卡着的 PR
 status: 在用
-approved: 待 Kun 过目
+approved: —
 sources: [20261113-在途PR没处理就开新活]
 ---
 
-# S3 先推在途 PR 再放新活
+# E7 先推在途 PR 再放新活
 
 ## 怎么做
 
