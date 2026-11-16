@@ -1,9 +1,11 @@
 """知识检查：用的层只有规定，一条规矩只有一份文字，用的层、条目文件、教训三者对得上。
 
+引用只从上往下：原则 > 规范 > 经验 > 教训，条目的 sources 列下级的编号或教训文件名，教训不反指。
+
 用的层：USE_FILES 里以「- P1 」「- S3 」「- E2 」开头的行，一条一行。
 条目文件：docs/knowledge/{principles,standards,practices}/<编号>-<短名>.md，front matter 有
   id、summary、written_in、mechanism、status、approved、sources。
-教训：docs/knowledge/lessons/*.md，front matter 有 date、refs、produces。
+教训：docs/knowledge/lessons/*.md，front matter 有 date、refs。
 """
 import re
 import sys
@@ -22,7 +24,9 @@ STATES = ("在用", "机制接管", "废止")
 
 
 ENTRY_KEYS = ("id", "summary", "written_in", "mechanism", "status", "approved", "sources")
-LESSON_KEYS = ("date", "refs", "produces")
+LESSON_KEYS = ("date", "refs")
+RANK = {"E": 1, "S": 2, "P": 3}  # 教训算 0
+RULE_ID = re.compile(r"[PSE]\d+")
 
 
 def front_matter(path, keys, out):
@@ -41,7 +45,7 @@ def front_matter(path, keys, out):
     if missing:
         out.append(f"{name}：front matter 缺 {'、'.join(missing)}")
         return None
-    for k in ("written_in", "sources", "produces"):
+    for k in ("written_in", "sources"):
         if k in data and not isinstance(data[k], list):
             out.append(f"{name}：{k} 要写成列表")
             return None
@@ -76,10 +80,10 @@ def problems(root):
                 if f["id"] != rule:
                     out.append(f"{folder}/{path.name}：id 写的是 {f['id']}，文件名是 {rule}")
                 entries[rule] = (path, f)
-    lessons = {}
+    lessons = set()
     for path in sorted((base / "lessons").glob("*.md")):
-        if (f := front_matter(path, LESSON_KEYS, out)) is not None:
-            lessons[path.stem] = set(f["produces"])
+        if front_matter(path, LESSON_KEYS, out) is not None:
+            lessons.add(path.stem)
 
     for rule, places in used.items():
         for name, number, text in places:
@@ -113,18 +117,16 @@ def problems(root):
         elif files:
             out.append(f"{name}：{state}，用的层里却还有")
         if not f["sources"]:
-            out.append(f"{name}：sources 至少列一篇教训")
-        for lesson in f["sources"]:
-            if lesson not in lessons:
-                out.append(f"{name}：sources 里的 lessons/{lesson}.md 不存在")
-            elif rule not in lessons[lesson]:
-                out.append(f"{name}：sources 里的 lessons/{lesson}.md，produces 没写 {rule}")
-    for lesson, made in lessons.items():
-        for rule in made:
-            if rule not in entries:
-                out.append(f"lessons/{lesson}.md：produces {rule}，没有条目文件")
-            elif lesson not in entries[rule][1]["sources"]:
-                out.append(f"lessons/{lesson}.md：produces {rule}，但 {rule} 的 sources 里没有这篇")
+            out.append(f"{name}：sources 至少列一篇教训或一条下级条目")
+        for source in f["sources"]:
+            source = str(source)
+            if RULE_ID.fullmatch(source):
+                if source not in entries:
+                    out.append(f"{name}：sources 里的 {source} 没有条目文件")
+                elif RANK[source[0]] >= RANK[rule[0]]:
+                    out.append(f"{name}：sources 只能引下级，{source} 不比 {rule} 低")
+            elif source not in lessons:
+                out.append(f"{name}：sources 里的 lessons/{source}.md 不存在")
     return out
 
 

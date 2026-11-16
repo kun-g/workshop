@@ -20,7 +20,7 @@ def make(tmp_path, agents, entries, lessons, pm=""):
     for name, body in entries.items():
         (k / name).write_text(body)
     for name, made in lessons.items():
-        (k / "lessons" / f"{name}.md").write_text(f"---\ndate: 2026-11-16\nrefs: x\nproduces: [{made}]\n---\n\n# x\n")
+        (k / "lessons" / f"{name}.md").write_text("---\ndate: 2026-11-16\nrefs: x\n---\n\n# x\n")
     return check.problems(tmp_path)
 
 
@@ -55,12 +55,15 @@ def test_entry_must_match_use_layer(tmp_path):
     assert any("summary 和用的层不一致" in p for p in found) and any("实际在" in p for p in found)
 
 
-def test_lesson_links_both_ways(tmp_path):
-    found = make(tmp_path, "- S1 主检出只读。\n", {"standards/S1-x.md": entry("S1", "主检出只读。", sources=("a", "c"))},
-                 {"a": "", "b": "S1"})
-    assert any("lessons/a.md，produces 没写 S1" in p for p in found)
+def test_sources_point_down(tmp_path):
+    agents = "- P1 车间自己运转。\n- S1 主检出只读。\n- E1 先看第一屏。\n"
+    found = make(tmp_path, agents, {"principles/P1-x.md": entry("P1", "车间自己运转。", sources=("S1", "a")),
+                                    "standards/S1-x.md": entry("S1", "主检出只读。", sources=("E1", "P1", "c", "E9")),
+                                    "practices/E1-x.md": entry("E1", "先看第一屏。")}, {"a": ""})
+    assert not any(p.startswith("principles/") or p.startswith("practices/") for p in found)
+    assert any("sources 只能引下级，P1 不比 S1 低" in p for p in found)
     assert any("c.md 不存在" in p for p in found)
-    assert any("b.md：produces S1，但 S1 的 sources 里没有这篇" in p for p in found)
+    assert any("E9 没有条目文件" in p for p in found)
 
 
 def test_mechanism_took_over(tmp_path):
