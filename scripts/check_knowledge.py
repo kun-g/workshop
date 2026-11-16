@@ -5,7 +5,7 @@
 用的层：USE_FILES 里以「- P1 」「- S3 」「- E2 」开头的行，一条一行。
 条目文件：docs/knowledge/{principles,standards,experiences}/<编号>-<短名>.md，front matter 有
   id、summary、written_in、mechanism、status、approved、sources。
-教训：docs/knowledge/lessons/*.md，front matter 有 date、refs。
+教训：docs/knowledge/lessons/*.md，front matter 有 refs。
 """
 import re
 import sys
@@ -24,7 +24,7 @@ STATES = ("在用", "机制接管", "废止")
 
 
 ENTRY_KEYS = ("id", "summary", "written_in", "mechanism", "status", "approved", "sources")
-LESSON_KEYS = ("date", "refs")
+LESSON_KEYS = ("refs",)
 RANK = {"E": 1, "S": 2, "P": 3}  # 教训算 0
 RULE_ID = re.compile(r"[PSE]\d+")
 

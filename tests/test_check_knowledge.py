@@ -20,7 +20,7 @@ def make(tmp_path, agents, entries, lessons, pm=""):
     for name, body in entries.items():
         (k / name).write_text(body)
     for name, made in lessons.items():
-        (k / "lessons" / f"{name}.md").write_text("---\ndate: 2026-11-16\nrefs: x\n---\n\n# x\n")
+        (k / "lessons" / f"{name}.md").write_text("---\nrefs: x\n---\n\n# x\n")
     return check.problems(tmp_path)
 
 
