@@ -2,7 +2,6 @@
 from collections import defaultdict
 from dataclasses import asdict
 
-from .cards import notice
 from .jobs import Pending
 from .models import Relations, STAGES, stamp
 
@@ -83,8 +82,6 @@ def admit(engine, item):
             engine.change(item, state=state, next=about, blocked_by=error, serial_hold=False,
                           relation_hold=saved, relation_error=bool(error),
                           leave={"kind": "工序", "owner": "车间", "at": stamp(engine.clock()), "about": about})
-        if error and not item.get("relation_error"):
-            engine.card(item, f'relations:{item["revision"]}', "notice", notice(about))
         return None
     if owned:
         # 排队位置重新计算，旧串行占位不会复活。
