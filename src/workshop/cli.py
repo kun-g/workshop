@@ -10,7 +10,7 @@ from .core.engine import Engine, finder
 from .core.jobs import Jobs, execute
 from .core.log import Log
 from .core.models import Event
-from .core.report import resolve, status, unfiled, usage, why
+from .core.report import overview, resolve, status, unfiled, usage, why
 from .core.rules import Rules
 from .core.wake import Mailbox, ring
 from .registry import Registry, load_rules
@@ -29,7 +29,13 @@ def parser():
         data.add_argument("--json")
         data.add_argument("--file", type=Path)
     commands.add_parser("abort").add_argument("token")
-    commands.add_parser("status")
+    status_command = commands.add_parser("status", help="当前的活：默认只列没结束的；--all 连已结束的一起列")
+    status_command.add_argument("--all", dest="everything", action="store_true", help="连完成、放弃的一起列")
+    status_command.add_argument("--state", help="只列这些状态，逗号分隔，例如 卡住,等你；给了就不再默认隐藏已结束的")
+    status_command.add_argument("--target", help="只列这些交付对象，逗号分隔")
+    status_command.add_argument("--flow", help="只列这些流程，逗号分隔")
+    status_command.add_argument("--html", nargs="?", const="", metavar="文件",
+                                help="写成一页网页；不给文件名时写到 --state-dir/status.html，打印路径")
     commands.add_parser("usage")
     metrics_command = commands.add_parser("metrics", help="只读查看供给、流动、负载及小时明细")
     metrics_command.add_argument("--since", help="回看时长，默认 24h；支持 s/m/h/d")
@@ -99,7 +105,15 @@ def main(argv=None):
     jobs = None
     try:
         if args.command == "status":
-            print(status(log))
+            split = lambda text: tuple(x.strip() for x in (text or "").split(",") if x.strip())
+            options = dict(everything=args.everything, states=split(args.state), targets=split(args.target), flows=split(args.flow))
+            if args.html is None:
+                print(status(log, **options))
+            else:
+                from .core.status_page import page
+                path = Path(args.html).expanduser() if args.html else args.state_dir / "status.html"
+                path.write_text(page(overview(log, **options)))
+                print(path.resolve())
         elif args.command == "job":
             saved = log.get("controls", "@rules") or {}
             execute(args.directory, Registry(saved.get('data', {}).get('executor_profiles')), lambda target: finder(log, target))
