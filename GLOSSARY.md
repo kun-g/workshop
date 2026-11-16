@@ -150,24 +150,20 @@ agent 不守规矩的五种样子之一：没做完，却报「做完」。另�
 
 ## 做事攒下的东西
 
-分两层：用的层是 `AGENTS.md`「规矩」和两个角色文件里带编号的行，agent 干活时读；来历层是 `docs/knowledge/` 里的教训和台账，复盘时读。
+分两层：用的层是 `AGENTS.md`「规矩」和两个角色文件里带编号的行，agent 干活时读；来历层是 `docs/knowledge/`，复盘时读：一件事一篇教训，一条规矩一个条目文件。
 
 **教训**（Lesson）：
 一次真碰到的事：经过、证据、原话、根因。放在 `docs/knowledge/lessons/`，写完不改。
 _Avoid_：踩坑记录、事故（事故留给线上故障）
 
 **经验**（Practice）：
-做成过、建议照做的做法，用的层里 E 开头的一行。
+做成过、建议照做的做法。用的层里 E 开头的一行，细节在 `docs/knowledge/practices/`；可以来自好几篇教训。
 _Avoid_：最佳实践、技巧
 
 **规范**（Standard）：
-Kun 过目过、必须照做的规定，用的层里 S 开头的一行。不叫规则：规则是 `rules/workshop.yaml` 那份配置。
+Kun 过目过、必须照做的规定。用的层里 S 开头的一行，细节在 `docs/knowledge/standards/`。不叫规则：规则是 `rules/workshop.yaml` 那份配置。
 _Avoid_：规则、约定、纪律
 
 **原则**（Principle）：
-Kun 定的取舍依据，用的层里 P 开头的一行，少而稳。
+Kun 定的取舍依据，少而稳。用的层里 P 开头的一行，细节在 `docs/knowledge/principles/`。
 _Avoid_：理念、价值观
-
-**台账**：
-`docs/knowledge/ledger.md`，一条规矩一行：写在哪、靠什么机制、来自哪篇教训、谁批的。
-_Avoid_：索引、清单
