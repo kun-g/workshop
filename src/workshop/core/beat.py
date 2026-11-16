@@ -68,13 +68,18 @@ def advance(engine, item):
                           after_pending_count=0, after_wait=None, pending_episode=item.get("pending_episode", 0) + 1,
                           wait_for_ready=False, retry_executor=None, gate_count=0, next="按新事件返工")
         item = engine.log.get("items", item["id"])
-    engine.recheck_after(item)
-    item = engine.log.get("items", item["id"])
-    engine.complete_approval(item)
-    item = engine.log.get("items", item["id"])
-    if not engine.taskhome(item):
-        return
-    item = engine.log.get("items", item["id"])
+    # 没有待办时这些操作不会改活，沿用本拍已读的正文。
+    # 有待办仍在操作后重读，后续推进必须看到刚结算的阶段和状态。
+    if item.get("after_wait"):
+        engine.recheck_after(item)
+        item = engine.log.get("items", item["id"])
+    if item.get("pending_advance"):
+        engine.complete_approval(item)
+        item = engine.log.get("items", item["id"])
+    if engine.rules.data.get("taskhome"):
+        if not engine.taskhome(item):
+            return
+        item = engine.log.get("items", item["id"])
     if item["state"] in ("空闲", "排队") and not item.get("after_wait"):
         item = engine.serial_queue(item)
     if item["state"] == "空闲" and not item.get("after_wait"):
