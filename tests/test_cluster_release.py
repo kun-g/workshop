@@ -431,7 +431,7 @@ def test_cumulative_changes_use_actual_deployment_and_rule_paths(cluster, monkey
     assert bool(poll.events) is release
     assert len(calls) == 4
     if immediate:
-        assert not request.exists()
+        assert request.read_text() == now.isoformat()
         assert all(e.title.startswith('立即发版') for e in poll.events)
         assert source.poll(target, poll.cursor).events == []
         assert len(calls) == 4

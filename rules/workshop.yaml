@@ -98,6 +98,7 @@ targets:
       scheduled_release:
         triggers: [{source: main_branch, when: {kind: ahead}, action: ready}]
         scheduled_release_state_dir: ~/.local/state/workshop
+        stages: [证据, 交付, 验收, 收尾]
       watch_updates:
         triggers:
           - {source: watch_updates, when: {kind: [version, reconcile, failure]}, action: ready}

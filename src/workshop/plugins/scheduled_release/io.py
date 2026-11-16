@@ -63,7 +63,7 @@ class IO:
     def now(self):
         return datetime.now(timezone.utc).isoformat()
 
-    def command(self, argv, *, cwd=None, timeout=30, isolated=False):
+    def command(self, argv, *, cwd=None, timeout=30, isolated=False, cache_dir=None):
         env = None
         temporary = None
         if isolated:
@@ -75,6 +75,11 @@ class IO:
                        GIT_TERMINAL_PROMPT='0', GH_CONFIG_DIR=str(home / 'gh'),
                        AWS_CONFIG_FILE='/dev/null', AWS_SHARED_CREDENTIALS_FILE='/dev/null', KUBECONFIG='/dev/null',
                        GIT_CONFIG_COUNT='1', GIT_CONFIG_KEY_0='core.hooksPath', GIT_CONFIG_VALUE_0='/dev/null')
+            # 临时 HOME 仍隔离身份；解释器使用作业自身的固定版本，不重新下载。
+            # 缓存仅存依赖，独立于宿主的 HOME、认证配置和检查副本的 venv。
+            env.update(UV_PYTHON=str(Path(sys._base_executable).resolve()), UV_PYTHON_DOWNLOADS='never')
+            if cache_dir is not None:
+                env['UV_CACHE_DIR'] = str(Path(cache_dir).resolve())
         try:
             result = authenticated_run(argv, cwd=cwd, env=env, timeout=timeout,
                                        capture_output=True, text=True, errors='replace')

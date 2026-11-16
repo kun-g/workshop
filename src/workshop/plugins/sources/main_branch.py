@@ -42,8 +42,15 @@ class MainBranchSource:
         slot = self.clock().astimezone(timezone.utc).replace(minute=0, second=0, microsecond=0).isoformat()
         config, root = self.release_config(target)
         request = root / REQUEST
-        asked = request.read_text().strip() if request.exists() else ''
-        if cursor == slot and not asked:
+        # 请求由 CLI 写，来源只读。确认随事件和游标一起提交；在途结果被
+        # 唤醒作废、超时或重启时，旧游标仍能重放请求，不先删除唯一凭据。
+        previous_slot, _, acknowledged = (cursor or '').partition('\n')
+        requested = request.read_text().strip() if request.exists() else ''
+        asked = requested if requested != acknowledged else ''
+        def position(request_id):
+            return slot + ('\n' + request_id if request_id else '')
+        next_cursor = position(asked or acknowledged)
+        if previous_slot == slot and not asked:
             return Poll([], cursor)
         cluster = config.get('scheduled_release_mode', 'self') == 'cluster'
         try:
@@ -56,7 +63,7 @@ class MainBranchSource:
             raise Retryable('发版记录须为对象')
         if cluster and release and release.get('status') not in ('ok', 'rejected', 'failed'):
             # pending、结果不明或上线失败都保留占位；不能整点再发一张卡。
-            return Poll([], slot)
+            return Poll([], position(acknowledged))
         checkout = str(Path(target['checkout']).expanduser().resolve())
         remote = f"https://github.com/{target['repo']}.git"
         def read(argv):
@@ -73,7 +80,7 @@ class MainBranchSource:
         to = rows[0]
         if cluster:
             if release.get('status') in ('rejected', 'failed') and release.get('to') == to:
-                return Poll([], slot)
+                return Poll([], next_cursor)
             try:
                 deployment = target['deployment']
                 application = json.loads(read(['kubectl', '--request-timeout=20s', '--context', deployment['context'],
@@ -97,7 +104,7 @@ class MainBranchSource:
                 # 启动时没记版本的旧守护进程只能退回比主检出；新版上线后不再走这里。
                 head = read(['git', '-C', checkout, 'rev-parse', 'HEAD'])
             if release.get('status') == 'rolled_back' and release.get('to') == to:
-                return Poll([], slot)
+                return Poll([], next_cursor)
         needs_release = head != to
         if cluster and needs_release and target.get('release_ignored_paths'):
             try:
@@ -113,10 +120,7 @@ class MainBranchSource:
         ext = 'now:' + asked if asked else slot
         events = [] if not needs_release else [Event('main_branch', ext, target['name'], to,
             ('立即发版 ' if asked else '定时发版 ') + to[:12], {'kind': 'ahead', 'from': head, 'to': to})]
-        if asked:
-            # 即使全是无需上线的路径，请求也只用一次；本小时不再另比一次。
-            request.unlink(missing_ok=True)
-        return Poll(events, slot)
+        return Poll(events, next_cursor)
 
 
 def make_source():

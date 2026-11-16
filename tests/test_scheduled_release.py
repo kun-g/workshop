@@ -368,6 +368,9 @@ def test_registered_rules_load_both_flows_and_default_issue_ids():
     assert issue['flow_default'] and issue['release'] == 'none'
     assert not release['flow_default']
     assert release['sources']['main_branch']['every'] == '1h'
+    assert ScheduledRelease().stages(release) == ('证据', '交付', '验收', '收尾')
+    assert issue['stages'] == ['接单', '说清楚', '执行', '证据', '交付', '验收', '收尾']
+    assert ScheduledRelease().stages(rules.target('grant-console', 'scheduled_release')) == tuple(issue['stages'])
     assert isinstance(Registry().get('flow', 'scheduled_release'), ScheduledRelease)
     assert isinstance(Registry().get('source', 'main_branch'), MainBranchSource)
 
@@ -471,7 +474,8 @@ def test_release_now_request_compares_immediately_once(world, monkeypatch):
     asked = source.poll(w['target'], slot)
     assert [e.body for e in asked.events] == [{'kind': 'ahead', 'from': w['a'], 'to': w['b']}]
     assert asked.events[0].object_key == w['b'] and asked.events[0].title.startswith('立即发版')
-    assert not request.exists() and asked.cursor == slot
+    assert request.read_text() == '2026-11-14T09:30:00+00:00'
+    assert asked.cursor == slot + '\n2026-11-14T09:30:00+00:00'
     assert source.poll(w['target'], asked.cursor).events == []
 
 
