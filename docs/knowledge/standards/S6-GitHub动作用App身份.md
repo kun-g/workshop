@@ -1,11 +1,14 @@
-# S6 GitHub 动作用 App 身份
+---
+id: S6
+summary: GitHub 上的动作用 App 身份；kun-g 只代表 Kun 亲手做的事。grant-console 的 issue 例外，正文写明代办。
+written_in: [AGENTS.md]
+mechanism: '`workshop release`；规则里各交付对象的 `github_identity`'
+status: 在用
+approved: 待 Kun 过目
+sources: [20261114-用kun-g替Kun操作]
+---
 
-- 一句话：GitHub 上的动作用 App 身份；kun-g 只代表 Kun 亲手做的事。grant-console 的 issue 例外，正文写明代办。
-- 写在：AGENTS.md
-- 机制：`workshop release`；规则里各交付对象的 `github_identity`
-- 状态：在用
-- 批准：待 Kun 过目
-- 来源：[用 kun-g 替 Kun 操作](../lessons/20261114-用kun-g替Kun操作.md)
+# S6 GitHub 动作用 App 身份
 
 ## 怎么做
 

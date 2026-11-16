@@ -1,11 +1,14 @@
-# S3 先推在途 PR 再放新活
+---
+id: S3
+summary: 有 PR 卡着时，新单不打开工标签，先解在途 PR 的卡点。
+written_in: [docs/项目经理.md, docs/协调对话.md]
+mechanism: 只有文字；可做成 `workshop release` 放行前列出卡着的 PR
+status: 在用
+approved: 待 Kun 过目
+sources: [20261113-在途PR没处理就开新活]
+---
 
-- 一句话：有 PR 卡着时，新单不打开工标签，先解在途 PR 的卡点。
-- 写在：docs/项目经理.md、docs/协调对话.md
-- 机制：只有文字；可做成 `workshop release` 放行前列出卡着的 PR
-- 状态：在用
-- 批准：待 Kun 过目
-- 来源：[在途 PR 没处理就开新活](../lessons/20261113-在途PR没处理就开新活.md)
+# S3 先推在途 PR 再放新活
 
 ## 怎么做
 

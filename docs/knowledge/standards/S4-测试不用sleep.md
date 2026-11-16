@@ -1,11 +1,14 @@
-# S4 测试不用 sleep
+---
+id: S4
+summary: 测试不用 sleep：慢调用用闸门或假时钟，等状态用查条件加总超时的循环。
+written_in: [AGENTS.md]
+mechanism: 只有文字；可加检查：tests/ 里出现 sleep 就报错，确有必要的逐条豁免
+status: 在用
+approved: 待 Kun 过目
+sources: [20261114-测试里用sleep]
+---
 
-- 一句话：测试不用 sleep：慢调用用闸门或假时钟，等状态用查条件加总超时的循环。
-- 写在：AGENTS.md
-- 机制：只有文字；可加检查：tests/ 里出现 sleep 就报错，确有必要的逐条豁免
-- 状态：在用
-- 批准：待 Kun 过目
-- 来源：[测试里用 sleep](../lessons/20261114-测试里用sleep.md)
+# S4 测试不用 sleep
 
 ## 怎么做
 

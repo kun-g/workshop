@@ -1,11 +1,14 @@
-# S5 不给 Kun 发通知
+---
+id: S5
+summary: 不给 Kun 发通知；只有要他拍板的事才发问卡，一张卡问一件事。
+written_in: [AGENTS.md]
+mechanism: '规则 `notices: hold`：通知只记进核心，`workshop why` 能看到'
+status: 在用
+approved: 待 Kun 过目
+sources: [20261114-Ash发垃圾通知]
+---
 
-- 一句话：不给 Kun 发通知；只有要他拍板的事才发问卡，一张卡问一件事。
-- 写在：AGENTS.md
-- 机制：规则 `notices: hold`：通知只记进核心，`workshop why` 能看到
-- 状态：在用
-- 批准：待 Kun 过目
-- 来源：[Ash 发垃圾通知](../lessons/20261114-Ash发垃圾通知.md)
+# S5 不给 Kun 发通知
 
 ## 怎么做
 
