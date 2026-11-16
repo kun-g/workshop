@@ -101,13 +101,16 @@ targets:
         stages: [证据, 交付, 验收, 收尾]
       watch_updates:
         triggers:
+          - {source: watch_updates, when: {resume: true}, action: rework}
+          - {source: watch_updates, when: {kind: upgrade}, action: ready}
           - {source: watch_updates, when: {kind: [version, reconcile, failure]}, action: ready}
           - {source: watch_updates, when: {kind: wake}, action: rework}
           - {source: 'cli:feishu', action: update}
         stage_executors:
           说清楚: [{use: watch-inventory}]
-          执行: [{use: codex}]
-        pending_limit: 24
+          执行: [{use: watch-inventory}]
+        # 同一检查活逐项对账/判断；每周新事件重置等待，不因软件数量触及旧的 24 次上限。
+        pending_limit: 10000
     selector: quota
     quota_snapshot: *quota_snapshot
     # 阶段开关：去掉审查（Kun 11-13：「先跳过 Review 加快交付，反正现在的系统是我自己在用」）。要恢复就把审查加回证据和交付之间。
@@ -115,6 +118,8 @@ targets:
     sources: {github: {}, main_branch: {every: 1h}, watch_updates: {}}
     watch_updates:
       enabled: true
+      consolidate_on_start: true
+      core_database: ~/.local/state/workshop/workshop.db
       timezone: Asia/Singapore
       hour: 9
       weekday: 0

@@ -8,7 +8,7 @@ import subprocess
 import pytest
 
 from workshop.core.models import Event, Receipt
-from workshop.plugins.watch_updates.flow import Flow, feedback
+from workshop.plugins.watch_updates.entries import Entries as Flow, feedback
 from workshop.plugins.watch_updates.io import IO, read, write
 from workshop.plugins.watch_updates.model import SCHEMA, reconcile, release_range, validate_judgment, validate_software, version
 from workshop.plugins.watch_updates.report import render

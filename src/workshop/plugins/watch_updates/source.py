@@ -1,11 +1,13 @@
 """每天读上游，每周发一次对账事件；游标与事件由核心同时确认。"""
 import json
 import subprocess
+from dataclasses import replace
 
 from workshop.core.models import Event, Poll
-from .io import IO
+from .io import IO, write
 from .calendar import period
 from .model import digest, release_range, upstream, validate_software
+from .checks import destination
 
 
 # 事件和活的资料只留这些字段；发布说明正文写进文件，判断时按需读。
@@ -25,6 +27,30 @@ class Source:
     def wake_paths(self, target):
         return [str(self.io.state_file(target))]
 
+    def normalize(self, batch, target):
+        """上游游标仍按版本去重；入核心前才决定检查活的归属。"""
+        state = self.io.state(target)
+        check, active = destination(state)
+        if not active and state.get('checks'):
+            previous = next(reversed(state['checks']))
+            if self.io.check_open(target, previous):
+                check, active = previous, True
+        events = []
+        for event in batch.events:
+            if event.body['kind'] == 'upgrade':
+                events.append(event)
+                continue
+            if event.body['kind'] == 'wake' and not active:
+                continue  # 已收尾项的旧 outbox 不开空的检查活。
+            data = {**event.body, 'entry_key': event.object_key, 'resume': active}
+            if data['kind'] in ('version', 'reconcile', 'failure'):
+                record_id = digest([event.source, event.ext_id])
+                write(self.io.file(target, 'state_dir') / 'events' / (record_id + '.json'), data)
+                data = {k: data[k] for k in ('kind', 'entry_key', 'resume')}
+                data['record_id'] = record_id
+            events.append(replace(event, object_key=check, title='检查更新', body=data))
+        return Poll(events, batch.cursor, normalized=True)
+
     def poll(self, target, cursor):
         c = self.io.config(target)
         if not c.get('enabled', False):
@@ -33,6 +59,8 @@ class Source:
         day, week = period(c, self.io.clock())
         events = []
         state = self.io.state(target)
+        if c.get('consolidate_on_start') and not state.get('checks_migrated'):
+            return Poll([], cursor)  # 启动迁移成功前不确认新游标、不再生成旧粒度的活。
 
         def event(kind, key, payload, ext):
             events.append(Event('watch_updates', ext, target['name'], key,
@@ -47,7 +75,7 @@ class Source:
             event('reconcile', object_key, {'week': str(week), 'title': '每周盯更新对账 ' + str(week)}, object_key)
             for key, value in state['versions'].items():
                 if value.get('status') not in ('done', 'failed'):
-                    event('wake', key, {'title': value['software']['name'] + ' 继续等反馈或升级'}, f'week:{week}:{key}')
+                    event('wake', key, {'title': value['software']['name'] + ' 继续等反馈'}, f'week:{week}:{key}')
             old['week'] = str(week)
         if old['day'] != str(day):
             try:
@@ -76,7 +104,8 @@ class Source:
                     error = str(exc)
                     key = 'failure-' + row['id'] + '-' + digest(error)
                     if key not in old['seen']:
-                        event('failure', key, {'error': error, 'title': row.get('name', row['id']) + ' 版本读取卡住'}, key)
+                        event('failure', key, {'error': error, 'software_id': row['id'],
+                                              'title': row.get('name', row['id']) + ' 版本读取卡住'}, key)
                         old['seen'].append(key)
             for item in events:
                 if item.body['kind'] in ('version', 'reconcile'):
