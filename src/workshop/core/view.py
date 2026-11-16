@@ -74,9 +74,9 @@ def evolve(db, fact: dict) -> None:
                 return  # 来源里没放行过的对象只记事实，不建活。
             item = dict(id=item_id, target=body["target"], object_key=body["object_key"],
                         flow=body.get("flow", ""), flow_default=body.get("flow_default", not body.get("flow")),
-                        title=body["title"], stage="接单", state="空闲", session=None,
+                        title=body["title"], stage=body.get("initial_stage", "接单"), state="空闲", session=None,
                         sessions={}, writer=None, ticket=None, failures=0, approved=[],
-                        checks=[], depth=body["depth"], created=fact["at"], next="接单",
+                        checks=[], depth=body["depth"], created=fact["at"], next=body.get("initial_stage", "接单"),
                         blocked_by="", leave=None, revision=0, pending_rework=False,
                         materials=[], history=[], reviews=[], review_required=1, cause=fact["seq"])
             if body.get("release_gate"):

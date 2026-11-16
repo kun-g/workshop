@@ -2,7 +2,7 @@
 from dataclasses import asdict, replace
 from datetime import datetime, timedelta
 import json
-from .gates import advance_problem, validate_stages
+from .gates import advance_problem, validate_stages, initial_stage
 from .models import Event, Receipt, ReceiptError, stamp
 from .ports import Retryable
 from .models import Classification
@@ -69,10 +69,12 @@ def ingest(engine, event: Event, round_token: str | None = None, *, ingress: str
 
 
 def record_event(engine, event, ingress, *, namespaced=False):
+    first = initial_stage(engine.rules.target(event.target, event.flow))
     with engine.log.transaction():
         paused = engine.control(event.target).get("paused", False)
         kind = "deferred_event" if paused else "event"
         added = engine.fact(kind, {**asdict(event), "ingress": ingress, "pending_classification": ingress == "external",
+                                 **({'initial_stage': first} if not paused else {}),
                                  **gate(ingress)}, event.item_id, source=event.source,
                                  ext_id=json.dumps([event.target, event.flow, event.ext_id], ensure_ascii=False) if namespaced else event.ext_id)
         if added and not paused:
@@ -136,7 +138,8 @@ def classify_events(engine):
             with engine.log.transaction():
                 engine.fact("event_classified", {"id": entry["id"], "action": action,
                           "event_seq": entry["event_seq"], **note,
-                          **({"event": {**asdict(event), "action": action}} if entry.get("defer_creation") else {})}, event.item_id)
+                          **({"event": {**asdict(event), "action": action,
+                                        "initial_stage": initial_stage(target)}} if entry.get("defer_creation") else {})}, event.item_id)
             engine.retry_clear(entry["id"])
         except Pending:
             continue

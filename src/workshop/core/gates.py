@@ -26,10 +26,19 @@ def overlaps(paths, prefixes):
 
 
 def validate_stages(stages):
+    short = list(stages) == ["证据", "交付", "验收", "收尾"]
     if (len(set(stages)) != len(stages) or any(s not in STAGES for s in stages)
             or list(stages) != sorted(stages, key=STAGES.index)
-            or not {"接单", "说清楚", "执行", "验收", "收尾"}.issubset(stages)):
+            or not (short or {"接单", "说清楚", "执行", "验收", "收尾"}.issubset(stages))):
         raise ValueError("阶段必须有序且包含四道关口需要的阶段")
+
+
+def initial_stage(target):
+    stages = target.get('stages')
+    if stages is None:
+        return '接单'
+    validate_stages(stages)
+    return stages[0]
 
 
 def allowed_advances(item: dict, stages) -> list[str]:

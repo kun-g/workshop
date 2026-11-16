@@ -3,6 +3,7 @@ from dataclasses import asdict
 import hashlib
 from pathlib import Path
 import re
+import time
 
 from workshop.core.models import After, Classification, Evidence
 from workshop.core.ports import Retryable
@@ -19,7 +20,11 @@ class ScheduledRelease:
         self.io = io or IO()
 
     def stages(self, target):
-        return STAGES
+        configured = tuple(target.get('stages', STAGES))
+        supported = (STAGES,) if target.get('scheduled_release_mode') == 'cluster' else (STAGES, STAGES[3:])
+        if configured not in supported:
+            raise ValueError('发版阶段必须保留证据、交付、验收、收尾；集群批次还须保留接单占位')
+        return configured
 
     def automatic(self, item, stage, target):
         return True
@@ -57,6 +62,9 @@ class ScheduledRelease:
         if state['status'] == 'checking':
             return self.fail(state, '上次检查进程退出但结果未确认，不重跑同一提交')
         root = self.io.root(target)
+        began = time.monotonic()
+        state['check_started_at'] = self.io.now()
+        timings = state['check_seconds'] = {}
         checkout = Path(target['checkout']).expanduser().resolve()
         candidate = root / 'scheduled_release' / ('check-' + hashlib.sha256(item['id'].encode()).hexdigest())
         if not candidate.exists():
@@ -64,17 +72,26 @@ class ScheduledRelease:
             self.io.git(checkout, 'worktree', 'add', '--detach', str(candidate), state['to'])
         if self.io.git(candidate, 'rev-parse', 'HEAD') != state['to']:
             return self.fail(state, '检查副本不是目标提交')
+        timings['checkout'] = time.monotonic() - began
         state['candidate'] = str(candidate)
         state['status'] = 'checking'
         save()
-        result = self.io.command(CHECKS[0], cwd=candidate, timeout=target.get('check_timeout', 300), isolated=True)
+        checking = time.monotonic()
+        result = self.io.command(CHECKS[0], cwd=candidate, timeout=target.get('check_timeout', 300), isolated=True,
+                                 cache_dir=root / 'dependency-cache' / 'uv')
+        timings['command'] = time.monotonic() - checking
         state['check'] = result
         state['checked'] = state['to']
         state['status'] = 'checked'
         result_after = self.fail(state, f"检查退出 {result['exit_code']}；{result['stderr'][-500:]}") if result['exit_code'] else After()
         save()
         # 只收回自己创建的临时检查副本，不碰执行者 worktree。
+        cleaning = time.monotonic()
         cleanup = self.io.command(['git', '-C', str(checkout), 'worktree', 'remove', '--force', str(candidate)])
+        timings['cleanup'] = time.monotonic() - cleaning
+        timings['total'] = time.monotonic() - began
+        state['check_finished_at'] = self.io.now()
+        save()
         if cleanup['exit_code']:
             state['cleanup_error'] = cleanup
         return result_after
@@ -115,7 +132,8 @@ class ScheduledRelease:
                 return self.fail(state, '准备命令未确认完成；已快进但未重启，需人工处理')
             results[str(index)] = {'argv': step['argv'], 'status': 'running'}
             save()
-            result = self.io.command(step['argv'], cwd=cwd, timeout=target.get('release_timeout', 300), isolated=True)
+            result = self.io.command(step['argv'], cwd=cwd, timeout=target.get('release_timeout', 300), isolated=True,
+                                     cache_dir=root / 'dependency-cache' / 'uv')
             results[str(index)] = result
             save()
             if result['exit_code']:
