@@ -2,6 +2,7 @@
 
 这一拍只做这些：收作业结果、清一次流程目录、收事件、归类、读通道、定时、结算开着的轮、推进每件活、收回目录、再读通道、写心跳。
 失败记账和心跳放在一起。
+一拍超过 100 毫秒时，等锁和各步耗时追加到状态目录的 tick-slow.jsonl，只留最近 100 条。
 """
 import json
 import os
@@ -11,6 +12,26 @@ import time
 from .jobs import Pending
 from .models import stamp
 from . import rounds
+
+SLOW_TICK_MS = 100
+SLOW_ITEM_MS = 5
+SLOW_TICK_KEEP = 100
+SLOW_TICK_BYTES = 256 * 1024
+
+
+class Span:
+    """记一步耗时；这一步抛出去也留下时间。"""
+
+    def __init__(self, spans, name):
+        self.spans, self.name = spans, name
+
+    def __enter__(self):
+        self.began = time.monotonic()
+        return self
+
+    def __exit__(self, *exc):
+        self.spans[self.name] = round((time.monotonic() - self.began) * 1000, 3)
+        return False
 
 
 def tick(engine, received_at=None):
@@ -24,21 +45,38 @@ def tick(engine, received_at=None):
 
 
 def one(engine, began=None):
+    spans, slow, count = {}, [], 0
+    waiting = time.monotonic()
     with engine.exclusive():
-        if engine.jobs:
-            engine.jobs.reap()
-        if not getattr(engine, "cleaned_flows", False):
-            engine.cleanup_flows()
-            engine.cleaned_flows = True
-        engine.sources()
-        engine.classify_events()
-        engine.channels()
-        engine.timers()
-        rounds.drive(engine)
-        advance_open(engine)
-        engine.release_workdirs()
-        engine.channels()
-        engine.heartbeat(began)
+        spans["lock"] = round((time.monotonic() - waiting) * 1000, 3)
+        try:
+            with Span(spans, "reap"):
+                if engine.jobs:
+                    engine.jobs.reap()
+            if not getattr(engine, "cleaned_flows", False):
+                with Span(spans, "cleanup"):
+                    engine.cleanup_flows()
+                engine.cleaned_flows = True
+            with Span(spans, "sources"):
+                engine.sources()
+            with Span(spans, "classify"):
+                engine.classify_events()
+            with Span(spans, "channels"):
+                engine.channels()
+            with Span(spans, "timers"):
+                engine.timers()
+            with Span(spans, "rounds"):
+                rounds.drive(engine)
+            with Span(spans, "advance"):
+                slow, count = advance_open(engine)
+            with Span(spans, "release"):
+                engine.release_workdirs()
+            with Span(spans, "channels_2"):
+                engine.channels()
+            with Span(spans, "heartbeat"):
+                engine.heartbeat(began)
+        finally:
+            note_slow_tick(engine, began, spans, slow, count)
 
 
 def advance(engine, item):
@@ -90,11 +128,47 @@ def advance_open(engine):
     items = {item["id"]: item for item in engine.log.open_items()}
     if engine.rules.data.get("taskhome"):
         items.update((item["id"], item) for item in engine.log.ended_home_items())
+    slow = []
     for item in items.values():
+        started = time.monotonic()
         try:
             engine.advance(item)
         except Pending:
-            continue  # 这件活在等作业出结果，下一拍再看；别的活照常推进。
+            pass  # 这件活在等作业出结果，下一拍再看；别的活照常推进。
+        finally:
+            spent = round((time.monotonic() - started) * 1000, 3)
+            if spent >= SLOW_ITEM_MS:
+                slow.append({"id": item["id"], "ms": spent, "stage": item.get("stage"), "state": item.get("state")})
+    slow.sort(key=lambda row: row["ms"], reverse=True)
+    return slow[:8], len(items)
+
+
+def note_slow_tick(engine, began, spans, slow, count):
+    """慢拍写在状态目录，不进事实库：库本身就是要查的开销。"""
+    if began is None:
+        return
+    elapsed = round((time.monotonic() - began) * 1000)
+    if elapsed <= SLOW_TICK_MS:
+        return
+    try:
+        active = engine.occupied()
+    except Exception:
+        active = None
+    record = {"at": stamp(engine.clock()), "tick_ms": elapsed, "wake_ms": getattr(engine, "wake_ms", None),
+              "active": active, "open": count, "spans": spans, "slow_items": slow}
+    try:
+        append_slow_tick(engine.log.path.parent / "tick-slow.jsonl", record)
+    except OSError:
+        return
+
+
+def append_slow_tick(path, record, keep=SLOW_TICK_KEEP, limit=SLOW_TICK_BYTES):
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+    if path.stat().st_size <= limit:
+        return
+    kept = path.read_text(encoding="utf-8").splitlines()[-keep:]
+    path.write_text("\n".join(kept) + ("\n" if kept else ""), encoding="utf-8")
 
 
 def note_tick_failure(engine, exc):
