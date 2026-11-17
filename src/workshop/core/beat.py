@@ -1,6 +1,6 @@
 """一拍的顺序。
 
-这一拍只做这些：收作业结果、清一次流程目录、收事件、归类、读通道、定时、结算开着的轮、推进每件活、收回目录、再读通道、写心跳。
+这一拍只做这些：收作业结果、归类外部事件、清一次流程目录、收来源事件、读通道、定时、结算开着的轮、推进每件活、收回目录、再读通道、写心跳。
 失败记账和心跳放在一起。
 一拍超过 100 毫秒时，等锁和各步耗时追加到状态目录的 tick-slow.jsonl，只留最近 100 条。
 """
@@ -53,14 +53,15 @@ def one(engine, began=None):
             with Span(spans, "reap"):
                 if engine.jobs:
                     engine.jobs.reap()
+            # 外部事件先归件：事件到开始处理不排在清目录、读来源之后（核心 R27）。
+            with Span(spans, "classify"):
+                engine.classify_events()
             if not getattr(engine, "cleaned_flows", False):
                 with Span(spans, "cleanup"):
                     engine.cleanup_flows()
                 engine.cleaned_flows = True
             with Span(spans, "sources"):
                 engine.sources()
-            with Span(spans, "classify"):
-                engine.classify_events()
             with Span(spans, "channels"):
                 engine.channels()
             with Span(spans, "timers"):

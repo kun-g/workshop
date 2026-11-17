@@ -37,7 +37,8 @@ def broken(engine, target, port, name, exc):
                 engine.fact('control', {'id': key, 'broken': True, 'action_blocked': isinstance(exc, TargetBlocked)})
                 engine.card({'id': f'@{key}'}, f'plugin:{port}:{name}:{incident}', 'notice',
                           notice(f'{target_name} 插件故障：{exc}'))
-            for item in engine.log.all('items'):
+            # 只有没结束的活会被标卡住；不读已结束活的大正文（核心 R27）。
+            for item in engine.log.open_items():
                 if (item['target'] == target_name and item['state'] not in ('完成', '放弃')
                         and not item.get('plugin_blocked')
                         and (flow is None or engine.item_target(item)['flow'] == flow)):
