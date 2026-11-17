@@ -45,7 +45,8 @@ def brief(row, asks):
     state, stage = row["shown"], row["stage"]
     if row["stuck"]:
         owner = row.get("owner") or "项目经理"
-        return sentence(row["reason"] or "原因未记录"), f"{owner}：{sentence(row['advice'], LIMIT - len(owner) - 1)}"
+        advice = row["advice"].removeprefix(owner).lstrip("：: ，,")  # 建议动作常以执行者开头，别写成「项目经理：项目经理…」
+        return sentence(row["reason"] or "原因未记录"), f"{owner}：{sentence(advice, LIMIT - len(owner) - 1)}"
     if state == "等你":
         decision = asks.get(row["id"]) or row["next"]
         return f"{stage}阶段等你回答", f"Kun：{sentence(decision, LIMIT - 4)}"
@@ -62,11 +63,17 @@ def item(row, asks, now, *, badge=True):
     reason, todo = brief(row, asks)
     pill = f'<span class="pill {tone(row["shown"])}">{e(row["shown"])}</span>' if badge else ""
     since = row.get("since") or ""
+    origin = row.get("origin") or {}
+    # 名字用来源资料的标题（「会话放行 workshop:184」这类登记名认不出是什么事）；链接放在简称上。
+    title = origin.get("title") or row["title"]
+    ref = (f'<a href="{e(origin["url"])}" onclick="event.stopPropagation()">{e(origin["ref"])}</a>' if origin.get("url") else e(origin.get("ref") or row["id"]))
+    quote = f'<span class="quote">Kun 原话：{e(sentence(origin["quote"], 60))}</span>' if origin.get("quote") else ""
     raw = (("下一步", row["next"]), ("原因", row["reason"] if row["state"] == "卡住" else ""),
            ("卡在谁手里", "" if row["blocker"] in ("—", row["reason"]) else row["blocker"]),
+           ("Kun 原话", origin.get("quote") or ""), ("等你回答", asks.get(row["id"], "")),
            ("流程", lane(row)), ("阶段", f'{row["stage"]} · {row["who"]}'), ("活", row["id"]))
     body = "".join(f"<p><b>{k}</b>{e(v)}</p>" for k, v in raw if v)
-    return (f'<details class="item"><summary><span class="name">{e(row["title"])}{pill}</span>'
+    return (f'<details class="item"><summary><span class="name">{e(title)}{pill}<span class="ref">{ref}</span>{quote}</span>'
             f'<span class="why">{e(reason)}</span><span class="todo">{e(todo)}</span>'
             f'<span class="since" data-since="{e(since)}">{e(waited(since, now))}</span></summary>'
             f'<div class="body">{body}</div></details>')
@@ -186,7 +193,8 @@ details.item>summary{padding:7px 0;cursor:pointer;list-style:none}
 details>summary::-webkit-details-marker{display:none}
 details.item>summary::before{content:"▸";position:absolute;margin-left:-14px;color:var(--mute);font-size:11px}
 details.item[open]>summary::before{content:"▾"}
-.name{font-weight:600;overflow-wrap:anywhere}.why{color:var(--mute)}.todo{overflow-wrap:anywhere}
+.name{font-weight:600;overflow-wrap:anywhere}.ref{margin-left:8px;font-weight:400;font-size:12px}.ref a{color:var(--run)}
+.quote{display:block;font-weight:400;font-size:12px;color:var(--mute)}.why{color:var(--mute)}.todo{overflow-wrap:anywhere}
 .pill{color:#fff;font-size:11px;border-radius:4px;padding:0 6px;margin-left:6px;font-weight:400}
 .body{padding:2px 0 10px}.body p,.card p{margin:4px 0}
 .body b,.card b{display:inline-block;min-width:52px;color:var(--mute);font-weight:500;margin-right:8px}

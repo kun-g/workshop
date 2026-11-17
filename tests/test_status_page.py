@@ -14,7 +14,7 @@ NEXT = "项目经理核对跨仓库关系调用所需的凭据范围或代执行
 def row(**extra):
     base = {"id": "workshop:184", "title": "会话放行 workshop:184", "target": "workshop", "flow": "issue_delivery",
             "stage": "执行", "state": "卡住", "shown": "卡住", "stuck": True, "who": "车间", "next": NEXT, "blocker": LONG,
-            "reason": LONG, "advice": NEXT, "owner": "项目经理", "since": (NOW - timedelta(minutes=95)).isoformat()}
+            "reason": LONG, "advice": NEXT, "owner": "项目经理", "origin": {"title": "任务关系：车间认前置、总单和相关", "url": "https://github.com/kun-g/workshop/issues/184", "ref": "workshop#184", "quote": "我的意思是，车间里面的任务系统能不能加这个 relationships？"}, "since": (NOW - timedelta(minutes=95)).isoformat()}
     return {**base, **extra}
 
 
@@ -37,18 +37,27 @@ def test_total_first_then_stamp_with_age_script():
     assert body.index("活 2 件 · 卡住 1 · 跑着 1") < body.index("生成于 <b>2026-11-16 22:50:12</b>")
     assert "另有 3 件没列出（已结束）" in body and "等你 0" not in body
     assert 'id="stamp" data-at="2026-11-16T22:50:12+08:00"' in html and "可能已过期，以 <code>workshop status</code> 为准" in html
-    assert "stale=10" in html and "http" not in html.replace("</", "")  # 离线、不引用外部资源
+    assert "stale=10" in html and not re.search(r"<link|<img|src=|@import|url\(", html)  # 离线、不加载外部资源；来源链接是点了才去的
 
 
 def test_one_line_per_item_with_four_short_fields():
     html = page(view(row()), NOW)
-    (line,) = [s for s in summaries(html) if "会话放行" in s]
-    fields = re.findall(r'class="(?:name|why|todo|since)"[^>]*>(.*?)</span>', line)
-    assert len(fields) == 4 and fields[0] == "会话放行 workshop:184" and fields[3] == "1 小时"
+    (line,) = [s for s in summaries(html) if "任务关系" in s]
+    fields = re.findall(r'class="(?:name|why|todo|since)"[^>]*>(.*?)(?:</span>(?=<span class="(?:why|todo|since)")|</span>$)', line)
+    assert len(fields) == 4 and fields[0].startswith("任务关系：车间认前置、总单和相关") and fields[3] == "1 小时"
     assert "项目经理：" in fields[2]
     for value in fields[1:3]:
         assert 0 < len(value) <= 40 and "\n" not in value
     assert NEXT not in line and LONG not in line  # 摘要行里没有原文整段
+
+
+def test_background_title_link_and_quote_on_the_line():
+    html = page(view(row()), NOW)
+    (line,) = [s for s in summaries(html) if "任务关系" in s]
+    assert 'href="https://github.com/kun-g/workshop/issues/184"' in line and ">workshop#184</a>" in line
+    assert "Kun 原话：我的意思是，车间里面的任务系统能不能加这个 relationships？" in line
+    plain = page(view(row(origin=None)), NOW)  # 不是 issue 来的活：退回登记名，不出空链接
+    assert "会话放行 workshop:184" in plain and "Kun 原话" not in plain.split('<div class="body">')[0]
 
 
 def test_raw_text_folded_and_each_shown_once():
@@ -76,7 +85,7 @@ def test_missing_start_is_unknown_not_made_up():
 def test_brief_by_state():
     assert sentence("第一句。第二句") == "第一句" and len(sentence("长" * 80)) == 40 and sentence("长" * 80).endswith("…")
     reason, todo = brief(row(owner=""), {})
-    assert todo.startswith("项目经理：") and reason.startswith("grant-console")
+    assert todo.startswith("项目经理：") and reason.startswith("grant-console") and not todo.startswith("项目经理：项目经理")
     ask = row(id="g:1", shown="等你", state="等你", stuck=False, owner="")
     assert brief(ask, {"g:1": "是否批准 #175"}) == ("执行阶段等你回答", "Kun：是否批准 #175")
     assert brief(row(shown="跑着", state="跑着", stuck=False, next="等回执"), {}) == ("执行阶段进行中", "车间：等回执")

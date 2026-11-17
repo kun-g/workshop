@@ -18,6 +18,19 @@ def state_since(log, item):
     return found[0] if found else None
 
 
+def origin(item):
+    """这件活从哪份来源资料来：标题、链接、简称，以及 Kun 原话的第一句（页面给人回忆背景用）；资料里没有标题和链接的返回 None。"""
+    found = [m["body"] for m in item.get("materials") or []
+             if isinstance(m.get("body"), dict) and isinstance(m["body"].get("data"), dict)
+             and m["body"]["data"].get("title") and m["body"]["data"].get("html_url")]
+    if not found:
+        return None
+    data = found[-1]["data"]
+    quotes = [line.lstrip("> ").strip() for line in (data.get("body") or "").splitlines() if line.startswith(">") and line.lstrip("> ").strip()]
+    return {"title": data["title"], "url": data["html_url"],
+            "ref": f'{str(found[-1].get("repo", "")).split("/")[-1]}#{found[-1].get("number", "")}', "quote": quotes[0] if quotes else ""}
+
+
 def overview(log, *, everything=False, states=(), targets=(), flows=()):
     """总览要用的数据，文字和网页共用。默认只取没结束的活；states、targets、flows 是筛选，空表示不筛。"""
     count = log.db.execute("SELECT count(*) FROM items").fetchone()[0]
@@ -44,7 +57,7 @@ def overview(log, *, everything=False, states=(), targets=(), flows=()):
                      "flow": item.get("flow") or "", "stage": item["stage"], "state": item["state"], "shown": shown,
                      "stuck": stuck, "who": row["executor"] if row else "车间", "next": next_step, "blocker": blocker,
                      "reason": item["blocked_by"], "advice": item["next"],
-                     "owner": (item.get("leave") or {}).get("owner") or ""})
+                     "owner": (item.get("leave") or {}).get("owner") or "", "origin": origin(item)})
     filtered = bool(states or targets or flows)
     picked = [r for r in rows
               if (everything or states or r["state"] not in ENDED)
