@@ -91,7 +91,7 @@ PAGE_MAX_AGE = timedelta(minutes=5)   # 没变化也至少这么久重写一次�
 
 
 def refresh_status_page(engine):
-    """状态有变化就重写状态目录里的 status.html（核心 R1 补注：页面反映当前）；写失败不挡这一拍，页面会因此显示「可能已过期」。"""
+    """状态有变化就重写状态目录里的 status.html（核心 R1 补注：页面反映当前）；写失败不挡这一拍，页面上的更新时间会因此变红。"""
     now = engine.clock()
     last = getattr(engine, "status_page", None)
     if last and (now - last < PAGE_MIN_GAP or (not engine.page_dirty and now - last < PAGE_MAX_AGE)):
