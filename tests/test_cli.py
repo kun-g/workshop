@@ -69,9 +69,9 @@ def test_status_html_page(tmp_path, capsys, monkeypatch):
     path = Path(capsys.readouterr().out.strip())
     assert path == tmp_path / "status.html"
     current = path.read_text()
-    assert current.startswith("<!doctype html>") and "没有卡住的活" in current and "alpha:one" not in current
-    assert "另有 1 件没列出（已结束）" in current
+    assert current.startswith("<!doctype html>") and "活 0 件" in current and "<h2>卡住" not in current and "alpha:one" not in current
+    assert "已结束" not in current and "没列出" not in current  # 已结束的件数不提
     target = tmp_path / "all.html"
     assert main(["status", "--all", "--html", str(target)]) == 0
     full = target.read_text()
-    assert "已结束 1 件" in full and "<code>alpha:one</code>" in full
+    assert "已结束 1 件" in full and "<b>活</b>alpha:one" in full
