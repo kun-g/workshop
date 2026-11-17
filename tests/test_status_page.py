@@ -153,3 +153,11 @@ def test_moving_rows_show_stage_and_duration_columns():
     (line,) = [s for s in summaries(head) if "任务关系" in s]
     assert '<span class="stage">执行</span>' in line and re.search(r'class="since"[^>]*>1 小时</span>', line) and 'class="todo"' not in line
     assert "<b>等了多久</b>" not in head  # 已经在行里，展开里不再重复
+
+
+def test_copy_id_button_on_every_row():
+    html = page(view(row(), row(id="g:1", title="跑", shown="跑着", state="跑着", stuck=False, origin=None)), NOW)
+    lines = summaries(html)
+    assert all('class="copy"' in line for line in lines if "name" in line)
+    assert 'data-copy="workshop:184"' in html and 'data-copy="g:1"' in html and "已复制" in html  # 点了不展开该行：脚本里 preventDefault
+    assert "preventDefault" in html

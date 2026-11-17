@@ -75,7 +75,7 @@ def item(row, asks, now, *, badge=True, running=False):
            ("Kun 原话", origin.get("quote") or ""), ("等你回答", asks.get(row["id"], "")),
            ("流程", lane(row)), ("" if running else "阶段", f'{row["stage"]} · {row["who"]}'), ("活", row["id"]))
     body = "".join(f"<p><b>{k}</b>{v if k == '等了多久' else e(v)}</p>" for k, v in raw if k and v)
-    return (f'<details class="item"><summary><span class="name">{e(title)}{pill}<span class="ref">{ref}</span>{quote}</span>'
+    return (f'<details class="item"><summary><span class="name">{e(title)}{pill}<span class="ref">{ref}</span><button type="button" class="copy" data-copy="{e(row["id"])}" title="复制 {e(row["id"])}">复制 ID</button>{quote}</span>'
             + (f'<span class="stage">{e(row["stage"])}</span>{clock}' if running else
                f'<span class="todo">{e(todo)}' + (f'<span class="why">{e(reason)}</span>' if reason else "") + '</span>')
             + '</summary>'
@@ -166,7 +166,15 @@ function tick(){
   s.classList.toggle("old",ms>=stale*60000)}
  document.querySelectorAll(".since").forEach(function(el){
   var b=Date.parse(el.dataset.since);if(!isNaN(b)){el.textContent=span(Date.now()-b)}})}
-tick();setInterval(tick,30000)})();
+tick();setInterval(tick,30000);
+document.addEventListener("click",function(ev){
+ var b=ev.target.closest&&ev.target.closest("button.copy");if(!b)return;
+ ev.preventDefault();ev.stopPropagation();
+ function done(){var old=b.textContent;b.textContent="已复制";setTimeout(function(){b.textContent=old},1200)}
+ function fallback(){var t=document.createElement("textarea");t.value=b.dataset.copy;document.body.appendChild(t);t.select();
+  try{document.execCommand("copy");done()}catch(e){}document.body.removeChild(t)}
+ if(navigator.clipboard&&window.isSecureContext){navigator.clipboard.writeText(b.dataset.copy).then(done,fallback)}else{fallback()}
+},true)})();
 """ % STALE_MINUTES
 
 
@@ -204,7 +212,8 @@ details.item>summary{padding:7px 0;cursor:pointer;list-style:none}
 details>summary::-webkit-details-marker{display:none}
 details.item>summary::before{content:"▸";position:absolute;margin-left:-14px;color:var(--mute);font-size:11px}
 details.item[open]>summary::before{content:"▾"}
-.name{font-weight:600;overflow-wrap:anywhere}.ref{margin-left:8px;font-weight:400;font-size:12px}.ref a{color:var(--run)}
+.name{font-weight:600;overflow-wrap:anywhere}.copy{margin-left:8px;font:inherit;font-size:11px;font-weight:400;padding:0 8px;border:1px solid var(--line);border-radius:999px;background:var(--card);color:var(--mute);cursor:pointer}.copy:hover{color:var(--ink)}
+.ref{margin-left:8px;font-weight:400;font-size:12px}.ref a{color:var(--run)}
 .quote{display:block;font-weight:400;font-size:12px;color:var(--mute)}.todo{overflow-wrap:anywhere}.why{display:block;color:var(--mute);font-size:12px}
 .pill{color:#fff;font-size:11px;border-radius:4px;padding:0 6px;margin-left:6px;font-weight:400}
 .body{padding:2px 0 10px}.body p,.card p{margin:4px 0}
