@@ -1,6 +1,6 @@
 """把总览（report.overview）排成一页自包含的网页：纯规则排版，不调模型，离线能开。
 
-每件活占一行：标题 · 下一步（谁做什么；卡住的活下面补一句原因）；等了多久和原文（下一步、原因、卡在谁手里）折叠在行下。
+每件活占一行：卡住的活 标题 · 原因 · 要谁做什么；等你的活 标题 · 下一步；在动的活 标题 · 阶段 · 执行时长；等了多久和原文（下一步、原因、卡在谁手里）折叠在行下。
 生成时间和「等了多久」带着时间戳，页面里的小脚本按打开时的本机时钟重算，页面放旧了看得出。
 """
 import re
@@ -41,26 +41,23 @@ def waited(since, now):
 
 
 def brief(row, asks):
-    """下一步（谁做什么）和补一句的原因：只有卡住的活才有原因可说；只用活里已有的字段拼，缺了退回原文首句。"""
-    state = row["shown"]
-    wide = 2 * LIMIT - 4
+    """等你的活的下一步：Kun 要回答的问题；没有问题原文就用活里的下一步。原因不写（写出来都是废话）。"""
+    return f"Kun：{sentence(asks.get(row['id']) or row['next'], 2 * LIMIT - 4 - 4)}", ""
+
+
+def split_brief(row):
+    """卡住和已结束的活分两栏写：原因，要谁做什么；各不超过 LIMIT 个字。"""
     if row["stuck"]:
         owner = row.get("owner") or "项目经理"
-        advice = row["advice"].removeprefix(owner).lstrip("：: ，,")  # 建议动作常以执行者开头，别写成「项目经理：项目经理…」
-        return f"{owner}：{sentence(advice, wide - len(owner) - 1)}", sentence(row["reason"] or "原因未记录", wide)
-    if state == "等你":
-        return f"Kun：{sentence(asks.get(row['id']) or row['next'], wide - 4)}", ""
-    if state == "暂停":
-        return "项目经理：恢复已暂停的交付对象", ""
-    if state in ENDED:
-        return "无需处理", ""
-    if state in ("定时", "排队"):
-        return f"车间：{sentence(row['next'], wide - 3)}", ""
-    return f"{row['who']}：{sentence(row['next'], wide - len(row['who']) - 1)}", ""
+        advice = row["advice"].removeprefix(owner).lstrip("：: ，,")
+        return sentence(row["reason"] or "原因未记录"), f"{owner}：{sentence(advice, LIMIT - len(owner) - 1)}"
+    return f"{row['shown']}，停在{row['stage']}阶段", "无需处理"
 
 
-def item(row, asks, now, *, badge=True, running=False):
-    todo, reason = brief(row, asks)
+def item(row, asks, now, *, badge=True, running=False, split=False):
+    reason, todo = split_brief(row) if split else (None, None)
+    if not split:
+        todo, reason = brief(row, asks)
     pill = f'<span class="pill {tone(row["shown"])}">{e(row["shown"])}</span>' if badge else ""
     since = row.get("since") or ""
     origin = row.get("origin") or {}
@@ -77,18 +74,19 @@ def item(row, asks, now, *, badge=True, running=False):
     body = "".join(f"<p><b>{k}</b>{v if k == '等了多久' else e(v)}</p>" for k, v in raw if k and v)
     return (f'<details class="item"><summary><span class="name">{e(title)}{pill}<span class="ref">{ref}</span>{quote}</span>'
             + (f'<span class="stage">{e(row["stage"])}</span>{clock}' if running else
+               f'<span class="why">{e(reason)}</span><span class="todo">{e(todo)}</span>' if split else
                f'<span class="todo">{e(todo)}' + (f'<span class="why">{e(reason)}</span>' if reason else "") + '</span>')
             + '</summary>'
             + f'<div class="body">{body}</div></details>')
 
 
-def section(title, rows, asks, now, *, note="", badge=True, folded=False, warn=False, running=False):
+def section(title, rows, asks, now, *, note="", badge=True, folded=False, warn=False, running=False, split=False):
     if not rows:
         return ""
     longest = sorted(rows, key=lambda r: r.get("since") or "9")  # 等得最久的排前面；没起点的排最后
     head = f"{e(title)} {len(rows)} 件"
-    body = f'<div class="group{" warn" if warn else ""}{" running" if running else ""}"><div class="cols"><span>标题</span>' + ("<span>阶段</span><span>执行时长</span>" if running else "<span>下一步</span>") + '</div>' \
-           + "".join(item(r, asks, now, badge=badge, running=running) for r in longest) + "</div>"
+    body = f'<div class="group{" warn" if warn else ""}{" running" if running else ""}{" split" if split else ""}"><div class="cols"><span>标题</span>' + ("<span>阶段</span><span>执行时长</span>" if running else "<span>原因</span><span>要谁做什么</span>" if split else "<span>下一步</span>") + '</div>' \
+           + "".join(item(r, asks, now, badge=badge, running=running, split=split) for r in longest) + "</div>"
     if folded:
         return f'<details class="fold"><summary><h2>{head}</h2></summary>{body}</details>'
     return f'<h2>{head}</h2>' + (f'<p class="note">{e(note)}</p>' if note else "") + body
@@ -146,10 +144,10 @@ def page(view, now=None):
 <h1>车间状态</h1>
 {card}
 <p class="sub">{e(scope)}{(" · " + e(hidden)) if hidden else ""}</p>
-{section("卡住", stuck, asks, now, badge=False, warn=True)}
+{section("卡住", stuck, asks, now, badge=False, warn=True, split=True)}
 {section("等你", waiting, asks, now, badge=False)}
 {section("在动", moving, asks, now, running=True)}
-{section("已结束", ended, asks, now, folded=True)}
+{section("已结束", ended, asks, now, folded=True, split=True)}
 {f'<details class="fold"><summary><h2>消息通道有问题（项目经理处理，你不用动）</h2></summary><div class="card"><p class="note">车间给你发卡片、读你的回答走的是飞书；这里列的是「发出去不确定到没到」「你答了读不到」两类。</p>{channel}</div></details>' if channel else ""}
 <p class="note foot">由 <code>workshop status --html</code> 生成，排版是固定规则，不经模型。</p>
 </main><script>{SCRIPT}</script></body></html>
@@ -213,6 +211,6 @@ code{font:12px ui-monospace,Menlo,monospace;overflow-wrap:anywhere;margin-right:
 details.fold>summary{cursor:pointer;color:var(--mute);font-size:12px;list-style:none}
 details.fold>summary{color:var(--ink);font-size:inherit}details.fold>summary::before{content:"▸ ";color:var(--mute)}
 details.fold[open]>summary::before{content:"▾ "}
-.running details.item>summary,.running .cols{grid-template-columns:minmax(160px,1fr) minmax(0,1fr) 8em}.since{color:var(--ink)}
-@media (max-width:600px){details.item>summary,.running details.item>summary{grid-template-columns:1fr}.cols{display:none}.lane{grid-template-columns:80px 1fr 28px}}
+.split details.item>summary,.split .cols{grid-template-columns:minmax(120px,1.2fr) minmax(0,1.6fr) minmax(0,1.6fr)}.running details.item>summary,.running .cols{grid-template-columns:minmax(160px,1fr) minmax(0,1fr) 8em}.since{color:var(--ink)}
+@media (max-width:600px){details.item>summary,.running details.item>summary,.split details.item>summary{grid-template-columns:1fr}.cols{display:none}.lane{grid-template-columns:80px 1fr 28px}}
 """

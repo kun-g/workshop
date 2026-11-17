@@ -3,7 +3,7 @@ import re
 from datetime import datetime, timedelta, timezone
 
 from workshop.core.beat import PAGE_MAX_AGE, PAGE_MIN_GAP
-from workshop.core.status_page import brief, page, sentence, waited
+from workshop.core.status_page import brief, page, sentence, split_brief, waited
 from conftest import event, finish
 
 NOW = datetime(2026, 11, 16, 22, 50, 12, tzinfo=timezone(timedelta(hours=8)))
@@ -60,15 +60,22 @@ def test_channel_problems_folded_at_end_with_explanation():
     assert "消息通道" not in page(view(row()), NOW)
 
 
-def test_one_line_per_item_title_and_next_step_with_wait_inside():
+def test_stuck_row_has_title_reason_and_who_does_what():
     html = page(view(row()), NOW)
     (line,) = [s for s in summaries(html) if "任务关系" in s]
-    assert line.count('class="name"') == 1 and line.count('class="todo"') == 1 and 'class="why"' in line  # 卡住的活：下一步下面补一句原因
+    assert '<span>原因</span><span>要谁做什么</span>' in html and "<span>下一步</span>" not in html
+    assert line.count('class="name"') == 1 and line.count('class="why"') == 1 and line.count('class="todo"') == 1
     assert "项目经理：" in line and "小时" not in line and NEXT not in line and LONG not in line
     assert re.search(r'<b>等了多久</b><span class="since"[^>]*>1 小时</span>', html[html.index(line):])  # 等了多久只在展开里
-    assert '<span>下一步</span>' in html and "<span>原因</span>" not in html and "<span>要谁做什么</span>" not in html
-    short = [len(v) for v in re.findall(r'class="(?:todo|why)">(?:项目经理：)?([^<]*)', line)]
-    assert all(0 < n <= 76 for n in short)
+    assert all(0 < len(v) <= 40 for v in re.findall(r'class="(?:why|todo)">(?:项目经理：)?([^<]*)', line))
+
+
+def test_waiting_row_merges_into_next_step():
+    ask = row(id="g:1", shown="等你", state="等你", stuck=False, owner="")
+    html = page(view(ask, asks=[{"item": "g:1", "card": "Q1", "decision": "是否批准 #175"}]), NOW)
+    head = html[html.index("等你 1 件"):]
+    assert "<span>标题</span><span>下一步</span>" in head and 'class="why"' not in head.split('<div class="body">')[0]
+    assert "Kun：是否批准 #175" in head
 
 
 def test_background_title_link_and_quote_on_the_line():
@@ -104,15 +111,12 @@ def test_missing_start_is_unknown_not_made_up():
 
 def test_brief_by_state():
     assert sentence("第一句。第二句") == "第一句" and len(sentence("长" * 80)) == 40 and sentence("长" * 80).endswith("…")
-    todo, reason = brief(row(owner=""), {})
+    reason, todo = split_brief(row(owner=""))
     assert todo.startswith("项目经理：") and not todo.startswith("项目经理：项目经理") and reason.startswith("grant-console")
+    assert all(len(part) <= 40 for part in split_brief(row()))
     ask = row(id="g:1", shown="等你", state="等你", stuck=False, owner="")
-    assert brief(ask, {"g:1": "是否批准 #175"}) == ("Kun：是否批准 #175", "")  # 等你、在动：只有下一步，没有原因
-    assert brief(row(shown="跑着", state="跑着", stuck=False, next="等回执"), {}) == ("车间：等回执", "")
-    assert brief(row(shown="暂停", state="跑着", stuck=False), {})[0].startswith("项目经理：")
-    assert brief(row(shown="定时", state="定时", stuck=False, next="等反馈。别的"), {}) == ("车间：等反馈", "")
-    for r in (ask, row(shown="定时", state="定时", stuck=False, next=NEXT), row()):
-        assert all(len(part) <= 76 for part in brief(r, {"g:1": "很长" * 40}))
+    assert brief(ask, {"g:1": "是否批准 #175"}) == ("Kun：是否批准 #175", "")
+    assert len(brief(ask, {"g:1": "很长" * 40})[0]) <= 76
 
 
 def test_page_rewritten_when_state_changes(engine, tmp_path):
