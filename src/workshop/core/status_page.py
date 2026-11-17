@@ -128,8 +128,7 @@ def page(view, now=None):
         [f'<p><b>读取失败</b><code>{e(c["item"])}</code>{e(c["reason"])}</p>' for c in view["unreadable"]]
         + [f'<p><b>待对账</b><code>{e(c["item"])}</code>发给你的卡片连续 3 次不能确定飞书有没有送出，车间不敢重发，也不敢当没发<br><span class="note">卡号 {e(c["card"])}</span></p>'
            for c in view["uncertain"]])
-    stamp = (f'<p class="stamp" id="stamp" data-at="{e(now.isoformat())}">更新于 <b>{e(now.strftime("%Y-%m-%d %H:%M:%S"))}</b>（<span id="ago">刚刚</span>）'
-             '<button type="button" onclick="location.reload()">刷新</button></p>')
+    stamp = (f'<p class="stamp" id="stamp" data-at="{e(now.isoformat())}">更新于 <b>{e(now.strftime("%Y-%m-%d %H:%M:%S"))}</b>（<span id="ago">刚刚</span>）</p>')
     live = [r for r in rows if r["state"] not in ENDED]
     card = (f'<section class="card top"><p class="total">{e(total)}</p>' + stamp +
             '<div class="tabs"><input type="radio" name="by" id="by-target" checked><label for="by-target">按项目</label>'
@@ -183,7 +182,7 @@ h3{margin:0 0 4px;font-size:14px}h3 em{font-style:normal;color:var(--mute);margi
 .tabs>input{position:absolute;opacity:0}.tabs>label{display:inline-block;padding:3px 14px;margin:6px 6px 6px 0;border:1px solid var(--line);border-radius:999px;cursor:pointer;color:var(--mute);font-size:13px}
 #by-target:checked~label[for=by-target],#by-flow:checked~label[for=by-flow]{background:var(--ink);color:var(--bg);border-color:var(--ink)}
 .pane{display:none}#by-target:checked~.p-target,#by-flow:checked~.p-flow{display:block}.top .chart{border:0;padding:0;margin:0}
-.stamp{font-size:15px;margin:0 0 6px}.stamp b{font-variant-numeric:tabular-nums}.stamp button{margin-left:10px;font:inherit;font-size:13px;padding:1px 12px;border:1px solid var(--line);border-radius:999px;background:var(--card);color:var(--ink);cursor:pointer}.stamp.old{color:var(--stuck);font-weight:600}
+.stamp{font-size:15px;margin:0 0 6px}.stamp b{font-variant-numeric:tabular-nums}.stamp.old{color:var(--stuck);font-weight:600}
 .chart,.card,.group{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px 16px;margin:10px 0}
 .group.warn{border-left:4px solid var(--stuck)}
 .lane{display:grid;grid-template-columns:150px 1fr 36px;align-items:center;gap:10px;margin:6px 0}

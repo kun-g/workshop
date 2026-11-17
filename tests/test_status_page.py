@@ -36,7 +36,7 @@ def test_total_first_then_stamp_with_age_script():
     body = text(html)
     assert body.index("活 2 件 · 卡住 1 · 跑着 1") < body.index("更新于 <b>2026-11-16 22:50:12</b>")
     assert "已结束" not in body and "没列出" not in body and "等你 0" not in body
-    assert 'id="stamp" data-at="2026-11-16T22:50:12+08:00"' in html and "可能已过期" not in html and 'onclick="location.reload()">刷新</button>' in html
+    assert 'id="stamp" data-at="2026-11-16T22:50:12+08:00"' in html and "可能已过期" not in html and '刷新' not in html
     assert "stale=10" in html and not re.search(r"<link|<img|src=|@import|url\(", html)  # 离线、不加载外部资源；来源链接是点了才去的
 
 
