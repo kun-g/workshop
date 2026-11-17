@@ -91,16 +91,17 @@ def section(title, rows, asks, now, *, note="", badge=True, folded=False, warn=F
     return f'<h2>{head}</h2>' + (f'<p class="note">{e(note)}</p>' if note else "") + body
 
 
-def chart(rows):
-    lanes = defaultdict(Counter)
+def chart(rows, key=lane):
+    """每组一根横条，按状态分段上色；key 决定怎么分组。"""
+    groups = defaultdict(Counter)
     for r in rows:
-        lanes[lane(r)][r["shown"]] += 1
-    if not lanes:
+        groups[key(r) or "（无）"]["卡住" if r["stuck"] else r["shown"]] += 1
+    if not groups:
         return ""
-    widest = max(sum(c.values()) for c in lanes.values())
-    seen = sorted({s for c in lanes.values() for s in c}, key=lambda s: ORDER.index(s) if s in ORDER else 2.5)
+    widest = max(sum(c.values()) for c in groups.values())
+    seen = sorted({s for c in groups.values() for s in c}, key=lambda s: ORDER.index(s) if s in ORDER else 2.5)
     out = ['<div class="chart">']
-    for name, c in sorted(lanes.items(), key=lambda kv: -sum(kv[1].values())):
+    for name, c in sorted(groups.items(), key=lambda kv: -sum(kv[1].values())):
         total = sum(c.values())
         segs = "".join(f'<span class="seg {tone(s)}" style="flex:{c[s]}" title="{e(s)} {c[s]}">{c[s] if c[s] / widest >= 0.04 else ""}</span>'
                        for s in seen if c[s])
@@ -117,16 +118,24 @@ def page(view, now=None):
     waiting = [r for r in rows if r["shown"] == "等你" and not r["stuck"]]
     ended = [r for r in rows if r["state"] in ENDED]
     moving = [r for r in rows if r not in stuck and r not in waiting and r not in ended]
-    counts = Counter("卡住" if r["stuck"] else r["shown"] for r in rows)
+    counts = Counter("卡住" if r["stuck"] else r["shown"] for r in rows if r["state"] not in ENDED)
     filters = "；".join(f"{k} {'、'.join(v)}" for k, v in (("状态", view["filters"]["states"]), ("交付对象", view["filters"]["targets"]),
                                                           ("流程", view["filters"]["flows"])) if v)
     scope = ("全部活" if view["everything"] else "当前的活") + (f"，筛选：{filters}" if filters else "")
-    hidden = (f"另有 {view['hidden']} 件没列出（{'筛掉的' if view['filtered'] else '已结束'}）" if view["hidden"] else "")
-    total = f"活 {len(rows)} 件" + "".join(f" · {s} {counts[s]}" for s in sorted(counts, key=lambda s: ORDER.index(s) if s in ORDER else 2.5))
+    hidden = f"另有 {view['hidden']} 件被筛掉" if view["hidden"] and view["filtered"] else ""  # 已结束的件数不提
+    total = f"活 {len([r for r in rows if r['state'] not in ENDED])} 件" + "".join(f" · {s} {counts[s]}" for s in sorted(counts, key=lambda s: ORDER.index(s) if s in ORDER else 2.5))
     channel = "".join(
         [f'<p><b>读取失败</b><code>{e(c["item"])}</code>{e(c["reason"])}</p>' for c in view["unreadable"]]
-        + [f'<p><b>待对账</b><code>{e(c["item"])}</code>连续 3 次不能确定是否已发送，需检查通道<br><span class="note">卡号 {e(c["card"])}</span></p>'
+        + [f'<p><b>待对账</b><code>{e(c["item"])}</code>发给你的卡片连续 3 次不能确定飞书有没有送出，车间不敢重发，也不敢当没发<br><span class="note">卡号 {e(c["card"])}</span></p>'
            for c in view["uncertain"]])
+    stamp = (f'<p class="stamp" id="stamp" data-at="{e(now.isoformat())}">更新于 <b>{e(now.strftime("%Y-%m-%d %H:%M:%S"))}</b>（<span id="ago">刚刚</span>）'
+             '<span id="old" hidden>　可能已过期，以 <code>workshop status</code> 为准</span></p>')
+    live = [r for r in rows if r["state"] not in ENDED]
+    card = (f'<section class="card top"><p class="total">{e(total)}</p>' + stamp +
+            '<div class="tabs"><input type="radio" name="by" id="by-target" checked><label for="by-target">按项目</label>'
+            '<input type="radio" name="by" id="by-flow"><label for="by-flow">按流程</label>'
+            f'<div class="pane p-target">{chart(live, lambda r: r["target"])}</div>'
+            f'<div class="pane p-flow">{chart(live, lambda r: r["flow"])}</div></div></section>') if live else f'<p class="total">{e(total)}</p>' + stamp
     overall = chart(rows)
     return f"""<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
@@ -134,15 +143,14 @@ def page(view, now=None):
 <style>{STYLE}</style></head>
 <body><main>
 <h1>车间状态</h1>
-<p class="total">{e(total)}</p>
-<p class="stamp" id="stamp" data-at="{e(now.isoformat())}">生成于 <b>{e(now.strftime("%Y-%m-%d %H:%M:%S"))}</b>（<span id="ago">刚刚</span>）<span id="old" hidden>　可能已过期，以 <code>workshop status</code> 为准</span></p>
+{card}
 <p class="sub">{e(scope)}{(" · " + e(hidden)) if hidden else ""}</p>
 {section("卡住", stuck, asks, now, badge=False, warn=True)}
-{f'<h2>通道</h2><div class="card">{channel}</div>' if channel else ""}
 {section("等你", waiting, asks, now, badge=False)}
 {section("在动", moving, asks, now)}
 {f'<details class="fold"><summary><h2>按流程分布</h2></summary>{overall}</details>' if overall else ""}
 {section("已结束", ended, asks, now, folded=True)}
+{f'<details class="fold"><summary><h2>消息通道有问题（项目经理处理，你不用动）</h2></summary><div class="card"><p class="note">车间给你发卡片、读你的回答走的是飞书；这里列的是「发出去不确定到没到」「你答了读不到」两类。</p>{channel}</div></details>' if channel else ""}
 <p class="note foot">由 <code>workshop status --html</code> 生成，排版是固定规则，不经模型。</p>
 </main><script>{SCRIPT}</script></body></html>
 """
@@ -172,6 +180,9 @@ h1{font-size:22px;margin:0 0 4px}h2{font-size:17px;margin:28px 0 8px;display:inl
 h3{margin:0 0 4px;font-size:14px}h3 em{font-style:normal;color:var(--mute);margin-left:6px;font-weight:400}
 .sub,.note{color:var(--mute)}.sub{margin:0 0 16px}.note{font-size:12px;margin:0 0 8px}.foot{margin-top:40px}
 .total{font-size:20px;font-weight:600;margin:0 0 6px}
+.tabs>input{position:absolute;opacity:0}.tabs>label{display:inline-block;padding:3px 14px;margin:6px 6px 6px 0;border:1px solid var(--line);border-radius:999px;cursor:pointer;color:var(--mute);font-size:13px}
+#by-target:checked~label[for=by-target],#by-flow:checked~label[for=by-flow]{background:var(--ink);color:var(--bg);border-color:var(--ink)}
+.pane{display:none}#by-target:checked~.p-target,#by-flow:checked~.p-flow{display:block}.top .chart{border:0;padding:0;margin:0}
 .stamp{font-size:15px;margin:0 0 6px}.stamp b{font-variant-numeric:tabular-nums}.stamp.old{color:var(--stuck);font-weight:600}
 .chart,.card,.group{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px 16px;margin:10px 0}
 .group.warn{border-left:4px solid var(--stuck)}

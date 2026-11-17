@@ -34,10 +34,30 @@ def summaries(html):
 def test_total_first_then_stamp_with_age_script():
     html = page(view(row(), row(id="a:1", title="跑", shown="跑着", state="跑着", stuck=False), hidden=3), NOW)
     body = text(html)
-    assert body.index("活 2 件 · 卡住 1 · 跑着 1") < body.index("生成于 <b>2026-11-16 22:50:12</b>")
-    assert "另有 3 件没列出（已结束）" in body and "等你 0" not in body
+    assert body.index("活 2 件 · 卡住 1 · 跑着 1") < body.index("更新于 <b>2026-11-16 22:50:12</b>")
+    assert "已结束" not in body and "没列出" not in body and "等你 0" not in body
     assert 'id="stamp" data-at="2026-11-16T22:50:12+08:00"' in html and "可能已过期，以 <code>workshop status</code> 为准" in html
     assert "stale=10" in html and not re.search(r"<link|<img|src=|@import|url\(", html)  # 离线、不加载外部资源；来源链接是点了才去的
+
+
+def test_top_card_has_project_and_flow_views():
+    rows = [row(), row(id="g:1", target="grant-console", flow="issue_delivery", shown="跑着", state="跑着", stuck=False),
+            row(id="w:2", flow="watch_updates", shown="定时", state="定时", stuck=False)]
+    html = page(view(*rows), NOW)
+    card = html[html.index('<section class="card top">'):html.index("</section>")]
+    assert card.index("活 3 件") < card.index("更新于") < card.index("按项目") < card.index("按流程")
+    target, flow = card.split('<div class="pane p-flow">')
+    assert "grant-console" in target and "workshop" in target and "watch_updates" not in target
+    assert "watch_updates" in flow and "issue_delivery" in flow
+    assert html.index("按流程分布") > html.index("等你") if "等你 " in html else True  # 老的流程图留在最后
+
+
+def test_channel_problems_folded_at_end_with_explanation():
+    broken = view(row(), asks=[])
+    broken["uncertain"] = [{"item": "g:1", "card": "c-1"}]
+    html = page(broken, NOW)
+    assert "消息通道有问题（项目经理处理，你不用动）" in html and "不敢重发" in html and html.index("消息通道有问题") > html.index("卡住 1 件")
+    assert "消息通道" not in page(view(row()), NOW)
 
 
 def test_one_line_per_item_with_four_short_fields():
