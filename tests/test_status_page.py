@@ -49,7 +49,7 @@ def test_top_card_has_project_and_flow_views():
     target, flow = card.split('<div class="pane p-flow">')
     assert "grant-console" in target and "workshop" in target and "watch_updates" not in target
     assert "watch_updates" in flow and "issue_delivery" in flow
-    assert html.index("按流程分布") > html.index("等你") if "等你 " in html else True  # 老的流程图留在最后
+    assert "按流程分布" not in html  # 底部那张旧图已删，只留顶部卡片
 
 
 def test_channel_problems_folded_at_end_with_explanation():

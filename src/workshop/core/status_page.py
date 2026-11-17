@@ -91,7 +91,7 @@ def section(title, rows, asks, now, *, note="", badge=True, folded=False, warn=F
     return f'<h2>{head}</h2>' + (f'<p class="note">{e(note)}</p>' if note else "") + body
 
 
-def chart(rows, key=lane):
+def chart(rows, key):
     """每组一根横条，按状态分段上色；key 决定怎么分组。"""
     groups = defaultdict(Counter)
     for r in rows:
@@ -135,7 +135,6 @@ def page(view, now=None):
             '<input type="radio" name="by" id="by-flow"><label for="by-flow">按流程</label>'
             f'<div class="pane p-target">{chart(live, lambda r: r["target"])}</div>'
             f'<div class="pane p-flow">{chart(live, lambda r: r["flow"])}</div></div></section>') if live else f'<p class="total">{e(total)}</p>' + stamp
-    overall = chart(rows)
     return f"""<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>车间状态</title>
@@ -147,7 +146,6 @@ def page(view, now=None):
 {section("卡住", stuck, asks, now, badge=False, warn=True)}
 {section("等你", waiting, asks, now, badge=False)}
 {section("在动", moving, asks, now)}
-{f'<details class="fold"><summary><h2>按流程分布</h2></summary>{overall}</details>' if overall else ""}
 {section("已结束", ended, asks, now, folded=True)}
 {f'<details class="fold"><summary><h2>消息通道有问题（项目经理处理，你不用动）</h2></summary><div class="card"><p class="note">车间给你发卡片、读你的回答走的是飞书；这里列的是「发出去不确定到没到」「你答了读不到」两类。</p>{channel}</div></details>' if channel else ""}
 <p class="note foot">由 <code>workshop status --html</code> 生成，排版是固定规则，不经模型。</p>
