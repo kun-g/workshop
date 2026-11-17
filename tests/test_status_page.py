@@ -120,10 +120,10 @@ def test_page_rewritten_when_state_changes(engine, tmp_path):
     engine.ingest(event())
     engine.tick()
     first = path.read_text()
-    assert "活 1 件" in text(first) and "<b>阶段</b>说清楚" not in text(first)
+    assert "活 1 件" in text(first) and '<span class="stage">说清楚</span>' not in text(first)
     engine.clock.now += PAGE_MIN_GAP + timedelta(seconds=1)
     finish(engine, "说清楚")
-    assert "<b>阶段</b>说清楚" in text(path.read_text())
+    assert '<span class="stage">说清楚</span>' in text(path.read_text())
 
 
 def test_page_throttled_and_refreshed_when_old(engine, tmp_path):
@@ -143,3 +143,13 @@ def test_page_throttled_and_refreshed_when_old(engine, tmp_path):
     engine.clock.now += PAGE_MAX_AGE
     engine.tick()  # 没变化但放旧了：重写，生成时间更新
     assert path.read_text() != settled
+
+
+def test_moving_rows_show_stage_and_duration_columns():
+    moving = row(shown="定时", state="定时", stuck=False, stage="执行", next="等约好的时间")
+    html = page(view(moving), NOW)
+    head = html[html.index("在动 1 件"):]
+    assert "<span>标题</span><span>阶段</span><span>执行时长</span>" in head and "<span>下一步</span>" not in head
+    (line,) = [s for s in summaries(head) if "任务关系" in s]
+    assert '<span class="stage">执行</span>' in line and re.search(r'class="since"[^>]*>1 小时</span>', line) and 'class="todo"' not in line
+    assert "<b>等了多久</b>" not in head  # 已经在行里，展开里不再重复

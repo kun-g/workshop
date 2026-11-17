@@ -59,7 +59,7 @@ def brief(row, asks):
     return f"{row['who']}：{sentence(row['next'], wide - len(row['who']) - 1)}", ""
 
 
-def item(row, asks, now, *, badge=True):
+def item(row, asks, now, *, badge=True, running=False):
     todo, reason = brief(row, asks)
     pill = f'<span class="pill {tone(row["shown"])}">{e(row["shown"])}</span>' if badge else ""
     since = row.get("since") or ""
@@ -68,24 +68,27 @@ def item(row, asks, now, *, badge=True):
     title = origin.get("title") or row["title"]
     ref = (f'<a href="{e(origin["url"])}" onclick="event.stopPropagation()">{e(origin["ref"])}</a>' if origin.get("url") else e(origin.get("ref") or row["id"]))
     quote = f'<span class="quote">Kun 原话：{e(sentence(origin["quote"], 60))}</span>' if origin.get("quote") else ""
-    raw = (("等了多久", f'<span class="since" data-since="{e(since)}">{e(waited(since, now))}</span>'),
+    clock = f'<span class="since" data-since="{e(since)}">{e(waited(since, now))}</span>'
+    raw = (("" if running else "等了多久", clock),
            ("下一步原文", row["next"]), ("原因", row["reason"] if row["state"] == "卡住" else ""),
            ("卡在谁手里", "" if row["blocker"] in ("—", row["reason"]) else row["blocker"]),
            ("Kun 原话", origin.get("quote") or ""), ("等你回答", asks.get(row["id"], "")),
-           ("流程", lane(row)), ("阶段", f'{row["stage"]} · {row["who"]}'), ("活", row["id"]))
-    body = "".join(f"<p><b>{k}</b>{v if k == '等了多久' else e(v)}</p>" for k, v in raw if v)
+           ("流程", lane(row)), ("" if running else "阶段", f'{row["stage"]} · {row["who"]}'), ("活", row["id"]))
+    body = "".join(f"<p><b>{k}</b>{v if k == '等了多久' else e(v)}</p>" for k, v in raw if k and v)
     return (f'<details class="item"><summary><span class="name">{e(title)}{pill}<span class="ref">{ref}</span>{quote}</span>'
-            + f'<span class="todo">{e(todo)}' + (f'<span class="why">{e(reason)}</span>' if reason else "") + '</span></summary>'
+            + (f'<span class="stage">{e(row["stage"])}</span>{clock}' if running else
+               f'<span class="todo">{e(todo)}' + (f'<span class="why">{e(reason)}</span>' if reason else "") + '</span>')
+            + '</summary>'
             + f'<div class="body">{body}</div></details>')
 
 
-def section(title, rows, asks, now, *, note="", badge=True, folded=False, warn=False):
+def section(title, rows, asks, now, *, note="", badge=True, folded=False, warn=False, running=False):
     if not rows:
         return ""
     longest = sorted(rows, key=lambda r: r.get("since") or "9")  # 等得最久的排前面；没起点的排最后
     head = f"{e(title)} {len(rows)} 件"
-    body = f'<div class="group{" warn" if warn else ""}"><div class="cols"><span>标题</span><span>下一步</span></div>' \
-           + "".join(item(r, asks, now, badge=badge) for r in longest) + "</div>"
+    body = f'<div class="group{" warn" if warn else ""}{" running" if running else ""}"><div class="cols"><span>标题</span>' + ("<span>阶段</span><span>执行时长</span>" if running else "<span>下一步</span>") + '</div>' \
+           + "".join(item(r, asks, now, badge=badge, running=running) for r in longest) + "</div>"
     if folded:
         return f'<details class="fold"><summary><h2>{head}</h2></summary>{body}</details>'
     return f'<h2>{head}</h2>' + (f'<p class="note">{e(note)}</p>' if note else "") + body
@@ -145,7 +148,7 @@ def page(view, now=None):
 <p class="sub">{e(scope)}{(" · " + e(hidden)) if hidden else ""}</p>
 {section("卡住", stuck, asks, now, badge=False, warn=True)}
 {section("等你", waiting, asks, now, badge=False)}
-{section("在动", moving, asks, now)}
+{section("在动", moving, asks, now, running=True)}
 {section("已结束", ended, asks, now, folded=True)}
 {f'<details class="fold"><summary><h2>消息通道有问题（项目经理处理，你不用动）</h2></summary><div class="card"><p class="note">车间给你发卡片、读你的回答走的是飞书；这里列的是「发出去不确定到没到」「你答了读不到」两类。</p>{channel}</div></details>' if channel else ""}
 <p class="note foot">由 <code>workshop status --html</code> 生成，排版是固定规则，不经模型。</p>
@@ -210,5 +213,6 @@ code{font:12px ui-monospace,Menlo,monospace;overflow-wrap:anywhere;margin-right:
 details.fold>summary{cursor:pointer;color:var(--mute);font-size:12px;list-style:none}
 details.fold>summary{color:var(--ink);font-size:inherit}details.fold>summary::before{content:"▸ ";color:var(--mute)}
 details.fold[open]>summary::before{content:"▾ "}
-@media (max-width:600px){details.item>summary{grid-template-columns:1fr}.cols{display:none}.lane{grid-template-columns:80px 1fr 28px}}
+.running details.item>summary,.running .cols{grid-template-columns:minmax(160px,1fr) minmax(0,1fr) 8em}.since{color:var(--ink)}
+@media (max-width:600px){details.item>summary,.running details.item>summary{grid-template-columns:1fr}.cols{display:none}.lane{grid-template-columns:80px 1fr 28px}}
 """
