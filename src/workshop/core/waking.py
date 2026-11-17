@@ -61,7 +61,7 @@ def wait_timeout(engine):
         if not timer["fired"] and not engine.control(timer["target"]).get("broken"):
             include(timer["at"], overdue=True)
     for control in engine.log.all("controls"):
-        if control["id"].startswith("retry:"):
+        if control["id"].startswith(("retry:", "reconcile:")):
             include(control.get("at"))
     for row in engine.active():
         include(row.get("deadline"))

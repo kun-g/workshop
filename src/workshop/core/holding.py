@@ -189,7 +189,8 @@ def restore_target(engine, target, plugin=None):
             continue
         if engine.control(key).get('broken'):
             engine.fact('control', {'id': key, 'broken': False, 'action_blocked': False})
-    for item in engine.log.all("items"):
+    # 被插件故障卡住的活都还没结束，未结束活的查询覆盖它们。
+    for item in engine.log.open_items():
         if (item["target"] == target and item.get("plugin_blocked")
                 and (plugin is None or engine.item_target(item)["plugin"] == plugin)):
             restored = dict(item["before_plugin_failure"])
