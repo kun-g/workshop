@@ -124,6 +124,6 @@ def read(io, objects, target):
 
 
 def signature(snapshot, body):
-    """验收绑定总单当前正文和完整子单集合，不用不存在的 PR 提交冒充证据。"""
+    """验收绑定总单当前正文和完整子单集合；交付提交另由正常验收路径核对。"""
     payload = {'members': snapshot.members, 'prerequisites': snapshot.prerequisites, 'body': body}
     return hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True).encode()).hexdigest()

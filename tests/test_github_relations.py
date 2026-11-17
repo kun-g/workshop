@@ -1,4 +1,3 @@
-from copy import deepcopy
 from dataclasses import replace
 import json
 from types import SimpleNamespace
@@ -97,31 +96,71 @@ def test_related_current_materials_only(world):
     assert isinstance(flow.brief(item, '说清楚', target), str)
 
 
-def test_aggregate_no_pr_visual_and_snapshot_binding(world, monkeypatch):
-    flow, target, item, store = world['flow'], world['target'], work(world, '验收'), world['store']
-    item.update(aggregate=True, stage='验收')
-    state = json.loads(store.read_text())
-    state['issue']['body'] = BODY.replace('否\n', '是\n')
-    store.write_text(json.dumps(state))
+def delivered_total(world, monkeypatch, visual=False):
+    flow, target, item = world['flow'], world['target'], work(world, '交付')
+    flow.io.save(item, target, {'effects': {}, 'issue': 7, 'reviewed_head': world['sha']})
+    assert not flow.after(item, '交付', 'deliver', target).pending
+    item['stage'] = '验收'
+    state = json.loads(world['store'].read_text())
+    if visual:
+        state['issue']['body'] = BODY.replace('否\n', '是\n')
+        world['store'].write_text(json.dumps(state))
     snapshot = Relations(members=[{'id': 'x#1', 'name': 'x#1', 'complete': True}], converge='验收')
-    monkeypatch.setattr(flow, '_aggregate_snapshot', lambda *a: snapshot)
-    old_api = flow.io.api
-    monkeypatch.setattr(flow.io, 'api', lambda endpoint, **kw: {'sha': state['sha']} if endpoint.endswith('/commits/main') else old_api(endpoint, **kw))
-    monkeypatch.setattr(flow.io, 'pr', lambda *a: pytest.fail('总单不应查自己的 PR'))
+    item['relations'] = {'members': snapshot.members}
+    values = {'value': snapshot}
+    monkeypatch.setattr(flow, 'relations', lambda objects, target: {o['id']: values['value'] for o in objects})
+    return item, values
+
+
+def total_receipt(world):
+    return Receipt('done', '总单已验', advance='收尾', evidence=[json.dumps({
+        'schema': 'issue-delivery/v1', 'acceptance': {'head': world['sha'], 'passed': True, 'output': '原样证据'}})])
+
+
+def test_total_uses_own_delivery_checks_and_visual_acceptance(world, monkeypatch):
+    flow, target = world['flow'], world['target']
+    item, values = delivered_total(world, monkeypatch, visual=True)
     brief = flow.brief(item, '验收', target)
     saved = flow.io.read(item, target)
-    assert brief.readonly and saved['aggregate_head'] == state['sha']
-    evidence = {'schema': 'issue-delivery/v1', 'acceptance': {'head': saved['aggregate_head'],
-                'relations': saved['aggregate_fingerprint'], 'passed': True, 'output': '原样证据'}}
-    receipt = Receipt('done', '总单已验', advance='收尾', evidence=[json.dumps(evidence)])
-    assert not flow.assess(item, receipt, target).passed  # 尚无人工回答
+    assert brief.readonly and saved['merge_runs']['head'] == world['sha']
+    assert 'raw check output' in brief.instructions
+    assert '总单自己没有 PR' not in brief.instructions
+    receipt = total_receipt(world)
+    assert not flow.assess(item, receipt, target).passed
     item['materials'] = [{'role': 'Kun 的回答', 'key': 'visual-acceptance', 'seq': 10, 'body': 'yes'}]
     assert flow.assess(item, receipt, target).passed
     item['result'] = receipt.json()
     flow.after(item, '验收', 'accepted', target)
-    assert flow.io.read(item, target)['accepted']
-    changed = replace(snapshot, members=[{'id': 'x#2', 'name': 'x#2', 'complete': True}])
-    monkeypatch.setattr(flow, '_aggregate_snapshot', lambda *a: changed)
+    assert flow.io.read(item, target)['accepted_head'] == world['sha']
+    values['value'] = replace(values['value'], members=[{'id': 'x#2', 'name': 'x#2', 'complete': True}])
+    assert flow.assess(item, receipt, target).superseded
+    assert flow.after(item, '验收', 'changed', target).pending
+
+
+@pytest.mark.parametrize('change', ['merge', 'checks', 'delivery', 'head', 'body'])
+def test_members_closed_do_not_replace_own_acceptance(world, monkeypatch, change):
+    flow, target = world['flow'], world['target']
+    item, values = delivered_total(world, monkeypatch)
+    flow.brief(item, '验收', target)
+    receipt = total_receipt(world)
+    state = flow.io.read(item, target)
+    if change == 'merge':
+        state.pop('merge')
+    elif change == 'checks':
+        state['merge_runs']['runs'][0]['exit_code'] = 1
+    elif change == 'delivery':
+        target['release'] = 'scheduled'
+        state['delivered'] = []
+        monkeypatch.setattr(flow, '_deployed', lambda *a: False)
+    elif change == 'head':
+        data = json.loads(receipt.evidence[0])
+        data['acceptance']['head'] = 'a' * 40
+        receipt.evidence[0] = json.dumps(data)
+    else:
+        remote = json.loads(world['store'].read_text())
+        remote['issue']['body'] += '\n正文已变'
+        world['store'].write_text(json.dumps(remote))
+    flow.io.save(item, target, state)
     assert not flow.assess(item, receipt, target).passed
 
 
@@ -132,47 +171,52 @@ def test_hidden_dependency_count_blocks(monkeypatch):
     assert relations.read(io, [{'id': 'one', 'object_key': '1'}], target)['one'].error
 
 
-def test_aggregate_recheck_refreshes_fixed_head_and_checks(world, monkeypatch):
-    flow, target, item = world['flow'], world['target'], work(world, '验收')
-    item.update(aggregate=True, pending_episode=0)
-    snapshot = Relations(members=[{'id': 'x#1', 'name': 'x#1', 'complete': True}], converge='验收')
-    monkeypatch.setattr(flow, '_aggregate_snapshot', lambda *a: snapshot)
-    original = flow.io.api
-    heads = {'value': 'a' * 40}
-    monkeypatch.setattr(flow.io, 'api', lambda ep, **kw: {'sha': heads['value']} if ep.endswith('/commits/main') else original(ep, **kw))
-    checks = []
-    monkeypatch.setattr(flow.io, 'verify', lambda target, head, argv: checks.append(head) or [{'exit_code': 0}])
-    monkeypatch.setattr(flow.io, 'review_copy', lambda *a: str(world['root']))
-    flow.brief(item, '验收', target)
-    heads['value'] = 'b' * 40
-    flow.brief(item, '验收', target)
-    assert checks == ['a' * 40]  # 同轮不得漂移验收提交
-    item['pending_episode'] = 1
-    flow.brief(item, '验收', target)
-    assert checks == ['a' * 40, 'b' * 40]
-    assert flow.io.read(item, target)['aggregate_head'] == 'b' * 40
-
-
 @pytest.mark.parametrize('removed', [False, True])
-def test_live_aggregate_relation_change_settles_old_round(world, engine, monkeypatch, removed):
-    from conftest import event, item as current_item, finish
+def test_live_total_relation_change_settles_old_round(world, engine, monkeypatch, removed):
+    from conftest import item as current_item, finish, reach
     from test_relations import install, ref
     real_flow, target = world['flow'], world['target']
-    values = install(engine, Relations(members=[ref(complete=True)], converge='验收'))
-    engine.ingest(event())
-    engine.tick()
+    work_item, values = delivered_total(world, monkeypatch)
+    real_flow.brief(work_item, '验收', target)
+    state = install(engine, values['value'])
+    reach(engine, '验收')
     values['value'] = Relations() if removed else Relations(members=[ref()], converge='验收')
-    monkeypatch.setattr(real_flow, 'relations', lambda objects, target: {o['id']: values['value'] for o in objects})
-    # 核心实际结算轮次，判定使用真实流程插件（只替换来源读取）。
+    state['value'] = values['value']
     fake_flow = engine.plugins.get('flow', 'flow')
-    fake_flow.assess = lambda item, receipt, unused: real_flow.assess(
-        {**work(world, '验收'), 'aggregate': True}, receipt, target)
+    fake_flow.assess = lambda item, receipt, unused: real_flow.assess(work_item, receipt, target)
     old = finish(engine, '收尾')
     assert engine.log.get('rounds', old['token'])['status'] == 'ended'
     assert not engine.flow_broken('alpha', '')
     assert current_item(engine)['state'] == ('跑着' if removed else '等子单')
-    if removed:
-        assert not current_item(engine)['aggregate']
-        assert current_item(engine)['stage'] == '接单'
-    else:
+    assert current_item(engine)['stage'] == '验收'
+    if not removed:
         assert engine.occupied() == 0
+
+
+def test_relation_change_after_acceptance_cannot_close_total(world, monkeypatch):
+    flow, target = world['flow'], world['target']
+    item, values = delivered_total(world, monkeypatch)
+    flow.brief(item, '验收', target)
+    receipt = total_receipt(world)
+    item['result'] = receipt.json()
+    assert not flow.after(item, '验收', 'accepted', target).pending
+    item['stage'] = '收尾'
+    values['value'] = replace(values['value'], members=[{'id': 'x#1', 'name': 'x#1', 'complete': False}])
+    assert flow.assess(item, receipt, target).superseded
+    assert flow.after(item, '收尾', 'cannot-close', target).pending
+    assert json.loads(world['store'].read_text())['issue']['state'] == 'open'
+
+
+def test_repeated_acceptance_does_not_reuse_old_visual_answer(world, monkeypatch):
+    flow, target = world['flow'], world['target']
+    item, values = delivered_total(world, monkeypatch, visual=True)
+    flow.brief(item, '验收', target)
+    receipt = total_receipt(world)
+    item['materials'] = [{'role': 'Kun 的回答', 'key': 'visual-acceptance', 'seq': 10, 'body': 'yes'}]
+    assert flow.assess(item, receipt, target).passed
+    # 关系在旧轮期间变化又恢复，仍须开始新一轮，旧回答不得充当新批准。
+    item['pending_episode'] = 1
+    flow.brief(item, '验收', target)
+    assert not flow.assess(item, receipt, target).passed
+    item['materials'].append({'role': 'Kun 的回答', 'key': 'visual-acceptance', 'seq': 11, 'body': 'yes'})
+    assert flow.assess(item, receipt, target).passed

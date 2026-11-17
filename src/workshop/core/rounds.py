@@ -209,8 +209,9 @@ def finish(engine, row):
                 changes.update(state="空闲", next=evidence.reason, approved=[], pending_advance=None,
                                pending_episode=item.get("pending_episode", 0) + 1,
                                after_wait=None, gate_count=0, blocked_by="", serial_hold=False)
-                if item.get("aggregate") and (item.get("relations") or {}).get("converge"):
-                    changes["stage"] = item["relations"]["converge"]
+                converge = (item.get("relations") or {}).get("converge")
+                if converge and STAGES.index(item["stage"]) >= STAGES.index(converge):
+                    changes["stage"] = converge
             elif evidence.blocked:
                 changes.update(state="卡住", blocked_by=evidence.blocked, next=evidence.next,
                                leave=engine.blocked_leave(evidence.next))
@@ -234,10 +235,6 @@ def finish(engine, row):
                                after_pending_count=0, pending_episode=item.get("pending_episode", 0) + 1,
                                review_required=1, pending_advance=None, gate_count=0,
                                leave={"kind": "工序", "owner": "车间", "at": stamp(engine.clock()), "about": "修正验收问题"})
-                if item.get("aggregate"):
-                    about = "总单验收未通过；修复子单后放行总单，重新固定结果验收"
-                    changes.update(state="卡住", blocked_by=about, next=about, wait_for_ready=True,
-                                   leave=engine.blocked_leave(about))
             elif receipt.outcome == "failed":
                 changes.update(engine.failure_changes(item, row))
             elif wait_ready:
@@ -315,9 +312,6 @@ def complete_approval(engine, item):
             engine.change(item, stage="执行", state="空闲", next=reason, pending_advance=None, reviews=[],
                         review_required=1, approved=[], retry_executor=None, gate_count=0, gate_reason=reason,
                         leave={"kind": "工序", "owner": "车间", "at": stamp(engine.clock()), "about": "按拒绝意见修改"})
-            if (item.get("relations") or {}).get("members"):
-                engine.change(item, state="卡住", blocked_by=reason, wait_for_ready=True,
-                              next="按拒绝意见修改后放行", leave=engine.blocked_leave(reason))
         return
     target = engine.item_target(item)
     try:
