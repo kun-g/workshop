@@ -60,16 +60,15 @@ def test_channel_problems_folded_at_end_with_explanation():
     assert "消息通道" not in page(view(row()), NOW)
 
 
-def test_one_line_per_item_with_three_short_fields_and_wait_inside():
+def test_one_line_per_item_title_and_next_step_with_wait_inside():
     html = page(view(row()), NOW)
     (line,) = [s for s in summaries(html) if "任务关系" in s]
-    fields = re.findall(r'class="(?:name|why|todo)"[^>]*>(.*?)(?:</span>(?=<span class="(?:why|todo)")|</span>$)', line)
-    assert len(fields) == 3 and fields[0].startswith("任务关系：车间认前置、总单和相关") and "小时" not in line
+    assert line.count('class="name"') == 1 and line.count('class="todo"') == 1 and 'class="why"' in line  # 卡住的活：下一步下面补一句原因
+    assert "项目经理：" in line and "小时" not in line and NEXT not in line and LONG not in line
     assert re.search(r'<b>等了多久</b><span class="since"[^>]*>1 小时</span>', html[html.index(line):])  # 等了多久只在展开里
-    assert "项目经理：" in fields[2]
-    for value in fields[1:]:
-        assert 0 < len(value) <= 40 and "\n" not in value
-    assert NEXT not in line and LONG not in line  # 摘要行里没有原文整段
+    assert '<span>下一步</span>' in html and "<span>原因</span>" not in html and "<span>要谁做什么</span>" not in html
+    short = [len(v) for v in re.findall(r'class="(?:todo|why)">(?:项目经理：)?([^<]*)', line)]
+    assert all(0 < n <= 76 for n in short)
 
 
 def test_background_title_link_and_quote_on_the_line():
@@ -105,16 +104,15 @@ def test_missing_start_is_unknown_not_made_up():
 
 def test_brief_by_state():
     assert sentence("第一句。第二句") == "第一句" and len(sentence("长" * 80)) == 40 and sentence("长" * 80).endswith("…")
-    reason, todo = brief(row(owner=""), {})
-    assert todo.startswith("项目经理：") and reason.startswith("grant-console") and not todo.startswith("项目经理：项目经理")
+    todo, reason = brief(row(owner=""), {})
+    assert todo.startswith("项目经理：") and not todo.startswith("项目经理：项目经理") and reason.startswith("grant-console")
     ask = row(id="g:1", shown="等你", state="等你", stuck=False, owner="")
-    assert brief(ask, {"g:1": "是否批准 #175"}) == ("", "Kun：是否批准 #175")  # 等你的活不写原因，问题占两栏
-    waiting = page(view(ask), NOW)
-    assert 'class="todo wide"' in waiting and 'class="why"' not in waiting.split('<div class="body">')[0].split("<summary>", 1)[1]
-    assert brief(row(shown="跑着", state="跑着", stuck=False, next="等回执"), {}) == ("执行阶段进行中", "车间：等回执")
-    assert brief(row(shown="暂停", state="跑着", stuck=False), {})[1] == "项目经理：恢复后继续"
-    for r in (row(shown="定时", state="定时", stuck=False, next=NEXT),):
-        assert all(len(part) <= 40 for part in brief(r, {"g:1": "很长" * 40}))
+    assert brief(ask, {"g:1": "是否批准 #175"}) == ("Kun：是否批准 #175", "")  # 等你、在动：只有下一步，没有原因
+    assert brief(row(shown="跑着", state="跑着", stuck=False, next="等回执"), {}) == ("车间：等回执", "")
+    assert brief(row(shown="暂停", state="跑着", stuck=False), {})[0].startswith("项目经理：")
+    assert brief(row(shown="定时", state="定时", stuck=False, next="等反馈。别的"), {}) == ("车间：等反馈", "")
+    for r in (ask, row(shown="定时", state="定时", stuck=False, next=NEXT), row()):
+        assert all(len(part) <= 76 for part in brief(r, {"g:1": "很长" * 40}))
 
 
 def test_page_rewritten_when_state_changes(engine, tmp_path):
@@ -122,10 +120,10 @@ def test_page_rewritten_when_state_changes(engine, tmp_path):
     engine.ingest(event())
     engine.tick()
     first = path.read_text()
-    assert "活 1 件" in text(first) and "说清楚阶段" not in text(first)
+    assert "活 1 件" in text(first) and "<b>阶段</b>说清楚" not in text(first)
     engine.clock.now += PAGE_MIN_GAP + timedelta(seconds=1)
     finish(engine, "说清楚")
-    assert "说清楚阶段" in text(path.read_text())
+    assert "<b>阶段</b>说清楚" in text(path.read_text())
 
 
 def test_page_throttled_and_refreshed_when_old(engine, tmp_path):

@@ -1,6 +1,6 @@
 """把总览（report.overview）排成一页自包含的网页：纯规则排版，不调模型，离线能开。
 
-每件活占一行：标题 · 一句话原因 · 要谁做什么；等了多久和原文（下一步、原因、卡在谁手里）折叠在行下。
+每件活占一行：标题 · 下一步（谁做什么；卡住的活下面补一句原因）；等了多久和原文（下一步、原因、卡在谁手里）折叠在行下。
 生成时间和「等了多久」带着时间戳，页面里的小脚本按打开时的本机时钟重算，页面放旧了看得出。
 """
 import re
@@ -41,26 +41,26 @@ def waited(since, now):
 
 
 def brief(row, asks):
-    """一句话原因，和要谁做什么：只用活里已有的字段拼，缺了退回原文首句。"""
-    state, stage = row["shown"], row["stage"]
+    """下一步（谁做什么）和补一句的原因：只有卡住的活才有原因可说；只用活里已有的字段拼，缺了退回原文首句。"""
+    state = row["shown"]
+    wide = 2 * LIMIT - 4
     if row["stuck"]:
         owner = row.get("owner") or "项目经理"
         advice = row["advice"].removeprefix(owner).lstrip("：: ，,")  # 建议动作常以执行者开头，别写成「项目经理：项目经理…」
-        return sentence(row["reason"] or "原因未记录"), f"{owner}：{sentence(advice, LIMIT - len(owner) - 1)}"
+        return f"{owner}：{sentence(advice, wide - len(owner) - 1)}", sentence(row["reason"] or "原因未记录", wide)
     if state == "等你":
-        decision = asks.get(row["id"]) or row["next"]
-        return "", f"Kun：{sentence(decision, 2 * LIMIT - 4)}"  # 等你的活没有「原因」可说，原因栏并进来，问题占两栏
+        return f"Kun：{sentence(asks.get(row['id']) or row['next'], wide - 4)}", ""
     if state == "暂停":
-        return f"交付对象已暂停，{stage}阶段不动", "项目经理：恢复后继续"
+        return "项目经理：恢复已暂停的交付对象", ""
     if state in ENDED:
-        return f"{state}，停在{stage}阶段", "无需处理"
+        return "无需处理", ""
     if state in ("定时", "排队"):
-        return sentence(row["next"]), "车间：到点自动继续"
-    return f"{stage}阶段进行中", f"{row['who']}：{sentence(row['next'], LIMIT - len(row['who']) - 1)}"
+        return f"车间：{sentence(row['next'], wide - 3)}", ""
+    return f"{row['who']}：{sentence(row['next'], wide - len(row['who']) - 1)}", ""
 
 
 def item(row, asks, now, *, badge=True):
-    reason, todo = brief(row, asks)
+    todo, reason = brief(row, asks)
     pill = f'<span class="pill {tone(row["shown"])}">{e(row["shown"])}</span>' if badge else ""
     since = row.get("since") or ""
     origin = row.get("origin") or {}
@@ -69,13 +69,13 @@ def item(row, asks, now, *, badge=True):
     ref = (f'<a href="{e(origin["url"])}" onclick="event.stopPropagation()">{e(origin["ref"])}</a>' if origin.get("url") else e(origin.get("ref") or row["id"]))
     quote = f'<span class="quote">Kun 原话：{e(sentence(origin["quote"], 60))}</span>' if origin.get("quote") else ""
     raw = (("等了多久", f'<span class="since" data-since="{e(since)}">{e(waited(since, now))}</span>'),
-           ("下一步", row["next"]), ("原因", row["reason"] if row["state"] == "卡住" else ""),
+           ("下一步原文", row["next"]), ("原因", row["reason"] if row["state"] == "卡住" else ""),
            ("卡在谁手里", "" if row["blocker"] in ("—", row["reason"]) else row["blocker"]),
            ("Kun 原话", origin.get("quote") or ""), ("等你回答", asks.get(row["id"], "")),
            ("流程", lane(row)), ("阶段", f'{row["stage"]} · {row["who"]}'), ("活", row["id"]))
     body = "".join(f"<p><b>{k}</b>{v if k == '等了多久' else e(v)}</p>" for k, v in raw if v)
     return (f'<details class="item"><summary><span class="name">{e(title)}{pill}<span class="ref">{ref}</span>{quote}</span>'
-            + (f'<span class="why">{e(reason)}</span>' if reason else "") + f'<span class="todo{" wide" if not reason else ""}">{e(todo)}</span></summary>'
+            + f'<span class="todo">{e(todo)}' + (f'<span class="why">{e(reason)}</span>' if reason else "") + '</span></summary>'
             + f'<div class="body">{body}</div></details>')
 
 
@@ -84,7 +84,7 @@ def section(title, rows, asks, now, *, note="", badge=True, folded=False, warn=F
         return ""
     longest = sorted(rows, key=lambda r: r.get("since") or "9")  # 等得最久的排前面；没起点的排最后
     head = f"{e(title)} {len(rows)} 件"
-    body = f'<div class="group{" warn" if warn else ""}"><div class="cols"><span>标题</span><span>原因</span><span>要谁做什么</span></div>' \
+    body = f'<div class="group{" warn" if warn else ""}"><div class="cols"><span>标题</span><span>下一步</span></div>' \
            + "".join(item(r, asks, now, badge=badge) for r in longest) + "</div>"
     if folded:
         return f'<details class="fold"><summary><h2>{head}</h2></summary>{body}</details>'
@@ -197,7 +197,7 @@ h3{margin:0 0 4px;font-size:14px}h3 em{font-style:normal;color:var(--mute);margi
 .legend i{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:5px;vertical-align:-1px}
 .list{padding-left:14px}
 details.item{border-top:1px solid var(--line)}
-details.item>summary,.cols{display:grid;grid-template-columns:minmax(120px,1.2fr) minmax(0,1.6fr) minmax(0,1.6fr);gap:4px 12px;align-items:baseline}
+details.item>summary,.cols{display:grid;grid-template-columns:minmax(160px,1fr) minmax(0,1.6fr);gap:4px 12px;align-items:baseline}
 details.item>summary{padding:7px 0;cursor:pointer;list-style:none}
 .cols{color:var(--mute);font-size:12px;padding-bottom:4px}
 .since{font-variant-numeric:tabular-nums}
@@ -205,7 +205,7 @@ details>summary::-webkit-details-marker{display:none}
 details.item>summary::before{content:"▸";position:absolute;margin-left:-14px;color:var(--mute);font-size:11px}
 details.item[open]>summary::before{content:"▾"}
 .name{font-weight:600;overflow-wrap:anywhere}.ref{margin-left:8px;font-weight:400;font-size:12px}.ref a{color:var(--run)}
-.quote{display:block;font-weight:400;font-size:12px;color:var(--mute)}.why{color:var(--mute)}.todo{overflow-wrap:anywhere}.todo.wide{grid-column:span 2}
+.quote{display:block;font-weight:400;font-size:12px;color:var(--mute)}.todo{overflow-wrap:anywhere}.why{display:block;color:var(--mute);font-size:12px}
 .pill{color:#fff;font-size:11px;border-radius:4px;padding:0 6px;margin-left:6px;font-weight:400}
 .body{padding:2px 0 10px}.body p,.card p{margin:4px 0}
 .body b,.card b{display:inline-block;min-width:52px;color:var(--mute);font-weight:500;margin-right:8px}
