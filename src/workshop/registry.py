@@ -29,6 +29,7 @@ class Registry:
         for name, target in targets.items():
             for flow in entries(target):
                 configuration(rules.target(name, flow))
+                configuration(rules.target(name, flow), relations_read=True)
         profiles = {}
         for name, profile in rules.data.get('executor_profiles', {}).items():
             try:

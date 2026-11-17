@@ -174,6 +174,7 @@ def reserve(engine, item, unavailable=()):
         with engine.log.transaction():
             latest = engine.log.get("items", item["id"])
             if (engine.control(item["target"]).get("paused") or latest["state"] != "空闲"
+                    or latest.get("relations") != item.get("relations")
                     or any(r["item"] == item["id"] for r in engine.active())
                     or engine.occupied() >= engine.rules.data["limits"]["concurrent"]):
                 return

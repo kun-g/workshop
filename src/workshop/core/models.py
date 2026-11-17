@@ -82,6 +82,34 @@ class Poll:
 
 
 @dataclass(frozen=True)
+class Relations:
+    """来源确认的完整关系快照；错误不等于没有关系。标识可跨交付对象。"""
+    prerequisites: list[dict] = field(default_factory=list)
+    members: list[dict] = field(default_factory=list)
+    collections: list[dict] = field(default_factory=list)
+    related: list[dict] = field(default_factory=list)
+    converge: str = ""
+    error: str = ""
+
+    def validate(self):
+        if not isinstance(self.error, str) or not isinstance(self.converge, str):
+            raise ValueError("关系的错误和汇合阶段须为字符串")
+        for group in (self.prerequisites, self.members, self.collections, self.related):
+            if not isinstance(group, list):
+                raise ValueError("关系须为列表")
+            seen = set()
+            for entry in group:
+                if (not isinstance(entry, dict) or not isinstance(entry.get("id"), str)
+                        or not entry["id"] or entry["id"] in seen
+                        or not isinstance(entry.get("name"), str) or not entry["name"]
+                        or type(entry.get("complete")) is not bool):
+                    raise ValueError("关系对象缺少唯一标识、显示名或完成状态")
+                seen.add(entry["id"])
+        if self.members and self.converge not in STAGES:
+            raise ValueError("总单须指定合法的汇合阶段")
+
+
+@dataclass(frozen=True)
 class FlowBrief:
     instructions: str
     workdir: str | None = None
@@ -144,8 +172,12 @@ class Evidence:
     next: str = ""
     # 无下一步的回执，经流程核实仍需等待；到点调用 after，完成后重跑本阶段。
     recheck_after: str = ""
+    superseded: bool = False  # 来源事实已变；结束旧轮并重新安排，不算验收拒绝。
 
     def validate(self) -> None:
+        if type(self.superseded) is not bool or self.superseded and (
+                self.passed or self.blocked or self.recheck_after or not self.reason):
+            raise ValueError("过期证据须有原因，不能同时通过、阻塞或定时回查")
         if (not isinstance(self.recheck_after, str) or self.recheck_after and
                 (self.blocked or self.passed or not isinstance(self.reason, str) or not self.reason.strip()
                  or not isinstance(self.next, str) or not self.next.strip())):

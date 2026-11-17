@@ -17,8 +17,10 @@ class IdentityError(TargetBlocked):
     pass
 
 
-def configuration(target):
+def configuration(target, *, relations_read=False):
     config = target.get('github_identity', {'mode': 'inherit'})
+    if relations_read:
+        config = target.get('relations_identity', config)
     if not isinstance(config, dict) or config.get('mode') not in ('inherit', 'app'):
         raise ValueError('github_identity.mode 必须是 inherit 或 app')
     allowed = {'mode'} if config['mode'] == 'inherit' else {'mode', 'signer', 'gh'}
@@ -35,12 +37,14 @@ def configuration(target):
     return dict(config)
 
 
-def sign(config, repo, source=None):
+def sign(config, repo, source=None, *, relations_read=False):
     env = dict(os.environ if source is None else source)
     for key in ('GH_TOKEN', 'GITHUB_TOKEN', 'GH_ENTERPRISE_TOKEN', 'GITHUB_ENTERPRISE_TOKEN'):
         env.pop(key, None)
     env['AGENT_KIND'] = 'workshop'
     argv = [str(Path(p).expanduser()) if p.startswith('~') else p for p in config['signer']]
+    if relations_read:
+        argv.append('--relations-read')
     try:
         result = subprocess.run([*argv, '--repo', repo], env=env, capture_output=True, text=True, timeout=30)
     except (OSError, subprocess.TimeoutExpired):
@@ -52,11 +56,11 @@ def sign(config, repo, source=None):
     return token
 
 
-def environment(config, repo, source=None):
+def environment(config, repo, source=None, *, relations_read=False):
     env = dict(os.environ if source is None else source)
     if config['mode'] == 'inherit':
         return env
-    token = sign(config, repo, env)
+    token = sign(config, repo, env, relations_read=relations_read)
     # A global wrapper can discard a supplied token. Use the configured real gh,
     # and disable inherited git helpers/headers which may choose the human account.
     for key in list(env):
@@ -79,17 +83,21 @@ def environment(config, repo, source=None):
 _scope = ContextVar('workshop_github_identity', default=None)
 
 
-def scoped(function):
+def scoped(function=None, *, relations_read=False):
     """Bound only at adapter entry points; nested calls reuse the same credential."""
+    if function is None:
+        return lambda fn: scoped(fn, relations_read=relations_read)
     sig = signature(function)
     @wraps(function)
     def call(*args, **kwargs):
         target = sig.bind(*args, **kwargs).arguments['target']
-        config = configuration(target)
+        config = configuration(target, relations_read=relations_read)
         current = _scope.get()
-        if current and current['repo'] == target.get('repo') and current['config'] == config:
+        if (current and current['repo'] == target.get('repo') and current['config'] == config
+                and current['relations_read'] == relations_read):
             return function(*args, **kwargs)
-        marker = _scope.set({'config': config, 'repo': target.get('repo'), 'env': None})
+        marker = _scope.set({'config': config, 'repo': target.get('repo'), 'env': None,
+                             'relations_read': relations_read})
         try:
             return function(*args, **kwargs)
         finally:
@@ -105,7 +113,7 @@ def run(argv, **kwargs):
     if not active:
         return subprocess.run(argv, **kwargs)
     if state['env'] is None:
-        state['env'] = environment(state['config'], state['repo'])
+        state['env'] = environment(state['config'], state['repo'], relations_read=state['relations_read'])
     env = state['env']
     argv = list(argv)
     if Path(argv[0]).name == 'gh':

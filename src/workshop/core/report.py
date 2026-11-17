@@ -91,6 +91,8 @@ def status(log, **options):
     head = f"活 {len(rows)} 件 · 跑着 {count('跑着')} · 等你 {count('等你') - reads} · 卡住 {count('卡住') + reads}"
     head += f" · 排队 {count('排队')}" if count("排队") else ""
     head += f" · 定时 {count('定时')}" if count("定时") else ""
+    for waiting in ("等前置", "等子单"):
+        head += f" · {waiting} {count(waiting)}" if count(waiting) else ""
     if view["hidden"]:
         head += f"\n另有 {view['hidden']} 件没列出" + ("（筛掉的）" if view["filtered"] else "（已结束；workshop status --all 看全部）")
     lines = [head, "活\t阶段\t状态\t谁在推\t下一步\t卡在谁手里"]
@@ -267,6 +269,18 @@ def why(log, item_id, rules=None, plugins=None, raw=False):
             detail = f'恢复 {body["mode"]} 从 {body["from_state"]}/{body["stage"]}：{body["reason"]}；Kun 原话：{body["quote"]}；计划：{json.dumps(body["plan"], ensure_ascii=False)}'
         elif kind == "recovery_applied":
             detail = f'已消费恢复机会 {body["id"]}'
+        elif kind == "item_changed" and "relations" in body:
+            snapshot = body["relations"]
+            labels = (("prerequisites", "前置"), ("members", "子单"),
+                      ("collections", "所属总单"), ("related", "相关"))
+            parts = [label + "=" + "、".join(n["name"] + ("（已完成）" if n["complete"] else "（未完成）")
+                                                for n in snapshot.get(key, []))
+                     for key, label in labels if snapshot.get(key)]
+            detail = "关系快照：" + ("；".join(parts) or "没有关系")
+            if snapshot.get("error"):
+                detail = "关系未确认：" + snapshot["error"]
+        elif kind == "item_changed" and any(k in body for k in ("relation_hold", "aggregate")):
+            detail = f'关系准入：{body.get("state", "")} {body.get("next", "")}'
         else:
             continue
         lines.append(f'{fact["at"]} {one_line(detail)}')

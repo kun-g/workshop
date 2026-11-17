@@ -13,7 +13,7 @@ from datetime import timedelta
 
 from .jobs import Pending
 from .models import stamp
-from . import rounds, waits
+from . import rounds, relations, waits
 
 SLOW_TICK_MS = 100
 SLOW_ITEM_MS = 5
@@ -116,6 +116,9 @@ def advance(engine, item):
     control = engine.control(item["target"])
     if control.get("paused") or engine.flow_broken(item["target"], item.get("flow", "")):
         return
+    item = relations.admit(engine, item)
+    if item is None:
+        return
     if item["state"] == "等你" and not engine.answerable(item):
         engine.change(item, state="等你", next=item.get("next"), leave=item.get("leave"),
                       gate_reason=item.get("gate_reason") or item.get("blocked_by"))
@@ -139,14 +142,16 @@ def advance(engine, item):
                           after_pending_count=0, after_wait=None, pending_episode=item.get("pending_episode", 0) + 1,
                           wait_for_ready=False, retry_executor=None, gate_count=0, next="按新事件返工")
         item = engine.log.get("items", item["id"])
-    # 没有待办时这些操作不会改活，沿用本拍已读的正文。
-    # 有待办仍在操作后重读，后续推进必须看到刚结算的阶段和状态。
+    # 有待办才结算；后续推进看到最新阶段和状态。
     if item.get("after_wait"):
         engine.recheck_after(item)
         item = engine.log.get("items", item["id"])
     if item.get("pending_advance"):
         engine.complete_approval(item)
         item = engine.log.get("items", item["id"])
+    item = relations.admit(engine, item)
+    if item is None:
+        return
     if engine.rules.data.get("taskhome"):
         if not engine.taskhome(item):
             return
@@ -161,11 +166,12 @@ def advance_open(engine):
     items = {item["id"]: item for item in engine.log.open_items()}
     if engine.rules.data.get("taskhome"):
         items.update((item["id"], item) for item in engine.log.ended_home_items())
+    relations.refresh(engine, [i for i in items.values() if i["state"] not in ("完成", "放弃")])
     slow = []
     for item in items.values():
         started = time.monotonic()
         try:
-            engine.advance(item)
+            engine.advance(engine.log.get("items", item["id"]))
         except Pending:
             pass  # 这件活在等作业出结果，下一拍再看；别的活照常推进。
         finally:

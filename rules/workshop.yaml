@@ -34,6 +34,13 @@ targets:
     github_overlap_seconds: 60
     repo: kun-g/grant-console
     github_identity: {mode: inherit}
+    # 普通动作保留原身份；关系读取只能用完整仓库集合的 App 只读身份。
+    relations_identity: &relationship_app
+      mode: app
+      gh: /opt/homebrew/bin/gh
+      signer: [~/workspace/runtime/repos/workshop/.venv/bin/python, -m, workshop.github_token,
+               --config, ~/workspace/runtime/tools/agent_github_identity/config.json,
+               --app, lambdatheory-agent, --key-service, lambdatheory-agent, --key-account, private-key]
     requirement_docs: ['docs/requirements/']
     # 仅作为证据/审查 clone 的只读来源；发布在插件状态目录 releases/ 的专用检出。
     checkout: ~/workspace/runtime/repos/grant-console
@@ -155,6 +162,7 @@ targets:
     check_timeout: 300
     bot_review: false
     repo: kun-g/workshop
+    relations_identity: *relationship_app
     github_identity:
       mode: app
       gh: /opt/homebrew/bin/gh

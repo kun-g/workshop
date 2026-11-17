@@ -31,7 +31,7 @@ def test_short_round_and_checks_after_position_released():
              fact(30, 'round_changed', dict(token='one', status='ended', outcome='failed')),
              fact(30, 'round_finished', dict(state='定时'))]
     result = run(facts=facts)['summary']
-    assert result['seconds'] == {'在跑': 20, '定时': 30, '卡住': 0, '排队': 10, '等你': 0, '其他': 0}
+    assert result['seconds'] == {'在跑': 20, '定时': 30, '卡住': 0, '排队': 10, '等你': 0, '等前置': 0, '等子单': 0, '其他': 0}
     assert result['occupied_seconds'] == 10
     assert result['capacity_seconds'] == 120
     assert result['failed'] == result['rounds'] == 1
@@ -46,7 +46,7 @@ def test_clipped_rounds_and_all_state_facts_and_wait_age():
              fact(30, 'gate_passed', dict(state='等你')),
              fact(40, 'round_finished', dict(state='排队'))]
     result = run(facts=facts)['summary']
-    assert result['seconds'] == {'在跑': 10, '定时': 10, '卡住': 10, '排队': 20, '等你': 10, '其他': 0}
+    assert result['seconds'] == {'在跑': 10, '定时': 10, '卡住': 10, '排队': 20, '等你': 10, '等前置': 0, '等子单': 0, '其他': 0}
     assert result['rounds'] == 0
     assert result['occupied_seconds'] == 5
     result = run(50, 60, facts)['summary']
