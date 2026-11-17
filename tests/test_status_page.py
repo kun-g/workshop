@@ -60,13 +60,14 @@ def test_channel_problems_folded_at_end_with_explanation():
     assert "消息通道" not in page(view(row()), NOW)
 
 
-def test_one_line_per_item_with_four_short_fields():
+def test_one_line_per_item_with_three_short_fields_and_wait_inside():
     html = page(view(row()), NOW)
     (line,) = [s for s in summaries(html) if "任务关系" in s]
-    fields = re.findall(r'class="(?:name|why|todo|since)"[^>]*>(.*?)(?:</span>(?=<span class="(?:why|todo|since)")|</span>$)', line)
-    assert len(fields) == 4 and fields[0].startswith("任务关系：车间认前置、总单和相关") and fields[3] == "1 小时"
+    fields = re.findall(r'class="(?:name|why|todo)"[^>]*>(.*?)(?:</span>(?=<span class="(?:why|todo)")|</span>$)', line)
+    assert len(fields) == 3 and fields[0].startswith("任务关系：车间认前置、总单和相关") and "小时" not in line
+    assert re.search(r'<b>等了多久</b><span class="since"[^>]*>1 小时</span>', html[html.index(line):])  # 等了多久只在展开里
     assert "项目经理：" in fields[2]
-    for value in fields[1:3]:
+    for value in fields[1:]:
         assert 0 < len(value) <= 40 and "\n" not in value
     assert NEXT not in line and LONG not in line  # 摘要行里没有原文整段
 

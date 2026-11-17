@@ -1,6 +1,6 @@
 """把总览（report.overview）排成一页自包含的网页：纯规则排版，不调模型，离线能开。
 
-每件活占一行：标题 · 一句话原因 · 要谁做什么 · 等了多久；原文（下一步、原因、卡在谁手里）折叠在行下。
+每件活占一行：标题 · 一句话原因 · 要谁做什么；等了多久和原文（下一步、原因、卡在谁手里）折叠在行下。
 生成时间和「等了多久」带着时间戳，页面里的小脚本按打开时的本机时钟重算，页面放旧了看得出。
 """
 import re
@@ -68,14 +68,14 @@ def item(row, asks, now, *, badge=True):
     title = origin.get("title") or row["title"]
     ref = (f'<a href="{e(origin["url"])}" onclick="event.stopPropagation()">{e(origin["ref"])}</a>' if origin.get("url") else e(origin.get("ref") or row["id"]))
     quote = f'<span class="quote">Kun 原话：{e(sentence(origin["quote"], 60))}</span>' if origin.get("quote") else ""
-    raw = (("下一步", row["next"]), ("原因", row["reason"] if row["state"] == "卡住" else ""),
+    raw = (("等了多久", f'<span class="since" data-since="{e(since)}">{e(waited(since, now))}</span>'),
+           ("下一步", row["next"]), ("原因", row["reason"] if row["state"] == "卡住" else ""),
            ("卡在谁手里", "" if row["blocker"] in ("—", row["reason"]) else row["blocker"]),
            ("Kun 原话", origin.get("quote") or ""), ("等你回答", asks.get(row["id"], "")),
            ("流程", lane(row)), ("阶段", f'{row["stage"]} · {row["who"]}'), ("活", row["id"]))
-    body = "".join(f"<p><b>{k}</b>{e(v)}</p>" for k, v in raw if v)
+    body = "".join(f"<p><b>{k}</b>{v if k == '等了多久' else e(v)}</p>" for k, v in raw if v)
     return (f'<details class="item"><summary><span class="name">{e(title)}{pill}<span class="ref">{ref}</span>{quote}</span>'
-            f'<span class="why">{e(reason)}</span><span class="todo">{e(todo)}</span>'
-            f'<span class="since" data-since="{e(since)}">{e(waited(since, now))}</span></summary>'
+            f'<span class="why">{e(reason)}</span><span class="todo">{e(todo)}</span></summary>'
             f'<div class="body">{body}</div></details>')
 
 
@@ -84,7 +84,7 @@ def section(title, rows, asks, now, *, note="", badge=True, folded=False, warn=F
         return ""
     longest = sorted(rows, key=lambda r: r.get("since") or "9")  # 等得最久的排前面；没起点的排最后
     head = f"{e(title)} {len(rows)} 件"
-    body = f'<div class="group{" warn" if warn else ""}"><div class="cols"><span>标题</span><span>原因</span><span>要谁做什么</span><span>等了多久</span></div>' \
+    body = f'<div class="group{" warn" if warn else ""}"><div class="cols"><span>标题</span><span>原因</span><span>要谁做什么</span></div>' \
            + "".join(item(r, asks, now, badge=badge) for r in longest) + "</div>"
     if folded:
         return f'<details class="fold"><summary><h2>{head}</h2></summary>{body}</details>'
@@ -197,10 +197,10 @@ h3{margin:0 0 4px;font-size:14px}h3 em{font-style:normal;color:var(--mute);margi
 .legend i{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:5px;vertical-align:-1px}
 .list{padding-left:14px}
 details.item{border-top:1px solid var(--line)}
-details.item>summary,.cols{display:grid;grid-template-columns:minmax(120px,1.2fr) minmax(0,1.6fr) minmax(0,1.6fr) 84px;gap:4px 12px;align-items:baseline}
+details.item>summary,.cols{display:grid;grid-template-columns:minmax(120px,1.2fr) minmax(0,1.6fr) minmax(0,1.6fr);gap:4px 12px;align-items:baseline}
 details.item>summary{padding:7px 0;cursor:pointer;list-style:none}
 .cols{color:var(--mute);font-size:12px;padding-bottom:4px}
-.since{text-align:right;font-variant-numeric:tabular-nums;color:var(--mute)}
+.since{font-variant-numeric:tabular-nums}
 details>summary::-webkit-details-marker{display:none}
 details.item>summary::before{content:"▸";position:absolute;margin-left:-14px;color:var(--mute);font-size:11px}
 details.item[open]>summary::before{content:"▾"}
@@ -213,5 +213,5 @@ code{font:12px ui-monospace,Menlo,monospace;overflow-wrap:anywhere;margin-right:
 details.fold>summary{cursor:pointer;color:var(--mute);font-size:12px;list-style:none}
 details.fold>summary{color:var(--ink);font-size:inherit}details.fold>summary::before{content:"▸ ";color:var(--mute)}
 details.fold[open]>summary::before{content:"▾ "}
-@media (max-width:600px){details.item>summary{grid-template-columns:1fr}.cols{display:none}.since{text-align:left}.lane{grid-template-columns:80px 1fr 28px}}
+@media (max-width:600px){details.item>summary{grid-template-columns:1fr}.cols{display:none}.lane{grid-template-columns:80px 1fr 28px}}
 """
