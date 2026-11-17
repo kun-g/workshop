@@ -223,8 +223,17 @@ def test_6_uncertain_delivery_escalates_once_and_is_visible(engine, monkeypatch)
     assert len([f for f in engine.log.facts() if f["kind"] == "reconcile_failed"]) == 1
     assert len([c for c in engine.log.all("cards") if c.get("reconciliation_alert")]) == 1
     assert "通道待对账" in status(engine.log) and card["id"] in status(engine.log)
-    monkeypatch.setattr(channel, "reconcile", lambda key, card: f"found:{key}")
+    reconciled = []
+    def found(key, card):
+        reconciled.append(key)
+        return f"found:{key}"
+    monkeypatch.setattr(channel, "reconcile", found)
+    # 告警之后不每拍对账（每拍起作业会把主循环一直叫醒）；到间隔才再对一次。
     engine.channels()
+    assert reconciled == [] and not engine.log.get("cards", card["id"])["sent"]
+    engine.clock.now += timedelta(seconds=60)
+    engine.channels()
+    assert reconciled == [card["id"]]
     assert engine.log.get("cards", card["id"])["sent"]
     assert "通道待对账" not in status(engine.log)
 
