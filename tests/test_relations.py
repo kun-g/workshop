@@ -3,7 +3,7 @@ from datetime import timedelta
 
 import pytest
 
-from conftest import event, item, current
+from conftest import event, item, current, reach, finish
 from workshop.core.models import Relations
 from workshop.core.ports import Retryable
 from workshop.core.report import status
@@ -83,20 +83,51 @@ def test_first_read_and_expired_read_never_dispatch(engine):
     assert engine.occupied() == 1
 
 
-def test_aggregate_waits_for_all_and_enters_acceptance(engine):
+def test_members_only_wait_at_acceptance_and_release_without_occupancy(engine):
     state = install(engine, Relations(members=[ref('one'), ref('two')], converge='验收'))
-    engine.ingest(event())
-    engine.tick()
+    reach(engine, '执行')
+    assert current(engine)['stage'] == '执行'
+    assert item(engine)['state'] == '跑着'
+    for stage in ('证据', '审查', '交付'):
+        finish(engine, stage)
+        assert current(engine)['stage'] == stage
+    engine.change(item(engine), serial_hold=True)
+    finish(engine, '验收')
     assert item(engine)['state'] == '等子单'
+    assert not engine.active() and engine.occupied() == 0
+    assert not item(engine)['serial_hold']
+    assert not engine.log.all('cards')
+    assert not any(r['stage'] == '验收' for r in engine.log.all('rounds'))
+    assert '等子单：one、two' in status(engine.log)
+    engine.clock.now += timedelta(seconds=60)
     state['value'] = replace(state['value'], members=[ref('one', True), ref('two')])
     engine.tick()
+    assert item(engine)['state'] == '等子单'
     assert not engine.active()
     state['value'] = replace(state['value'], members=[ref('one', True), ref('two', True)])
     engine.tick()
     assert current(engine)['stage'] == '验收'
-    assert len(engine.log.all('rounds')) == 1
+    from workshop.core.metrics import calculate, read_snapshot
+    result = calculate(*read_snapshot(engine.log.path), engine.clock.now-timedelta(seconds=60), engine.clock.now)
+    assert result['summary']['seconds']['等子单'] == 60
+    assert result['summary']['seconds']['等前置'] == 0
+    assert result['summary']['occupied_seconds'] == 0
+
+
+def test_completed_members_do_not_skip_execution(engine):
+    install(engine, Relations(members=[ref(complete=True)], converge='验收'))
+    reach(engine, '验收')
+    assert [r['stage'] for r in engine.log.all('rounds')] == list(engine.plugins.get('flow', 'flow').path[:-1])
+
+
+def test_members_and_prerequisites_are_independent(engine):
+    state = install(engine, Relations(prerequisites=[ref('before')], members=[ref()], converge='验收'))
+    engine.ingest(event())
     engine.tick()
-    assert len(engine.log.all('rounds')) == 1
+    assert item(engine)['state'] == '等前置'
+    state['value'] = replace(state['value'], prerequisites=[ref('before', True)])
+    engine.tick()
+    assert current(engine)['stage'] == '接单'
 
 
 def test_other_hold_is_not_erased_and_related_does_not_block(engine):
@@ -164,35 +195,40 @@ def test_pending_stage_job_does_not_escape_tick(engine, monkeypatch):
     assert not engine.control('@tick').get('failures')
 
 
-def test_aggregate_rejection_waits_for_explicit_release(engine):
-    from conftest import finish
+def test_total_rejection_returns_to_own_execution(engine):
     install(engine, Relations(members=[ref(complete=True)], converge='验收'))
-    engine.ingest(event())
-    engine.tick()
+    reach(engine, '验收')
     engine.plugins.get('flow', 'flow').passed = False
     finish(engine, '执行')
-    assert item(engine)['stage'] == '执行'
-    assert item(engine)['state'] == '卡住'
-    rounds = len(engine.log.all('rounds'))
-    for _ in range(3):
-        engine.tick()
-    assert len(engine.log.all('rounds')) == rounds
-    engine.ingest(event(ext_id='release-again'))
+    assert current(engine)['stage'] == '执行'
+    assert item(engine)['state'] == '跑着'
+
+
+def test_removing_last_member_preserves_own_stage(engine):
+    state = install(engine, Relations(members=[ref()], converge='验收'))
+    reach(engine, '交付')
+    finish(engine, '验收')
+    state['value'] = Relations()
     engine.tick()
     assert current(engine)['stage'] == '验收'
-    assert item(engine)['pending_episode'] > 0
 
 
-def test_removing_last_member_restores_normal_path(engine):
-    from conftest import finish
-    state = install(engine, Relations(members=[ref(complete=True)], converge='验收'))
+def test_existing_skipped_execution_is_restored(engine):
+    install(engine, Relations(members=[ref()], converge='验收'))
     engine.ingest(event())
+    engine.change(item(engine), stage='验收', aggregate=True, aggregate_origin='说清楚')
     engine.tick()
-    state['value'] = Relations()
-    engine.plugins.get('flow', 'flow').passed = False
-    finish(engine, '执行')
     assert not item(engine)['aggregate']
-    assert current(engine)['stage'] == '接单'
+    assert current(engine)['stage'] == '说清楚'
+
+
+def test_rework_while_waiting_for_members_can_execute(engine):
+    install(engine, Relations(members=[ref()], converge='验收'))
+    reach(engine, '交付')
+    finish(engine, '验收')
+    engine.change(item(engine), pending_rework=True)
+    engine.tick()
+    assert current(engine)['stage'] == '执行'
 
 
 def test_pending_approval_rejection_cannot_be_swallowed_by_convergence(engine):
@@ -208,6 +244,6 @@ def test_pending_approval_rejection_cannot_be_swallowed_by_convergence(engine):
     for _ in range(3):
         engine.tick()
     assert item(engine)['stage'] == '执行'
-    assert item(engine)['state'] == '卡住'
-    assert not engine.active()
+    assert item(engine)['state'] == '跑着'
+    assert current(engine)['stage'] == '执行'
     assert any(f['kind'] == 'core_feedback' for f in engine.log.facts())

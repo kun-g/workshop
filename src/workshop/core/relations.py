@@ -55,14 +55,14 @@ def admit(engine, item):
     data = item.get("relations") or {}
     if any(r["item"] == item["id"] for r in engine.active()) or item.get("program"):
         return item
-    if item.get("pending_advance"):
-        return item  # 先结算已有授权，不能用汇合清掉人的回答。
-    if item.get("aggregate") and not data.get("error") and not data.get("members"):
-        # 最后一项被移走，恢复进入总单前的正常路径；旧总单的问卡不能批准普通活。
+    if item.get("pending_advance") or item.get("pending_rework"):
+        return item  # 先结算已有授权或返工，不能用等待清掉人的回答。
+    if item.get("aggregate") and not data.get("error"):
+        # 旧版跳过执行的活回到原阶段；旧验收问卡不能批准新的执行结果。
         engine.cancel_questions(item)
         origin = item.get("aggregate_origin") or "说清楚"
         engine.change(item, aggregate=False, aggregate_origin=None, stage=origin, state="空闲",
-                      next="已无子单，恢复" + origin, blocked_by="", relation_hold=None,
+                      next="总单恢复自身流程：" + origin, blocked_by="", relation_hold=None,
                       relation_error=False, approved=[], pending_advance=None, wait_for_ready=False,
                       after_wait=None, retry_at=None, retry_executor=None, serial_hold=False,
                       pending_episode=item.get("pending_episode", 0) + 1)
@@ -73,7 +73,9 @@ def admit(engine, item):
         return item
     error = data.get("error", "")
     waiting = [n for n in data.get("prerequisites", []) if not n["complete"]]
-    children = [n for n in data.get("members", []) if not n["complete"]]
+    converge = data.get("converge")
+    at_convergence = converge and STAGES.index(item["stage"]) >= STAGES.index(converge)
+    children = [n for n in data.get("members", []) if not n["complete"]] if at_convergence else []
     state = "卡住" if error else "等前置" if waiting else "等子单" if children else ""
     if state:
         about = "关系读取失败：" + error if error else state + "：" + "、".join(n["name"] for n in (waiting or children))
@@ -88,12 +90,5 @@ def admit(engine, item):
         engine.change(item, state="空闲", next=item["stage"], blocked_by="", relation_hold=None,
                       relation_error=False, serial_hold=False,
                       leave={"kind": "工序", "owner": "车间", "at": stamp(engine.clock()), "about": "关系已满足"})
-        item = engine.log.get("items", item["id"])
-    converge = data.get("converge")
-    if data.get("members") and converge and STAGES.index(item["stage"]) < STAGES.index(converge):
-        engine.change(item, stage=converge, state="空闲", next="子单全部完成，进入" + converge,
-                      aggregate=True, aggregate_origin=item.get("aggregate_origin") or item["stage"],
-                      serial_hold=False, pending_advance=None,
-                      after_wait=None, retry_at=None, retry_executor=None)
         item = engine.log.get("items", item["id"])
     return item
