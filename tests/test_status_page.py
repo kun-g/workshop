@@ -108,10 +108,12 @@ def test_brief_by_state():
     reason, todo = brief(row(owner=""), {})
     assert todo.startswith("项目经理：") and reason.startswith("grant-console") and not todo.startswith("项目经理：项目经理")
     ask = row(id="g:1", shown="等你", state="等你", stuck=False, owner="")
-    assert brief(ask, {"g:1": "是否批准 #175"}) == ("执行阶段等你回答", "Kun：是否批准 #175")
+    assert brief(ask, {"g:1": "是否批准 #175"}) == ("", "Kun：是否批准 #175")  # 等你的活不写原因，问题占两栏
+    waiting = page(view(ask), NOW)
+    assert 'class="todo wide"' in waiting and 'class="why"' not in waiting.split('<div class="body">')[0].split("<summary>", 1)[1]
     assert brief(row(shown="跑着", state="跑着", stuck=False, next="等回执"), {}) == ("执行阶段进行中", "车间：等回执")
     assert brief(row(shown="暂停", state="跑着", stuck=False), {})[1] == "项目经理：恢复后继续"
-    for r in (ask, row(shown="定时", state="定时", stuck=False, next=NEXT)):
+    for r in (row(shown="定时", state="定时", stuck=False, next=NEXT),):
         assert all(len(part) <= 40 for part in brief(r, {"g:1": "很长" * 40}))
 
 

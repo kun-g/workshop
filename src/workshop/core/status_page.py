@@ -49,7 +49,7 @@ def brief(row, asks):
         return sentence(row["reason"] or "原因未记录"), f"{owner}：{sentence(advice, LIMIT - len(owner) - 1)}"
     if state == "等你":
         decision = asks.get(row["id"]) or row["next"]
-        return f"{stage}阶段等你回答", f"Kun：{sentence(decision, LIMIT - 4)}"
+        return "", f"Kun：{sentence(decision, 2 * LIMIT - 4)}"  # 等你的活没有「原因」可说，原因栏并进来，问题占两栏
     if state == "暂停":
         return f"交付对象已暂停，{stage}阶段不动", "项目经理：恢复后继续"
     if state in ENDED:
@@ -75,8 +75,8 @@ def item(row, asks, now, *, badge=True):
            ("流程", lane(row)), ("阶段", f'{row["stage"]} · {row["who"]}'), ("活", row["id"]))
     body = "".join(f"<p><b>{k}</b>{v if k == '等了多久' else e(v)}</p>" for k, v in raw if v)
     return (f'<details class="item"><summary><span class="name">{e(title)}{pill}<span class="ref">{ref}</span>{quote}</span>'
-            f'<span class="why">{e(reason)}</span><span class="todo">{e(todo)}</span></summary>'
-            f'<div class="body">{body}</div></details>')
+            + (f'<span class="why">{e(reason)}</span>' if reason else "") + f'<span class="todo{" wide" if not reason else ""}">{e(todo)}</span></summary>'
+            + f'<div class="body">{body}</div></details>')
 
 
 def section(title, rows, asks, now, *, note="", badge=True, folded=False, warn=False):
@@ -205,7 +205,7 @@ details>summary::-webkit-details-marker{display:none}
 details.item>summary::before{content:"▸";position:absolute;margin-left:-14px;color:var(--mute);font-size:11px}
 details.item[open]>summary::before{content:"▾"}
 .name{font-weight:600;overflow-wrap:anywhere}.ref{margin-left:8px;font-weight:400;font-size:12px}.ref a{color:var(--run)}
-.quote{display:block;font-weight:400;font-size:12px;color:var(--mute)}.why{color:var(--mute)}.todo{overflow-wrap:anywhere}
+.quote{display:block;font-weight:400;font-size:12px;color:var(--mute)}.why{color:var(--mute)}.todo{overflow-wrap:anywhere}.todo.wide{grid-column:span 2}
 .pill{color:#fff;font-size:11px;border-radius:4px;padding:0 6px;margin-left:6px;font-weight:400}
 .body{padding:2px 0 10px}.body p,.card p{margin:4px 0}
 .body b,.card b{display:inline-block;min-width:52px;color:var(--mute);font-weight:500;margin-right:8px}
