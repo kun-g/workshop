@@ -149,11 +149,14 @@ def main(argv=None):
         elif args.command == "release-now":
             # 只写请求；比较和发版仍由守护进程按整点同一流程做（集群模式同样读这个目录）。
             from datetime import datetime, timezone
-            from .plugins.sources.main_branch import MainBranchSource, REQUEST
             rules = current_rules(args, log.get("controls", "@rules"))
-            root = MainBranchSource.release_config(rules.target(args.target))[1]
-            root.mkdir(parents=True, exist_ok=True)
-            (root / REQUEST).write_text(datetime.now(timezone.utc).isoformat())
+            source = Registry().get('source', 'main_branch')
+            paths = source.wake_paths(rules.target(args.target))
+            if len(paths) != 1:
+                raise ValueError('立即发版来源须提供唯一请求路径')
+            request = Path(paths[0])
+            request.parent.mkdir(parents=True, exist_ok=True)
+            request.write_text(datetime.now(timezone.utc).isoformat())
             print("已请求立即发版：守护进程马上比较在跑的版本与远端，有新合并就发版；进度看 workshop status")
         else:
             saved = log.get("controls", "@rules")
@@ -165,17 +168,6 @@ def main(argv=None):
                 rules = current_rules(args, saved)
             jobs = None
             if args.command == "run":
-                # 本次流程数据迁移只在启动窗口执行；失败只暂停该来源，不能挡住其他流程启动。
-                for name, config in rules.data['targets'].items():
-                    if config.get('watch_updates', {}).get('consolidate_on_start'):
-                        from .plugins.watch_updates.migration import migrate
-                        try:
-                            migrated = migrate(log.path, {**config, 'name': name})
-                        except (ValueError, OSError, KeyError, TypeError, sqlite3.Error) as exc:
-                            migrated = {'status': 'blocked', 'target': name, 'flow': 'watch_updates',
-                                        'reason': str(exc), 'next': '结算旧轮后，在下一停机窗口重跑 migrate-checks'}
-                        if migrated['status'] != 'unchanged':
-                            print(json.dumps(migrated, ensure_ascii=False), flush=True)
                 from .running import record
                 record()  # 作业子进程继承；整点发版拿它和远端比
             if args.command == "run" and not args.once:

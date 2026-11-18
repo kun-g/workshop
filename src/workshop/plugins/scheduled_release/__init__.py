@@ -8,7 +8,7 @@ import time
 from workshop.core.models import After, Classification, Evidence
 from workshop.core.ports import Retryable
 from workshop.github_identity import scoped
-from .io import IO, read, write
+from .io import IO, read, write, release_path
 from .cluster import ClusterRelease
 
 STAGES = ('接单', '说清楚', '执行', '证据', '交付', '验收', '收尾')
@@ -98,7 +98,7 @@ class ScheduledRelease:
 
     def deploy(self, item, target, state, save):
         root = self.io.root(target)
-        release = read(root / 'release.json')
+        release = read(release_path(root))
         if release.get('item') == item['id'] and release.get('to') == state['to'] and release.get('status') in ('restarting', 'ok'):
             state['status'] = release['status']
             # 已重启则不要再次请求；同一旧进程尚未消费返回值则重放重启请求。
@@ -142,13 +142,13 @@ class ScheduledRelease:
         record = {'from': state['from'], 'to': state['to'], 'at': self.io.now(),
                   'status': 'restarting', 'prepare': [s['argv'] for s in prepare],
                   'prepare_cwds': [s.get('cwd', '.') for s in prepare], 'item': item['id'], 'daemon': daemon}
-        write(root / 'release.json', record)
+        write(release_path(root), record)
         state['status'] = 'restarting'
         return After(restart=True)
 
     def confirm(self, item, target, state):
         root = self.io.root(target)
-        release = read(root / 'release.json')
+        release = read(release_path(root))
         if release.get('item') != item['id'] or release.get('to') != state['to']:
             raise Retryable('发版记录与本活不匹配')
         if release['status'] == 'ok':
@@ -166,7 +166,7 @@ class ScheduledRelease:
         if not self.io.heartbeat_ready(root, daemon):
             return After(pending=True, reason='新守护进程心跳尚未恢复', next='回查新进程心跳')
         release.update(status='ok', confirmed_at=self.io.now(), confirmed_daemon=daemon)
-        write(root / 'release.json', release)
+        write(release_path(root), release)
         state['status'] = 'ok'
         return After()
 
@@ -179,7 +179,7 @@ class ScheduledRelease:
             state = read(path) or {**self.intent(item), 'status': 'new', 'effects': {}}
             def save():
                 write(path, state)
-            release = read(self.io.root(target) / 'release.json')
+            release = read(release_path(self.io.root(target)))
             if (release.get('item') == item['id'] and release.get('to') == state['to']
                     and release.get('status') in ('rolling_back', 'rollback_failed', 'rolled_back')):
                 # 在旧 after key 重放之前拦住重启请求/成功通知；通知由独立看门负责。
@@ -189,7 +189,7 @@ class ScheduledRelease:
                 return After()
             if key in state['effects']:
                 result = After(**state['effects'][key])
-                if result.restart and self.io.daemon() != read(self.io.root(target) / 'release.json').get('daemon'):
+                if result.restart and self.io.daemon() != read(release_path(self.io.root(target))).get('daemon'):
                     return After()
                 return result
             result = After()

@@ -59,8 +59,6 @@ class Source:
         day, week = period(c, self.io.clock())
         events = []
         state = self.io.state(target)
-        if c.get('consolidate_on_start') and not state.get('checks_migrated'):
-            return Poll([], cursor)  # 启动迁移成功前不确认新游标、不再生成旧粒度的活。
 
         def event(kind, key, payload, ext):
             events.append(Event('watch_updates', ext, target['name'], key,

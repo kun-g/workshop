@@ -125,7 +125,6 @@ targets:
     sources: {github: {}, main_branch: {every: 1h}, watch_updates: {}}
     watch_updates:
       enabled: true
-      consolidate_on_start: true
       core_database: ~/.local/state/workshop/workshop.db
       timezone: Asia/Singapore
       hour: 9

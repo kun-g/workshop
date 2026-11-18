@@ -14,8 +14,8 @@ from workshop.core.models import Event
 from workshop.core.ports import Retryable
 from workshop.plugins.scheduled_release import ScheduledRelease, CHECKS
 from workshop.plugins.scheduled_release.io import IO, read, write
-from workshop.plugins.sources.main_branch import MainBranchSource
-import workshop.plugins.sources.main_branch as source_module
+from workshop.plugins.scheduled_release.source import MainBranchSource
+import workshop.plugins.scheduled_release.source as source_module
 from workshop import running
 
 
@@ -507,3 +507,22 @@ def test_record_running_version_overrides_inherited_value(monkeypatch):
     monkeypatch.setenv(running.VARIABLE, '0' * 40)
     expected = git(Path(running.__file__).resolve().parent, 'rev-parse', 'HEAD')
     assert running.record() == expected == running.current() == os.environ[running.VARIABLE]
+
+
+def test_release_now_uses_registered_source_wake_path(tmp_path, monkeypatch):
+    import workshop.cli as cli
+    from workshop.registry import Registry
+    config = configuration()
+    config['targets']['alpha']['scheduled_release_state_dir'] = str(tmp_path / 'configured')
+    engine = build(tmp_path, config)
+    engine.log.close()
+    request = tmp_path / 'registered' / 'request'
+    class Source:
+        def wake_paths(self, target):
+            return [str(request)]
+    registry = Registry()
+    registry.register('source', 'main_branch', Source())
+    monkeypatch.setattr(cli, 'Registry', lambda *args, **kwargs: registry)
+    assert cli.main(['--state-dir', str(tmp_path), 'release-now', 'alpha']) == 0
+    assert datetime.fromisoformat(request.read_text()).tzinfo is not None
+    assert not (tmp_path / 'configured' / 'release-now').exists()

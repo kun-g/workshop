@@ -32,21 +32,12 @@ def main(argv=None):
     inventory = commands.add_parser('preview-inventory', help='校验并应用采集提案到隔离目录，不改现役清单')
     inventory.add_argument('--proposal', required=True)
     inventory.add_argument('--output', required=True)
-    migration = commands.add_parser('migrate-checks', help='停机窗口备份并合并活动检查活；不升级、不发送')
-    migration.add_argument('--database', required=True)
-    migration.add_argument('--watch-state', required=True, help='与数据库同一快照的盯更新状态目录')
-    migration.add_argument('--offline', action='store_true', required=True, help='确认该数据库没有运行中的守护进程')
-    for sub in (prepare, resend, inventory, migration):
+    for sub in (prepare, resend, inventory):
         sub.add_argument('--rules', default='rules/workshop.yaml')
         sub.add_argument('--target', required=True)
     args = parser.parse_args(argv)
     try:
-        if args.command == 'migrate-checks':
-            from .migration import migrate
-            target = configured(args)
-            target['watch_updates']['state_dir'] = args.watch_state
-            result = migrate(args.database, target)
-        elif args.command == 'preview-inventory':
+        if args.command == 'preview-inventory':
             result = preview_inventory(configured(args), args.proposal, args.output)
         elif args.command == 'prepare-preview':
             result = prepare_preview(configured(args), args.version, args.output)
