@@ -79,7 +79,7 @@ def test_C_answer_keeps_concurrent_event_and_monotonic_cause(engine):
     assert item(engine)["cause"] >= seq
 
 
-def test_D_other_owner_gets_reminder_not_execution(engine):
+def test_D_other_owner_gets_neither_reminder_nor_execution(engine):
     reach(engine, "收尾")
     finish(engine, leave={"kind": "工序", "owner": "Kun", "at": "+1d", "about": "Kun 自己处理"})
     engine.clock.now += timedelta(days=1, minutes=1)
@@ -87,7 +87,7 @@ def test_D_other_owner_gets_reminder_not_execution(engine):
     engine.tick()
     assert not engine.active()
     assert item(engine)["state"] == "完成"
-    assert len([c for c in engine.log.all("cards") if c["mode"] == "notice"]) == 1
+    assert not engine.log.all("cards")
 
 
 def test_E_nothing_does_not_send_empty_card(engine):

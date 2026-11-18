@@ -70,7 +70,7 @@ def read(io, objects, target):
     deadline = time.monotonic() + 20
     for start in range(0, len(entries), 20):
         batch = entries[start:start + 20]
-        fields = ('number issueDependenciesSummary{totalBlockedBy} subIssuesSummary{total} parent{'
+        fields = ('number body issueDependenciesSummary{totalBlockedBy} subIssuesSummary{total} parent{'
                   + FIELDS + '} ' + ' '.join(connection(k) for k in GROUPS))
         text = prefix + ' '.join(f'i{n}:issue(number:{n}){{{fields}}}' for _, n in batch) + '}}'
         try:
@@ -85,7 +85,9 @@ def read(io, objects, target):
                 value = values[f'i{number}']
                 if not isinstance(value, dict) or value.get('number') != number:
                     raise ValueError('关系查询未返回指定 issue')
-                result = dict(converge='收尾', collections=[node(value['parent'], target)] if value.get('parent') else [])
+                priority = re.search(r'优先级[：:]\s*(P[012])\b', value.get('body') or '')
+                result = dict(priority=priority[1] if priority else 'P1', converge='收尾',
+                              collections=[node(value['parent'], target)] if value.get('parent') else [])
                 expected = {'blockedBy': value['issueDependenciesSummary']['totalBlockedBy'],
                             'subIssues': value['subIssuesSummary']['total']}
                 for field, name in GROUPS.items():

@@ -223,6 +223,9 @@ class GitHubSource:
             issue, _ = self._get(f"{base}/issues/{number}", cache)
             changes = self._list(f"{base}/issues/{number}/events?per_page=100", cache)
             emit("issue", number, number, "body", issue)
+            if number in state.get('intake_pending', []):
+                # 升级前相同正文可能已被核心确认；独立事件号保证首次接单检查不会被旧事实去重。
+                emit("issue", number, number, "intake-v1-body", issue)
             own_intake = re.search(r"<!-- workshop-intake: [^<>]+ -->", issue.get("body") or "")
             initial = next((c.get("id") for c in changes if c.get("event") == "labeled"
                             and c.get("label", {}).get("name") == label), None) if own_intake else None
@@ -257,6 +260,15 @@ class GitHubSource:
 
         try:
             issues = self._list(endpoint("/issues", state.get("watermark"), state="all", sort="updated"), cache)
+            bootstrap = target.get('auto_intake') and not state.get('intake_bootstrapped')
+            if bootstrap:
+                opened = self._list(endpoint('/issues', None, state='open', sort='updated'), cache)
+                if 'intake_pending' not in state:
+                    state['intake_pending'] = [str(i['number']) for i in opened if 'pull_request' not in i
+                        and not any(v['name'] == label for v in i.get('labels', []))]
+                for number in state['intake_pending']:
+                    listed.pop(number, None)
+                issues = list({str(i['number']): i for i in [*issues, *opened]}.values())
             for issue in issues:
                 number = str(issue["number"])
                 signature = hashlib.sha256(json.dumps(issue, sort_keys=True).encode()).hexdigest()
@@ -277,6 +289,12 @@ class GitHubSource:
                     continue
                 # 全部详情完成后再记摘要，中途让出请求预算时下次仍会补完。
                 listed[number] = signature
+                if number in state.get('intake_pending', []):
+                    state['intake_pending'].remove(number)
+
+            if bootstrap:
+                state['intake_bootstrapped'] = True
+                state.pop('intake_pending', None)
 
             review_comments = self._list(endpoint("/pulls/comments", state.get("review_watermark"),
                                                   sort="updated", direction="asc"), cache)

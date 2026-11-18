@@ -158,7 +158,8 @@ class Driver(Base):
         session = spec.get('vendor_id')
         if code <= 0 or spec['interactive'] or not session or not output.exists():
             return False
-        pattern = r'(?:Error: )?no rollout found for thread id[ :]+[\x27\"]?' + re.escape(session) + r'[\x27\"]?\.?'
+        pattern = (r'(?:Error: )?(?:thread/resume: thread/resume failed: )?no rollout found for thread id[ :]+[\x27\"]?'
+                   + re.escape(session) + r'[\x27\"]?\.?(?: \(code -32600\))?')
         for line in output.read_text(errors='replace').splitlines():
             try:
                 row = json.loads(line)

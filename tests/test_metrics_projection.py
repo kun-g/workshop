@@ -29,7 +29,7 @@ class Audit:
             else:
                 assert replayed[item_id]['state'] == row['state'], (kind, body, item_id)
         for item_id, row in replayed.items():
-            # 待放行只记事实、不建核心活；移除也不保留核心活。
+            # 未接单只记事实、不建核心活；移除也不保留核心活。
             if item_id not in projected:
                 assert row['state'] == '移除' or row['waiting'], (kind, body, item_id)
         return replayed

@@ -76,11 +76,8 @@ def test_explicit_leave_after_completion_still_fires(engine, kind):
     engine.clock.now += timedelta(hours=1)
     engine.tick()
     assert engine.log.all('timers')[0]['fired']
-    if kind == '工序':
-        assert current(engine)['stage'] == '收尾'
-    else:
-        assert item(engine)['state'] == '等你'
-        assert any(c['mode'] == 'ask' for c in engine.log.all('cards'))
+    assert current(engine)['stage'] == '收尾'
+    assert not engine.log.all('cards')
 
 
 def test_abandon_running_program_explains_pause_without_mutation(engine, monkeypatch):

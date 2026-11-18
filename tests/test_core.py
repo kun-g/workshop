@@ -569,8 +569,8 @@ def test_observation_stage_is_optional_and_not_complete_before_it(engine):
     assert item(engine)["state"] == "完成"
     engine.clock.now += timedelta(days=1)
     engine.tick()
-    assert item(engine)["state"] == "等你"
-    assert engine.log.all("cards")[0]["mode"] == "ask"
+    assert item(engine)["state"] == "跑着"
+    assert not engine.log.all("cards")
 
 
 def test_chain_limit_arriving_during_live_round_still_blocks_next_round(engine):
@@ -645,7 +645,7 @@ def test_extension_metrics_counts_lines_and_first_completion(engine, tmp_path):
         "core_lines": 1, "first_item_hours": 2.0}
 
 
-def test_paused_sendback_timer_does_not_ask_until_selected(engine):
+def test_paused_sendback_timer_resumes_without_card_when_selected(engine):
     reach(engine, "收尾")
     finish(engine, leave={"kind": "送回", "at": "+1m", "about": "看看结果"})
     engine.pause("alpha")
@@ -655,8 +655,8 @@ def test_paused_sendback_timer_does_not_ask_until_selected(engine):
     missed = engine.missed("alpha")
     engine.resume("alpha", [missed[0]["id"]])
     engine.tick()
-    assert item(engine)["state"] == "等你"
-    assert engine.log.all("cards")[0]["sent"]
+    assert item(engine)["state"] == "跑着"
+    assert not engine.log.all("cards")
 
 
 def test_resume_detects_events_arriving_after_list_was_displayed(engine):

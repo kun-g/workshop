@@ -87,7 +87,7 @@ class FakeFlow:
     def assess(self, item, receipt, target):
         return Evidence(self.checks, self.passed, self.actions)
 
-    def after(self, item, stage, key, target):
+    def after(self, item, stage, key, target, services=None):
         self.after_keys.append(key)
 
 

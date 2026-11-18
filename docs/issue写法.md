@@ -29,7 +29,7 @@ issue 是一件活的登记。车间接单时核对它（核心 R2、R3），执
 
 进交付时程序检查 PR 是否修改依据指明的登记需求文档；缺任一份就不过、退回执行，删除文档或仅把文档移出原路径不算修改完成。
 
-需要 Kun 判断时，回执 `ask` 发一张带选项、推荐与理由的卡，`leave.kind=等你` 必须关联有效问卡。操作阻塞（缺工具、权限、次数用完）交 `outcome=nothing`，不带 `advance`，在 evidence 的 JSON 写 `blocked: {"reason":"具体原因","next":"建议动作"}`；状态记为卡住，项目经理从 `workshop status` 的卡住清单处理。不能仅发通知再等你。恢复命令见 [恢复与重验](implementation/恢复与重验.md)。不猜标准，也不反复发卡。Kun 改完同一个 issue、先去掉再加回标签后继续原活。车间建单时的初次标签只是登记，不算 Kun 放行。通知正文写「不对就在群里回一句「<交付对象短名>#<issue号> 不对」」，例如 `gc#123 不对`；短名由规则指定。
+需要 Kun 判断时按下文「自动核对与取舍等待」登记无卡等待，不发普通问卡或通知。操作阻塞（缺工具、权限、次数用完）交 `outcome=nothing`，不带 `advance`，在 evidence 的 JSON 写 `blocked: {"reason":"具体原因","next":"建议动作"}`；状态记为卡住，项目经理从 `workshop status` 的卡住清单处理。恢复命令见 [恢复与重验](implementation/恢复与重验.md)。
 
 第一次发的评论如果没写「不对」，事后改成「不对」只算补充，不算返工；要返工就另发一条评论。
 
@@ -88,5 +88,13 @@ DoD 能由检查和原样输出判定。
 
 ## 在会话里放行
 
-Kun 在会话里明确说「放」后，项目经理用 `workshop release ws#31 --quote '放' --session <会话号>` 登记；也支持 `workshop:31`。未接单的对象可直接放行，已有活继续或返工，原话与会话号在 why 中可查。两项都必填，不得只写空白。只更新 issue 正文或用 App 打标签不等于 Kun 放行；不要代 Kun 使用个人 GitHub 身份。
+Kun 在会话里明确说「放」后，项目经理用 `workshop release ws#31 --quote '放' --session <会话号>` 登记；也支持 `workshop:31`。未接单的对象可直接放行，已有活继续或返工，原话与会话号在 why 中可查。两项都必填，不得只写空白。写全的正文会触发车间自动补标签接单；会话放行不能替代待答问题的具体回答。不要代 Kun 使用个人 GitHub 身份。
 
+
+## 自动核对与取舍等待（#173）
+
+写全了车间会自动用 App 打 Ready for Agent 接单，开工按 P0 → P1 → P2，同级按入队先后；正文不写优先级时为 P1。还没想清楚的 issue 不要写全那几节。没有写全的原地保留，不建活、不评论、不发卡；补全正文后再核对。同一版正文只核对一次。Kun 亲手打标签、会话 `workshop release` 仍保留，但放行不能代答取舍。
+
+执行中需要 Kun 判断，执行者交无卡等待：证据 JSON 的 `decision` 写 `key`、`version`、`question`、`reason`、`recommend` 五个非空字符串；改问题换版本。回执 `outcome=nothing`、`leave={"kind":"等你","about":"问题"}`，不发 ask/notice，不填 advance。核心只存等待引用；问题和起始时间由介入点服务持久保存。
+
+协调对话先看 `workshop status` 或 `workshop why <活>`，再用 `workshop answer-wait <等待号> <回答> --version <问题版本> --quote <Kun原话> --session <会话号>` 登记。回答必须来自 Kun 本人，不能拿泛化放行代答；重复回答幂等，旧版本拒绝。到点再看用 later，自动续跑，不生成送回问卡。

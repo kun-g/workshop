@@ -55,6 +55,9 @@ def ingest(engine, event: Event, round_token: str | None = None, *, ingress: str
                              source=event.source, ext_id=json.dumps([event.target, '', event.ext_id], ensure_ascii=False))
         added = False
         for config, action in selected:
+            classify = action == 'classify'
+            if classify:
+                action = 'update'
             scoped = replace(event, flow=config['flow'], flow_default=config['flow_default'], action=action,
                              ext_id=event.action_id if action != 'update' and event.action_id else event.ext_id)
             # 旧兼容流程的历史去重标识仍有效；新流程不受旧记录影响。
@@ -64,22 +67,22 @@ def ingest(engine, event: Event, round_token: str | None = None, *, ingress: str
                                            (event.source, key, event.target)).fetchone() for key in ids):
                     continue
             scoped = replace(scoped, object_key=engine.resolve_key(scoped.target, scoped.object_key, scoped.flow))
-            added = engine.record_event(scoped, ingress, namespaced='flows' in target and not directed) or added
+            added = engine.record_event(scoped, ingress, namespaced='flows' in target and not directed, classify=classify) or added
         return added
 
 
-def record_event(engine, event, ingress, *, namespaced=False):
+def record_event(engine, event, ingress, *, namespaced=False, classify=False):
     first = initial_stage(engine.rules.target(event.target, event.flow))
     with engine.log.transaction():
         paused = engine.control(event.target).get("paused", False)
         kind = "deferred_event" if paused else "event"
-        added = engine.fact(kind, {**asdict(event), "ingress": ingress, "pending_classification": ingress == "external",
+        added = engine.fact(kind, {**asdict(event), "ingress": ingress, "pending_classification": classify or ingress == "external",
                                  **({'initial_stage': first} if not paused else {}),
                                  **gate(ingress)}, event.item_id, source=event.source,
                                  ext_id=json.dumps([event.target, event.flow, event.ext_id], ensure_ascii=False) if namespaced else event.ext_id)
         if added and not paused:
-            if ingress == "external":
-                engine.classification_intent(event)
+            if classify or ingress == "external":
+                engine.classification_intent(event, release_gate=ingress == 'source')
                 return added
             item = engine.log.get("items", event.item_id)
             if item is None:
@@ -91,12 +94,13 @@ def record_event(engine, event, ingress, *, namespaced=False):
         return added
 
 
-def classification_intent(engine, event, received_seq=None):
+def classification_intent(engine, event, received_seq=None, release_gate=False):
     """received_seq：原来收到时的事实序号；暂停后补放的事件带原序号，放弃前收到的旧返工照样作废。"""
     seq = engine.log.db.execute("SELECT max(seq) FROM facts").fetchone()[0]
     engine.fact("effect", {"id": f"classify:{seq}", "kind": "classify", "done": False,
                          "event": asdict(event), "item": event.item_id, "event_seq": seq,
-                         "received_seq": received_seq or seq, "defer_creation": True}, event.item_id)
+                         "received_seq": received_seq or seq, "defer_creation": True,
+                         "release_gate": release_gate}, event.item_id)
 
 
 def classify_events(engine):
@@ -139,6 +143,7 @@ def classify_events(engine):
                 engine.fact("event_classified", {"id": entry["id"], "action": action,
                           "event_seq": entry["event_seq"], **note,
                           **({"event": {**asdict(event), "action": action,
+                                        "release_gate": entry.get('release_gate', False),
                                         "initial_stage": initial_stage(target)}} if entry.get("defer_creation") else {})}, event.item_id)
             engine.retry_clear(entry["id"])
         except Pending:
@@ -177,6 +182,15 @@ def submit(engine, token: str, data: dict) -> bool:
         extra = engine.advance_error(token, receipt.advance)
         if extra:
             raise ValueError(extra)
+        if row:
+            item = engine.log.get('items', row['item'])
+            target = engine.item_target(item)
+            try:
+                validate = getattr(engine.plugins.get('flow', target['plugin']), 'validate_receipt', None)
+            except LookupError:
+                validate = None  # 插件暂未装上仍可收回执；业务内容在结算时核对。
+            if validate:
+                validate(item, receipt, target)
     except (ValueError, TypeError, KeyError) as exc:
         ask_only = isinstance(exc, ReceiptError) and exc.ask_only
         if ask_only:

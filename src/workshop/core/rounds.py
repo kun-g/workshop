@@ -179,7 +179,7 @@ def finish(engine, row):
         after_result = After()
         rechecking = (bool(evidence.recheck_after) and receipt.outcome == "nothing" and not receipt.advance
                       and not receipt.ask and not receipt.later and not receipt.leave and not engine.waiting(item))
-        if advancing:
+        if advancing or evidence.pause:
             key = f"after:{token}"
             after_result = engine.after({**item, "result": receipt.json()}, row["stage"], key, target)
         with engine.log.transaction():
@@ -189,11 +189,12 @@ def finish(engine, row):
             engine.fact("program_result" if program else "round_result", {"token": token, "stage": row["stage"], "outcome": receipt.outcome,
                       "summary": summary, "evidence": receipt.evidence, "reason": evidence.reason},
                       item["id"], source="result", ext_id=token)
-            for ask in receipt.ask:
+            for ask in ([] if evidence.pause else receipt.ask):
                 engine.card(item, f'{token}:{ask["key"]}', "ask", ask)
             completed = advancing and (decision.complete or (
                 bool(evidence.done_key) and STAGES.index(decision.stage) > STAGES.index(row["stage"])))
-            engine.receipt_notices(item, row["stage"], token, receipt, evidence, completed)
+            if not evidence.pause:
+                engine.receipt_notices(item, row["stage"], token, receipt, evidence, completed)
             for later in receipt.later:
                 engine.timer(item, f'{token}:{later["key"]}', later["at"], later["about"], base=received_at)
             # 最后一个程序阶段的 leave 是自动补的收尾登记，不是后续工序。
@@ -239,7 +240,8 @@ def finish(engine, row):
                                after_wait=None, leave=engine.blocked_leave(after_result.next))
             elif after_result.pending:
                 changes.update(engine.pending_changes(item, after_result, target,
-                    {"key": key, "receipt": receipt.json(), "to": decision.stage, "complete": decision.complete}))
+                    {"key": key, "receipt": receipt.json(), "to": row["stage"] if evidence.pause else decision.stage,
+                     "complete": False if evidence.pause else decision.complete}))
                 if after_result.rerun:
                     changes.update(reviews=item.get("reviews", []), retry_executor=row["executor"])
             elif rejected:

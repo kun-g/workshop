@@ -1,6 +1,7 @@
 """一轮一轮推进：外部副作用有持久标识；视图只经事实演进。"""
 from contextlib import contextmanager
 import fcntl
+import inspect
 
 from .flows import default_flow, entries
 from .log import Log
@@ -105,7 +106,12 @@ class Engine:
         if self.jobs is None:
             args = materialize(args)
             if lookup is not None:
-                args = (*args, finder(self.log, lookup))
+                if 'wait_services' in lookup:
+                    method_fn = getattr(self.plugins.get(port, name), method)
+                    if len(inspect.signature(method_fn).parameters) >= 5:
+                        args = (*args, waits.handle(self.plugins, lookup['wait_services']))
+                else:
+                    args = (*args, finder(self.log, lookup))
             return getattr(self.plugins.get(port, name), method)(*args)
         return self.jobs.call(port, name, method, args, identity=identity, item=item, lookup=lookup)
 

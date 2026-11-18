@@ -78,7 +78,7 @@ def histories(facts, metadata, rules, end):
         if state in TERMINAL:
             label = '结束'
         elif item['waiting']:
-            label = '待放行'
+            label = '未接单'
         else:
             label = {'空闲': '排队', '跑着': '在跑'}.get(state, state)
             if label not in STATES:
@@ -94,7 +94,7 @@ def histories(facts, metadata, rules, end):
                                           for card in cards.values())
         if item['state'] in ('卡住', '等你') and not item['plugin_blocked'] and not pending:
             item['state'] = '空闲'
-        # 尚未建活的待放行与已有活的拒收等待分别沿用原口径。
+        # 尚未建活的未接单与已有活的拒收等待分别沿用原口径。
         if item['waiting']:
             item['waiting'] = False
 
@@ -190,7 +190,7 @@ def segments(item, rounds, end):
     for at, kind, value in events + [(end, 2, None)]:
         at = min(at, end)
         if previous is not None and at > previous:
-            label = '在跑' if running and state not in ('待放行', '结束') else state
+            label = '在跑' if running and state not in ('未接单', '结束') else state
             if result and result[-1][2] == label and result[-1][1] == previous:
                 result[-1] = (result[-1][0], at, label)
             else:
@@ -218,7 +218,7 @@ def summarize(items, rounds, first, last, capacity):
             # 半开窗口结束前的快照；等待年龄不在窗口起点截断。
             if start < last <= end:
                 entry = dict(id=item['id'], title=item['title'], seconds=(last-start).total_seconds())
-                if state == '待放行':
+                if state == '未接单':
                     result['pending'] += 1
                     old = result['oldest_pending']
                     if old is None or entry['seconds'] > old['seconds']:
@@ -285,7 +285,7 @@ def render(report):
         times = ' '.join(f'{state}={seconds:.3f}s({seconds/total:.1%})' if total else f'{state}=0s(0%)'
                          for state, seconds in data['seconds'].items())
         ratio = data['failed']/data['rounds'] if data['rounds'] else 0
-        return (f"供给 在途={data['in_flight']} 待放行={data['pending']} 最老={age(data['oldest_pending'])} | "
+        return (f"供给 在途={data['in_flight']} 未接单={data['pending']} 最老={age(data['oldest_pending'])} | "
                 f"流动 {times} 效率={data['efficiency']:.2%} 失败轮={data['failed']}/{data['rounds']}({ratio:.2%}) | "
                 f"负载={data['load']:.2%} 占用={data['occupied_seconds']/60:.3f}位置分钟")
 

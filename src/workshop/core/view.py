@@ -123,9 +123,10 @@ def evolve(db, fact: dict) -> None:
         if "event" in body:
             evolve(db, {**fact, "kind": "event", "source": body["event"]["source"], "body": body["event"]})
         item = get("items", item_id)
-        apply_action(item, body["action"])
-        item["cause"] = max(item["cause"], fact["seq"])
-        put("items", item_id, item)
+        if item:
+            apply_action(item, body["action"])
+            item["cause"] = max(item["cause"], fact["seq"])
+            put("items", item_id, item)
         entry = get("effects", body["id"])
         entry.update(done=True, action=body["action"])
         put("effects", body["id"], entry)

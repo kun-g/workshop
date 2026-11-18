@@ -24,6 +24,14 @@ class InputBlocked(Exception):
     """派活输入无法安全送出，尚未启动执行者；只阻塞当前活，修复后显式恢复。"""
 
 
+class WaitRejected(Exception):
+    """被调等待服务明确拒绝业务请求；只阻塞当前活。"""
+
+
+class WaitUnavailable(Exception):
+    """等待服务暂时不可达或未确认结果；保留幂等操作号重查。"""
+
+
 class Source(Protocol):
     def normalize(self, batch: Poll, target: dict,
                   find_external: Callable[..., dict | None]) -> Poll:
@@ -102,16 +110,20 @@ class Flow(Protocol):
         handoff 由流程按外部状态判交接，代替回执自报的 advance；awaits_update 让活停在本阶段等来源更新。
         """
         ...
+    def validate_receipt(self, item: dict, receipt: Receipt, target: dict) -> None:
+        """可选、纯本地协议校验；交回执时调用，ValueError 当轮退回修改，不执行副作用。"""
+        ...
     def prepare_recovery(self, item: dict, options: dict, target: dict) -> dict:
         """可选。命令行追加核验前只读验证并固定计划；核心记为恢复事实，由流程消费一次。
 
         不能写流程状态；失败抛 ValueError。计划是流程自有数据，核心不解释其业务字段。
         """
         ...
-    def after(self, item: dict, completed_stage: str, key: str, target: dict) -> After | list[str] | None:
+    def after(self, item: dict, completed_stage: str, key: str, target: dict, services=None) -> After | list[str] | None:
         """准许推进或核实等待到期后调用，item.result 含本轮回执，key 必须持久幂等。
 
         After 可绑定别名、仍留本阶段或返回 blocked 停下；回查完成不等于准许推进。
+        services(name) 按规则返回 (WaitService, 配置副本)，不能改装配；兼容四参数旧实现。
         """
         ...
     def hold_workdir(self, item: dict, target: dict) -> str:
@@ -205,7 +217,17 @@ class Selector(Protocol):
 
 
 class WaitService(Protocol):
-    """独立服务端口。content/read 的内容只由流程解释，核心只用引用和完成标识。"""
+    """独立服务端口。content/read 由流程和查看工具解释，核心只用引用和完成标识。
+
+    直接调用五条条件：被调方持久化且操作号幂等；核心不用分清谁坏了；
+    不开会话、不占并发或串行名额；对象由核心按规则经端口交出；只在 after 短时调用。
+    明确拒绝用 WaitRejected，调用方返回 After(blocked=...)；暂时不通/结果不明
+    用 WaitUnavailable，调用方返回 After(pending=True)，原号重查，到 pending_limit
+    只卡本活；调用方自己出错按流程故障隔离，不能伪装业务拒绝。
+    """
+    def validate(self, config: dict) -> None:
+        """可选，装配层启动时验证 wait_services.<名字>，不读取业务许可目录。"""
+        ...
     def wake_paths(self, config: dict) -> list[str]:
         """可选，核心 waking 调用；收等待服务的配置，返回可叫醒核心的本地路径。"""
         ...

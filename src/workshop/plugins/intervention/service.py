@@ -1,18 +1,49 @@
 """等待、回答和送达的权威记录。许可目录只从唯一规则文件加载。"""
 import json
+import hashlib
 from pathlib import Path
 import subprocess
 import yaml
+from datetime import datetime, timezone
 from .store import Store, encode, required
 
 
 class Service:
     def __init__(self, state, rules):
-        self.store = Store(Path(state) / 'intervention.db')
         self.rules = Path(rules)
+        self.configuration()
+        self.store = Store(Path(state) / 'intervention.db')
+
+    def configuration(self):
+        document = yaml.safe_load(self.rules.read_text())
+        if not isinstance(document, dict):
+            raise ValueError('intervention 所在规则必须是对象')
+        config = document.get('intervention', {})
+        if not isinstance(config, dict) or set(config) - {'points', 'transport'}:
+            raise ValueError('intervention 必须为 points/transport 对象')
+        points = config.get('points')
+        if not isinstance(points, dict) or not points:
+            raise ValueError('intervention.points 必须是非空对象')
+        for name, policy in points.items():
+            where = f'intervention.points.{name}'
+            if not isinstance(policy, dict) or set(policy) - {'wait', 'send', 'required_wait', 'scope_prefixes', 'required_basis'}:
+                raise ValueError(where + ' 有未知字段或不是对象')
+            for key in ('wait', 'send'):
+                if type(policy.get(key)) is not bool:
+                    raise ValueError(where + '.' + key + ' 必须是布尔值')
+            for key in ('required_wait', 'scope_prefixes', 'required_basis'):
+                value = policy.get(key, [])
+                if not isinstance(value, list) or not all(isinstance(v, str) and v.strip() for v in value) or len(set(value)) != len(value):
+                    raise ValueError(where + '.' + key + ' 必须为不重复的非空字符串列表')
+            if policy['send'] and (not policy.get('scope_prefixes') or not policy.get('required_basis')):
+                raise ValueError(where + ' 允许发送须有 scope_prefixes/required_basis')
+        if 'transport' in config and (not isinstance(config['transport'], list) or not config['transport']
+                or not all(isinstance(v, str) and v.strip() for v in config['transport'])):
+            raise ValueError('intervention.transport 必须是非空 argv')
+        return config
 
     def policy(self, point):
-        config = yaml.safe_load(self.rules.read_text()).get('intervention', {})
+        config = self.configuration()
         points = config.get('points', {})
         if point not in points:
             raise ValueError('介入点未登记')
@@ -33,7 +64,9 @@ class Service:
         if action not in fields or set(data) != fields[action]:
             raise ValueError('操作字段不完整或有未知字段')
         if action == 'ping':
-            return {'protocol': 1}
+            self.configuration()
+            return {'protocol': 1, 'rules': str(self.rules.resolve()),
+                    'rules_sha256': hashlib.sha256(self.rules.read_bytes()).hexdigest()}
         if action == 'get':
             return self.store.get(data['ref'])
         if action == 'status':
@@ -57,16 +90,37 @@ class Service:
         required(data.get('owner'), 'owner')
         if not isinstance(data.get('content'), dict) or not data['content']:
             raise ValueError('等待内容不能为空')
+        content = data['content']
+        for field in policy.get('required_wait', []):
+            required(content.get(field), 'content.' + field)
+        if content.get('version'):
+            for old in self.store.all('wait'):
+                previous = old['content']
+                if (old['owner'], old['point'], previous.get('stage'), previous.get('key')) != (
+                        data['owner'], point, content.get('stage'), content.get('key')):
+                    continue
+                if previous.get('version') == content['version']:
+                    if previous != content or old.get('superseded'):
+                        raise ValueError('问题版本已使用或已过期')
+                    return {'ref': old['id']}
+                if old['answer'] is None and not old.get('superseded'):
+                    old['superseded'] = True
+                    self.store.put('wait', old['id'], old, 'superseded')
         ref = self.store.identity('wait', key)
-        record = {'id': ref, **data, 'answer': None, 'token': None, 'acknowledged': False}
+        record = {'id': ref, **data, 'answer': None, 'token': None, 'acknowledged': False,
+                  'started_at': datetime.now(timezone.utc).isoformat(), 'superseded': False}
         self.store.put('wait', ref, record, 'created')
         return {'ref': ref}
 
     def answer(self, key, data):
         record = self.store.get(data['ref'], 'wait')
+        if record.get('superseded'):
+            raise ValueError('问题已过期，拒绝旧答案')
         source = data.get('source', {})
         if not isinstance(source, dict):
             raise ValueError('回答须注明来源')
+        if record['content'].get('version') and source.get('version') != record['content']['version']:
+            raise ValueError('回答的问题版本不匹配')
         channel = source.get('channel')
         if channel == 'session':
             required(source.get('session'), 'session')

@@ -2,6 +2,16 @@
 from datetime import timedelta
 from .models import stamp
 from .jobs import Pending
+from copy import deepcopy
+
+
+def handle(plugins, configs):
+    """只给已配置的等待端口及配置副本，不给流程装配或状态写入能力。"""
+    def get(name):
+        if name not in configs:
+            raise ValueError('等待端口未配置：' + name)
+        return plugins.get('wait', name), deepcopy(configs[name])
+    return get
 
 
 def descriptor(value):
@@ -46,6 +56,7 @@ def bind(engine, item, value):
 def pending(engine, item, value, hook):
     key = bind(engine, item, value)
     return dict(state='等你', wait_id=key, next='等待外部结果', blocked_by='',
+                serial_hold=False,
                 after_wait={**hook, 'at': stamp(engine.clock())},
                 after_pending_count=item.get('after_pending_count', 0) + 1,
                 leave={'kind': '等你', 'about': '等待外部结果'})
