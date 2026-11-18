@@ -1,3 +1,8 @@
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="src/workshop/assets/logo-white.svg">
+  <img src="src/workshop/assets/logo.svg" width="80" height="80" alt="车间 Logo">
+</picture>
+
 # 车间（workshop）
 
 一套自动运转的交付体系：事件进来变成一件活，活按阶段走到收尾，阶段之间有关口。核心管接单、阶段和关口、派活、等待、找 Kun 拍板、记录；每一类活、每个来源、执行者和通道都是装在核心上的插件。第一个插件是 issue 交付。

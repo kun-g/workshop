@@ -1,4 +1,6 @@
 """按认可样例输出私密离线报告：结论、要点、部署反馈。"""
+from importlib.resources import files
+from urllib.parse import quote
 from datetime import datetime
 from html import escape
 from pathlib import Path
@@ -6,6 +8,11 @@ from pathlib import Path
 from .model import UPGRADE_ORDER, point_link
 from .inventory import blind_records
 from .presentation import software_views, targets
+
+
+ASSETS = files("workshop").joinpath("assets")
+LOGO = ASSETS.joinpath("logo.svg").read_text(encoding="utf-8")
+FAVICON = "data:image/svg+xml," + quote(ASSETS.joinpath("favicon.svg").read_text(encoding="utf-8"), safe="")
 
 
 def h(value):
@@ -201,7 +208,7 @@ def render(report, versions, needs, now):
     js = (assets / 'report.js').read_text()
     title = '盯更新周报' if report['kind'] == 'weekly' else '盯更新日报'
     return f'''<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>{title} · {h(report['id'])}</title><style>{css}</style></head><body data-report="{h(report['id'])}"><main>
-<h1>{title} · {h(report.get('day', now.date().isoformat()))}</h1><div class="top">{top}</div>{sections}
+<title>{title} · {h(report['id'])}</title><link rel="icon" type="image/svg+xml" href="{FAVICON}"><style>{css}</style></head><body data-report="{h(report['id'])}"><main>
+<h1 class="brand"><span class="brand-mark" aria-hidden="true">{LOGO}</span><span>{title} · {h(report.get('day', now.date().isoformat()))}</span></h1><div class="top">{top}</div>{sections}
 <div id="out"><textarea id="outText" aria-label="复制反馈内容" readonly></textarea><div id="msg" role="status"></div></div></main>
 <div class="bar"><span id="count">还没选</span><button id="copy" type="button">复制反馈</button></div><script>{js}</script></body></html>'''
