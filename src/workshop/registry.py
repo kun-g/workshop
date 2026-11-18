@@ -34,6 +34,14 @@ class Registry:
                 except ValueError as exc:
                     raise ValueError(f'wait_services.{name}: {exc}') from exc
         for name, target in targets.items():
+            local = rules.target(name)
+            for source in local.get('sources', []):
+                try:
+                    validate = getattr(self.get('source', source), 'validate', None)
+                except LookupError:
+                    continue  # 查询和恢复命令允许来源插件暂未装上，与流程装配一致。
+                if validate:
+                    validate(local)
             for flow in entries(target):
                 configuration(rules.target(name, flow))
                 configuration(rules.target(name, flow), relations_read=True)
