@@ -31,7 +31,7 @@ class GitHubSource:
             raise RuntimeError("找不到 gh；请在启动 PATH 中配置")
 
     @staticmethod
-    def normalize(batch, target):
+    def normalize(batch, target, find_external):
         """升级时认回旧 poll 作业：补事实字段，再交核心按新规则匹配，游标不变。"""
         events = []
         for event in batch.events:

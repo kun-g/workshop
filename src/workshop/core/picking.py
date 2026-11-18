@@ -6,7 +6,7 @@ from pathlib import Path
 import uuid
 import sys
 import hashlib
-from .gates import overlaps, validate_stages
+from .gates import overlaps, validate_stages, allowed_advances
 from .models import STAGES as ALL_STAGES
 from .models import Brief, Receipt, stamp, DEFAULT_BRIEF_MAX_CHARS
 from .ports import Unavailable, Retryable, InputBlocked
@@ -98,7 +98,8 @@ def reserve(engine, item, unavailable=()):
             return
         if engine.occupied() >= engine.rules.data["limits"]["concurrent"]:
             return
-        content = engine.call(port, name, "brief", item, item["stage"], target, item=item["id"])
+        brief_item = {**item, "allowed_advances": allowed_advances(item, stages)}
+        content = engine.call(port, name, "brief", brief_item, item["stage"], target, item=item["id"])
         content = FlowBrief(content) if isinstance(content, str) else content
         if (not isinstance(content, FlowBrief) or not isinstance(content.instructions, str)
                 or type(content.readonly) is not bool

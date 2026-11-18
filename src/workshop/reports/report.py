@@ -4,6 +4,7 @@ from datetime import datetime, timedelta
 import json
 from workshop.core.jobs import running as running_jobs
 from workshop.core.models import Event, utcnow
+from workshop.core.ports import Flow, Plugins
 from workshop.core.flows import configured
 from workshop.core.holding import resolve
 
@@ -16,21 +17,24 @@ def state_since(log, item):
     return log.state_since(item)
 
 
-def origin(item):
-    """这件活从哪份来源资料来：标题、链接、简称，以及 Kun 原话的第一句（页面给人回忆背景用）；资料里没有标题和链接的返回 None。"""
-    found = [m["body"] for m in item.get("materials") or []
-             if isinstance(m.get("body"), dict) and isinstance(m["body"].get("data"), dict)
-             and m["body"]["data"].get("title") and m["body"]["data"].get("html_url")]
-    if not found:
-        return None
-    data = found[-1]["data"]
-    quotes = [line.lstrip("> ").strip() for line in (data.get("body") or "").splitlines() if line.startswith(">") and line.lstrip("> ").strip()]
-    return {"title": data["title"], "url": data["html_url"],
-            "ref": f'{str(found[-1].get("repo", "")).split("/")[-1]}#{found[-1].get("number", "")}', "quote": quotes[0] if quotes else ""}
+def origin(item, target, flow: Flow | None):
+    """流程提供来源摘要；未实现或读取失败时退回活的登记名，不妨碍查看状态。"""
+    describe = getattr(flow, "origin", None)
+    if describe and target:
+        try:
+            result = describe(item, target)
+            if isinstance(result, dict) and all(isinstance(result.get(k), str) for k in ("title", "url", "ref", "quote")):
+                return result
+        except Exception:
+            pass
+    return None
 
 
-def overview(log, *, everything=False, states=(), targets=(), flows=()):
+def overview(log, *, everything=False, states=(), targets=(), flows=(), rules=None, plugins: Plugins | None = None):
     """总览要用的数据，文字和网页共用。默认只取没结束的活；states、targets、flows 是筛选，空表示不筛。"""
+    if rules is None:
+        rules = (log.get("controls", "@rules") or {}).get("data", {})
+    configured_targets = rules.get("targets", {})
     count = log.item_count()
     # 默认不列已结束的活：在库里先筛掉，不逐行解析它们（已结束的占绝大多数，解析一遍要 200 多毫秒）。
     items = log.all("items") if everything or states else log.open_items()
@@ -44,6 +48,7 @@ def overview(log, *, everything=False, states=(), targets=(), flows=()):
     jobs = running_jobs(log.path.parent / "jobs")
     rows = []
     for item in items:
+        target, flow = flow_for(configured_targets, item["target"], plugins, item.get("flow", ""))
         row = log.get("rounds", item.get("round", ""))
         control = log.get("controls", item["target"]) or {}
         stuck = item["state"] == "卡住" or item["id"] in read_states
@@ -55,7 +60,7 @@ def overview(log, *, everything=False, states=(), targets=(), flows=()):
                      "flow": item.get("flow") or "", "stage": item["stage"], "state": item["state"], "shown": shown,
                      "stuck": stuck, "who": row["executor"] if row else "车间", "next": next_step, "blocker": blocker,
                      "reason": item["blocked_by"], "advice": item["next"],
-                     "owner": (item.get("leave") or {}).get("owner") or "", "origin": origin(item)})
+                     "owner": (item.get("leave") or {}).get("owner") or "", "origin": origin(item, target, flow)})
     filtered = bool(states or targets or flows)
     picked = [r for r in rows
               if (everything or states or r["state"] not in ENDED)
@@ -118,7 +123,7 @@ def one_line(text):
 ACTIONS = {"update": "更新", "rework": "返工", "ready": "放行"}
 
 
-def flow_for(targets, name, plugins, selected=""):
+def flow_for(targets, name, plugins: Plugins, selected=""):
     """规则里的交付对象和它的流程；装不上流程时只回交付对象，查看起因不依赖插件。"""
     try:
         target = configured(name, targets[name], selected) if name in targets else None
@@ -133,7 +138,7 @@ def flow_for(targets, name, plugins, selected=""):
     return target, flow
 
 
-def summarize(body, target, flow):
+def summarize(body, target, flow: Flow | None):
     """流程给的一句话说明；流程没有说明或出错时退回事件种类。"""
     content = body["body"]
     kind = content.get("kind") if isinstance(content, dict) and isinstance(content.get("kind"), str) else "资料"

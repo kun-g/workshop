@@ -9,7 +9,6 @@ from pathlib import Path
 import re
 from urllib.parse import quote
 
-from workshop.core.gates import allowed_advances
 from workshop.core.cards import question_example
 from workshop.core.models import After, Classification, Evidence, FlowBrief, OUTCOMES, Receipt
 from .io import IO, executable, failure, run, tail
@@ -142,6 +141,18 @@ class IssueDelivery:
     def _approved_head(state):
         """能合并的头提交：进交付时合并前 DoD 查过的提交；旧流程在途的活沿用证据或审查记下的。"""
         return state.get("dod_head") or state.get("reviewed_head") or state.get("evidence_head")
+
+    def origin(self, item, target):
+        """这件活从哪份来源资料来：标题、链接、简称，以及 Kun 原话的第一句（页面给人回忆背景用）；资料里没有标题和链接的返回 None。"""
+        found = [m["body"] for m in item.get("materials") or []
+                 if isinstance(m.get("body"), dict) and isinstance(m["body"].get("data"), dict)
+                 and m["body"]["data"].get("title") and m["body"]["data"].get("html_url")]
+        if not found:
+            return None
+        data = found[-1]["data"]
+        quotes = [line.lstrip("> ").strip() for line in (data.get("body") or "").splitlines() if line.startswith(">") and line.lstrip("> ").strip()]
+        return {"title": data["title"], "url": data["html_url"],
+                "ref": f'{str(found[-1].get("repo", "")).split("/")[-1]}#{found[-1].get("number", "")}', "quote": quotes[0] if quotes else ""}
 
     def describe(self, event, target):
         """why 用的一句话；只读事件本身，不回查上游。认不出的事件交回核心退回种类。"""
@@ -302,7 +313,7 @@ class IssueDelivery:
             "等人/等外部任务时交 later（key/at/about），退出会话；不得轮询占着会话。\n"
             "不发进度通知（notice）：进度 Kun 在 workshop status / why 里看。\n"
         )
-        allowed = "、".join(f"「{name}」" for name in allowed_advances({**item, "stage": stage}, self.stages(target)))
+        allowed = "、".join(f"「{name}」" for name in item["allowed_advances"])
         common += (f'回执顶层只认 {"、".join(f.name for f in fields(Receipt))}，别的字段一律放进 evidence 那条 JSON；'
                    f'outcome 只能是 {"、".join(OUTCOMES)}；advance 只能是{allowed or "空（不填）"}，可以不填。'
                    "交回执被拒时照拒绝原因改对，同一轮重交。\n")

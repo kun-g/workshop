@@ -22,7 +22,7 @@ def samples(text):
 
 @pytest.mark.parametrize('stage,key', [('收尾', 'visual-acceptance')])
 def test_actual_brief_examples_pass_both_validators(world, stage, key):
-    value = world['flow'].brief(snapshot(world, stage), stage, world['target'])
+    value = world['flow'].brief({**snapshot(world, stage), 'allowed_advances': ['执行']}, stage, world['target'])
     brief = value if isinstance(value, str) else value.instructions
     cards = [v['ask'][0] for v in samples(brief) if 'ask' in v]
     assert {'question', key} <= {c['key'] for c in cards}

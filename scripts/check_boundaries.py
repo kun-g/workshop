@@ -72,8 +72,6 @@ forbidden_modules =
 # models / ports 内部的依赖由核心维护，只限制插件的直接引用。
 allow_indirect_imports = True
 ignore_imports =
-    # H2：核心把可填阶段交给流程后删除。
-    workshop.plugins.issue_delivery -> workshop.core.gates
     # H6：卡片移到介入点插件后删除。
     workshop.plugins.issue_delivery -> workshop.core.cards
     # H6：旧通道卡片路径迁走后删除。

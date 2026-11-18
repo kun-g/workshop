@@ -100,7 +100,7 @@ def read_command(args):
                 if args.command == 'status':
                     split = lambda text: tuple(x.strip() for x in (text or '').split(',') if x.strip())
                     options = dict(everything=args.everything, states=split(args.state),
-                                   targets=split(args.target), flows=split(args.flow))
+                                   targets=split(args.target), flows=split(args.flow), plugins=Registry())
                     if args.html is None:
                         print(status(log, **options))
                     else:
@@ -227,7 +227,7 @@ def main(argv=None):
                 else:
                     paths = engine.wake_paths()
                     from .reports.status_writer import StatusWriter
-                    with StatusWriter(log.path) as writer, Mailbox(args.state_dir, paths) as mailbox:
+                    with StatusWriter(log.path, plugins=Registry()) as writer, Mailbox(args.state_dir, paths) as mailbox:
                         received_at = None
                         while True:
                             engine.tick(received_at)
