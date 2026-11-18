@@ -34,9 +34,10 @@ def write_page(path, content):
 
 
 class StatusWriter:
-    def __init__(self, database, clock=utcnow):
+    def __init__(self, database, clock=utcnow, *, plugins=None):
         self.database = Path(database)
         self.clock = clock
+        self.plugins = plugins
         self.last = None
         self.seq = 0
         self._wake = threading.Event()
@@ -53,7 +54,7 @@ class StatusWriter:
                 changes = log.selected_facts(PAGE_KINDS, ('state',), after=self.seq)
                 if self.last is not None and not changes and now - self.last < PAGE_MAX_AGE:
                     return
-                content = page(overview(log), now.astimezone())
+                content = page(overview(log, plugins=self.plugins), now.astimezone())
                 seq = changes[-1]['seq'] if changes else self.seq
             # 排版和写文件不占核心连接；失败不消费游标，下次仍重试。
             write_page(self.database.parent / 'status.html', content)

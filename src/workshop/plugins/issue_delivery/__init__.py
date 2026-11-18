@@ -142,6 +142,18 @@ class IssueDelivery:
         """能合并的头提交：进交付时合并前 DoD 查过的提交；旧流程在途的活沿用证据或审查记下的。"""
         return state.get("dod_head") or state.get("reviewed_head") or state.get("evidence_head")
 
+    def origin(self, item, target):
+        """这件活从哪份来源资料来：标题、链接、简称，以及 Kun 原话的第一句（页面给人回忆背景用）；资料里没有标题和链接的返回 None。"""
+        found = [m["body"] for m in item.get("materials") or []
+                 if isinstance(m.get("body"), dict) and isinstance(m["body"].get("data"), dict)
+                 and m["body"]["data"].get("title") and m["body"]["data"].get("html_url")]
+        if not found:
+            return None
+        data = found[-1]["data"]
+        quotes = [line.lstrip("> ").strip() for line in (data.get("body") or "").splitlines() if line.startswith(">") and line.lstrip("> ").strip()]
+        return {"title": data["title"], "url": data["html_url"],
+                "ref": f'{str(found[-1].get("repo", "")).split("/")[-1]}#{found[-1].get("number", "")}', "quote": quotes[0] if quotes else ""}
+
     def describe(self, event, target):
         """why 用的一句话；只读事件本身，不回查上游。认不出的事件交回核心退回种类。"""
         body = event.body if isinstance(event.body, dict) else {}

@@ -44,6 +44,13 @@ class Source(Protocol):
 
 
 class Flow(Protocol):
+    def origin(self, item: dict, target: dict) -> dict[str, str] | None:
+        """可选，查看工具总览调用：只读返回 title、url、ref、quote（标题、链接、简称、原话）。
+
+        没有来源摘要时返回 None；不得回查网络或写状态。查看工具失败时退回登记名。
+        """
+        ...
+
     def describe(self, event: Event, target: dict) -> str:
         """可选，查看工具调用：只读给出事件的一句话说明。"""
         ...
