@@ -11,7 +11,7 @@ import time
 
 from .jobs import Pending
 from .models import stamp
-from . import rounds, relations, waits
+from . import rounds, relations, waits, hooks
 
 SLOW_TICK_MS = 100
 SLOW_ITEM_MS = 5
@@ -78,6 +78,8 @@ def one(engine, began=None):
                 engine.channels()
             with Span(spans, "heartbeat"):
                 engine.heartbeat(began)
+            with Span(spans, "restart"):
+                hooks.resume_restarts(engine)
         finally:
             note_slow_tick(engine, began, spans, slow, count)
 
@@ -213,7 +215,7 @@ def heartbeat(engine, began=None):
         process = previous.get("process")
         process = process if isinstance(process, dict) else {}
         heartbeat_process = {
-            "pid": os.getpid(), "version": os.environ.get("WORKSHOP_RUNNING_COMMIT"), "first_at": now,
+            **engine.process, "version": os.environ.get("WORKSHOP_RUNNING_COMMIT"), "first_at": now,
             "previous": {"at": previous.get("at"),
                          "pid": process.get("pid"),
                          "version": process.get("version")}}
@@ -233,4 +235,6 @@ def heartbeat(engine, began=None):
             engine.fact("control", {"id": "@tick", "failures": 0, "since": None})
         temporary.replace(heartbeat)
     engine.heartbeat_process = heartbeat_process
+    if engine.first_ok_at is None:
+        engine.first_ok_at = now
     engine.tick_failures = 0

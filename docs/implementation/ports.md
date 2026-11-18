@@ -107,7 +107,9 @@ Evidence 字段：checks（检查 argv 列表）、passed（布尔）、actions�
 
 `after(item, completed_stage, key, target)` 在停止本轮且核心准许推进后调用，必须持久 key 幂等。传入 item 额外含 `result`（当前已核验回执 JSON）；history 仍是此前轮次。返回 `After(aliases=[], pending=False, reason="", next="", rerun=False, recheck_after="+5m")`；兼容 None 或别名字符串列表。
 
-`restart=True` 表示交付改了车间自己正在跑的代码：核心在内存里记下重启请求，这一拍照常结算、推进、派下一轮，`workshop run` 在这一拍结束后正常退出（exit 0），由外部守护（launchd KeepAlive）拉起新代码；不写状态，崩溃重放同一 key 时最多多重启一次。`notice` 非空时核心经通道给 Kun 发一条不用回的通知，卡片 key 为 `after-notice:<after key>`，同一个完成钩子只发一次（重查沿用同一 key）。两个字段只能是布尔值和字符串，否则按插件错误隔离。
+`restart=True` 表示完成钩子需要重启：核心持久登记原活、阶段、key、回执和请求进程实例，暂停该钩子的结算；这一拍结束后 `workshop run` 正常退出，由外部守护拉起新进程。新进程第一拍成功写出心跳后，同拍发起原 `after` 的重调，不经过 `pending` 的退避。只有这次重调的 `target.runtime` 带 `daemon`（和心跳 `process` 同一形状，含 pid、操作系统启动时间 start、version、first_at、previous）与 `first_ok_at`（新进程第一拍成功时间）；其他钩子调用不带这两个字段。首次一拍失败时不重调，直到成功心跳；多个请求逐件重调，异步作业完成后再结算原阶段。进程再重启仍能从事实库恢复请求，作业身份按新进程实例区分。重调不能再次返回 `restart=True`，须重新核验状态；异常沿用流程故障隔离或 Retryable 重试，不误记确认完成。
+
+`notice` 非空时按现有通道规则处理，卡片 key 为 `after-notice:<after key>`，同一个完成钩子只记一次。`restart` 与 `notice` 类型分别须为布尔值和字符串。
 
 pending=true 表示尚未完成这个阶段，须带非空 reason 和 next，不算执行失败。rerun=true 才在同一阶段接回执行者；rerun=false 登记工序，到 recheck_after（相对时间或 ISO 时间）只重调 after，沿用同一 key 与 item.result，不再 assess 或启动执行者。核心取插件建议时间和 5/10/20/40/60 分钟退避中较晚者。连续 pending 达交付对象的 pending_limit（默认 5）标卡住，只通知一次，此后不再轮询或起执行者；离开阶段或可信返工重置计数。完成钩子的副作用按 key 幂等，但 pending 业务状态须允许重查，不能永久缓存 pending。等待授权的会话应交 later 退出。授权问题保存 receipt、Evidence、原阶段、下一阶段；明确批准后直接用这些证据过关口并调用同一个 after key，不再多起一轮审查。拒绝则回执行，清空本次批准/审查记录，追加“Kun 没批准”和所选项的 key/label 为核心关口反馈资料，再按意见修改。after 不得越权推进或提前做交付动作。
 

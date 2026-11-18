@@ -9,11 +9,10 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
-import time
 
 from workshop.core.ports import Retryable
-from workshop.core.wake import ring
 from workshop.github_identity import run as authenticated_run
+from workshop.running import process_identity
 
 
 def state_root(target):
@@ -116,14 +115,7 @@ class IO:
             raise Retryable('git 未完成：' + result['stderr'][-500:])
         return result['stdout'].strip()
 
-    @staticmethod
-    def process(pid):
-        if pid <= 1:
-            return None
-        result = subprocess.run(['/bin/ps', '-p', str(pid), '-o', 'lstart='],
-                                env={'PATH': '/usr/bin:/bin', 'LC_ALL': 'C'}, capture_output=True, text=True, timeout=5)
-        start = result.stdout.strip()
-        return {'pid': pid, 'start': start} if result.returncode == 0 and start else None
+    process = staticmethod(process_identity)
 
     def daemon(self):
         # 生产 after 在 Jobs.spawn 的直接子进程中。--once 不具备重启契约，拒绝上线。
@@ -134,15 +126,3 @@ class IO:
         if identity is None or os.getppid() != pid:
             raise Retryable('发版作业已失去父守护进程，不能确认重启')
         return identity
-
-    def heartbeat_ready(self, root, daemon):
-        # 旧父已退出后，主动唤醒新父写一拍心跳；不能接受旧进程退出前的最后心跳。
-        began = self.now()
-        ring(root)
-        deadline = time.monotonic() + 5
-        while time.monotonic() < deadline:
-            heartbeat = read(root / 'heartbeat.json')
-            if heartbeat.get('last_ok_at', '') >= began:
-                return self.daemon() == daemon
-            time.sleep(.05)
-        return False

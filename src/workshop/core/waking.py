@@ -49,6 +49,9 @@ def awaken(engine, wake, paths):
 
 def wait_timeout(engine):
     """等到最近一个尚需处理的截止时间，最长 60 秒写一次心跳。"""
+    if engine.restart_completed:
+        engine.restart_completed = False
+        return 0
     now = engine.clock()
     start = getattr(engine, "tick_started", now)
     waits = [60]

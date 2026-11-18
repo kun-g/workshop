@@ -50,9 +50,6 @@ class LocalIO(IO):
     def process(self, pid):
         return {'pid': 100, 'start': 'old'} if self.old_alive else None
 
-    def heartbeat_ready(self, root, daemon):
-        return self.fresh_heartbeat
-
 
 @pytest.fixture
 def world(tmp_path, monkeypatch):
@@ -79,7 +76,10 @@ def world(tmp_path, monkeypatch):
 
 
 def after(w, stage, key=None):
-    return w['flow'].after(w['data'], stage, key or stage, w['target'])
+    target = w['target']
+    if w['io'].fresh_heartbeat and stage == '验收':
+        target = {**target, 'runtime': {'daemon': w['io'].identity, 'first_ok_at': w['io'].now()}}
+    return w['flow'].after(w['data'], stage, key or stage, target)
 
 
 def state(w):
@@ -87,7 +87,8 @@ def state(w):
 
 
 def restart(w, *, heartbeat=True, old_alive=False):
-    w['io'].identity = {'pid': 101, 'start': 'new'}
+    from workshop.running import process_identity
+    w['io'].identity = process_identity(os.getpid())
     w['io'].old_alive = old_alive
     w['io'].fresh_heartbeat = heartbeat
 
@@ -195,6 +196,7 @@ def make_engine(w, notices='send'):
         'flows': {'scheduled_release': {'triggers': [{'source': 'main_branch', 'when': {'kind': 'ahead'}, 'action': 'ready'}]}}, 'sources': []}
     engine = build(w['root'] / 'engine', config)
     engine.plugins.register('flow', 'scheduled_release', w['flow'])
+    engine.clock.now = datetime.now(timezone.utc) + timedelta(seconds=60)
     body = {'kind': 'ahead', 'from': w['a'], 'to': w['b']}
     engine.ingest(Event('main_branch', 'hour1', 'alpha', w['b'], 'release', body))
     w['data']['id'] = 'alpha:' + w['b']  # 此测试中它是默认流程
@@ -245,7 +247,7 @@ def test_program_release_does_not_wait_for_active_round_and_resumes(world):
         running = current(engine, target='beta')
         assert len(engine.log.all('rounds')) == 1
         restart(w)
-        revived = Engine(engine.log, engine.rules, engine.plugins, engine.clock)
+        revived = Engine(engine.log, engine.rules, engine.plugins, engine.clock, daemon=w["io"].identity)
         for _ in range(4):
             revived.tick()
         assert current(revived, target='beta')['token'] == running['token']
@@ -294,7 +296,7 @@ def test_background_jobs_resume_without_rechecking_or_restarting_twice(world, mo
                 assert pending_path in locks
                 restart(w)
                 jobs = ManualJobs(engine.log.path.parent / 'jobs', ['unused'], locks)
-                engine = Engine(engine.log, engine.rules, plugins, engine.clock, jobs)
+                engine = Engine(engine.log, engine.rules, plugins, engine.clock, jobs, daemon=w["io"].identity)
                 restarted = True
                 with pytest.raises(Pending):
                     jobs.call('flow', 'other', 'after', args, identity=['unrelated'])
@@ -325,25 +327,6 @@ def test_background_jobs_resume_without_rechecking_or_restarting_twice(world, mo
         for descriptor in locks.values():
             os.close(descriptor)
         engine.log.close()
-
-
-def test_heartbeat_probe_demands_fresh_success_and_stable_parent(tmp_path, monkeypatch):
-    import workshop.plugins.scheduled_release.io as module
-    io = IO(tmp_path)
-    now = '2026-11-14T10:00:02+00:00'
-    monkeypatch.setattr(io, 'now', lambda: now)
-    parent = {'pid': 123, 'start': 'new'}
-    monkeypatch.setattr(io, 'daemon', lambda: parent)
-    write(tmp_path / 'heartbeat.json', {'last_ok_at': '2026-11-14T10:00:00+00:00'})
-    monkeypatch.setattr(module, 'ring', lambda root: None)
-    ticks = iter([0, 1, 6])
-    monkeypatch.setattr(module.time, 'monotonic', lambda: next(ticks))
-    monkeypatch.setattr(module.time, 'sleep', lambda _: None)
-    assert not io.heartbeat_ready(tmp_path, parent)
-    monkeypatch.setattr(module, 'ring', lambda root: write(root / 'heartbeat.json', {'last_ok_at': now}))
-    monkeypatch.setattr(module.time, 'monotonic', lambda: 0)
-    assert io.heartbeat_ready(tmp_path, parent)
-    assert not io.heartbeat_ready(tmp_path, {'pid': 456, 'start': 'other'})
 
 
 def test_daemon_only_accepts_direct_job_parent(monkeypatch):
@@ -432,7 +415,7 @@ def test_rollback_cannot_replay_restart_or_finish_successfully(world, status):
         assert not after(w, '交付').restart
         git(w['repo'], 'reset', '--keep', w['a'])
         restart(w)
-        revived = Engine(engine.log, engine.rules, engine.plugins, engine.clock)
+        revived = Engine(engine.log, engine.rules, engine.plugins, engine.clock, daemon=w["io"].identity)
         for _ in range(5):
             revived.tick()
         assert revived.log.get('items', w['data']['id'])['state'] == '完成'

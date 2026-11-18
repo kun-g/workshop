@@ -3,7 +3,7 @@ import json
 from datetime import datetime
 from .records import compact, compact_history
 
-TABLES = ("items", "rounds", "cards", "timers", "controls", "cursors", "deferred", "effects", "aliases", "waits")
+TABLES = ("items", "rounds", "cards", "timers", "controls", "cursors", "deferred", "effects", "aliases", "waits", "restarts")
 
 
 def evolve(db, fact: dict) -> None:
@@ -67,6 +67,10 @@ def evolve(db, fact: dict) -> None:
     if kind == "reset":
         for table in TABLES:
             db.execute(f"DELETE FROM {table}")
+    elif kind in ("restart_requested", "restart_completed"):
+        row = get("restarts", body["id"])
+        row.update(body)
+        put("restarts", body["id"], row)
     elif kind == 'wait_bound':
         put('waits', body['id'], body)
         item = get('items', item_id)
