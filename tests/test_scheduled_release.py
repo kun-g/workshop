@@ -189,6 +189,57 @@ def test_prepare_failure_records_fast_forward_and_no_restart(world):
     assert not (w['io'].root(w['target']) / 'release.json').exists()
 
 
+def test_release_prepare_runs_only_on_deploy_and_is_not_main_rollback_prepare(world):
+    w = world
+    marker = w['root'] / 'independent-service'
+    command = [sys.executable, '-c', f'from pathlib import Path; p=Path({str(marker)!r}); p.write_text(p.read_text()+"start\\n" if p.exists() else "start\\n")']
+    w['target']['release_prepare'] = [{'argv': command}]
+    after(w, '证据')
+    assert not marker.exists()
+    assert after(w, '交付').restart
+    assert marker.read_text() == 'start\n'
+    assert after(w, '交付', 'retry-deploy').restart
+    assert marker.read_text() == 'start\n'
+    assert state(w)['release_prepare_runs']['0']['exit_code'] == 0
+    assert read(w['io'].root(w['target']) / 'release.json')['prepare'] == []
+
+
+def test_release_prepare_failure_does_not_request_daemon_restart(world):
+    w = world
+    w['target']['release_prepare'] = [{'argv': [sys.executable, '-c', 'raise SystemExit(9)']}]
+    after(w, '证据')
+    result = after(w, '交付')
+    assert not result.restart and '已快进但未重启' in result.notice
+    assert state(w)['release_prepare_runs']['0']['exit_code'] == 9
+    assert not (w['io'].root(w['target']) / 'release.json').exists()
+
+
+def test_new_daemon_installs_service_when_old_deploy_did_not_know_step(world):
+    w = world
+    after(w, '证据')
+    assert after(w, '交付').restart  # 旧版代码和规则没有独立服务安装步骤。
+    marker = w['root'] / 'installed-after-upgrade'
+    w['target']['release_prepare'] = [{'argv': [sys.executable, '-c',
+        f'from pathlib import Path; Path({str(marker)!r}).write_text("ready")']}]
+    restart(w)
+    assert not after(w, '验收').pending
+    assert marker.read_text() == 'ready'
+    assert state(w)['release_prepare_runs']['0']['exit_code'] == 0
+    assert read(w['io'].root(w['target']) / 'release.json')['status'] == 'ok'
+
+
+
+def test_bootstrap_install_failure_leaves_release_unconfirmed(world):
+    w = world
+    after(w, '证据')
+    assert after(w, '交付').restart
+    w['target']['release_prepare'] = [{'argv': [sys.executable, '-c', 'raise SystemExit(9)']}]
+    restart(w)
+    result = after(w, '验收')
+    assert '已重启但尚未确认成功' in result.notice
+    assert state(w)['status'] == 'failed'
+    assert read(w['root'] / 'state/release.json')['status'] == 'restarting'
+
 def make_engine(w, notices='send'):
     config = configuration()
     config['notices'] = notices
