@@ -3,6 +3,7 @@ import argparse
 import json
 import sys
 
+from workshop.wait_client import Client
 from .flow import Flow
 from .io import IO, path, read
 from .operations import prepare_preview, preview_inventory, render_preview, resend_weekly
@@ -44,7 +45,10 @@ def main(argv=None):
         elif args.command == 'render-preview':
             result = render_preview(args.preview, args.judgments)
         elif args.command == 'resend-weekly':
-            result = resend_weekly(configured(args), args.request)
+            io = IO()
+            config = read(path(args.rules))['wait_services']['intervention']
+            io.services = lambda name: (Client(), config)
+            result = resend_weekly(configured(args), args.request, io)
         else:
             if not args.watchlist or not args.needs:
                 parser.error('检查清单须提供 --watchlist 和 --needs')

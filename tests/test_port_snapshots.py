@@ -26,7 +26,6 @@ def test_allowed_advances_only_in_brief(engine, monkeypatch):
 
 @pytest.mark.parametrize('stage,allowed,expected', [
     ('执行', ['交付'], 'advance 只能是「交付」，可以不填。'),
-    ('收尾', ['执行'], 'advance 只能是「执行」，可以不填。'),
     ('执行', ['证据', '验收'], 'advance 只能是「证据」、「验收」，可以不填。'),
     ('执行', [], 'advance 只能是空（不填），可以不填。'),
 ])

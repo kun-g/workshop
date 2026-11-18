@@ -43,7 +43,7 @@ def test_invalid_answer_notifies_once_and_keeps_waiting(engine):
 
     channel.answers = [Answer(card["id"], "yes", False)]
     engine.tick()
-    assert current(engine)["stage"] == "交付"
+    assert current(engine)["stage"] == "审查"
     assert heartbeat(engine)["delivery_failed_count"] == 0
 
 

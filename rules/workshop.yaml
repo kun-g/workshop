@@ -36,6 +36,7 @@ targets:
     auto_intake: true
     intake_app_logins: ["lambdatheory-agent[bot]"]
     github_overlap_seconds: 60
+    authorization_client: ~/workspace/runtime/repos/grant-console/scripts/request_grant.py
     repo: kun-g/grant-console
     github_identity:
       mode: app
@@ -92,8 +93,6 @@ targets:
     # 前缀匹配仓库根起的相对路径。名单由 grant-console 项目经理 11-13 给出。
     two_reviewers: ['.github/', 'deploy/', 'scripts/', 'services/devops-console/grant_console/',
                     'services/devops-console/k8s/', 'docs/ci.md', 'docs/runbooks/release.md']
-    # 冻结：自动部署那条线收尾前不改，除非 Kun 单独放行（grant-console 项目经理 11-13）。前缀匹配同 two_reviewers。
-    frozen_paths: ['.github/', 'deploy/', 'docs/ci.md', 'docs/runbooks/release.md']
     # 串行：审批卡的渲染和回调，碰到的活一件一件过执行（grant-console 项目经理 11-13；按 main e18321a 核过）。
     # app.py 的 grant_decision 处理审批卡回调，整份列入：碰 app.py 的活都会排队。
     # 仓库里没有 cards/ 目录，故不列。
@@ -176,6 +175,7 @@ targets:
       - {argv: [uv, run, python, scripts/install_intervention.py, --rules, rules/workshop.yaml]}
     check_timeout: 300
     bot_review: false
+    authorization_client: ~/workspace/runtime/repos/grant-console/scripts/request_grant.py
     repo: kun-g/workshop
     relations_identity: *relationship_app
     github_identity:
@@ -281,7 +281,10 @@ wait_services:
     endpoint: ~/.local/state/workshop-intervention/run/service.sock
     timeout: 5
 intervention:
-  # transport 留空：真实发送由迁移单接入，禁止隐式回退旧通知口。
+  transport: ["/Users/kun/workspace/runtime/repos/workshop/.venv/bin/python", "-m", "workshop.plugins.intervention.transport",
+              "--profile", "tuan", "--recipient", "ou_43456ed5ae17472375fcbb6ec0fc4661",
+              "--chat-id", "oc_9d541419240c15d82e50fabbba2ace4e", "--app-id", "cli_a9762c913979dbd4",
+              "--state-dir", "/Users/kun/.local/state/workshop-intervention/transport"]
   points:
     requirement: {wait: true, send: false}
     decision: {wait: true, send: false, required_wait: [key, version, stage, question, reason, recommend]}

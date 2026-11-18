@@ -161,18 +161,17 @@ def test_J_answers_have_questions_and_are_separate_from_external_text(engine):
     assert not any(m.get("source") == "回答" for m in brief["materials"])
 
 
-def test_K_approval_uses_saved_evidence_without_repeating_review(engine):
+def test_K_missing_authorization_blocks_without_repeating_review(engine):
     flow = engine.plugins.get("flow", "flow")
     flow.actions = ["对外发消息"]
     reach(engine, "审查")
     finish(engine, "交付")
     count = len(engine.log.all("rounds"))
-    card = next(c for c in engine.log.all("cards") if c.get("actions"))
     flow.assess = lambda *args: (_ for _ in ()).throw(AssertionError("不得重新核验旧轮"))
-    engine.plugins.get("channel", "channel").answers = [Answer(card["id"], "yes", True)]
     engine.tick()
-    assert current(engine)["stage"] == "交付"
-    assert len(engine.log.all("rounds")) == count + 1
+    assert item(engine)["state"] == "卡住"
+    assert not engine.log.all("cards")
+    assert len(engine.log.all("rounds")) == count
 
 
 def test_L_each_plugin_incident_notifies_once(engine):

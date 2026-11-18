@@ -56,11 +56,7 @@ def close(engine, key):
     finish(engine, key=key, leave={"kind": "工序", "owner": "车间", "at": "+7d", "about": "复看"})
 
 
-def answer(engine, value):
-    card = next(c for c in engine.log.all("cards") if c.get("core_approval") and not c["answered"])
-    engine.plugins.get("channel", "channel").answers = [Answer(card["id"], value, value == "yes")]
-    engine.tick()
-    return card
+
 
 
 # ---------- 串行路径 ----------
@@ -248,52 +244,20 @@ def reach_evidence(engine, paths):
     finish(engine, "审查", key="one")
 
 
-def test_frozen_paths_stop_and_list_files(make):
+def test_legacy_frozen_paths_do_not_create_gate(make):
     engine = make(frozen_paths=["deploy/", "docs/ci.md"])
-    reach_evidence(engine, ["deploy/a.yaml", "src/b.py", "docs/ci.md"])
-    waiting = item(engine, "one")
-    assert waiting["stage"] == "证据" and waiting["state"] == "等你" and waiting["blocked_by"] == "Kun"
-    card = next(c for c in engine.log.all("cards") if c.get("core_approval"))
-    assert card["frozen_files"] == ["deploy/a.yaml", "docs/ci.md"]
-    assert "deploy/a.yaml" in card["payload"]["context"] and "docs/ci.md" in card["payload"]["context"]
-    assert "src/b.py" not in card["payload"]["context"]
-    sent = engine.plugins.get("channel", "channel").messages[card["id"]]
-    assert sent[0] == "ask"
-
-
-def test_frozen_release_continues(make):
-    engine = make(frozen_paths=["deploy/"])
-    reach_evidence(engine, ["deploy/a.yaml"])
-    answer(engine, "yes")
+    reach_evidence(engine, ["deploy/a.yaml", "docs/ci.md"])
     assert current(engine, "one")["stage"] == "审查"
-    assert item(engine, "one")["frozen_approved"] == ["deploy/a.yaml"]
+    assert not engine.log.all("cards")
 
 
-def test_frozen_refusal_returns_to_execution(make):
-    engine = make(frozen_paths=["deploy/"])
-    reach_evidence(engine, ["deploy/a.yaml"])
-    answer(engine, "no")
-    assert current(engine, "one")["stage"] == "执行"
-    assert "Kun 没批准" in item(engine, "one")["gate_reason"]
-    assert not item(engine, "one").get("frozen_approved")
 
 
-def test_released_files_not_asked_again_but_new_frozen_files_are(make):
-    engine = make(frozen_paths=["deploy/"])
-    reach_evidence(engine, ["deploy/a.yaml"])
-    answer(engine, "yes")
-    finish(engine, "执行", key="one")  # 审查退回执行。
-    flow(engine).paths = {("alpha:one", "证据"): ["deploy/a.yaml"]}
-    walk(engine, "one", ["证据"])
-    finish(engine, "审查", key="one")
-    assert current(engine, "one")["stage"] == "审查"  # 放行过的文件不再问。
-    finish(engine, "执行", key="one")
-    flow(engine).paths = {("alpha:one", "证据"): ["deploy/a.yaml", "deploy/c.yaml"]}
-    walk(engine, "one", ["证据"])
-    finish(engine, "审查", key="one")
-    assert item(engine, "one")["state"] == "等你"
-    cards = [c for c in engine.log.all("cards") if c.get("core_approval")]
-    assert cards[-1]["frozen_files"] == ["deploy/c.yaml"]
+
+
+
+
+
 
 
 def test_untouched_frozen_paths_pass(make):
@@ -303,37 +267,21 @@ def test_untouched_frozen_paths_pass(make):
     assert not engine.log.all("cards")
 
 
-def test_frozen_and_delivery_approval_share_one_card(make):
-    engine = make(frozen_paths=["deploy/"])
-    flow(engine).actions = ["对外发消息"]
-    flow(engine).paths = {("alpha:one", "审查"): ["deploy/a.yaml"]}
-    start(engine, "one")
-    walk(engine, "one", ["说清楚", "执行", "证据", "审查"])
-    finish(engine, "交付", key="one")
-    cards = [c for c in engine.log.all("cards") if c.get("core_approval")]
-    assert len(cards) == 1
-    assert cards[0]["actions"] == ["对外发消息"] and cards[0]["frozen_files"] == ["deploy/a.yaml"]
-    assert "对外发消息" in cards[0]["payload"]["context"]
-    answer(engine, "yes")
-    assert item(engine, "one")["stage"] == "交付"
-    assert "对外发消息" in item(engine, "one")["approved"]
 
 
-def test_rule_paths_must_be_string_lists(make):
-    config = configuration()
-    config["targets"]["alpha"]["frozen_paths"] = "deploy/"
-    with pytest.raises(ValueError, match="frozen_paths"):
-        Rules.validate(config)
-    config["targets"]["alpha"]["frozen_paths"] = []
-    config["targets"]["alpha"]["serial_paths"] = [""]
-    with pytest.raises(ValueError, match="serial_paths"):
-        Rules.validate(config)
+
+def test_serial_paths_must_be_string_lists(make):
+    for value in ('deploy/', ['']):
+        config = configuration()
+        config["targets"]["alpha"]["serial_paths"] = value
+        with pytest.raises(ValueError, match="serial_paths"):
+            Rules.validate(config)
 
 
-def test_repository_rules_freeze_grant_console_paths():
+def test_repository_rules_keep_serial_paths_without_frozen_gate():
     from pathlib import Path
     target = Rules.load(Path("rules/workshop.yaml")).target("grant-console")
-    assert target["frozen_paths"] == [".github/", "deploy/", "docs/ci.md", "docs/runbooks/release.md"]
+    assert 'frozen_paths' not in target
     assert any("lark_receiver" in p for p in target["serial_paths"])
 
 
@@ -372,13 +320,13 @@ def test_abandoned_holder_releases_next(make):
 
 
 def test_abandon_cancels_open_questions(make):
-    engine = make(frozen_paths=["deploy/"])
-    reach_evidence(engine, ["deploy/a.yaml"])
-    engine.abandon("alpha:one", "不改冻结路径了")
-    card = next(c for c in engine.log.all("cards") if c.get("core_approval"))
-    assert card["cancelled"] and item(engine, "one")["pending_advance"] is None
+    engine = make()
+    start(engine, 'one')
+    finish(engine, key='one', ask=[{'key':'q', 'title':'选择方案', 'options':['A','B']}])
+    engine.abandon('alpha:one', '需求取消')
+    assert engine.log.all('cards')[0]['cancelled']
     engine.tick()
-    assert item(engine, "one")["state"] == "放弃" and not engine.active()
+    assert item(engine, 'one')['state'] == '放弃' and not engine.active()
 
 
 def test_cli_abandon(make, tmp_path, capsys):

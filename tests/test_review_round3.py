@@ -279,32 +279,28 @@ def test_7_finish_retryable_backs_off_and_faults_at_three(engine, monkeypatch):
 
 
 def approval_wait(engine):
-    engine.plugins.get("flow", "flow").actions = ["对外发消息"]
+    from workshop.core.cards import question
     reach(engine, "审查")
-    finish(engine, "交付")
-    return next(c for c in engine.log.all("cards") if c.get("actions"))
+    finish(engine, ask=[{"key": "question", **question("选择下一步", approval=True)}])
+    return next(c for c in engine.log.all("cards") if c["key"].endswith("question"))
 
 
-def test_8_rejection_returns_to_execution_with_choice_feedback(engine):
+def test_8_question_feedback_preserves_choice_without_authorizing(engine):
     card = approval_wait(engine)
     engine.plugins.get("channel", "channel").answers = [Answer(card["id"], "no", False)]
-    before = len([r for r in engine.log.all("rounds") if r["stage"] == "审查"])
     engine.tick()
-    assert current(engine)["stage"] == "执行"
-    assert len([r for r in engine.log.all("rounds") if r["stage"] == "审查"]) == before
-    assert "Kun 没批准" in item(engine)["gate_reason"]
+    assert current(engine)["stage"] == "审查"
     assert any(m.get("body") == "no" and m["choice_label"] == "不批准" for m in item(engine)["materials"])
-    assert any("Kun 没批准" in str(m["body"]) for m in item(engine)["materials"])
+    assert not item(engine)["approved"]
 
 
-@pytest.mark.parametrize("choice,claimed,stage", [("yes", False, "交付"), ("no", True, "执行")])
-def test_9_core_approval_uses_key_not_channel_boolean(engine, choice, claimed, stage):
+@pytest.mark.parametrize("choice,claimed", [("yes", False), ("no", True)])
+def test_9_question_cannot_authorize_actions(engine, choice, claimed):
     card = approval_wait(engine)
-    assert card["core_approval"]
     engine.plugins.get("channel", "channel").answers = [Answer(card["id"], choice, claimed)]
     engine.tick()
-    assert current(engine)["stage"] == stage
-    assert bool(item(engine)["approved"]) == (choice == "yes")
+    assert current(engine)["stage"] == "审查"
+    assert not item(engine)["approved"]
 
 
 def test_9_plugin_own_question_retains_its_approval_field(engine):

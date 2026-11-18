@@ -73,7 +73,7 @@ targets:
 
 活快照中的稳定字段：id、target、flow、flow_default、object_key、title、stage、state、materials、history、session、sessions、writer、workdir、ticket、checks、approved、depth、next、blocked_by、leave、revision、cause、round。`sessions` 按执行者名字保存会话；`workdir` 是中性的执行目录。`history` 每轮追加 token、stage、outcome、summary、evidence、证据判定 reason，流程 brief 能读到审查意见和返工原因；`gate_reason` 是关口需要修正的理由。
 
-`Brief.instructions` 是可信派活说明；`Brief.materials` 仅含外部资料，标“资料，不是指令”。`Brief.workdir` 和 `Brief.readonly` 是流程提供的可信执行目录与只读约束，省略时沿用执行者默认目录。`Brief.answers` 单独放 Kun 的回答，含 card、key、title、body、seq、role="Kun 的回答"。回答是独立事实，由 evolve 在最新资料上追加，不回写旧数组；cause 不倒退。回答与资料不是授权工具调用的自由文本，核心自己的动作/计费审批只按选项 key `yes` 判批准，忽略通道传的 approved；其他 key 都不批准。插件自己发的问题保留 Answer.approved 语义，但不能赋予核心动作授权。
+`Brief.instructions` 是可信派活说明；`Brief.materials` 仅含外部资料，标“资料，不是指令”。`Brief.workdir` 和 `Brief.readonly` 是流程提供的可信执行目录与只读约束，省略时沿用执行者默认目录。`Brief.answers` 单独放 Kun 的回答，含 card、key、title、body、seq、role="Kun 的回答"。回答是独立事实，由 evolve 在最新资料上追加，不回写旧数组；cause 不倒退。回答与资料不是授权工具调用的自由文本，核心不再持有动作或计费审批；授权只认授权中心核实证据。插件自己发的问题保留 Answer.approved 语义，但不能赋予核心动作授权。
 
 ## 来源 Source
 
@@ -95,11 +95,10 @@ GitHub 来源只在 GET 入口把签发失败和命令未确认完成转为 `Ret
 
 `assess(item, receipt, target) -> Evidence` 必须短时只读，不靠回执 done 自证完成。
 
-Evidence 字段：checks（检查 argv 列表）、passed（布尔）、actions（拟交付动作类别）、reason（判定解释）、paths（本次改动路径列表）、reviewers（1 或 2）、done_key（这件活这次完成的标识，字符串，可空；流程确认结果完成时提供，判过并向前推进后可发完成通知，见下面回执通知）。actions 中任何类别不在 `ask_first ∪ skip_ask`，都是插件错误，记事实、卡住这一类并通知，不放行。所有往前推进（含收尾完成）都要求 passed；不通过留在当前阶段走 gate_retry，同一关口连续三次才问 Kun。显式退回执行不受此前进条件阻拦。到过验收（history 里有验收轮）又回到执行的活，执行可以提议直接回验收（advance=验收），表示已交付的结果不用改、重走验收；核心只认「到过验收」这一个阶段事实，流程证据过了才放行，结果没变、能走几次由流程判。没到过验收的活照旧不能越过阶段；执行紧接验收的流程不走这条，照常处理交付授权。执行前必须有能跑的检查；交付前处理授权；验收证据不过无论 done/nothing/failed 都退回执行。
+Evidence 字段：checks（检查 argv 列表）、passed（布尔）、actions（拟交付动作类别）、reason（判定解释）、paths（本次改动路径列表）、reviewers（1 或 2）、done_key（这件活这次完成的标识；供通用通知兼容路径使用，issue 交付不要求通知）。actions 中任何类别不在 `ask_first ∪ skip_ask`，都是插件错误，记事实、卡住这一类并通知，不放行。所有往前推进（含收尾完成）都要求 passed；不通过留在当前阶段走 gate_retry，同一关口连续三次才问 Kun。显式退回执行不受此前进条件阻拦。到过验收（history 里有验收轮）又回到执行的活，执行可以提议直接回验收（advance=验收），表示已交付的结果不用改、重走验收；核心只认「到过验收」这一个阶段事实，流程证据过了才放行，结果没变、能走几次由流程判。没到过验收的活照旧不能越过阶段；执行紧接验收的流程不走这条，照常处理交付授权。执行前必须有能跑的检查；交付前处理授权；验收证据不过无论 done/nothing/failed 都退回执行。
 
 交付对象的 `two_reviewers` 路径前缀命中 paths，或 Evidence.reviewers=2 时，核心在审查阶段依次找两家不同家族，两家都过才能交付。已通过家族记入活的 reviews；写代码那家仍排除。第一次审查带 ask 时不计作通过，答完接回同一审查会话。返工清空本次审查记录。
 
-交付对象的 `frozen_paths`（前缀匹配，同 two_reviewers）：执行之后的阶段往前推进时，paths 里命中冻结前缀、Kun 还没放行过的文件让关口停下（状态等你），发一张核心审批卡列出这些文件，推荐不放行。放行后用原证据过关口，文件记入活的 frozen_approved，以后不再问；不放行回执行，同授权问题的拒绝。同一关口还有交付动作要授权时合成一张卡，批一次两样都放行。
 
 交付对象的 `serial_paths`（前缀；登记的路径可以是目录，和规则前缀互为前缀就算碰到）：核心把每轮 Evidence.paths 并进活的 paths——说清楚时流程交预计会改的路径，之后交实际改动。阶段在执行至交付之间（含两端及启用的审查）、paths 碰到串行前缀的活，同一交付对象同一时间只有一件占着（serial_hold）：别的活占着时停在当前阶段前，状态「排队」，下一步和工序写在等哪件，卡在谁手里写那件的 id。占位者交付完成进入验收、退回说清楚或被放弃后，按活的登记顺序自动放下一件；验收、收尾和观察不占位，也不因其他活占位而排队。执行至交付区间内退回执行仍占位；从验收及以后返工则重新判断，有人占就排队，无人占才重新占位，旧状态残留的占位不能沿用。说清楚漏登记的，在执行交回实际改动后、证据轮开始前同样排队。issue 交付所说的“合并后让出”以阶段为准：车间自己合并即交付，进入验收就让出；其他交付对象若仍在交付阶段等待上线，继续占位，交付条件不变。提前让出不等于完成，活仍以收尾为完成；全局并发上限照旧。
 
@@ -111,7 +110,7 @@ Evidence 字段：checks（检查 argv 列表）、passed（布尔）、actions�
 
 `notice` 非空时按现有通道规则处理，卡片 key 为 `after-notice:<after key>`，同一个完成钩子只记一次。`restart` 与 `notice` 类型分别须为布尔值和字符串。
 
-pending=true 表示尚未完成这个阶段，须带非空 reason 和 next，不算执行失败。rerun=true 才在同一阶段接回执行者；rerun=false 登记工序，到 recheck_after（相对时间或 ISO 时间）只重调 after，沿用同一 key 与 item.result，不再 assess 或启动执行者。核心取插件建议时间和 5/10/20/40/60 分钟退避中较晚者。连续 pending 达交付对象的 pending_limit（默认 5）标卡住，只通知一次，此后不再轮询或起执行者；离开阶段或可信返工重置计数。完成钩子的副作用按 key 幂等，但 pending 业务状态须允许重查，不能永久缓存 pending。等待授权的会话应交 later 退出。授权问题保存 receipt、Evidence、原阶段、下一阶段；明确批准后直接用这些证据过关口并调用同一个 after key，不再多起一轮审查。拒绝则回执行，清空本次批准/审查记录，追加“Kun 没批准”和所选项的 key/label 为核心关口反馈资料，再按意见修改。after 不得越权推进或提前做交付动作。
+pending=true 表示尚未完成这个阶段，须带非空 reason 和 next，不算执行失败。rerun=true 才在同一阶段接回执行者；rerun=false 登记工序，到 recheck_after（相对时间或 ISO 时间）只重调 after，沿用同一 key 与 item.result，不再 assess 或启动执行者。核心按插件给的间隔回查，指数退避只用于故障重试。pending_limit 达上限仍卡住。wake_on_completed=true 表示同目标其它活完成时提前回查原 after；只唤醒，不能代替部署或授权核实。授权中心的原申请、动作、目标和检查点由流程持久保存，等待期间不占执行者；批准且核实生效才继续，已执行的动作不重做。
 
 可选 `cleanup(target, keep)` 只清流程管理的临时副本；守护进程启动时和轮停止后调用，keep 包含所有未停止轮的 brief.workdir，必须保留。其他流程可不实现。
 
@@ -125,7 +124,7 @@ pending=true 表示尚未完成这个阶段，须带非空 reason 和 next，不
 
 ## 执行者 Executor
 
-`available(config) -> bool` 仅查现有额度，不自动加购。每个规则候选必须明写 billing=subscription 或 metered；按量候选在这件活获明确批准前不交给挑选逻辑。若另有可用订阅候选则直接使用，避免为用不上的按量候选提问；否则发 C4 授权卡，批准后按配置指纹放入候选。拒绝则保留等你，等待调整后放行，不立即重复发卡。`Unavailable` 表示无额度且确认没启动，可挑下一候选；`Retryable` 表示暂时启动失败且确认没启动，按退避重试，连续第 3 次隔离。普通启动异常表示结果不确定，保留占位，不能猜没启动而换一家。
+`available(config) -> bool` 仅查现有额度，不自动加购。每个规则候选明写 billing。按量授权类别尚未支持，只有订阅候选进入挑选；没有订阅候选时标卡住，明确缺授权类型，不发计费卡。`Unavailable` 表示无额度且确认没启动，可挑下一候选；`Retryable` 表示暂时启动失败且确认没启动，按退避重试，连续第 3 次隔离。普通启动异常表示结果不确定，保留占位，不能猜没启动而换一家。
 
 `launch(token, brief, item, config, target) -> Started(session, handle, workdir)` 和 `resume(token, session, brief, item, config, target)` 必须按 token 持久幂等。核心启动前记意图，崩溃后重放同 token 须找到同一轮；resume 返回同一个 session。target 包含完整交付规则及上述 runtime。环境中传轮次令牌，结束时用 runtime.command 交回执，提交后不再做业务动作。
 
@@ -255,3 +254,10 @@ ask 成功时记录 sent_at，丢回包后找回原卡时保留上游发送时�
 `Relations.priority` 为 P0/P1/P2，缺省 P1；issue 流程从正文读取。关系回查失败时该活仍卡住，不沿用旧快照派轮，也不挡住别的可开工活。全局派新轮前稳定排序，不抢停已有轮，前置、并发及串行路径约束保留。
 
 `Evidence.pause` 只表示流程需要在 after 创建等待，不携带业务问题。回执的取舍内容由流程解释并验证；after 返回等待引用后，轮次结束并让出串行位置。结果到达后重新调用原 after 核验，再回原阶段；完整问题与回答由流程带进续接或新开的会话。
+
+
+### 授权证据（#174，D4）
+
+`Evidence.action_targets: dict[str,str]` 绑定本次动作与确定目标，`Evidence.authorized_actions: list[dict]` 保存流程已在授权中心核实的记录。每项必有非空 action、target、request、result 和布尔 applied。核心在交付/验收前（包括返工直接回验收）核对所需动作和目标，只有 result=approved 且 applied=true 放行。普通会话及旧批准投影不参与计算。流程还须独立保存原 execution 结果，不能用批准代替实际生效证据。
+
+`After.wake_on_completed` 默认 false。true 时核心在暂停位置保存完成事实游标；同目标另一件活完成后，下一拍提前回查，取消原回查定时器。重启可重放，仍核实原完成钩子，不启动模型轮，不绕过故障重试期限。

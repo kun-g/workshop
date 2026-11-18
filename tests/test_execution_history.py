@@ -219,20 +219,15 @@ def test_core_filters_writer_family_and_no_quota_before_selector(engine):
     assert seen == ["acceptor"]
 
 
-def test_metered_executor_requires_approval_before_selection(engine):
-    from workshop.core.models import Answer
+def test_metered_executor_missing_authorization_type_blocks(engine):
     config = deepcopy(engine.rules.data)
     config["executors"]["writer"]["billing"] = "metered"
     engine.rules = Rules.validate(config)
     engine.ingest(event())
     engine.tick()
-    assert item(engine)["state"] == "等你" and not engine.active()
-    card = engine.log.all("cards")[0]
-    assert card["billing_configs"] and card["payload"]["kind"] == "approval"
-    engine.plugins.get("channel", "channel").answers = [Answer(card["id"], "yes", True)]
-    engine.tick()
-    assert current(engine)["config"]["billing"] == "metered"
-    assert item(engine)["billing_approved"]
+    assert item(engine)["state"] == "卡住" and not engine.active()
+    assert "按量计费" in item(engine)["next"] + item(engine)["blocked_by"]
+    assert not engine.log.all("cards")
 
 
 def test_subscription_candidate_avoids_unneeded_metered_question(engine):
@@ -247,16 +242,13 @@ def test_subscription_candidate_avoids_unneeded_metered_question(engine):
     assert not engine.log.all("cards")
 
 
-def test_metered_refusal_does_not_repeat_question_or_select(engine):
-    from workshop.core.models import Answer
+def test_legacy_metered_approval_does_not_select(engine):
     config = deepcopy(engine.rules.data)
     config["executors"]["writer"]["billing"] = "metered"
     engine.rules = Rules.validate(config)
     engine.ingest(event())
-    engine.tick()
-    card = engine.log.all("cards")[0]
-    engine.plugins.get("channel", "channel").answers = [Answer(card["id"], "no", False)]
+    engine.fact('item_changed', {'billing_approved': ['writer']}, 'alpha:one')
     engine.tick()
     engine.tick()
-    assert not engine.active() and item(engine)["wait_for_ready"]
-    assert len(engine.log.all("cards")) == 1
+    assert not engine.active() and item(engine)['state'] == '卡住'
+    assert not engine.log.all('cards')

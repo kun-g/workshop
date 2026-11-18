@@ -3,6 +3,7 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 import fcntl
 import json
+import hashlib
 import os
 import re
 from pathlib import Path
@@ -289,27 +290,35 @@ class IO:
                 return json.loads(msg['body']['content']).get('text')
         return None
 
-    def send_report(self, target, report):
-        """只发 HTML 附件（Kun 11-15：飞书里的逐行文字摘要不用发）；附件有固定幂等键，未确认发送成功时保留原报告重试。"""
-        c = self.config(target)
+    def send_report(self, target, report, services=None):
+        """原报告幂等键保持不变；许可、发送和不确定结果对账由介入点服务处理。"""
+        services = services or getattr(self, 'services', None)
+        if services is None:
+            raise ValueError('报告送达缺介入点服务端口')
+        port, config = services('intervention')
         file = path(report['path'])
         journal_file = self.file(target, 'state_dir') / ('delivery-' + digest(report['id']) + '.json')
         journal = read(journal_file)
-        for kind, argument in [('file', ['--file', file.name])]:
-            old = journal.get(kind)
-            if old and old.get('sent'):
-                continue
-            if old and (self.clock() - datetime.fromisoformat(old['started'])).total_seconds() >= 3500:
-                raise ValueError('报告发送结果不明，已超过服务端幂等窗口；须按发送记录核对，禁止重发')
-            journal[kind] = old or {'started': self.now()}
-            write(journal_file, journal)
-            argv = [c['lark'], '--profile', c['profile'], 'im', '+messages-send', '--as', 'bot',
-                    '--user-id', c['kun_open_id'], '--idempotency-key', digest([report['id'], kind]),
-                    '--format', 'json', *argument]
-            result = self.command(argv, cwd=file.parent)
-            value = json.loads(result.stdout) if result.stdout else {}
-            if result.returncode or value.get('ok') is not True:
-                raise ValueError('报告私聊发送未确认：' + result.stderr[-500:])
-            journal[kind].update(sent=True, response=value)
-            write(journal_file, journal)
-
+        operation = 'update-report:' + target['name'] + ':' + report['id']
+        permit = port.invoke('permit', {'operation': operation + ':permit', 'point': 'update_report',
+            'owner': target['name'] + ':watch_updates:' + report.get('anchor', 'check'),
+            'scope': 'report:' + target['name'] + ':' + report['id'],
+            'basis': {'contract': '盯更新 R14：只送 HTML 附件', 'artifact': str(file)}}, config)['ref']
+        payload = {'kind': 'update_report', 'artifact': str(file), 'report': report['id'],
+                   'sha256': hashlib.sha256(file.read_bytes()).hexdigest(),
+                   'idempotency_key': digest([report['id'], 'file'])}
+        old = journal.get('file', {})
+        if old.get('sent') and old.get('response', {}).get('data', {}).get('message_id'):
+            payload.update(existing_external=old['response']['data']['message_id'], existing_started=old['started'])
+        elif old.get('started'):
+            # 旧路径未确认结果也不能视作未发；只允许回查旧记录。
+            payload.update(existing_external='unknown', existing_started=old['started'])
+        delivery = port.invoke('enqueue', {'operation': operation + ':enqueue', 'permit': permit, 'payload': payload}, config)['ref']
+        journal.update(intervention={'permit': permit, 'delivery': delivery, 'idempotency_key': payload['idempotency_key'],
+                      'created_at': journal.get('intervention', {}).get('created_at', self.now())})
+        write(journal_file, journal)
+        result = port.invoke('dispatch', {'ref': delivery}, config)
+        journal['intervention'].update(state=result['state'], external=result.get('external'))
+        write(journal_file, journal)
+        if result['state'] != 'sent':
+            raise ValueError('报告发送未确认；按原送达号 ' + delivery + ' 对账，禁止重发')

@@ -81,6 +81,10 @@ def registration(body, target, documents=None):
     if visual and not re.match(r"(?:是|否)(?:\s|$)", visual):
         # 没写这一节按「否」：核心 R2、R3 只要求检查、DoD 和不可逆动作三节。
         problems.append("「要不要亲眼看」第一行须写「是」或「否」")
+    if _first_line(visual) == '是':
+        for name, value in visual_contract(body).items():
+            if not value:
+                problems.append('亲眼看缺「' + {'contract': '看什么：', 'location': '在哪看：', 'response': '怎么回：'}[name] + '」段')
     after = section(body, "上线后 DoD")
     if after:
         try:
@@ -140,3 +144,12 @@ def evidence_problems(pr_body, issue_body, checks):
         if not (fenced and fenced[1].strip()) and not named:
             problems.append(f"PR 的合并前 DoD 这一项没附证据（登记的检查名或原样输出代码块）：{want['text']}")
     return problems
+
+
+def visual_contract(body):
+    text = section(body, '要不要亲眼看')
+    result = {}
+    for key, label in (('contract', '看什么'), ('location', '在哪看'), ('response', '怎么回')):
+        match = re.search(r'^' + label + r'：(.*?)(?=^(?:看什么|在哪看|怎么回)：|\Z)', text, re.M | re.S)
+        result[key] = match[1].strip() if match else ''
+    return result

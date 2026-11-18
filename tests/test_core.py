@@ -162,14 +162,10 @@ def test_approval_gate_and_explicit_answer(engine):
     before = len(flow.after_keys)
     finish(engine, "交付")
     assert item(engine)["stage"] == "审查"
-    assert item(engine)["state"] == "等你"
+    assert item(engine)["state"] == "卡住"
     assert len(flow.after_keys) == before
-    card = next(c for c in engine.log.all("cards") if c.get("actions"))
-    channel = engine.plugins.get("channel", "channel")
-    channel.answers = [Answer(card["id"], "yes", True)]
-    engine.tick()
-    assert item(engine)["stage"] == "交付"
-    assert "对外发消息" in item(engine)["approved"]
+    assert not engine.log.all("cards")
+    assert '授权中心' in item(engine)['blocked_by']
 
 
 def test_skip_ask_and_optional_stages_cannot_skip_approval(engine):
@@ -179,7 +175,7 @@ def test_skip_ask_and_optional_stages_cannot_skip_approval(engine):
     reach(engine, "执行")
     finish(engine, "验收")
     assert item(engine)["stage"] == "执行"
-    assert item(engine)["state"] == "等你"
+    assert item(engine)["state"] == "卡住"
 
 
 def test_delegated_action_does_not_ask(engine):
@@ -536,13 +532,11 @@ def test_receipt_child_target_is_validated_before_acknowledgement(engine):
 def test_rejected_approval_does_not_authorize_delivery(engine):
     engine.plugins.get("flow", "flow").actions = ["花订阅以外的钱"]
     reach(engine, "审查")
+    engine.change(item(engine), approved=["花订阅以外的钱"])
     finish(engine, "交付")
-    card = engine.log.all("cards")[0]
-    engine.plugins.get("channel", "channel").answers = [Answer(card["id"], "no", False)]
-    engine.tick()
-    assert current(engine)["stage"] == "执行"
-    assert "Kun 没批准" in item(engine)["gate_reason"]
-    assert not item(engine)["approved"]
+    assert item(engine)['stage'] == '审查'
+    assert item(engine)['state'] == '卡住'
+    assert not engine.log.all('cards')
 
 
 def test_stopped_round_with_broken_flow_does_not_use_execution_capacity(engine, monkeypatch):

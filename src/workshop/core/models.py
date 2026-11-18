@@ -139,6 +139,8 @@ class After:
     blocked: str = ""
     # 流程已持久创建的引用；与 pending=True 一起返回，恢复后重查完成钩子。
     wait: dict | None = None
+    # 同目标的其它活完成时提前回查；只唤醒，仍由流程重新核验。
+    wake_on_completed: bool = False
 
 
 @dataclass(frozen=True)
@@ -182,8 +184,19 @@ class Evidence:
     awaits_update: bool = False
     # 流程核实本轮需创建外部等待；调用 after 取得引用，回答后仍回本阶段。
     pause: bool = False
+    action_targets: dict[str, str] = field(default_factory=dict)
+    authorized_actions: list[dict] = field(default_factory=list)
 
     def validate(self) -> None:
+        if not isinstance(self.action_targets, dict) or not all(
+                isinstance(k, str) and k and isinstance(v, str) and v for k, v in self.action_targets.items()):
+            raise ValueError("动作目标须为非空字符串映射")
+        if not isinstance(self.authorized_actions, list):
+            raise ValueError("授权核实须为列表")
+        for record in self.authorized_actions:
+            if (not isinstance(record, dict) or not all(isinstance(record.get(k), str) and record[k]
+                    for k in ('action', 'target', 'request', 'result')) or type(record.get('applied')) is not bool):
+                raise ValueError("授权核实缺动作、目标、原申请、结果或生效状态")
         if type(self.pause) is not bool or self.pause and (
                 self.passed or self.blocked or self.handoff or self.recheck_after or self.awaits_update):
             raise ValueError("暂停不能同时通过、阻塞、交接或另设等待")

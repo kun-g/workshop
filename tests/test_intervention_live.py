@@ -92,3 +92,49 @@ def test_checks_run_with_temporary_home_without_github(live):
             '--state-dir', str(state)], env=clean_env(home), capture_output=True, text=True, timeout=15)
         assert result.returncode == 0, result.stderr
     assert code['resident_path']('~/service.sock', state) == Path(pwd.getpwuid(state.stat().st_uid).pw_dir) / 'service.sock'
+
+
+def test_no_approval_cards_checks_creation_even_without_send(live):
+    code, log, state = live
+    args = argparse.Namespace(state_dir=state, check='no-approval-cards')
+    code['verify'](args)
+    log.append('card_created', {'id':'legacy','core_approval':True,'mode':'ask','payload':{}})
+    with pytest.raises(ValueError, match='仍建过'):
+        code['verify'](args)
+
+
+def test_authorization_audit_rejects_missing_or_mismatched_evidence(live):
+    from workshop.core.rules import Rules
+    code, log, state = live
+    rules = Rules.load(ROOT/'rules/workshop.yaml')
+    body = {'gate_stage':'交付','actions':['对外发消息'], 'action_targets':{'对外发消息':'target'},
+            'authorized_actions':[{'action':'对外发消息','target':'target','request':'original','result':'approved','applied':True}]}
+    log.db.execute('INSERT INTO items VALUES (?,?)', ('workshop:one',json.dumps({'cause':0,'stage':'审查','revision':0})))
+    log.append('gate_passed', body, 'workshop:one')
+    assert len(code['inspect_authorizations'](log,rules,'2026')) == 1
+    body['authorized_actions'][0]['target'] = 'another'
+    log.db.execute('INSERT INTO items VALUES (?,?)', ('workshop:two',json.dumps({'cause':0,'stage':'审查','revision':0})))
+    log.append('gate_passed',body,'workshop:two')
+    with pytest.raises(ValueError, match='缺原申请'):
+        code['inspect_authorizations'](log,rules,'2026')
+
+
+def test_deliveries_audit_rejects_non_html_and_duplicate_send(live):
+    from workshop.core.rules import Rules
+    from workshop.plugins.intervention.service import Service
+    code, log, state = live
+    service = Service(state,ROOT/'rules/workshop.yaml')
+    permit = service.call('permit', {'operation':'p','point':'update_report','owner':'watch', 'scope':'report:one',
+        'basis':{'contract':'盯更新','artifact':'one.html'}})['ref']
+    delivery = service.call('enqueue', {'operation':'e','permit':permit,
+        'payload':{'kind':'update_report','artifact':'one.html','sha256':'abc'}})['ref']
+    service.transport = lambda *a: {'state':'sent','external':'om_one'}
+    service.call('dispatch',{'ref':delivery})
+    rules = Rules.load(ROOT/'rules/workshop.yaml')
+    rules.data['targets']['workshop']['watch_updates']['state_dir'] = str(state/'watch')
+    endpoint = state/'run/service.sock'
+    assert len(code['inspect_deliveries'](rules,state,endpoint,'2026')['deliveries']) == 1
+    entry = service.store.get(delivery)
+    service.delivery_state(entry,'sending')
+    with pytest.raises(ValueError, match='超过一次'):
+        code['inspect_deliveries'](rules,state,endpoint,'2026')

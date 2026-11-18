@@ -71,6 +71,7 @@ def one(engine, began=None):
             with Span(spans, "rounds"):
                 rounds.drive(engine)
             with Span(spans, "advance"):
+                hooks.wake_completed(engine)
                 slow, count = advance_open(engine)
             with Span(spans, "release"):
                 engine.release_workdirs()
@@ -119,9 +120,6 @@ def advance(engine, item):
     # 有待办才结算；后续推进看到最新阶段和状态。
     if item.get("after_wait"):
         engine.recheck_after(item)
-        item = engine.log.get("items", item["id"])
-    if item.get("pending_advance"):
-        engine.complete_approval(item)
         item = engine.log.get("items", item["id"])
     item = relations.admit(engine, item)
     if item is None:

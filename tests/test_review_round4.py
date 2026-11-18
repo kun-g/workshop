@@ -176,7 +176,7 @@ def test_4_invalid_approval_key_stays_waiting_and_deduplicates_failure(engine, i
     assert len([c for c in engine.log.all("cards") if c["key"].startswith("invalid-answer:")]) == 1
     channel.answers = [Answer(card["id"], "yes", False)]
     engine.tick()
-    assert current(engine)["stage"] == "交付"
+    assert current(engine)["stage"] == "审查"
     assert not engine.control(f"delivery:answer:{card['id']}").get("failed")
 
 

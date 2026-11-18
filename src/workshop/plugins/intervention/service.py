@@ -74,6 +74,8 @@ class Service:
             return self.store.get(data['ref'])
         if action == 'status':
             wait = self.store.get(data['ref'], 'wait')
+            self.poll_reply(wait)
+            wait = self.store.get(data['ref'], 'wait')
             return {'ref': wait['id'], 'ready': wait['answer'] is not None, 'token': wait['token']}
         if action == 'dispatch':
             return self.dispatch(data['ref'])
@@ -135,6 +137,11 @@ class Service:
             raise ValueError('回答须来自会话或经回查的外部记录')
         if 'value' not in data or data['value'] is None or data['value'] in ('', [], {}):
             raise ValueError('空回答不能解除等待')
+        if record['point'] == 'visual' and record['content'].get('delivery'):
+            delivery = self.store.get(record['content']['delivery'], 'delivery')
+            if (channel != 'external' or source.get('delivery') != delivery['id']
+                    or delivery['state'] != 'sent' or delivery['payload'].get('version') != source.get('version')):
+                raise ValueError('回答未绑定本次已送达的交付版本')
         answer = {'value': data['value'], 'source': source}
         if record['answer'] is not None:
             if record['answer'] != answer:
@@ -191,7 +198,7 @@ class Service:
             if old['payload'] != data['payload']:
                 raise ValueError('同一许可不能更改已排队内容')
             return {'ref': ref}
-        self.store.put('delivery', ref, {'id': ref, **data, 'state': 'queued', 'external': None}, 'queued')
+        self.store.put('delivery', ref, {'id': ref, **data, 'state': 'queued', 'external': None, 'created_at': datetime.now(timezone.utc).isoformat()}, 'queued')
         return {'ref': ref}
 
     def cancel(self, key, data):
@@ -201,6 +208,32 @@ class Service:
             record.update(cancelled=True, reason=data['reason'])
             self.store.put('permit', record['id'], record, 'cancelled')
         return {'ref': record['id']}
+
+    def poll_reply(self, wait):
+        if wait['point'] != 'visual' or wait['answer'] is not None or wait.get('superseded'):
+            return
+        content = wait['content']
+        if not content.get('delivery'):
+            return
+        delivery = self.store.get(content['delivery'], 'delivery')
+        if delivery['state'] != 'sent' or delivery['payload'].get('version') != content.get('version'):
+            return
+        _, config = self.policy('visual')
+        try:
+            result = subprocess.run(config['transport'], input=encode({'action': 'reply', 'key': delivery['id'],
+                'payload': {'external': delivery['external'], 'started': delivery.get('created_at', wait['started_at']), 'response': content['response']}}),
+                capture_output=True, text=True, timeout=20)
+            reply = json.loads(result.stdout) if result.returncode == 0 else {}
+            if not reply.get('message_id') or reply.get('reply_to') != delivery['external']:
+                return
+            text = reply.get('text', '')
+            if not (text == '过' and '过' in content['response'] or text.startswith('不对') and '不对' in content['response']):
+                return
+            self.call('answer', {'operation': 'visual-reply:' + reply['message_id'], 'ref': wait['id'], 'value': text,
+                'source': {'channel': 'external', 'reference': reply['message_id'], 'evidence': encode(reply),
+                           'version': content['version'], 'delivery': delivery['id']}})
+        except (OSError, ValueError, subprocess.TimeoutExpired):
+            return  # 暂时读不到不代表通过；下次仍读原送达。
 
     def transport(self, config, action, record):
         argv = config.get('transport')
