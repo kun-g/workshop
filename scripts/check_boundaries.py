@@ -80,8 +80,6 @@ ignore_imports =
     workshop.plugins.channels.ask_kun -> workshop.core.cards
     # H3：核心完成重启确认后删除。
     workshop.plugins.scheduled_release.io -> workshop.core.wake
-    # H4：确认存量迁移完成、删除一次性迁移后删除。
-    workshop.plugins.watch_updates.migration -> workshop.core.log
 
 [importlinter:contract:plugins-outer]
 name = 插件不引用装配层、看门和查看工具

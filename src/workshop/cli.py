@@ -168,17 +168,6 @@ def main(argv=None):
                 rules = current_rules(args, saved)
             jobs = None
             if args.command == "run":
-                # 本次流程数据迁移只在启动窗口执行；失败只暂停该来源，不能挡住其他流程启动。
-                for name, config in rules.data['targets'].items():
-                    if config.get('watch_updates', {}).get('consolidate_on_start'):
-                        from .plugins.watch_updates.migration import migrate
-                        try:
-                            migrated = migrate(log.path, {**config, 'name': name})
-                        except (ValueError, OSError, KeyError, TypeError, sqlite3.Error) as exc:
-                            migrated = {'status': 'blocked', 'target': name, 'flow': 'watch_updates',
-                                        'reason': str(exc), 'next': '结算旧轮后，在下一停机窗口重跑 migrate-checks'}
-                        if migrated['status'] != 'unchanged':
-                            print(json.dumps(migrated, ensure_ascii=False), flush=True)
                 from .running import record
                 record()  # 作业子进程继承；整点发版拿它和远端比
             if args.command == "run" and not args.once:

@@ -7,10 +7,9 @@ from conftest import build, configuration
 from test_watch_updates import world, software, judgment, item_for, advance
 from workshop.core.models import Event
 from workshop.core.holding import resolve
-from workshop.reports.report import status, why
+from workshop.reports.report import status
 from workshop.plugins.watch_updates.flow import Flow
 from workshop.plugins.watch_updates.io import read, write
-from workshop.plugins.watch_updates.migration import migrate
 from workshop.plugins.watch_updates.model import SCHEMA
 
 
@@ -144,44 +143,6 @@ def test_blocked_entry_does_not_prevent_other_judgments(world, tmp_path):
         engine.log.close()
 
 
-def test_migration_backups_aliases_history_and_replay(world, tmp_path):
-    io, target, legacy, source = world
-    engine, _ = engine_for(world, tmp_path)
-    try:
-        raw = source.poll(target, None)
-        events = [e for e in raw.events if e.body['kind'] == 'version']
-        old = replace(events[0], flow='watch_updates', action='ready')
-        # 直接追加和真实来源一致的事实；旧 key 留历史，迁移只追加不改事实。
-        engine.log.append('event', asdict(old), old.item_id, source=old.source, ext_id='old')
-        engine.log.append('item_changed', {'state': '定时', 'stage': '验收', 'blocked_by': 'old reason'}, old.item_id)
-        item = item_for(events[0])
-        advance(legacy, item, target, '接单')
-        advance(legacy, item, target, '执行', {'judgment': judgment()})
-        state = io.state(target)
-        state['checks'] = {'check': {'entries': {}, 'failures': {'old': {'error': '旧来源不可达'}}}}
-        io.save(target, state)
-        # 真实历史中的重判事件只有键，完整软件/发布资料已在版本状态里。
-        minimal = {**asdict(old), 'body': {'kind': 'version', 'day': '2026-11-16', 'batch': []}}
-        engine.log.append('item_changed', {'materials': [{'source': 'watch_updates', 'ext_id': 'minimal',
-                                                         'body': minimal['body']}]}, old.item_id)
-        ended = replace(old, object_key='finished', ext_id='finished')
-        engine.log.append('event', asdict(ended), ended.item_id, source=ended.source, ext_id='finished')
-        engine.log.append('item_changed', {'state': '完成'}, ended.item_id)
-        first = migrate(engine.log.path, target, io=io)
-        assert first['migrated'] == 1
-        from pathlib import Path
-        assert (Path(first['backup']) / 'workshop.db').is_file()
-        assert migrate(engine.log.path, target, io=io) == {'status': 'unchanged', 'migrated': 0}
-        assert resolve(engine.log, {}, old.item_id) == 'alpha:watch_updates:check'
-        assert engine.log.get('items', ended.item_id)['state'] == '完成'
-        assert 'old reason' in why(engine.log, 'alpha:watch_updates:check', raw=True)
-        before = engine.log.all('items')
-        engine.log.rebuild()
-        assert engine.log.all('items') == before
-    finally:
-        engine.log.close()
-
-
 def test_weekly_wait_keeps_same_check_and_completion_opens_next(world, tmp_path):
     io, target, _, source = world
     write(io.file(target, 'needs'), {'needs': []})
@@ -244,33 +205,6 @@ def test_version_failure_is_recorded_once_and_does_not_block_check(world, tmp_pa
         engine.log.close()
 
 
-def test_migration_retries_after_file_write_before_database_commit(world, tmp_path, monkeypatch):
-    io, target, _, source = world
-    engine, _ = engine_for(world, tmp_path)
-    try:
-        event = replace(next(e for e in source.poll(target, None).events if e.body['kind'] == 'version'),
-                        flow='watch_updates', action='ready')
-        engine.log.append('event', asdict(event), event.item_id)
-        from workshop.core.log import Log
-        original = Log.append
-        def crash(log, kind, *args, **kwargs):
-            if kind == 'alias_bound':
-                raise OSError('interrupted')
-            return original(log, kind, *args, **kwargs)
-        monkeypatch.setattr(Log, 'append', crash)
-        import pytest
-        with pytest.raises(OSError, match='interrupted'):
-            migrate(engine.log.path, target, io=io)
-        assert not io.state(target).get('checks_migrated')
-        assert engine.log.get('items', 'alpha:watch_updates:check') is None
-        monkeypatch.setattr(Log, 'append', original)
-        assert migrate(engine.log.path, target, io=io)['migrated'] == 1
-        assert len(io.state(target)['checks']) == 1
-        assert migrate(engine.log.path, target, io=io)['migrated'] == 0
-    finally:
-        engine.log.close()
-
-
 def test_source_does_not_open_second_check_before_core_finishes(world, tmp_path):
     io, target, _, source = world
     engine, _ = engine_for(world, tmp_path)
@@ -311,28 +245,3 @@ def test_aggregate_deadline_reports_ready_entries_while_next_is_pending(world, t
         assert engine.active()[0]['item'] == 'alpha:watch_updates:check'
     finally:
         engine.log.close()
-
-
-def test_startup_migration_failure_does_not_stop_other_work(tmp_path, monkeypatch, capsys):
-    import workshop.cli as cli
-    import workshop.running as running
-    import workshop.plugins.watch_updates.migration as migration
-    from workshop.core.log import Log
-    config = configuration()
-    config['targets']['alpha'].update(sources=[], watch_updates={'consolidate_on_start': True})
-    engine = build(tmp_path, config)
-    engine.ingest(Event('input', 'other-work', 'beta', 'other', '其他活', {}, action='ready'))
-    registry = engine.plugins
-    engine.log.close()
-    monkeypatch.setattr(cli, 'Registry', lambda *args, **kwargs: registry)
-    monkeypatch.setattr(running, 'record', lambda: None)
-    def busy(*args, **kwargs):
-        raise ValueError('旧活仍有未结算轮次')
-    monkeypatch.setattr(migration, 'migrate', busy)
-    assert cli.main(['--state-dir', str(tmp_path), 'run', '--once']) == 0
-    assert '旧活仍有未结算轮次' in capsys.readouterr().out
-    log = Log(tmp_path / 'workshop.db')
-    try:
-        assert log.get('items', 'beta:other')['state'] == '跑着'
-    finally:
-        log.close()

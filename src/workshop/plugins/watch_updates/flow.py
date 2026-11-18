@@ -73,7 +73,7 @@ class Flow(Entries):
 
     def assess(self, item, receipt, target):
         if self.legacy(item):
-            return Evidence(blocked='旧盯更新活尚未迁移', next='在停机窗口运行 migrate-checks 后继续检查活')
+            return Evidence(blocked='旧盯更新活尚未迁移', next='核对旧活与迁移备份，由项目经理处理')
         if self.upgrade(item):
             return Evidence(passed=True, checks=self.checks(target), reason='已登记选中的软件、部署、版本与原话')
         try:
