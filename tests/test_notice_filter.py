@@ -2,7 +2,7 @@
 import pytest
 
 from workshop.core.models import Evidence, Receipt
-from workshop.core.report import why
+from workshop.reports.report import why
 from conftest import current, finish, item, reach
 
 

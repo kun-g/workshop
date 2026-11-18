@@ -25,7 +25,7 @@ from workshop.core.engine import Engine, finder
 from workshop.core.jobs import Jobs, Pending, execute, read, write
 from workshop.core.log import Log
 from workshop.core.ports import Retryable
-from workshop.core.report import status
+from workshop.reports.report import status
 from workshop.core.rules import Rules
 
 import job_plugins

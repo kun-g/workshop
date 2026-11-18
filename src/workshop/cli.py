@@ -11,7 +11,7 @@ from .core.jobs import Jobs, execute
 from .core.log import Log
 from .core.models import Event
 from .core.holding import resolve
-from .core.report import overview, status, unfiled, usage, why
+from .reports.report import overview, status, unfiled, usage, why
 from .core.rules import Rules
 from .core.wake import Mailbox, ring
 from .registry import Registry, load_rules
@@ -92,40 +92,60 @@ def current_rules(args, saved):
     return load_rules(Path(__file__).resolve().parents[2] / "rules/workshop.yaml")
 
 
+def read_command(args):
+    try:
+        log = Log.readonly(args.state_dir / 'workshop.db')
+        try:
+            with log.read_transaction():
+                if args.command == 'status':
+                    split = lambda text: tuple(x.strip() for x in (text or '').split(',') if x.strip())
+                    options = dict(everything=args.everything, states=split(args.state),
+                                   targets=split(args.target), flows=split(args.flow))
+                    if args.html is None:
+                        print(status(log, **options))
+                    else:
+                        from .reports.status_page import page
+                        from .reports.status_writer import write_page
+                        path = Path(args.html).expanduser() if args.html else args.state_dir / 'status.html'
+                        write_page(path, page(overview(log, **options)))
+                        print(path.resolve())
+                elif args.command == 'why':
+                    try:
+                        rules = current_rules(args, log.get('controls', '@rules')).data
+                    except (ValueError, OSError):
+                        rules = None
+                    if args.unfiled == (args.item is not None):
+                        raise ValueError('why 要么给一件活，要么用 --unfiled 看未归件')
+                    print(unfiled(log, rules, Registry()) if args.unfiled else
+                          why(log, args.item, rules, Registry(), raw=args.raw))
+                else:
+                    print(usage(log))
+            return 0
+        finally:
+            log.close()
+    except (ValueError, TypeError, KeyError, OSError, sqlite3.Error) as exc:
+        print(f'车间：{exc}', file=sys.stderr)
+        return 2
+
+
 def main(argv=None):
     args = parser().parse_args(argv)
     if args.command == "metrics":
-        from .core.metrics import metrics
+        from .reports.metrics import metrics
         try:
             print(metrics(args.database or args.state_dir / "workshop.db", args.since, args.start, args.end))
             return 0
         except (ValueError, TypeError, KeyError, OSError, sqlite3.Error, OverflowError) as exc:
             print(f"车间：{exc}", file=sys.stderr)
             return 2
+    if args.command in ("status", "why", "usage"):
+        return read_command(args)
     log = Log(args.state_dir / "workshop.db")
     jobs = None
     try:
-        if args.command == "status":
-            split = lambda text: tuple(x.strip() for x in (text or "").split(",") if x.strip())
-            options = dict(everything=args.everything, states=split(args.state), targets=split(args.target), flows=split(args.flow))
-            if args.html is None:
-                print(status(log, **options))
-            else:
-                from .core.status_page import page
-                path = Path(args.html).expanduser() if args.html else args.state_dir / "status.html"
-                path.write_text(page(overview(log, **options)))
-                print(path.resolve())
-        elif args.command == "job":
+        if args.command == "job":
             saved = log.get("controls", "@rules") or {}
             execute(args.directory, Registry(saved.get('data', {}).get('executor_profiles')), lambda target: finder(log, target))
-        elif args.command == "why":
-            try:
-                rules = current_rules(args, log.get("controls", "@rules")).data
-            except (ValueError, OSError):
-                rules = None  # 规则读不到时只认 <交付对象>:<对象键>，不挡查看。
-            if args.unfiled == (args.item is not None):
-                raise ValueError("why 要么给一件活，要么用 --unfiled 看未归件")
-            print(unfiled(log, rules, Registry()) if args.unfiled else why(log, args.item, rules, Registry(), raw=args.raw))
         elif args.command == "release-now":
             # 只写请求；比较和发版仍由守护进程按整点同一流程做（集群模式同样读这个目录）。
             from datetime import datetime, timezone
@@ -135,8 +155,6 @@ def main(argv=None):
             root.mkdir(parents=True, exist_ok=True)
             (root / REQUEST).write_text(datetime.now(timezone.utc).isoformat())
             print("已请求立即发版：守护进程马上比较在跑的版本与远端，有新合并就发版；进度看 workshop status")
-        elif args.command == "usage":
-            print(usage(log))
         else:
             saved = log.get("controls", "@rules")
             if args.command == "receipt":
@@ -216,10 +234,12 @@ def main(argv=None):
                     engine.tick()
                 else:
                     paths = engine.wake_paths()
-                    with Mailbox(args.state_dir, paths) as mailbox:
+                    from .reports.status_writer import StatusWriter
+                    with StatusWriter(log.path) as writer, Mailbox(args.state_dir, paths) as mailbox:
                         received_at = None
                         while True:
                             engine.tick(received_at)
+                            writer.wake()
                             if engine.restart_requested:
                                 print("车间代码已更新，这一拍结束，退出等守护拉起", flush=True)
                                 break

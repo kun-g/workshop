@@ -81,3 +81,25 @@ def test_fact_queries_preserve_nested_values_and_select_only_requested_fields(en
             assert reader.all('items', fields=('id', 'title')) == [{'id': item['id'], 'title': item['title']}]
     finally:
         reader.close()
+
+
+@pytest.mark.parametrize('command', [('status',), ('status', '--all'), ('status', '--html'),
+                                     ('why', 'alpha:one'), ('usage',)])
+def test_read_commands_succeed_while_writer_holds_transaction(engine, command, capsys):
+    from workshop.cli import main
+    engine.ingest(event())
+    before = engine.log.path.read_bytes()
+    with engine.log.transaction():
+        engine.log.append('control', {'id': 'uncommitted', 'value': 1})
+        assert main(['--state-dir', str(engine.log.path.parent), *command]) == 0
+        assert not capsys.readouterr().err
+    assert engine.log.path.read_bytes() == before
+
+
+@pytest.mark.parametrize('command', [('status',), ('why', 'a:1'), ('usage',)])
+def test_read_commands_do_not_create_missing_database(tmp_path, command, capsys):
+    from workshop.cli import main
+    path = tmp_path / 'absent'
+    assert main(['--state-dir', str(path), *command]) == 2
+    assert not path.exists()
+    assert '车间：' in capsys.readouterr().err

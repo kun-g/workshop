@@ -1,10 +1,8 @@
 """按事实区间计算供给、流动、负载；不经过会写库的日志初始化。"""
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
-import json
-from pathlib import Path
 import re
-import sqlite3
+from workshop.core.log import Log
 
 
 STATES = ('在跑', '定时', '卡住', '排队', '等你', '等前置', '等子单', '其他')
@@ -43,30 +41,17 @@ def window(since=None, start=None, end=None, now=None):
 
 def read_snapshot(path):
     """短只读事务保证各表是同一快照；不建表、不迁移、不取写锁。"""
-    uri = Path(path).expanduser().resolve().as_uri() + '?mode=ro'
-    db = sqlite3.connect(uri, uri=True, timeout=0)
+    log = Log.readonly(path)
     try:
-        db.execute('BEGIN')
-        row = db.execute("SELECT body FROM controls WHERE id='@rules'").fetchone()
-        rules = json.loads(row[0]).get('data', {}) if row else {}
-        meta = {key: {'target': target, 'flow': flow, 'title': title}
-                for key, target, flow, title in db.execute(
-                    "SELECT id,json_extract(body,'$.target'),json_extract(body,'$.flow'),"
-                    "json_extract(body,'$.title') FROM items")}
-        # 只取统计字段，不把派活说明和外部正文读入内存。
-        columns = ','.join(f"json_extract(body,'$.{field}')" for field in FIELDS)
-        marks = ','.join('?' for _ in KINDS)
-        facts = []
-        for seq, kind, item, at, *values in db.execute(
-                f'SELECT seq,kind,item,at,{columns} FROM facts WHERE kind IN ({marks}) ORDER BY seq', KINDS):
-            body = {field: value for field, value in zip(FIELDS, values) if value is not None}
-            if 'event' in body:
-                body['event'] = json.loads(body['event'])
-            facts.append((seq, kind, item, instant(at), body))
-        db.rollback()
+        with log.read_transaction():
+            rules = (log.get('controls', '@rules') or {}).get('data', {})
+            meta = {row['id']: {k: row[k] for k in ('target', 'flow', 'title')}
+                    for row in log.all('items', fields=('id', 'target', 'flow', 'title'))}
+            facts = [(row['seq'], row['kind'], row['item'], instant(row['at']), row['body'])
+                     for row in log.selected_facts(KINDS, FIELDS)]
+        return facts, meta, rules
     finally:
-        db.close()
-    return facts, meta, rules
+        log.close()
 
 
 def histories(facts, metadata, rules, end):

@@ -5,7 +5,7 @@ import sqlite3
 import pytest
 
 from workshop.cli import main
-from workshop.core.metrics import calculate, read_snapshot, window
+from workshop.reports.metrics import calculate, read_snapshot, window
 
 
 BASE = datetime(2026, 1, 1, tzinfo=timezone.utc)
@@ -124,7 +124,7 @@ def test_empty_window_and_invalid_arguments():
 def database(path):
     db = sqlite3.connect(path)
     db.executescript('CREATE TABLE controls(id TEXT,body TEXT); CREATE TABLE items(id TEXT,body TEXT);'
-                     'CREATE TABLE facts(seq INTEGER PRIMARY KEY,kind TEXT,item TEXT,at TEXT,body TEXT);')
+                     'CREATE TABLE facts(seq INTEGER PRIMARY KEY,kind TEXT,item TEXT,at TEXT,body TEXT); PRAGMA user_version=1;')
     db.execute('INSERT INTO controls VALUES (?,?)', ('@rules', json.dumps({'data': RULES})))
     for i, (_, kind, item, at, body) in enumerate([opened(), fact(10, 'item_changed', dict(state='卡住'))]):
         db.execute('INSERT INTO facts VALUES (?,?,?,?,?)', (i, kind, item, at.isoformat(), json.dumps(body)))

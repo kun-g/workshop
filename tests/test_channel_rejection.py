@@ -6,7 +6,7 @@ import pytest
 from workshop.core.cards import question, notice
 from workshop.core.models import Answer
 from workshop.core.ports import ChannelRejected
-from workshop.core.report import why
+from workshop.reports.report import why
 from conftest import event, item, finish, current
 
 

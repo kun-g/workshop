@@ -2,7 +2,7 @@
 import json
 
 from workshop.core.models import Answer
-from workshop.core.report import why
+from workshop.reports.report import why
 from conftest import current, item
 from test_review_round3 import approval_wait
 

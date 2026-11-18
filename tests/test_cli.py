@@ -54,6 +54,8 @@ def test_cli_invalid_input_and_unknown_item(tmp_path, monkeypatch, capsys):
 
 
 def test_packaged_command_runs(tmp_path):
+    from workshop.core.log import Log
+    Log(tmp_path / "workshop.db").close()
     result = subprocess.run(["uv", "run", "workshop", "--state-dir", str(tmp_path), "status"],
                             capture_output=True, text=True, check=True)
     assert "活 0 件" in result.stdout

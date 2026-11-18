@@ -8,7 +8,7 @@ from workshop.core.cards import question
 from workshop.core.engine import Engine
 from workshop.core.jobs import Pending, encode, decode
 from workshop.core.models import Answer, ChannelPoll
-from workshop.core.report import status, why
+from workshop.reports.report import status, why
 
 
 def setup_cards(engine):

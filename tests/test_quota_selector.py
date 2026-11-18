@@ -6,7 +6,7 @@ import sqlite3
 import pytest
 
 from conftest import build, configuration, current, event
-from workshop.core.report import why
+from workshop.reports.report import why
 from workshop.core.rules import Rules
 from workshop.plugins.selectors.quota import QuotaSelector
 from workshop.registry import Registry

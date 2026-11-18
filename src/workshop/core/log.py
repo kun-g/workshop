@@ -103,7 +103,7 @@ class Log:
             raise ValueError('字段须为非空的简单名称列表')
         return 'json_object(' + ','.join(f"'{field}',json_extract(body,'$.{field}')" for field in fields) + ')'
 
-    def selected_facts(self, kinds, fields, *, after=0):
+    def selected_facts(self, kinds, fields, *, after=-1):
         """按种类、序号只取指定字段，避免加载无关的大块正文。"""
         columns = self.selected_body(fields)
         marks = ','.join('?' for _ in kinds)

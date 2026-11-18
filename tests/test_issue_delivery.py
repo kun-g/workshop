@@ -1051,7 +1051,7 @@ def test_renaming_out_of_frozen_path_still_stops(world):
 
 def test_feishu_rework_shows_in_why_and_rejected_message_in_unfiled(world):
     """ws#37：群里一句「ws#7 不对」归到 alpha:7，why 里有时刻、来源、动作、原话和谁说的；冒名的进未归件。"""
-    from workshop.core.report import unfiled, why
+    from workshop.reports.report import unfiled, why
     cfg = configuration()
     cfg.pop('taskhome')
     cfg['targets']['alpha'] = {**world['target'], 'plugin': 'issue_delivery', 'sources': []}
@@ -1489,7 +1489,7 @@ def delivery_wait_engine(world):
 @pytest.mark.parametrize('pending', ['queued', 'in_progress'])
 @pytest.mark.parametrize('with_blocked', [False, True])
 def test_missing_later_waits_for_tag_ci_then_resumes_same_stage(world, pending, with_blocked):
-    from workshop.core.report import why
+    from workshop.reports.report import why
     engine, cfg = delivery_wait_engine(world)
     edit(world, workflow_runs=[tag_run(world, pending)])
     evidence = [result(world, blocked={'reason': 'CI 还在排队', 'next': '等 CI'})] if with_blocked else []
@@ -1523,7 +1523,7 @@ def test_missing_later_waits_for_tag_ci_then_resumes_same_stage(world, pending, 
 
 @pytest.mark.parametrize('later_failure', [False, True])
 def test_tag_ci_failure_blocks_with_actual_conclusion(world, later_failure):
-    from workshop.core.report import why
+    from workshop.reports.report import why
     engine, _ = delivery_wait_engine(world)
     edit(world, workflow_runs=[tag_run(world, 'queued' if later_failure else 'completed', None if later_failure else 'failure')])
     finish(engine, key='7', outcome='nothing')

@@ -5,7 +5,7 @@ import pytest
 from conftest import build, configuration, event, item, reach, finish
 from workshop.cli import main, parser
 from workshop.core.models import Event
-from workshop.core.report import why
+from workshop.reports.report import why
 from workshop.core.cards import question
 
 

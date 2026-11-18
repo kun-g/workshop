@@ -6,7 +6,7 @@ from conftest import current, event, finish, item, reach
 from workshop.core.engine import Engine
 from workshop.core.models import After
 from workshop.core.ports import Retryable
-from workshop.core.report import why
+from workshop.reports.report import why
 from workshop.core.view import TABLES
 
 

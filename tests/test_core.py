@@ -8,7 +8,7 @@ import pytest
 
 from workshop.core.log import Log
 from workshop.core.models import Answer, Event, FlowBrief, Receipt, STAGES, stamp
-from workshop.core.report import status, usage, why
+from workshop.reports.report import status, usage, why
 from workshop.core.rules import Rules
 from workshop.core.view import TABLES
 from conftest import build, configuration, current, event, finish, item, reach

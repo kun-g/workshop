@@ -2,10 +2,10 @@
 from dataclasses import fields
 from datetime import datetime, timedelta
 import json
-from .jobs import running as running_jobs
-from .models import Event, utcnow
-from .flows import configured
-from .holding import resolve
+from workshop.core.jobs import running as running_jobs
+from workshop.core.models import Event, utcnow
+from workshop.core.flows import configured
+from workshop.core.holding import resolve
 
 
 ENDED = ("完成", "放弃")
@@ -13,9 +13,7 @@ ENDED = ("完成", "放弃")
 
 def state_since(log, item):
     """这件活进入当前状态的时间（事实里最近一次改状态的时刻）；查不到返回 None，页面写「时长未知」。"""
-    found = log.db.execute("SELECT at FROM facts WHERE item=? AND kind='item_changed' AND json_extract(body,'$.state') IS NOT NULL "
-                           "ORDER BY seq DESC LIMIT 1", (item,)).fetchone()
-    return found[0] if found else None
+    return log.state_since(item)
 
 
 def origin(item):
@@ -33,7 +31,7 @@ def origin(item):
 
 def overview(log, *, everything=False, states=(), targets=(), flows=()):
     """总览要用的数据，文字和网页共用。默认只取没结束的活；states、targets、flows 是筛选，空表示不筛。"""
-    count = log.db.execute("SELECT count(*) FROM items").fetchone()[0]
+    count = log.item_count()
     # 默认不列已结束的活：在库里先筛掉，不逐行解析它们（已结束的占绝大多数，解析一遍要 200 多毫秒）。
     items = log.all("items") if everything or states else log.open_items()
     cards = log.all("cards")
@@ -165,8 +163,7 @@ def event_line(body, target, flow, raw):
 
 
 def original_event(log, seq):
-    row = log.db.execute("SELECT body FROM facts WHERE seq=? AND kind='event'", (seq,)).fetchone()
-    return json.loads(row[0]) if row else None
+    return log.event_at(seq)
 
 
 def classified_line(log, body, target, flow):

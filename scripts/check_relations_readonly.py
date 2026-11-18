@@ -10,7 +10,7 @@ from workshop.core.engine import Engine
 from workshop.core.log import Log
 from workshop.core.models import Event, STAGES
 from workshop.core.relations import refresh, admit
-from workshop.core.report import status, why
+from workshop.reports.report import status, why
 from workshop.core.rules import Rules
 from workshop.registry import Registry
 

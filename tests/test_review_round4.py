@@ -11,7 +11,7 @@ import pytest
 from workshop.cli import main
 from workshop.core.engine import Engine
 from workshop.core.models import Answer
-from workshop.core.report import why
+from workshop.reports.report import why
 from workshop.core.view import TABLES
 from conftest import current, event, item
 from test_review_round3 import approval_wait, wait_without_card

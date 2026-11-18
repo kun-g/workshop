@@ -9,7 +9,7 @@ from workshop.core.engine import Engine, finder
 from workshop.core.models import Event, After
 from workshop.core.rules import Rules
 from workshop.core.holding import resolve
-from workshop.core.report import unfiled, why
+from workshop.reports.report import unfiled, why
 from workshop.core.flows import matches
 
 
