@@ -1,5 +1,6 @@
 """按固定提交检查、上线并确认；所有阶段由程序完成。"""
 from dataclasses import asdict
+from datetime import datetime
 import hashlib
 from pathlib import Path
 import re
@@ -156,16 +157,22 @@ class ScheduledRelease:
             return After()
         if release['status'] != 'restarting':
             return self.fail(state, '发版已停止：' + release['status'])
-        daemon = self.io.daemon()
+        runtime = target.get('runtime', {})
+        daemon, first_ok_at = runtime.get('daemon'), runtime.get('first_ok_at')
+        if not daemon or not first_ok_at:
+            return After(pending=True, reason='等待核心重启确认', next='由核心在新进程首拍成功后重调')
+        actual = self.io.daemon()
         old = release['daemon']
-        if daemon == old or self.io.process(old['pid']) == old:
+        if ({k: daemon.get(k) for k in ('pid', 'start')} != actual
+                or actual == old or self.io.process(old['pid']) == old):
             return After(pending=True, reason='原守护进程尚未退出', next='等新进程恢复心跳后确认')
         checkout = Path(target['checkout']).expanduser().resolve()
         if self.io.git(checkout, 'rev-parse', 'HEAD') != state['to']:
             return self.fail(state, '重启后的主检出不是检查过的提交')
-        if not self.io.heartbeat_ready(root, daemon):
-            return After(pending=True, reason='新守护进程心跳尚未恢复', next='回查新进程心跳')
-        release.update(status='ok', confirmed_at=self.io.now(), confirmed_daemon=daemon)
+        if datetime.fromisoformat(first_ok_at) < datetime.fromisoformat(release['at']):
+            raise ValueError('首拍成功时间早于重启请求')
+        release.update(status='ok', confirmed_at=self.io.now(), confirmed_daemon=daemon,
+                       first_ok_at=first_ok_at)
         write(release_path(root), release)
         state['status'] = 'ok'
         return After()
@@ -187,6 +194,12 @@ class ScheduledRelease:
                 state['effects'][key] = asdict(After())
                 save()
                 return After()
+            if target.get('runtime', {}).get('first_ok_at'):
+                result = self.confirm(item, target, state)
+                if not result.pending:
+                    state['effects'][key] = asdict(result)
+                save()
+                return result
             if key in state['effects']:
                 result = After(**state['effects'][key])
                 if result.restart and self.io.daemon() != read(release_path(self.io.root(target))).get('daemon'):

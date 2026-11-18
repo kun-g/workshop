@@ -23,6 +23,10 @@ def parser():
     result.add_argument("--state-dir", type=Path, default=Path(os.environ.get("WORKSHOP_STATE_DIR", "~/.local/state/workshop")).expanduser())
     result.add_argument("--rules", type=Path, default=Path(os.environ["WORKSHOP_RULES"]).expanduser().resolve() if os.environ.get("WORKSHOP_RULES") else None)
     commands = result.add_subparsers(dest="command", required=True)
+    check_issue = commands.add_parser("check-issue", help="只读核对 issue 或草稿，缺项措辞与接单一致")
+    check_issue.add_argument("issue", nargs="?", help="<短名>#<号> 或 <交付对象>:<号>")
+    check_issue.add_argument("--file", type=Path, help="本地 issue 草稿")
+    check_issue.add_argument("--target", help="草稿所属交付对象的短名或名字")
     for name in ("event", "receipt"):
         command = commands.add_parser(name)
         if name == "receipt":
@@ -138,6 +142,14 @@ def read_command(args):
 
 def main(argv=None):
     args = parser().parse_args(argv)
+    if args.command == "check-issue":
+        from .plugins.issue_delivery.check_issue import check_issue
+        from .core.ports import Retryable, TargetBlocked
+        try:
+            return check_issue(args, current_rules(args, None))
+        except (ValueError, KeyError, OSError, RuntimeError, Retryable, TargetBlocked) as exc:
+            print(f"车间：{exc}", file=sys.stderr)
+            return 2
     if args.command == "metrics":
         from .reports.metrics import metrics
         try:
@@ -176,12 +188,13 @@ def main(argv=None):
                 rules = current_rules(args, saved)
             jobs = None
             if args.command == "run":
-                from .running import record
+                from .running import record, process_identity
                 record()  # 作业子进程继承；整点发版拿它和远端比
             if args.command == "run" and not args.once:
                 state_dir = str(args.state_dir.resolve())
                 jobs = Jobs(args.state_dir / "jobs", [sys.executable, "-m", "workshop.cli", "--state-dir", state_dir, "job"])
-            engine = Engine(log, rules, Registry(), jobs=jobs)
+            engine = Engine(log, rules, Registry(), jobs=jobs,
+                            daemon=process_identity(os.getpid()) if args.command == "run" else None)
             if args.command in ("event", "receipt"):
                 data = json.loads(args.json if args.json is not None else args.file.read_text() if args.file else sys.stdin.read())
                 added = engine.ingest(Event(**data), round_token=os.environ.get("WORKSHOP_ROUND_TOKEN"), ingress="external") if args.command == "event" else engine.submit(args.token, data)

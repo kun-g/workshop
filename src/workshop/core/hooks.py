@@ -6,18 +6,31 @@ from .ports import Retryable
 from .cards import notice
 from .models import After
 from . import waits
+from .jobs import Pending
 
 
-def after(engine, item, stage, key, target, *, recheck=False):
+def after(engine, item, stage, key, target, *, recheck=False, restarting=False):
+    request = engine.log.get("restarts", key)
+    if request and not request.get("done") and not restarting:
+        raise Pending(key, "等待重启后完成钩子", item["id"])
+    effect_key = key
+    identity = [key, item.get("pending_episode", 0), item.get("after_pending_count", 0)]
+    if restarting:
+        if not engine.first_ok_at:
+            raise ValueError("首拍未成功，不能重调完成钩子")
+        effect_key = f"{key}:restarted:{engine.instance}"
+        identity.append(engine.instance)
+        target = {**target, "runtime": {**target.get("runtime", {}),
+                  "daemon": engine.heartbeat_process, "first_ok_at": engine.first_ok_at}}
     def invoke():
         # 同一完成钩子每次回查是一次新调用；回查次数进身份，免得认回上一次的结果。
         result = engine.call("flow", target["plugin"], "after", item, stage, key, target,
-                             identity=[key, item.get("pending_episode", 0), item.get("after_pending_count", 0)],
+                             identity=identity,
                              item=item["id"], lookup={'wait_services': engine.rules.data.get('wait_services', {})})
         return asdict(result) if isinstance(result, After) else result
-    if recheck and (engine.log.get("effects", key) or {}).get("done"):
+    if recheck and not restarting and (engine.log.get("effects", key) or {}).get("done"):
         engine.fact("effect", {"id": key, "done": False})
-    value = engine.effect(key, invoke)
+    value = engine.effect(effect_key, invoke)
     result = After(**value) if isinstance(value, dict) else After(aliases=value or [])
     if (not isinstance(result.blocked, str) or result.blocked and
             (result.pending or not isinstance(result.next, str) or not result.next.strip())):
@@ -36,9 +49,8 @@ def after(engine, item, stage, key, target, *, recheck=False):
                   source="recovery", ext_id="applied:" + result.recovery_id)
     if result.notice.strip():
         engine.card(item, f"after-notice:{key}", "notice", notice(result.notice))
-    if result.restart:
-        # 只在内存里记；run 循环在这一拍结束后退出，外部守护拉起新代码。
-        engine.restart_requested = True
+    if restarting and result.restart:
+        raise ValueError("重启后完成钩子不能再次请求重启")
     if result.wait is not None:
         waits.descriptor(result.wait)
         if not result.pending or result.rerun or result.blocked:
@@ -59,7 +71,39 @@ def after(engine, item, stage, key, target, *, recheck=False):
     if key.startswith("after:program:"):
         engine.fact("program_after", {"stage": stage, "result": asdict(result)}, item["id"],
                   source="program-after", ext_id=f"{key}:{item.get('pending_episode', 0)}:{item.get('after_pending_count', 0)}")
+    if result.restart:
+        engine.fact("restart_requested", {"id": key, "item": item, "stage": stage,
+                    "instance": engine.instance, "done": False}, item["id"],
+                    source="restart", ext_id=key)
+        engine.restart_requested = True
+        raise Pending(key, "等待重启后完成钩子", item["id"])
+    if restarting:
+        with engine.log.transaction():
+            engine.fact("effect", {"id": key, "done": True, "result": asdict(result)})
+            engine.fact("restart_completed", {"id": key, "done": True,
+                        "daemon": engine.heartbeat_process, "first_ok_at": engine.first_ok_at}, item["id"])
+        engine.restart_completed = True
     return result
+
+
+def resume_restarts(engine):
+    """成功心跳之后发起重调；作业照常异步完成，首调不经过阶段等待的退避。"""
+    for request in engine.log.all("restarts", unless=("done", True)):
+        item, key = request["item"], request["id"]
+        if request["instance"] == engine.instance:
+            continue
+        target = engine.item_target(item)
+        if engine.flow_broken(item["target"], item.get("flow", "")) or not engine.retry_due("restart:" + key):
+            continue
+        try:
+            engine.after(item, request["stage"], key, target, restarting=True)
+            engine.retry_clear("restart:" + key)
+        except Pending:
+            pass
+        except Retryable as exc:
+            engine.retry_failure(item["target"], "flow", target["plugin"], "restart:" + key, exc)
+        except Exception as exc:
+            engine.broken(item["target"], "flow", target["plugin"], exc)
 
 
 def pending_changes(engine, item, result, target, hook):

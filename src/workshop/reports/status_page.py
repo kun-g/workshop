@@ -5,8 +5,15 @@
 """
 import re
 from collections import Counter, defaultdict
+from importlib.resources import files
+from urllib.parse import quote
 from datetime import datetime
 from html import escape as e
+
+
+ASSETS = files("workshop").joinpath("assets")
+LOGO = ASSETS.joinpath("logo.svg").read_text(encoding="utf-8")
+FAVICON = "data:image/svg+xml," + quote(ASSETS.joinpath("favicon.svg").read_text(encoding="utf-8"), safe="")
 
 ENDED = ("完成", "放弃")
 # 状态在页面里的先后和颜色类；没列到的状态（例如作业字样「等检查」）按在跑算。
@@ -147,9 +154,10 @@ def page(view, now=None):
     return f"""<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>车间状态</title>
+<link rel="icon" type="image/svg+xml" href="{FAVICON}">
 <style>{STYLE}</style></head>
 <body><main>
-<h1>车间状态</h1>
+<h1 class="brand"><span class="brand-mark" aria-hidden="true">{LOGO}</span>车间状态</h1>
 {card}
 <p class="sub">{e(scope)}{(" · " + e(hidden)) if hidden else ""}</p>
 {section("卡住", stuck, asks, now, badge=False, warn=True)}
@@ -190,6 +198,7 @@ STYLE = """
 @media (prefers-color-scheme:dark){:root{--bg:#17171a;--card:#212125;--ink:#ecebe6;--mute:#9d9b94;--line:#33333a;--timer:#6d7286;--drop:#55534d;color-scheme:dark}}
 body{background:var(--bg);color:var(--ink);font:14px/1.6 -apple-system,"PingFang SC","Helvetica Neue",sans-serif;margin:0}
 main{max-width:960px;margin:0 auto;padding:28px 18px 60px}
+.brand{display:flex;align-items:center;gap:8px}.brand-mark{display:inline-flex;flex:0 0 40px;width:40px;height:40px}.brand-mark svg{width:100%;height:100%}
 h1{font-size:22px;margin:0 0 4px}h2{font-size:17px;margin:28px 0 8px;display:inline-block}
 h3{margin:0 0 4px;font-size:14px}h3 em{font-style:normal;color:var(--mute);margin-left:6px;font-weight:400}
 .sub,.note{color:var(--mute)}.sub{margin:0 0 16px}.note{font-size:12px;margin:0 0 8px}.foot{margin-top:40px}

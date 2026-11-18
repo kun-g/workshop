@@ -29,3 +29,14 @@ def record():
 def current():
     commit = os.environ.get(VARIABLE, "")
     return commit if re.fullmatch("[0-9a-f]{40}", commit) else None
+
+
+def process_identity(pid):
+    """进程号和操作系统启动时间，防止把复用的 pid 当成同一进程。"""
+    if pid <= 1:
+        return None
+    result = subprocess.run(['/bin/ps', '-p', str(pid), '-o', 'lstart='],
+                            env={'PATH': '/usr/bin:/bin', 'LC_ALL': 'C'},
+                            capture_output=True, text=True, timeout=5)
+    start = result.stdout.strip()
+    return {'pid': pid, 'start': start} if result.returncode == 0 and start else None

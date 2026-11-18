@@ -59,7 +59,9 @@ def test_self_release_uses_only_configured_nonempty_stages(world):
             if engine.restart_requested:
                 break
         restart(w)
-        for _ in range(5):
+        from workshop.core.engine import Engine
+        engine = Engine(engine.log, engine.rules, engine.plugins, engine.clock, daemon=w["io"].identity)
+        for _ in range(6):
             engine.tick()
         item = engine.log.get('items', w['data']['id'])
         assert item['state'] == '完成'
