@@ -1,6 +1,7 @@
 """SQLite 只追加事实日志；提交成功才确认收到。"""
 from contextlib import contextmanager
 import json
+import re
 from pathlib import Path
 import sqlite3
 import uuid
@@ -23,6 +24,7 @@ class Log:
     def __init__(self, path: Path):
         path.parent.mkdir(parents=True, exist_ok=True)
         self.path = path
+        self.read_only = False
         self.db = sqlite3.connect(path, timeout=30, isolation_level=None)
         self.db.row_factory = sqlite3.Row
         self.db.execute("PRAGMA journal_mode=WAL")
@@ -51,6 +53,64 @@ class Log:
                             "json_extract(body, '$.ticket'), json_extract(body, '$.revision'))")
             self.db.execute("CREATE INDEX IF NOT EXISTS items_program ON items((json_extract(body, '$.program') IS NOT NULL)) "
                             "WHERE (json_extract(body, '$.program') IS NOT NULL) = 1")
+
+    @classmethod
+    def readonly(cls, path):
+        """只读打开已有的当前版本；升级只能由写入方启动时完成。"""
+        log = cls.__new__(cls)
+        log.path = Path(path).expanduser().resolve()
+        log.depth = 0
+        log.read_only = True
+        log.db = sqlite3.connect(log.path.as_uri() + '?mode=ro', uri=True,
+                                 timeout=0, isolation_level=None)
+        log.db.row_factory = sqlite3.Row
+        try:
+            if log.db.execute('PRAGMA user_version').fetchone()[0] < 1:
+                raise ValueError('状态库版本较旧，请先启动守护进程升级后再查询')
+        except BaseException:
+            log.close()
+            raise
+        return log
+
+    @contextmanager
+    def read_transaction(self):
+        """一次查询共用一个快照；嵌套查询沿用调用方已有的事务。"""
+        outer = not self.db.in_transaction
+        if outer:
+            self.db.execute('BEGIN')
+        try:
+            yield self
+        finally:
+            if outer:
+                self.db.rollback()
+
+    def state_since(self, item):
+        row = self.db.execute("SELECT at FROM facts WHERE item=? AND kind='item_changed' "
+                              "AND json_extract(body,'$.state') IS NOT NULL ORDER BY seq DESC LIMIT 1",
+                              (item,)).fetchone()
+        return row[0] if row else None
+
+    def item_count(self):
+        return self.db.execute('SELECT count(*) FROM items').fetchone()[0]
+
+    def event_at(self, seq):
+        row = self.db.execute("SELECT body FROM facts WHERE seq=? AND kind='event'", (seq,)).fetchone()
+        return json.loads(row[0]) if row else None
+
+    @staticmethod
+    def selected_body(fields):
+        if not fields or any(not re.fullmatch(r'[a-z_][a-z_0-9]*', field) for field in fields):
+            raise ValueError('字段须为非空的简单名称列表')
+        return 'json_object(' + ','.join(f"'{field}',json_extract(body,'$.{field}')" for field in fields) + ')'
+
+    def selected_facts(self, kinds, fields, *, after=-1):
+        """按种类、序号只取指定字段，避免加载无关的大块正文。"""
+        columns = self.selected_body(fields)
+        marks = ','.join('?' for _ in kinds)
+        rows = self.db.execute(f'SELECT seq,kind,item,at,{columns} AS body FROM facts '
+                               f'WHERE seq>? AND kind IN ({marks}) ORDER BY seq', (after, *kinds))
+        return [{**dict(row), 'body': {k: v for k, v in json.loads(row['body']).items() if v is not None}}
+                for row in rows]
 
     def upgrade(self):
         """一次性迁移派生视图；旧事实不改、不删。与其他进程的迁移互斥。"""
@@ -99,6 +159,8 @@ class Log:
 
     @contextmanager
     def transaction(self):
+        if self.read_only:
+            raise sqlite3.OperationalError("attempt to write a readonly database")
         outer = self.depth == 0
         if outer:
             self.db.execute("BEGIN IMMEDIATE")
@@ -138,7 +200,7 @@ class Log:
         """没结束的活（含还有后续动作的）：走部分索引，不解析已结束的。"""
         return [json.loads(row[0]) for row in self.db.execute(f"SELECT body FROM items WHERE {OPEN_ITEMS} = 1 ORDER BY rowid")]
 
-    def all(self, table, *, where=None, unless=None):
+    def all(self, table, *, where=None, unless=None, fields=None):
         """where=(字段, 值) 只要该字段等于值的行，unless=(字段, 值) 筛掉等于值的行；在库里先筛，
         不在 Python 里逐行解析（例如已结束的轮、别的活的轮）。"""
         if table not in TABLES:
@@ -160,7 +222,8 @@ class Log:
                 else:
                     clauses.append(f"json_extract(body, ?) {test} ?")
                     params += [f"$.{field}", value]
-        query = f"SELECT body FROM {table}" + (" WHERE " + " AND ".join(clauses) if clauses else "") + " ORDER BY rowid"
+        columns = self.selected_body(fields) if fields is not None else "body"
+        query = f"SELECT {columns} FROM {table}" + (" WHERE " + " AND ".join(clauses) if clauses else "") + " ORDER BY rowid"
         return [json.loads(row[0]) for row in self.db.execute(query, params)]
 
     def open_items(self):

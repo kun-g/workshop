@@ -5,7 +5,7 @@ import pytest
 
 from workshop.cli import main
 from workshop.core.models import Classification, Event
-from workshop.core.report import unfiled, why
+from workshop.reports.report import unfiled, why
 from workshop.plugins.issue_delivery import IssueDelivery
 from conftest import FakeFlow, build, configuration, finish
 

@@ -11,7 +11,7 @@ from workshop.core.jobs import Jobs, encode, decode, execute, read, write
 from workshop.core.log import Log
 from workshop.core.models import Brief, Poll
 from workshop.core.records import StoredBrief, defer_items
-from workshop.core.report import why
+from workshop.reports.report import why
 
 
 class Reads:

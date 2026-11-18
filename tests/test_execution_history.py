@@ -7,7 +7,7 @@ import math
 import pytest
 
 from workshop.core.models import Usage, Selection
-from workshop.core.report import model_metrics, usage, why
+from workshop.reports.report import model_metrics, usage, why
 from workshop.core.rules import Rules
 from workshop.registry import Registry
 from conftest import current, event, finish, item, reach

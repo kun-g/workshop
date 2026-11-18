@@ -676,7 +676,7 @@ def test_new_hidden_card_does_not_drop_visible_answer(fake, tmp_path, capsys):
 
 def test_local_invalid_key_is_rejected_once_in_core_and_explained(fake, engine):
     from conftest import event, item
-    from workshop.core.report import why
+    from workshop.reports.report import why
     engine.ingest(event())
     c = AskKun(fake, engine.log.path.parent)
     engine.plugins.register("channel", "channel", c)
@@ -833,7 +833,7 @@ def test_list_answers_require_original_send_record(fake, tmp_path, damage):
 
 def test_real_channel_mixed_results_and_one_time_core_consumption(fake, engine):
     from conftest import event, item
-    from workshop.core.report import status
+    from workshop.reports.report import status
     engine.ingest(event())
     c = AskKun(fake, engine.log.path.parent)
     engine.plugins.register('channel', 'channel', c)

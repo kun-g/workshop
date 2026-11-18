@@ -10,6 +10,7 @@
 
 - `src/workshop/core/`：只认事件、活、阶段、关口。不许 import `workshop.plugins`；不许出现只属于某一类活的词（PR、issue、merge、视频、周报），检查脚本会拦（核心 R22）。
 - `src/workshop/plugins/`：来源、执行者、通道、工单、流程插件。插件之间不互相引用，只经核心的端口。
+- `src/workshop/reports/`：只读给人看的（status、why、usage、metrics、状态网页、观察检查），不进核心。
 - `rules/workshop.yaml`：唯一一份规则（核心 R16）。换执行者、加交付对象只改这里。
 - `scripts/pm/`：项目经理手工干预用的工具。每个都对应车间缺的一个机制，做成命令后删掉。
 - 规矩正文写在下面「规矩」和两个角色文件里，一条一行带编号；每条的细节和来历放 `docs/knowledge/`，见那里的 README。不写进 agent 记忆。

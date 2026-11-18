@@ -12,7 +12,7 @@ from workshop.core.engine import Engine
 from workshop.core.jobs import Jobs, Pending, execute, write
 from workshop.core.models import Brief, DEFAULT_BRIEF_MAX_CHARS
 from workshop.core.ports import InputBlocked
-from workshop.core.report import status, why
+from workshop.reports.report import status, why
 from workshop.core.rules import Rules
 from workshop.plugins.executors.local import briefs
 from workshop.plugins.executors.local.read_material import read_chunk

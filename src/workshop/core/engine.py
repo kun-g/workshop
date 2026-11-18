@@ -40,7 +40,6 @@ class Engine:
             rules = plugins.configure(rules)
         self.log, self.rules, self.plugins, self.clock, self.jobs = log, rules, plugins, clock, jobs
         self.restart_requested = False
-        self.page_dirty = True
         self.channel_read_tokens = {}
         self.tick_failures = self.control("@tick").get("failures", 0)
         saved = self.log.get("controls", "@rules") or {}
@@ -73,8 +72,6 @@ class Engine:
                 fcntl.flock(handle, fcntl.LOCK_UN)
 
     def fact(self, kind, body, item=None, **kwargs):
-        if kind in beat.PAGE_KINDS:
-            self.page_dirty = True  # 状态网页要重写；拍里看这个标记，不查库
         return self.log.append(kind, body, item, at=stamp(self.clock()), **kwargs)
 
     def change(self, item, kind="item_changed", **changes):
@@ -225,10 +222,10 @@ class Engine:
         return intake.source_retry(self, *args, **kwargs)
 
     def delivery_error(self, *args, **kwargs):
-        return asking.delivery_error(self, *args, **kwargs)
+        return faults.delivery_error(self, *args, **kwargs)
 
     def delivery_ok(self, *args, **kwargs):
-        return asking.delivery_ok(self, *args, **kwargs)
+        return faults.delivery_ok(self, *args, **kwargs)
 
     def invalid_answer(self, *args, **kwargs):
         return asking.invalid_answer(self, *args, **kwargs)

@@ -6,7 +6,7 @@ import pytest
 from conftest import event, item, current, reach, finish
 from workshop.core.models import Relations
 from workshop.core.ports import Retryable
-from workshop.core.report import status
+from workshop.reports.report import status
 from workshop.core import relations
 from workshop.core.jobs import Pending, encode, decode
 
@@ -40,7 +40,7 @@ def test_prerequisites_wait_release_and_metrics(engine):
     engine.tick()
     assert current(engine)['stage'] == '接单'
     assert item(engine)['state'] == '跑着'
-    from workshop.core.metrics import calculate, read_snapshot
+    from workshop.reports.metrics import calculate, read_snapshot
     result = calculate(*read_snapshot(engine.log.path), engine.clock.now-timedelta(seconds=60), engine.clock.now)
     assert result['summary']['seconds']['等前置'] == 60
     assert result['summary']['seconds']['排队'] == 0
@@ -107,7 +107,7 @@ def test_members_only_wait_at_acceptance_and_release_without_occupancy(engine):
     state['value'] = replace(state['value'], members=[ref('one', True), ref('two', True)])
     engine.tick()
     assert current(engine)['stage'] == '验收'
-    from workshop.core.metrics import calculate, read_snapshot
+    from workshop.reports.metrics import calculate, read_snapshot
     result = calculate(*read_snapshot(engine.log.path), engine.clock.now-timedelta(seconds=60), engine.clock.now)
     assert result['summary']['seconds']['等子单'] == 60
     assert result['summary']['seconds']['等前置'] == 0

@@ -7,6 +7,19 @@ from .cards import notice
 from .flows import entries
 
 
+def delivery_error(engine, key, exc, item=None):
+    state = engine.control(f"delivery:{key}")
+    if not state.get("failed"):
+        with engine.log.transaction():
+            engine.fact("delivery_failed", {"key": key, "error": repr(exc)}, item)
+            engine.fact("control", {"id": f"delivery:{key}", "failed": True, "since": stamp(engine.clock())})
+
+
+def delivery_ok(engine, key):
+    if engine.control(f"delivery:{key}").get("failed"):
+        engine.fact("control", {"id": f"delivery:{key}", "failed": False})
+
+
 def block(engine, item, reason, plugin=False):
     with engine.log.transaction():
         item = engine.log.get("items", item["id"])

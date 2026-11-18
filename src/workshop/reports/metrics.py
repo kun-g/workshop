@@ -1,20 +1,20 @@
 """按事实区间计算供给、流动、负载；不经过会写库的日志初始化。"""
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
-import json
-from pathlib import Path
 import re
-import sqlite3
+from workshop.core.log import Log
 
 
 STATES = ('在跑', '定时', '卡住', '排队', '等你', '等前置', '等子单', '其他')
 TERMINAL = ('完成', '放弃', '移除')
 FIELDS = ('target', 'flow', 'title', 'action', 'release_gate', 'pending_classification',
           'unmatched', 'state', 'wait_for_ready', 'token', 'executor', 'stopped',
-          'status', 'outcome', 'event')
+          'status', 'outcome', 'event', 'plugin_blocked', 'wait_id',
+          'id', 'item', 'mode', 'answered', 'cancelled', 'rejected')
 KINDS = ('event', 'event_classified', 'item_changed', 'gate_blocked', 'gate_passed',
          'round_finished', 'work_blocked', 'round_reserved', 'round_changed',
-         'item_dropped', 'reset')
+         'item_dropped', 'reset', 'wait_bound', 'wait_changed', 'wait_resumed',
+         'card_created', 'card_changed')
 
 
 def instant(value):
@@ -43,35 +43,22 @@ def window(since=None, start=None, end=None, now=None):
 
 def read_snapshot(path):
     """短只读事务保证各表是同一快照；不建表、不迁移、不取写锁。"""
-    uri = Path(path).expanduser().resolve().as_uri() + '?mode=ro'
-    db = sqlite3.connect(uri, uri=True, timeout=0)
+    log = Log.readonly(path)
     try:
-        db.execute('BEGIN')
-        row = db.execute("SELECT body FROM controls WHERE id='@rules'").fetchone()
-        rules = json.loads(row[0]).get('data', {}) if row else {}
-        meta = {key: {'target': target, 'flow': flow, 'title': title}
-                for key, target, flow, title in db.execute(
-                    "SELECT id,json_extract(body,'$.target'),json_extract(body,'$.flow'),"
-                    "json_extract(body,'$.title') FROM items")}
-        # 只取统计字段，不把派活说明和外部正文读入内存。
-        columns = ','.join(f"json_extract(body,'$.{field}')" for field in FIELDS)
-        marks = ','.join('?' for _ in KINDS)
-        facts = []
-        for seq, kind, item, at, *values in db.execute(
-                f'SELECT seq,kind,item,at,{columns} FROM facts WHERE kind IN ({marks}) ORDER BY seq', KINDS):
-            body = {field: value for field, value in zip(FIELDS, values) if value is not None}
-            if 'event' in body:
-                body['event'] = json.loads(body['event'])
-            facts.append((seq, kind, item, instant(at), body))
-        db.rollback()
+        with log.read_transaction():
+            rules = (log.get('controls', '@rules') or {}).get('data', {})
+            meta = {row['id']: {k: row[k] for k in ('target', 'flow', 'title')}
+                    for row in log.all('items', fields=('id', 'target', 'flow', 'title'))}
+            facts = [(row['seq'], row['kind'], row['item'], instant(row['at']), row['body'])
+                     for row in log.selected_facts(KINDS, FIELDS)]
+        return facts, meta, rules
     finally:
-        db.close()
-    return facts, meta, rules
+        log.close()
 
 
 def histories(facts, metadata, rules, end):
     """保留窗口前的状态与轮次端点，用于裁剪和当前等待年龄。"""
-    items, rounds = {}, {}
+    items, rounds, cards, waits = {}, {}, {}, {}
 
     def ensure(key, body):
         if key not in items:
@@ -83,7 +70,7 @@ def histories(facts, metadata, rules, end):
             items[key] = dict(id=key, title=body.get('title') or meta.get('title') or key,
                               target=target, flow=body.get('flow') or meta.get('flow') or
                               config.get('default_flow') or config.get('plugin') or '未登记',
-                              state='空闲', waiting=False, timeline=[])
+                              state='空闲', waiting=False, plugin_blocked=False, wait_id=None, timeline=[])
         return items[key]
 
     def record(item, at):
@@ -99,6 +86,17 @@ def histories(facts, metadata, rules, end):
         timeline = item['timeline']
         if not timeline or timeline[-1][1] != label:
             timeline.append((at, label))
+
+    def release(item):
+        reference_pending = waits.get(item.get('wait_id'), {}).get('state') == 'waiting'
+        pending = reference_pending or any(card.get('item') == item['id'] and card.get('mode') == 'ask'
+                                          and not any(card.get(k) for k in ('answered', 'cancelled', 'rejected'))
+                                          for card in cards.values())
+        if item['state'] in ('卡住', '等你') and not item['plugin_blocked'] and not pending:
+            item['state'] = '空闲'
+        # 尚未建活的待放行与已有活的拒收等待分别沿用原口径。
+        if item['waiting']:
+            item['waiting'] = False
 
     for _, kind, key, at, body in facts:
         if kind == 'round_reserved':
@@ -116,14 +114,32 @@ def histories(facts, metadata, rules, end):
         # 轮次的最终结果可在窗口之后出现；状态快照只能用终点以前的事实。
         if at >= end:
             continue
+        if kind in ('card_created', 'card_changed'):
+            cards.setdefault(body['id'], {}).update(body)
+            continue
+        if kind in ('wait_bound', 'wait_changed', 'wait_resumed'):
+            waits.setdefault(body['id'], {}).update(body)
+            if kind == 'wait_bound':
+                ensure(key, body)['wait_id'] = body['id']
+            elif kind == 'wait_resumed':
+                waits[body['id']]['state'] = 'resumed'
+                item = ensure(key, body)
+                item.update(wait_id=None, state='空闲')
+                record(item, at)
+            continue
         if kind == 'reset':
+            cards.clear()
+            waits.clear()
             for item in items.values():
                 item['state'] = '移除'
                 record(item, at)
             continue
         if kind == 'event_classified':
             if body.get('event'):
-                body = body['event']
+                outer_action = body.get('action')
+                body = {**body['event']}
+                if outer_action == 'ready':
+                    body['action'] = 'ready'
             elif body.get('action') != 'ready' or key not in items:
                 continue
             kind = 'event'
@@ -135,18 +151,22 @@ def histories(facts, metadata, rules, end):
             if body.get('flow'):
                 item['flow'] = body['flow']
             if new:
-                item.update(state='空闲', waiting=bool(body.get('release_gate') and body.get('action') != 'ready'))
-            elif body.get('action') == 'ready' and item['waiting']:
-                item.update(waiting=False, state='空闲')
+                item.update(state='空闲', plugin_blocked=False, wait_id=None,
+                            waiting=bool(body.get('release_gate') and body.get('action') != 'ready'))
+            elif body.get('action') == 'ready':
+                release(item)
             record(item, at)
         elif key and kind == 'item_dropped':
             item = ensure(key, body)
             item['state'] = '移除'
             record(item, at)
-        elif key and ('state' in body or 'wait_for_ready' in body):
+        elif key and any(field in body for field in ('state', 'wait_for_ready', 'plugin_blocked', 'wait_id')):
             item = ensure(key, body)
             if 'state' in body:
                 item['state'] = body['state']
+            for field in ('plugin_blocked', 'wait_id'):
+                if field in body:
+                    item[field] = body[field]
             if 'wait_for_ready' in body:
                 item['waiting'] = bool(body['wait_for_ready'])
             record(item, at)

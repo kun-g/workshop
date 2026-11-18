@@ -13,7 +13,7 @@ from workshop.core.engine import Engine
 from workshop.core.log import Log
 from workshop.core.models import Answer, stamp
 from workshop.core.ports import Retryable
-from workshop.core.report import model_metrics, status, usage
+from workshop.reports.report import model_metrics, status, usage
 from workshop.core.rules import Rules
 from workshop.core.view import TABLES
 from conftest import current, event, finish, item, reach

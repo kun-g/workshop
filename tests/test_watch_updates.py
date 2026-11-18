@@ -591,7 +591,7 @@ def test_feishu_gets_only_the_attachment_and_summary_stays_on_record(world):
 
 def test_real_engine_wait_feedback_rework_completion_and_replay(world, tmp_path):
     from conftest import build, configuration
-    from workshop.core.report import status, why
+    from workshop.reports.report import status, why
     io, target, flow, source = world
     config = configuration()
     config['targets']['alpha'] = {**target, 'sources': [], 'plugin': 'flow'}

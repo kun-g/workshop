@@ -68,3 +68,21 @@ forbidden_modules = ["workshop.plugins"]
 
 [project.entry-points."workshop.wait"]
 intervention = "workshop.plugins.intervention.client:make_wait"
+
+[[tool.importlinter.contracts]]
+name = "核心不引用查看工具"
+type = "forbidden"
+source_modules = ["workshop.core"]
+forbidden_modules = ["workshop.reports"]
+
+[[tool.importlinter.contracts]]
+name = "看门不引用查看工具"
+type = "forbidden"
+source_modules = ["workshop.watch"]
+forbidden_modules = ["workshop.reports"]
+
+[[tool.importlinter.contracts]]
+name = "查看工具不引用插件"
+type = "forbidden"
+source_modules = ["workshop.reports"]
+forbidden_modules = ["workshop.plugins"]

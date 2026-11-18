@@ -1,11 +1,25 @@
 """暂停、恢复、放弃，以及在这里放开。"""
 from dataclasses import asdict, replace
 from datetime import timedelta
+import re
 import uuid
 from .models import Event, due, stamp
 from .flows import entries
 from .stages import gate
 from .gates import initial_stage
+
+
+def resolve(log, targets, text, *, allow_new=False):
+    """`<短名>#<对象键>` 或 `<交付对象>:<对象键>` 找到活 id；对象键先查别名。"""
+    short = {t["short_name"]: name for name, t in targets.items() if isinstance(t, dict) and t.get("short_name")}
+    named = re.fullmatch(r"([^\s:#]+)#(\S+)", text)
+    target, key = (short.get(named[1]), named[2]) if named else text.split(":", 1) if ":" in text else (None, None)
+    if target and (not allow_new or target in targets) and key and not re.search(r'\s', key):
+        alias = log.get("aliases", f"{target}:{key}")
+        item_id = alias["item"] if alias else f"{target}:{key}"
+        if allow_new or log.get("items", item_id):
+            return item_id
+    raise ValueError(f'找不到活：{text}；可用短名：{"、".join(sorted(short)) or "无"}')
 
 
 def drop(engine, item_id):
@@ -201,7 +215,6 @@ def restore_target(engine, target, plugin=None):
 
 def release_here(engine, ref, quote, session):
     """会话确认的放行；外部正文不能通过自报来源调用此入口。"""
-    from .report import resolve
     if not quote.strip() or not session.strip():
         raise ValueError("要写 Kun 的原话和会话号")
     with engine.log.transaction():

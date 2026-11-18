@@ -8,7 +8,7 @@ import pytest
 from workshop.cli import main, parser
 from workshop.core.cards import question
 from workshop.core.models import After, Evidence, Receipt
-from workshop.core.report import status, why
+from workshop.reports.report import status, why
 from conftest import build, configuration, current, event, finish, item, reach
 from test_issue_delivery import world, snapshot, edit, result  # noqa: F401
 from test_rerun_acceptance import engine_for, walk, remote, fail_acceptance, rerun, git, commit

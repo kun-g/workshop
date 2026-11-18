@@ -8,7 +8,7 @@ import pytest
 
 from workshop.core.log import Log
 from workshop.core.models import Answer, Event, FlowBrief, Receipt, STAGES, stamp
-from workshop.core.report import status, usage, why
+from workshop.reports.report import status, usage, why
 from workshop.core.rules import Rules
 from workshop.core.view import TABLES
 from conftest import build, configuration, current, event, finish, item, reach
@@ -620,7 +620,7 @@ def test_unavailable_at_launch_falls_back_without_new_spend(engine, monkeypatch)
 
 def test_extension_metrics_counts_lines_and_first_completion(engine, tmp_path):
     import subprocess
-    from workshop.core.observe import extension_metrics
+    from workshop.reports.observe import extension_metrics
     repository = tmp_path / "repo"
     repository.mkdir()
     def git(*args):
