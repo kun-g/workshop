@@ -27,7 +27,7 @@ BUSINESS_MERGE_STATES = ("dirty", "behind", "blocked", "unstable")
 STAGES = ("接单", "执行", "交付", "收尾")
 # 规则去掉的旧阶段落到哪一段：说清楚回到接单核对，证据、审查进交付查 DoD；验收按是否已交付另判。
 MOVES = {"说清楚": "接单", "证据": "交付", "审查": "交付"}
-# 两段 DoD 退回执行的次数合计上限，同关口连续没过记卡住的次数（core.rounds.gate_retry）。
+# 合并失败和两段 DoD 退回执行的次数合计上限，同关口连续没过记卡住的次数（core.rounds.gate_retry）。
 RETURN_LIMIT = 3
 # GitHub 评论正文上限 65536 字符，原样输出只留结尾。
 COMMENT_OUTPUT = 60000
@@ -73,6 +73,13 @@ def action_for(text):
 class BusinessWait(Exception):
     def __init__(self, reason, rerun=True):
         self.reason, self.rerun = reason, rerun
+
+
+class MergeReturn(BusinessWait):
+    """合并明确被拒绝；保存结果后由交付程序步统一退回执行。"""
+    def __init__(self, reason, pr):
+        super().__init__(reason)
+        self.pr = pr
 
 
 class RelationsChanged(Retryable):
@@ -382,7 +389,7 @@ class IssueDelivery:
         return bool(state.get("visual")) and self._visual_answer(item, state) is None
 
     def _returns(self, item, state):
-        """两段 DoD 退回执行的次数；项目经理用 recover 返工后重新计。"""
+        """合并失败和两段 DoD 退回执行的次数；项目经理用 recover 返工后重新计。"""
         recovery = (item.get("recovery") or {}).get("id")
         return state.get("returns", 0) if state.get("returns_recovery") == recovery else 0
 
@@ -513,6 +520,13 @@ class IssueDelivery:
             return self._return(item, target, checks, "合并前 DoD", f'PR #{pr["number"]} 又改回了 Draft', "", paths, head=sha)
         if not self._safe_pr(pr, item):
             return self._return(item, target, checks, "合并前 DoD", "PR 缺活标记或带自动关闭 issue 的语句", "", paths, head=sha)
+        failure = state.get("merge_failure")
+        if failure and failure["pr"] == pr["number"] and failure["head"] == sha:
+            return self._return(item, target, checks, "合并前 DoD", failure["reason"], failure["output"],
+                                paths, head=sha)
+        blocked = self._unmergeable(pr)
+        if blocked:
+            return self._return(item, target, checks, "合并前 DoD", blocked, self._merge_status(pr), paths, head=sha)
         problems = dod.evidence_problems(pr.get("body") or "", body, checks)
         basis = section(body, "依据")
         if changed_requirement(basis) is not None:
@@ -683,6 +697,11 @@ class IssueDelivery:
                     "退回执行：在本活分支合最新 main、解冲突、重跑检查后推新提交")
         return None
 
+    @staticmethod
+    def _merge_status(pr):
+        return json.dumps({name: pr.get(name) for name in
+                           ("number", "state", "draft", "mergeable", "mergeable_state", "head")}, ensure_ascii=False)
+
     def _merge_failed(self, pr, state, argv, merging, target):
         """gh pr merge 失败后按回查到的 PR 分类：业务原因退回执行或等待，其余才是插件故障。"""
         output = tail(merging.stderr) or tail(merging.stdout)
@@ -690,11 +709,11 @@ class IssueDelivery:
             raise BusinessWait(f'头提交变化：合并时 PR 头已不是合并前 DoD 查过的 {self._approved_head(state)}，重新查。gh 输出：{output}')
         blocked = self._unmergeable(pr)
         if blocked:
-            raise BusinessWait(f"{blocked}。gh 输出：{output}")
+            raise MergeReturn(f"{blocked}。gh 输出：{output}", pr)
         merge_state = pr.get("mergeable_state")
         if merge_state in BUSINESS_MERGE_STATES:
-            raise BusinessWait(f'合并被 GitHub 拒绝（mergeable_state={merge_state}，检查没过、落后 main 或分支保护），'
-                               f"退回执行：按 gh 输出处理后推新提交。gh 输出：{output}")
+            raise MergeReturn(f'合并被 GitHub 拒绝（mergeable_state={merge_state}，检查没过、落后 main 或分支保护），'
+                               f"退回执行：合最新 main、解冲突，按 gh 输出处理、重跑检查后推新提交。gh 输出：{output}", pr)
         if pr.get("mergeable") is None or merge_state in (None, "unknown"):
             raise BusinessWait(f"合并没成功，GitHub 还没算出能否合并，稍后回查。gh 输出：{output}", rerun=False)
         raise Retryable(failure(argv, merging))
@@ -764,12 +783,18 @@ class IssueDelivery:
                 if pr.get("merged") or pr["state"] != "open" or pr.get("draft"):
                     raise BusinessWait("结算时 PR 已不是打开的非 Draft PR，执行重来")
                 for name in ("dod_head", "reviewed_head", "evidence_head", "merge", "tag", "release_submitted",
-                             "post_failure", "post_runs", "pending_return", "accepted", "acceptance_target",
+                             "post_failure", "post_runs", "merge_failure", "pending_return", "accepted", "acceptance_target",
                              "acceptance_relations", "acceptance_receipt", "merge_runs"):
                     state.pop(name, None)
                 state["pr"] = pr["number"]
             elif completed_stage == "交付":
-                result = self._deliver(item, target, state)
+                try:
+                    result = self._deliver(item, target, state)
+                except MergeReturn as failure:
+                    # after 不能改变阶段；保留失败事实，让下一次 assess 走同一个退回次数关口。
+                    state["merge_failure"] = {"pr": failure.pr["number"], "head": failure.pr["head"]["sha"],
+                                              "reason": failure.reason, "output": self._merge_status(failure.pr)}
+                    result = After(pending=True, rerun=True, reason=failure.reason, next="交付程序步退回执行")
             elif completed_stage == "收尾":
                 merge = state.get("merge")
                 if not merge or not self._delivery_done(target, state, merge):
@@ -791,12 +816,14 @@ class IssueDelivery:
             if not pr.get("merged"):
                 if approved != pr["head"]["sha"] or not self._safe_pr(pr, item):
                     raise BusinessWait("合并前头提交或正文变了，重新查合并前 DoD")
+                blocked = self._unmergeable(pr)
+                if blocked:
+                    raise MergeReturn(blocked, pr)
+                if pr.get("mergeable") is None or pr.get("mergeable_state") == "unknown":
+                    return After(pending=True, reason="GitHub 还没算出能否合并", next="稍后回查能否合并")
                 if target.get("bot_review"):
                     # 合并保护要的 bot 批准在合并前补上，批的是合并前 DoD 查过的提交。
                     self.io.bot_review(item, target, pr, body="未审查：按合并前 DoD 检查通过的提交批准合并")
-                blocked = self._unmergeable(pr)
-                if blocked:
-                    raise BusinessWait(blocked)
                 if not self._ci(pr, target):
                     return After(pending=True, reason="CI 尚未全部成功", next="回查 CI，失败则修正")
                 argv = [self.io.gh, "pr", "merge", str(pr["number"]), "--repo", target["repo"],
