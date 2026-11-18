@@ -55,7 +55,7 @@ def deliver(args, message):
     if message.get('action') not in ('send', 'reconcile') or not isinstance(message.get('key'), str):
         raise ValueError('送达操作无效')
     key, payload = message['key'], message['payload']
-    if payload.get('kind') not in ('visual', 'update_report', 'manager_help'):
+    if payload.get('kind') not in ('visual', 'update_report', 'manager_help', 'status_reply'):
         raise ValueError('未知送达种类')
     root = Path(args.state_dir).expanduser()
     root.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -75,7 +75,7 @@ def deliver(args, message):
                 raise ValueError('报告文件或快照散列不匹配')
             marker = file.name
         else:
-            marker = '[送达 ' + key + ']'
+            marker = key if payload.get('card') else '[送达 ' + key + ']'
         if message['action'] == 'reconcile' or record.get('started') or payload.get('existing_external'):
             if not record.get('started') and not payload.get('existing_external'):
                 return {'state': 'absent'}
@@ -87,7 +87,7 @@ def deliver(args, message):
                        and m.get('sender', {}).get('sender_type') in ('app', 'bot') and not m.get('deleted')
                        and m.get('sender', {}).get('id') == args.app_id
                        and ((m.get('msg_type') == 'file' and attachment_name(m.get('content')) == marker)
-                            if file else m.get('msg_type') == 'text' and marker in str(m.get('content')))]
+                            if file else m.get('msg_type') == ('interactive' if payload.get('card') else 'text') and marker in str(m.get('content')))]
             if payload.get('existing_external') not in (None, '', 'unknown'):
                 matches = [m for m in matches if m['message_id'] == payload['existing_external']]
             if len(matches) == 1:
@@ -104,6 +104,8 @@ def deliver(args, message):
                 '--idempotency-key', payload.get('idempotency_key', name[:48])]
         if file:
             value = command(args, [*argv, '--file', file.name], cwd=file.parent)
+        elif payload.get('card'):
+            value = command(args, [*argv, '--msg-type', 'interactive', '--content', json.dumps(payload['card'], ensure_ascii=False)])
         else:
             value = command(args, [*argv, '--text', payload['text'] + '\n' + marker])
         external = value.get('data', {}).get('message_id')

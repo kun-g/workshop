@@ -197,6 +197,28 @@ def test_cancel_reconciles_and_is_idempotent(fake, tmp_path):
 NOW = datetime(2026, 11, 13, 10, tzinfo=timezone.utc)
 
 
+
+def manager_command(fake):
+    path = fake.parent / 'manager.py'
+    path.write_text("""import json,sys
+from pathlib import Path
+root=Path(__file__).parent
+value=json.loads(Path(sys.argv[-1]).read_text())
+with (root/'manager.jsonl').open('a') as f: f.write(json.dumps(value)+'\\n')
+raise SystemExit(json.loads((root/'config.json').read_text()).get('manager_exit',0))
+""")
+    return [sys.executable, str(path)]
+
+
+def delegated(fake):
+    path = fake.parent / 'manager.jsonl'
+    unique = {}
+    for line in path.read_text().splitlines() if path.exists() else []:
+        for incident in json.loads(line)['faults'].values():
+            if incident['confirmed']:
+                unique[incident['id']] = incident
+    return list(unique.values())
+
 def setup_watch(fake, tmp_path, heartbeat=NOW, rounds=()):
     state = tmp_path / "watch-state"
     state.mkdir()
@@ -205,28 +227,28 @@ def setup_watch(fake, tmp_path, heartbeat=NOW, rounds=()):
     with sqlite3.connect(state / "workshop.db") as db:
         db.execute("CREATE TABLE rounds(id TEXT, body TEXT)")
         db.executemany("INSERT INTO rounds VALUES (?,?)", [(str(i), json.dumps(row)) for i, row in enumerate(rounds)])
-    return Watch(state, ask_kun=fake, attention=fake.parent / "attention.py")
+    return Watch(state, manager_command=manager_command(fake))
 
 
 def test_fresh_heartbeat_is_quiet(fake, tmp_path):
     watch = setup_watch(fake, tmp_path)
     assert watch.run(NOW)["active"] == {}
-    assert calls(fake) == []
+    assert delegated(fake) == [] and calls(fake) == []
 
 
 def test_stale_once_across_restart_date_then_recovery_and_new_failure(fake, tmp_path):
     watch = setup_watch(fake, tmp_path, NOW - timedelta(minutes=4))
     watch.run(NOW)
     watch.run(NOW + timedelta(minutes=1))
-    Watch(watch.directory, ask_kun=fake).run(NOW + timedelta(days=1))
-    assert len(calls(fake, "notify")) == 1
+    Watch(watch.directory, manager_command=manager_command(fake)).run(NOW + timedelta(days=1))
+    assert len(delegated(fake)) == 1
     (watch.directory / "heartbeat.json").write_text(json.dumps({"last_ok_at": NOW.isoformat()}))
     watch.run(NOW)
     watch.run(NOW + timedelta(minutes=4))
     watch.run(NOW + timedelta(minutes=5))
-    rows = calls(fake, "notify")
+    rows = delegated(fake)
     assert len(rows) == 2
-    assert rows[0]["args"][2] != rows[1]["args"][2]
+    assert rows[0]["id"] != rows[1]["id"]
 
 
 def test_recovered_tick_between_watch_runs_starts_new_incident(fake, tmp_path):
@@ -236,7 +258,7 @@ def test_recovered_tick_between_watch_runs_starts_new_incident(fake, tmp_path):
     (watch.directory / "heartbeat.json").write_text(json.dumps({"last_ok_at": NOW.isoformat()}))
     watch.run(NOW + timedelta(minutes=5))
     watch.run(NOW + timedelta(minutes=6))
-    assert len(calls(fake, "notify")) == 2
+    assert len(delegated(fake)) == 2
 
 
 @pytest.mark.parametrize("status", ["starting", "running", "finishing"])
@@ -245,8 +267,8 @@ def test_overdue_unsettled_round_even_if_stopped(fake, tmp_path, status):
                                               {"status": "ended", "at": (NOW - timedelta(days=1)).isoformat()}])
     watch.run(NOW)
     watch.run(NOW + timedelta(minutes=1))
-    assert len(calls(fake, "notify")) == 1
-    assert "超过期限" in calls(fake, "notify")[0]["input"]
+    assert len(delegated(fake)) == 1
+    assert "超过期限" in delegated(fake)[0]["text"]
 
 
 def test_missing_heartbeat_and_database_are_detected(fake, tmp_path):
@@ -257,36 +279,30 @@ def test_missing_heartbeat_and_database_are_detected(fake, tmp_path):
     assert not (watch.directory / "workshop.db").exists()
 
 
-def test_failed_ask_uses_attention_once(fake, tmp_path):
-    configure(fake, notify_exit=1)
+def test_watch_never_uses_old_message_routes(fake, tmp_path):
     watch = setup_watch(fake, tmp_path, NOW - timedelta(minutes=4))
-    watch.run(NOW)
-    watch.run(NOW + timedelta(minutes=1))
-    watch.run(NOW + timedelta(minutes=2))
-    lines = (fake.parent / "attention.jsonl").read_text().splitlines()
-    assert len(lines) == 1
-    args = json.loads(lines[0])
-    assert args[:3] == ["--writer", "车间", "--row"]
-    row = json.loads(args[3])
-    assert row["种类"] == "等你" and row["推飞书"] is True
-    assert "需要你检查" in row["要什么"] and row["推荐"]
-    assert row["来源会话"] == calls(fake, "notify")[0]["args"][2]
+    for n in range(3):
+        watch.run(NOW + timedelta(minutes=n))
+    assert len(delegated(fake)) == 1
+    assert not calls(fake) and not (fake.parent / 'attention.jsonl').exists()
 
 
-def test_both_notifications_fail_retry_same_incident(fake, tmp_path):
-    configure(fake, notify_exit=1, attention_exit=1)
+def test_manager_entry_failure_preserves_incident(fake, tmp_path):
     watch = setup_watch(fake, tmp_path, NOW - timedelta(minutes=4))
-    watch.run(NOW)
+    configure(fake, manager_exit=1)
     with pytest.raises(RuntimeError):
-        watch.run(NOW + timedelta(minutes=1))
+        watch.run(NOW)
+    first = json.loads((watch.directory / 'watch.json').read_text())
     configure(fake)
-    watch.run(NOW + timedelta(minutes=2))
-    assert calls(fake, "notify")[0] == calls(fake, "notify")[1]
+    second = watch.run(NOW + timedelta(minutes=1))
+    assert first['active']['heartbeat']['id'] == second['active']['heartbeat']['id']
+    assert 'manager_error' in first and 'manager_error' not in second
+    assert not calls(fake)
 
 
 def test_watch_cli_runs_with_fake_only(fake, tmp_path):
     watch = setup_watch(fake, tmp_path)
-    result = subprocess.run([sys.executable, "-m", "workshop.watch", "--state-dir", str(watch.directory), "--ask-kun", str(fake)], capture_output=True, text=True)
+    result = subprocess.run([sys.executable, "-m", "workshop.watch", "--state-dir", str(watch.directory), "--manager-command", json.dumps(manager_command(fake))], capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
 
 
@@ -403,59 +419,40 @@ def test_recent_watch_run_alerts_on_first_stale_observation(fake, tmp_path):
     watch = setup_watch(fake, tmp_path, NOW)
     for seconds in (0, 60, 120, 180):
         watch.run(NOW + timedelta(seconds=seconds))
-    assert calls(fake, "notify") == []
+    assert delegated(fake) == []
     watch.run(NOW + timedelta(seconds=240))
-    assert len(calls(fake, "notify")) == 1
+    assert len(delegated(fake)) == 1
     watch.run(NOW + timedelta(seconds=300))
-    assert len(calls(fake, "notify")) == 1
+    assert len(delegated(fake)) == 1
 
 
 def test_long_sleep_does_not_count_as_second_observation(fake, tmp_path):
     watch = setup_watch(fake, tmp_path, NOW - timedelta(minutes=4))
     watch.run(NOW)
     watch.run(NOW + timedelta(hours=8))
-    assert calls(fake, "notify") == []
+    assert delegated(fake) == []
     (watch.directory / "heartbeat.json").write_text(json.dumps({"last_ok_at": (NOW + timedelta(hours=8)).isoformat()}))
     watch.run(NOW + timedelta(hours=8, minutes=1))
-    assert calls(fake, "notify") == []
+    assert delegated(fake) == []
 
 
-def test_attention_delivery_retries_notify_same_id_until_success(fake, tmp_path):
-    configure(fake, notify_exit=1)
+def test_repeated_delegation_retains_one_incident(fake, tmp_path):
     watch = setup_watch(fake, tmp_path, NOW - timedelta(minutes=4))
-    watch.run(NOW)
-    state = watch.run(NOW + timedelta(minutes=1))
-    assert state["active"]["heartbeat"]["reported"] is False
-    watch.run(NOW + timedelta(minutes=2))
-    assert len((fake.parent / "attention.jsonl").read_text().splitlines()) == 1
-    configure(fake)
-    state = watch.run(NOW + timedelta(minutes=3))
-    assert state["active"]["heartbeat"]["reported"] is True
-    assert len(calls(fake, "notify")) == 3
-    assert all(row == calls(fake, "notify")[0] for row in calls(fake, "notify"))
+    first = watch.run(NOW)['active']['heartbeat']['id']
+    for n in range(1,4):
+        assert watch.run(NOW + timedelta(minutes=n))['active']['heartbeat']['id'] == first
+    assert not calls(fake)
 
 
 @pytest.mark.parametrize("fault", ["heartbeat", "round", "database", "delivery"])
-def test_real_attention_keeps_visible_kind(fake, tmp_path, fault):
-    attention = Path.home() / "workspace/runtime/tools/stuck_watch/attention.py"
-    if not attention.exists():
-        pytest.skip("本机没有 attention.py")
-    configure(fake, notify_exit=1)
+def test_fault_details_are_delegated_without_messages(fake, tmp_path, fault):
     watch = setup_watch(fake, tmp_path, NOW - timedelta(minutes=4))
-    if fault != "heartbeat":
-        (watch.directory / "heartbeat.json").write_text(json.dumps({"last_ok_at": NOW.isoformat(),
-            **({"delivery_failed_count": 1, "delivery_failed_since": (NOW-timedelta(minutes=5)).isoformat()} if fault == "delivery" else {})}))
-    if fault == "database":
-        (watch.directory / "workshop.db").unlink()
-    if fault == "round":
-        with sqlite3.connect(watch.directory / "workshop.db") as db:
-            db.execute("INSERT INTO rounds VALUES ('r', ?)", (json.dumps({"status": "running", "at": (NOW-timedelta(hours=3)).isoformat()}),))
-    watch.attention = str(attention)
-    watch.attention_directory = tmp_path / "real-attention"
+    if fault == 'database':
+        (watch.directory / 'workshop.db').unlink()
     watch.run(NOW)
-    watch.run(NOW + timedelta(minutes=1))
-    row = json.loads((watch.attention_directory / "车间.jsonl").read_text())
-    assert row["种类"] == "等你" and row["推飞书"] is True
+    state = watch.run(NOW + timedelta(minutes=1))
+    assert state['active'] and all(i['text'] for i in delegated(fake))
+    assert not calls(fake)
 
 
 def test_system_python_watch_without_venv_and_quiet_unchanged_state(fake, tmp_path):
@@ -464,7 +461,7 @@ def test_system_python_watch_without_venv_and_quiet_unchanged_state(fake, tmp_pa
     system_python = "/usr/bin/python3" if Path("/usr/bin/python3").exists() else sys.executable
     # -I 丢弃 PYTHONPATH；脚本在任何工作目录都不需要安装 workshop。
     for _ in range(2):
-        result = subprocess.run([system_python, "-I", str(script), "--state-dir", str(watch.directory), "--ask-kun", str(fake)],
+        result = subprocess.run([system_python, "-I", str(script), "--state-dir", str(watch.directory), "--manager-command", json.dumps(manager_command(fake))],
                                 cwd=tmp_path, capture_output=True, text=True)
         assert result.returncode == 0, result.stderr
         assert result.stdout == ""
@@ -619,7 +616,7 @@ def test_watch_delivery_failure_threshold_and_recovery(fake, tmp_path):
         at = NOW + timedelta(seconds=seconds)
         write(at)
         state = watch.run(at)
-    assert set(state["active"]) == {"delivery"} and len(calls(fake, "notify")) == 1
+    assert set(state["active"]) == {"delivery"} and len(delegated(fake)) == 1
     write(NOW + timedelta(seconds=300), 0)
     assert not watch.run(NOW + timedelta(seconds=300))["active"]
 
@@ -631,7 +628,7 @@ def test_watch_detects_stop_within_four_minute_check_bound(fake, tmp_path, phase
     detected = None
     for seconds in range(60-phase, 301, 60):
         watch.run(NOW + timedelta(seconds=seconds))
-        if calls(fake, "notify"):
+        if delegated(fake):
             detected = seconds
             break
     assert 180 < detected <= 240
@@ -688,7 +685,7 @@ def test_local_invalid_key_is_rejected_once_in_core_and_explained(fake, engine):
     assert engine.log.get("cards", cid)["rejected"]
     assert "选项 key" in why(engine.log, item(engine)["id"])
     assert not calls(fake, "ask")
-    assert len(calls(fake, "notify")) == 1
+    assert len(calls(fake, "notify")) == 0
     assert c._read(cid).get("rejected") and not c._read(cid).get("not_started")
 
 
@@ -712,8 +709,8 @@ def test_tick_alert_after_three_distinct_samples_once_across_restart_and_recover
     for n in range(6):
         at = NOW + timedelta(minutes=n)
         write_tick(watch, at, 101)
-        state = Watch(watch.directory, ask_kun=fake).run(at)
-        assert len(calls(fake, "notify")) == (0 if n < 2 else 1)
+        state = Watch(watch.directory, manager_command=manager_command(fake)).run(at)
+        assert len(delegated(fake)) == (0 if n < 2 else 1)
     first_id = state["active"]["tick"]["id"]
     write_tick(watch, NOW + timedelta(minutes=6), 100)
     assert "tick" not in watch.run(NOW + timedelta(minutes=6))["active"]
@@ -721,7 +718,7 @@ def test_tick_alert_after_three_distinct_samples_once_across_restart_and_recover
         at = NOW + timedelta(minutes=n)
         write_tick(watch, at, 101)
         state = watch.run(at)
-    assert len(calls(fake, "notify")) == 2
+    assert len(delegated(fake)) == 2
     assert state["active"]["tick"]["id"] != first_id
 
 
@@ -732,10 +729,10 @@ def test_tick_good_or_invalid_sample_breaks_streak(fake, tmp_path, reset):
         at = NOW + timedelta(minutes=n)
         write_tick(watch, at, elapsed)
         watch.run(at)
-    assert not calls(fake, "notify")
+    assert not delegated(fake)
     write_tick(watch, NOW + timedelta(minutes=5), 101)
     assert "tick" in watch.run(NOW + timedelta(minutes=5))["active"]
-    assert len(calls(fake, "notify")) == 1
+    assert len(delegated(fake)) == 1
 
 
 def test_tick_same_heartbeat_and_long_gap_do_not_accumulate(fake, tmp_path):
@@ -744,13 +741,13 @@ def test_tick_same_heartbeat_and_long_gap_do_not_accumulate(fake, tmp_path):
     for n in range(3):
         state = watch.run(NOW + timedelta(seconds=n * 30))
     assert state["tick_observation"]["count"] == 1
-    assert not calls(fake, "notify")
+    assert not delegated(fake)
     write_tick(watch, NOW + timedelta(minutes=1), 101)
     watch.run(NOW + timedelta(minutes=1))
     write_tick(watch, NOW + timedelta(hours=8), 101)
     state = watch.run(NOW + timedelta(hours=8))
     assert state["tick_observation"]["count"] == 1
-    assert not calls(fake, "notify")
+    assert not delegated(fake)
 
 
 def test_tick_heartbeat_written_after_watch_started_still_counts(fake, tmp_path):
@@ -766,20 +763,21 @@ def test_tick_heartbeat_written_after_watch_started_still_counts(fake, tmp_path)
     assert "tick_observation" not in watch.run(NOW + timedelta(minutes=4))
 
 
-def test_tick_alert_retries_same_incident_after_delivery_failure(fake, tmp_path):
+def test_tick_incident_survives_manager_entry_failure(fake, tmp_path):
     watch = setup_watch(fake, tmp_path)
-    configure(fake, notify_exit=1)
     for n in range(3):
         at = NOW + timedelta(minutes=n)
         write_tick(watch, at, 101)
         state = watch.run(at)
-    assert not state["active"]["tick"]["reported"]
-    assert state["active"]["tick"]["via"] == "attention"
-    configure(fake)
+    first = state['active']['tick']['id']
+    configure(fake, manager_exit=1)
     write_tick(watch, NOW + timedelta(minutes=3), 101)
-    state = watch.run(NOW + timedelta(minutes=3))
-    assert state["active"]["tick"]["reported"]
-    assert calls(fake, "notify")[0] == calls(fake, "notify")[1]
+    with pytest.raises(RuntimeError):
+        watch.run(NOW + timedelta(minutes=3))
+    configure(fake)
+    write_tick(watch, NOW + timedelta(minutes=4), 101)
+    assert watch.run(NOW + timedelta(minutes=4))['active']['tick']['id'] == first
+    assert not calls(fake)
 
 
 @pytest.mark.parametrize('change', [

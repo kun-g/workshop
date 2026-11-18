@@ -19,7 +19,7 @@ class Handler(socketserver.StreamRequestHandler):
                 raise ValueError('请求过大或未结束')
             message = json.loads(raw)
             result = self.server.service.call(message['action'], message.get('data', {}))
-            if message['action'] not in ('get', 'status', 'ping'):
+            if message['action'] not in ('get', 'status', 'ping', 'status_click'):
                 self.server.changed.touch()
             response = {'ok': True, 'result': result}
         except (ValueError, KeyError, TypeError, OSError) as exc:

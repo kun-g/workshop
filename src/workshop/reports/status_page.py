@@ -1,3 +1,4 @@
+from .manager_status import sections
 """把总览（report.overview）排成一页自包含的网页：纯规则排版，不调模型，离线能开。
 
 每件活占一行：标题 · 下一步（谁做什么；卡住的活下面补一句原因）；等了多久和原文（下一步、原因、卡在谁手里）折叠在行下。
@@ -120,6 +121,12 @@ def chart(rows, key):
     return "".join(out)
 
 
+def manager_sections(view):
+    return ''.join('<h2>' + e(h) + '</h2><div class="card">' + ''.join('<p>' + e(line) + '</p>' for line in v['lines'])
+                   + ('<details><summary>详情</summary><pre>' + e('\n'.join(v['details'])) + '</pre></details>' if v['details'] else '')
+                   + '</div>' for h, v in sections(view).items())
+
+
 def page(view, now=None):
     rows = view["rows"]
     now = now or datetime.now().astimezone()
@@ -161,10 +168,11 @@ def page(view, now=None):
 {card}
 <p class="sub">{e(scope)}{(" · " + e(hidden)) if hidden else ""}</p>
 {section("卡住", stuck, asks, now, badge=False, warn=True)}
-{section("等你", waiting, asks, now, badge=False)}
+{manager_sections(view)}
 {section("在动", moving, asks, now, running=True)}
 {section("已结束", ended, asks, now, folded=True)}
-{f'<details class="fold"><summary><h2>消息通道有问题（项目经理处理，你不用动）</h2></summary><div class="card"><p class="note">车间给你发卡片、读你的回答走的是飞书；这里列的是「发出去不确定到没到」「你答了读不到」两类。</p>{channel}</div></details>' if channel else ""}
+{('<h2>等回答的问卡（旧记录）</h2><div class="card">' + ''.join('<p>'+e(c['decision'])+'</p>' for c in view['asks'])+'</div>') if view['asks'] else ''}
+{f'<details class="fold"><summary><h2>通道待对账</h2></summary><div class="card"><p class="note">车间给你发卡片、读你的回答走的是飞书；这里列的是「发出去不确定到没到」「你答了读不到」两类。</p>{channel}</div></details>' if channel else ""}
 <p class="note foot">由 <code>workshop status --html</code> 生成，排版是固定规则，不经模型。</p>
 </main><script>{SCRIPT}</script></body></html>
 """

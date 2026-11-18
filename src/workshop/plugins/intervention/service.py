@@ -8,6 +8,7 @@ import subprocess
 import yaml
 from datetime import datetime, timezone
 from .store import Store, encode, required
+from . import manager
 
 
 class Service:
@@ -21,7 +22,7 @@ class Service:
         if not isinstance(document, dict):
             raise ValueError('intervention 所在规则必须是对象')
         config = document.get('intervention', {})
-        if not isinstance(config, dict) or set(config) - {'points', 'transport'}:
+        if not isinstance(config, dict) or set(config) - {'points', 'transport', 'status'}:
             raise ValueError('intervention 必须为 points/transport 对象')
         points = config.get('points')
         if not isinstance(points, dict) or not points:
@@ -42,6 +43,14 @@ class Service:
         if 'transport' in config and (not isinstance(config['transport'], list) or not config['transport']
                 or not all(isinstance(v, str) and v.strip() for v in config['transport'])):
             raise ValueError('intervention.transport 必须是非空 argv')
+        if 'status' in config:
+            status = config['status']
+            if not isinstance(status, dict) or set(status) != {'command', 'recipient', 'chat'}:
+                raise ValueError('status 须有 command/recipient/chat')
+            for key in ('recipient', 'chat'):
+                required(status[key], key)
+            if not isinstance(status['command'], list) or not status['command'] or not all(isinstance(x, str) and x for x in status['command']):
+                raise ValueError('status.command 必须为非空 argv')
         return config
 
     def policy(self, point):
@@ -62,6 +71,8 @@ class Service:
             'permit': {'operation', 'point', 'scope', 'owner', 'basis'},
             'enqueue': {'operation', 'permit', 'payload'},
             'cancel': {'operation', 'ref', 'reason'},
+            'manager_update': {'operation', 'record'}, 'manager_flush': set(),
+            'status_click': {'operation', 'event'},
         }
         if action not in fields or set(data) != fields[action]:
             raise ValueError('操作字段不完整或有未知字段')
@@ -77,15 +88,29 @@ class Service:
             self.poll_reply(wait)
             wait = self.store.get(data['ref'], 'wait')
             return {'ref': wait['id'], 'ready': wait['answer'] is not None, 'token': wait['token']}
+        if action == 'manager_flush':
+            return manager.flush(self)
         if action == 'dispatch':
             return self.dispatch(data['ref'])
         handlers = {'create': self.create, 'answer': self.answer, 'ack': self.ack,
-                    'permit': self.permit, 'enqueue': self.enqueue, 'cancel': self.cancel}
+                    'permit': self.permit, 'enqueue': self.enqueue, 'cancel': self.cancel,
+                    'manager_update': lambda key, data: manager.update(self, key, data),
+                    'status_click': lambda key, data: manager.click(self, key, data)}
         if action not in handlers:
             raise ValueError('未知操作')
+        if action == 'status_click':
+            context = data['event'].get('event', {})
+            trusted = self.configuration().get('status', {})
+            if (not trusted.get('recipient') or not trusted.get('chat') or context.get('operator', {}).get('open_id') != trusted.get('recipient')
+                    or context.get('context', {}).get('open_chat_id') != trusted.get('chat')):
+                return {'state': 'rejected', 'accepted': False, 'reason': '只接受指定本人私聊点击'}
         key = required(data.get('operation'), 'operation')
         payload = {k: v for k, v in data.items() if k != 'operation'}
-        return self.store.operation(key, action, payload, lambda: handlers[action](key, payload))
+        result = self.store.operation(key, action, payload, lambda: handlers[action](key, payload))
+        if action == 'status_click' and result.get('accepted'):
+            delivery = self.dispatch(result['ref'])
+            result = {**result, 'delivery': delivery, 'state': delivery['state'], 'external': delivery.get('external')}
+        return result
 
     def create(self, key, data):
         point = required(data.get('point'), 'point')
@@ -254,8 +279,11 @@ class Service:
         record = self.store.get(ref, 'delivery')
         if record['state'] in ('sent', 'cancelled'):
             return record
-        permit = self.store.get(record['permit'], 'permit')
-        policy, config = self.policy(permit['point'])
+        if record['payload'].get('kind') == 'status_reply':
+            permit, policy, config = {'cancelled': False}, {'send': True}, self.configuration()
+        else:
+            permit = self.store.get(record['permit'], 'permit')
+            policy, config = self.policy(permit['point'])
         try:
             if record['state'] in ('sending', 'uncertain'):
                 # 发送后的崩溃窗口必须先对账；即使许可取消，也保留已送达的真实结果。

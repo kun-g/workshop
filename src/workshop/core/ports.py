@@ -143,6 +143,13 @@ class Flow(Protocol):
 
 
 class Executor(Protocol):
+    def inform(self, token: str, started: Started, operation: str, text: str) -> bool:
+        """可选。项目经理协调器调用：按稳定 operation 送新事实到正在运行的会话。
+
+        True 代表已确认接受；False 代表不支持或未确认，调用方保留事实，退出后 resume。
+        同号改正文拒绝；不向身份不明或已退出的终端输入，不把不确定当成功。
+        """
+        ...
     def available(self, config: dict) -> bool:
         """仅现有订阅/已付额度，禁止加购。"""
         ...

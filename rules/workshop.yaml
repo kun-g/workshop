@@ -192,7 +192,38 @@ targets:
     # issue 合并即交付；整点上线由 scheduled_release 程序流程完成。
     release: none
 # 配置档集中定义；use 是持久身份，不随 driver 或运行方式改变。
+managers:
+  target: workshop
+  service: intervention
+  manual: docs/项目经理.md
+  candidates: [manager-codex, manager-claude]
 executor_profiles:
+  manager-codex:
+    driver: codex
+    transport: headless
+    billing: subscription
+    require_subscription_login: true
+    model: gpt-6.1-sol
+    effort: high
+    sandbox: workspace-write
+    settings: {sandbox_workspace_write: {network_access: true, writable_roots: [/Users/kun/.local/state/workshop]}}
+    permission_mode: never
+    ignore_user_config: true
+    ignore_rules: true
+    skip_git_repo_check: true
+    prompt: '项目经理只用现有授权命令疏通和记录；禁止修改代码、规则、需求、开单、代答或发消息。'
+  manager-claude:
+    driver: claude
+    transport: headless
+    billing: subscription
+    require_subscription_login: true
+    permission_mode: dontAsk
+    restricted: true
+    tools: [Read, Glob, Grep, Bash, Write]
+    allowed_tools: [Read, Glob, Grep, Bash, Write]
+    strict_mcp_config: true
+    mcp_config: {mcpServers: {}}
+    prompt: '项目经理替代诊断：只读现有资料形成结论，不能改代码、规则、需求、开单、代答或发消息。'
   watch-inventory:
     driver: codex
     transport: headless
@@ -281,6 +312,10 @@ wait_services:
     endpoint: ~/.local/state/workshop-intervention/run/service.sock
     timeout: 5
 intervention:
+  status:
+    recipient: ou_43456ed5ae17472375fcbb6ec0fc4661
+    chat: oc_9d541419240c15d82e50fabbba2ace4e
+    command: ["/Users/kun/workspace/runtime/repos/workshop/.venv/bin/python", "-m", "workshop.reports.manager_status", "--state-dir", "/Users/kun/.local/state/workshop"]
   transport: ["/Users/kun/workspace/runtime/repos/workshop/.venv/bin/python", "-m", "workshop.plugins.intervention.transport",
               "--profile", "tuan", "--recipient", "ou_43456ed5ae17472375fcbb6ec0fc4661",
               "--chat-id", "oc_9d541419240c15d82e50fabbba2ace4e", "--app-id", "cli_a9762c913979dbd4",

@@ -9,6 +9,9 @@ from workshop.core.flows import configured
 from workshop.core.holding import resolve
 
 
+from .manager_status import read_managers, sections
+
+
 ENDED = ("完成", "放弃")
 
 
@@ -101,7 +104,7 @@ def overview(log, *, everything=False, states=(), targets=(), flows=(), rules=No
             and not c.get("rejected") and keep(c)]
     uncertain = [{"item": c["item"], "card": c["id"]} for c in cards
                  if c.get("reconcile_failed") and not c["sent"] and not c.get("cancel_done") and keep(c)]
-    return {"rows": picked, "total": count, "ended": count - sum(r["state"] not in ENDED for r in rows),
+    return {"managers": read_managers(log.path.parent.resolve()), "rows": picked, "total": count, "ended": count - sum(r["state"] not in ENDED for r in rows),
             "hidden": count - len(picked), "everything": everything, "filtered": filtered,
             "unreadable": unread, "asks": asks, "uncertain": uncertain,
             "waits": [w for w in waiting_records(log, rules, plugins) if w['item'] in ids],
@@ -123,18 +126,19 @@ def status(log, **options):
     lines = [head, "活\t阶段\t状态\t谁在推\t下一步\t卡在谁手里\t优先级"]
     for r in rows:
         lines.append("\t".join((r["id"], r["stage"], r["shown"], r["who"], r["next"], r["blocker"], r['priority'])))
-    lines.append("卡住清单（项目经理处理）\n活\t阶段\t原因\t建议动作")
+    lines.append("卡住\n活\t阶段\t原因\t建议动作")
     for r in rows:
         if r["state"] == "卡住":
             lines.append("\t".join((r["id"], r["stage"], one_line(r["reason"]), one_line(r["advice"]))))
     for card in view["unreadable"]:
         lines.append("\t".join((card["item"], card["stage"], one_line(card["reason"]),
                                 "项目经理核对通道读取权限和状态；恢复后自动收取原卡回答")))
-    lines.append("等你\n活\t等待号\t版本\t等什么\t原因\t推荐\t等了多久")
-    for wait in view['waits']:
-        lines.append('\t'.join(map(one_line, (wait['item'], wait['ref'], wait.get('content', {}).get('version', '—'),
-                     wait['question'], wait['reason'], wait['recommend'],
-                     f"{wait['seconds']} 秒" if wait['seconds'] is not None else '时长未知'))))
+    for heading, snapshot in sections(view).items():
+        lines.extend([heading, *snapshot['lines']])
+        if heading == '等你':
+            lines.append('详情（等待号、版本、原因、推荐、等了多久）')
+        if snapshot['details']:
+            lines.extend(['详情', *snapshot['details']])
     lines.append("等回答的问卡（旧记录）")
     for card in view["asks"]:
         lines.append(f'{card["item"]}\t{card["card"]}\t{card["decision"]}')

@@ -1,11 +1,14 @@
 """Claude Code command, session and transcript protocol."""
 import copy
+import os
+import subprocess
 import json
 from pathlib import Path
 import re
 import shlex
 import sys
 
+from workshop.core.ports import Unavailable
 from workshop.core.models import RoundUsage, Usage
 from ..storage import write
 from ..usage import after, number, aggregate, grouped, rows
@@ -17,6 +20,7 @@ class Driver(Base):
     family = 'claude'
     binary = 'claude'
     fields = {
+        'require_subscription_login': lambda v: type(v) is bool,
         'prompt': text, 'skills': strings, 'tools': lambda v: isinstance(v, str) or strings(v),
         'allowed_tools': strings, 'disallowed_tools': strings,
         'permission_mode': lambda v: v in ('acceptEdits', 'auto', 'bypassPermissions', 'manual', 'dontAsk', 'plan'),
@@ -26,6 +30,21 @@ class Driver(Base):
 
     def environment(self, config):
         return {'CLAUDE_CONFIG_DIR': str(Path(config['config_dir']).expanduser())} if 'config_dir' in config else {}
+
+    def preflight(self, executor, config):
+        if not config.get('require_subscription_login'):
+            return
+        env = dict(os.environ)
+        env.update(self.environment(config))
+        try:
+            result = subprocess.run([executor.commands[self.binary], 'auth', 'status'], env=env,
+                                    capture_output=True, text=True, timeout=30)
+            value = json.loads(result.stdout)
+        except (OSError, ValueError, subprocess.TimeoutExpired) as exc:
+            raise Unavailable('Claude 订阅登录状态无法确认；未启动') from exc
+        if (result.returncode or value.get('loggedIn') is not True or value.get('authMethod') != 'claude.ai'
+                or value.get('apiProvider') != 'firstParty' or not value.get('subscriptionType')):
+            raise Unavailable('Claude 当前不是订阅登录（claude auth status）；未启动')
 
     def argv(self, executor, config, workdir, session, resume, directory, trust_workdir=None):
         argv = [executor.commands[self.binary], '--resume' if resume else '--session-id', session]

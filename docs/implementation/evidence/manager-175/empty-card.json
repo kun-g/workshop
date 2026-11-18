@@ -1,0 +1,70 @@
+{
+  "card": {
+    "body": {
+      "elements": [
+        {
+          "tag": "div",
+          "text": {
+            "content": "隔离状态无业务且未配置需求来源，当前无可疏通事项。",
+            "tag": "plain_text"
+          }
+        },
+        {
+          "elements": [
+            {
+              "tag": "div",
+              "text": {
+                "content": "车间空了，要新需求：已读本轮角色手册；显式指定隔离 state-dir 查询 workshop status：活0件、跑着0、等你0、卡住0，仅本事项由项目经理处理中；隔离 rules.yaml 的 targets.workshop.sources=[]。目录内无 pm.md、问题记录或交接文件。未访问生产状态或远端，未创建业务、开单、代答或发消息。",
+                "tag": "plain_text"
+              }
+            }
+          ],
+          "expanded": false,
+          "header": {
+            "title": {
+              "content": "项目经理查了什么",
+              "tag": "plain_text"
+            }
+          },
+          "tag": "collapsible_panel"
+        },
+        {
+          "behaviors": [
+            {
+              "type": "callback",
+              "value": {
+                "delivery": "delivery:d5d68b7b64082b817c831263353622e28a257fef4a660915f0e4cfabf971e9af",
+                "ns": "workshop-status/v1",
+                "section": "处理不了"
+              }
+            }
+          ],
+          "tag": "button",
+          "text": {
+            "content": "处理不了",
+            "tag": "plain_text"
+          },
+          "type": "primary"
+        }
+      ]
+    },
+    "header": {
+      "subtitle": {
+        "content": "项目经理处理不了",
+        "tag": "plain_text"
+      },
+      "template": "orange",
+      "title": {
+        "content": "车间空了，要新需求",
+        "tag": "plain_text"
+      }
+    },
+    "schema": "2.0"
+  },
+  "kind": "manager_help",
+  "members": [
+    "38ae0361-3400-4f35-bedf-476355b3ab3a"
+  ],
+  "primary": "38ae0361-3400-4f35-bedf-476355b3ab3a",
+  "section": "处理不了"
+}

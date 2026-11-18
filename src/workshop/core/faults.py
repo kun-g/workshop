@@ -3,7 +3,6 @@ from datetime import timedelta
 import uuid
 from .models import stamp
 from .ports import TargetBlocked
-from .cards import notice
 from .flows import entries
 
 
@@ -46,10 +45,7 @@ def broken(engine, target, port, name, exc):
             if not engine.control(key).get('broken'):
                 engine.fact('plugin_failed', {'target': target_name, 'flow': flow, 'port': port,
                                            'name': name, 'error': repr(exc)})
-                incident = engine.log.db.execute('SELECT max(seq) FROM facts').fetchone()[0]
                 engine.fact('control', {'id': key, 'broken': True, 'action_blocked': isinstance(exc, TargetBlocked)})
-                engine.card({'id': f'@{key}'}, f'plugin:{port}:{name}:{incident}', 'notice',
-                          notice(f'{target_name} 插件故障：{exc}'))
             # 只有没结束的活会被标卡住；不读已结束活的大正文（核心 R27）。
             for item in engine.log.open_items():
                 if (item['target'] == target_name and item['state'] not in ('完成', '放弃')

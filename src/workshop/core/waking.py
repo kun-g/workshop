@@ -75,6 +75,6 @@ def wait_timeout(engine):
         if row["state"] in ("waiting", "resumed"):
             include(row.get("next_at"))
     if engine.jobs is not None:
-        waits.append(engine.jobs.wait_timeout())
+        waits.append(min(engine.jobs.wait_timeout(), engine.manager_jobs.wait_timeout() if getattr(engine, 'manager_jobs', None) else 60))
     return min(waits)
 

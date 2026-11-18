@@ -86,6 +86,20 @@ class Rules:
             for field in ("driver", "transport", "billing"):
                 if not isinstance(profile.get(field), str) or not profile[field]:
                     raise ValueError(f"配置档 {name} 的 {field} 必须写明")
+        managers = data.get('managers')
+        if managers is not None:
+            if not isinstance(managers, dict) or set(managers) != {'target', 'service', 'manual', 'candidates'}:
+                raise ValueError('managers 须指定 target/service/manual/candidates')
+            if managers['target'] not in data['targets'] or managers['service'] not in services:
+                raise ValueError('项目经理目标或服务未登记')
+            if not isinstance(managers['manual'], str) or not managers['manual'].strip():
+                raise ValueError('项目经理手册须是非空路径')
+            candidates = managers['candidates']
+            if not isinstance(candidates, list) or not candidates or not all(isinstance(n, str) and n for n in candidates) or len(set(candidates)) != len(candidates):
+                raise ValueError('项目经理候选须是非空不重复列表')
+            for name in candidates:
+                if name not in profiles or profiles[name].get('billing') != 'subscription':
+                    raise ValueError('项目经理只能使用已配置的订阅候选')
         configs = []
         for entries in data["executors"].values():
             configs.extend(entries if isinstance(entries, list) else [entries])

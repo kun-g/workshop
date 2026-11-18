@@ -47,6 +47,7 @@ class Log:
             for table, field in (("effects", "done"), ("timers", "fired")):
                 self.db.execute(f"CREATE INDEX IF NOT EXISTS {table}_pending ON {table}((json_extract(body, '$.{field}') IS NOT 1)) "
                                 f"WHERE (json_extract(body, '$.{field}') IS NOT 1) = 1")
+            self.db.execute("CREATE INDEX IF NOT EXISTS rounds_ended ON rounds(json_extract(body,'$.ended'))")
             self.db.execute(f"CREATE INDEX IF NOT EXISTS items_open ON items({OPEN_ITEMS}) WHERE {OPEN_ITEMS} = 1")
             self.db.execute(f"CREATE INDEX IF NOT EXISTS items_release ON items({RELEASE_ITEMS}) WHERE {RELEASE_ITEMS} = 1")
             self.db.execute("CREATE INDEX IF NOT EXISTS items_home ON items(json_extract(body, '$.state'), id, "

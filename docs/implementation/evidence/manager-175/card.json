@@ -1,0 +1,62 @@
+{
+  "body": {
+    "elements": [
+      {
+        "tag": "div",
+        "text": {
+          "content": "隔离回放中登录被撤下",
+          "tag": "plain_text"
+        }
+      },
+      {
+        "elements": [
+          {
+            "tag": "div",
+            "text": {
+              "content": "恢复订阅登录：受控配置下现有订阅均返回不可用；没有按量调用；恢复订阅登录：受控配置下现有订阅均返回不可用；没有按量调用",
+              "tag": "plain_text"
+            }
+          }
+        ],
+        "expanded": false,
+        "header": {
+          "title": {
+            "content": "项目经理查了什么",
+            "tag": "plain_text"
+          }
+        },
+        "tag": "collapsible_panel"
+      },
+      {
+        "behaviors": [
+          {
+            "type": "callback",
+            "value": {
+              "delivery": "delivery:6fe6c7d05fa16a4d56f456a9ae4efdf6e389f17e0ec39fd7adb6151353080c90",
+              "ns": "workshop-status/v1",
+              "section": "等你"
+            }
+          }
+        ],
+        "tag": "button",
+        "text": {
+          "content": "等你",
+          "tag": "plain_text"
+        },
+        "type": "primary"
+      }
+    ]
+  },
+  "header": {
+    "subtitle": {
+      "content": "项目经理",
+      "tag": "plain_text"
+    },
+    "template": "orange",
+    "title": {
+      "content": "恢复订阅登录",
+      "tag": "plain_text"
+    }
+  },
+  "schema": "2.0"
+}

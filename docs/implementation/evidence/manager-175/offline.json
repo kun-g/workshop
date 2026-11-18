@@ -1,0 +1,76 @@
+{
+  "accepted": true,
+  "delivery": {
+    "external": "local:delivery:5413533e01e2c32fd8189542e24e01f58bda2729cfc2b8b0c17dc096cbc41181",
+    "id": "delivery:5413533e01e2c32fd8189542e24e01f58bda2729cfc2b8b0c17dc096cbc41181",
+    "payload": {
+      "card": {
+        "body": {
+          "elements": [
+            {
+              "tag": "div",
+              "text": {
+                "content": "读不到车间状态：守护进程心跳过期",
+                "tag": "plain_text"
+              }
+            },
+            {
+              "elements": [
+                {
+                  "tag": "div",
+                  "text": {
+                    "content": "ValueError: 守护进程心跳过期\n[送达 delivery:5413533e01e2c32fd8189542e24e01f58bda2729cfc2b8b0c17dc096cbc41181]",
+                    "tag": "plain_text"
+                  }
+                }
+              ],
+              "expanded": false,
+              "header": {
+                "title": {
+                  "content": "详情",
+                  "tag": "plain_text"
+                }
+              },
+              "tag": "collapsible_panel"
+            }
+          ]
+        },
+        "header": {
+          "subtitle": {
+            "content": "车间状态",
+            "tag": "plain_text"
+          },
+          "title": {
+            "content": "等你",
+            "tag": "plain_text"
+          }
+        },
+        "schema": "2.0"
+      },
+      "kind": "status_reply",
+      "snapshot": {
+        "details": [
+          "ValueError: 守护进程心跳过期"
+        ],
+        "lines": [
+          "读不到车间状态：守护进程心跳过期"
+        ],
+        "section": "等你"
+      }
+    },
+    "permit": null,
+    "state": "sent"
+  },
+  "external": "local:delivery:5413533e01e2c32fd8189542e24e01f58bda2729cfc2b8b0c17dc096cbc41181",
+  "ref": "delivery:5413533e01e2c32fd8189542e24e01f58bda2729cfc2b8b0c17dc096cbc41181",
+  "snapshot": {
+    "details": [
+      "ValueError: 守护进程心跳过期"
+    ],
+    "lines": [
+      "读不到车间状态：守护进程心跳过期"
+    ],
+    "section": "等你"
+  },
+  "state": "sent"
+}

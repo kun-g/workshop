@@ -10,7 +10,7 @@ import sys
 
 import pytest
 
-from test_ask_kun_watch import fake, setup_watch, calls, configure, NOW
+from test_ask_kun_watch import fake, setup_watch, calls, configure, NOW, manager_command, delegated
 from test_scheduled_release import git, commit
 from workshop.watch import Watch, ReleaseRollback, save_json
 
@@ -60,7 +60,7 @@ def mutations(w):
 
 
 def fresh(w):
-    return Watch(w['root'], ask_kun=w['fake'], attention=w['fake'].parent / 'attention.py')
+    return Watch(w['root'], manager_command=manager_command(w['fake']))
 
 
 def test_success_restores_previous_commit_and_persists_dedup(rollback):
@@ -73,10 +73,10 @@ def test_success_restores_previous_commit_and_persists_dedup(rollback):
     assert len(record['rollback']['runs']) == 3
     assert record['rollback']['runs'][1]['stdout'] == str(w['repo'] / 'subdir') + '\n'
     assert record['rollback']['runs'][2]['argv'] == ['launchctl', 'kickstart', '-k', f'gui/{os.getuid()}/com.kun.workshop']
-    assert len(calls(w['fake'], 'notify')) == 1
-    assert next(v for k, v in state['active'].items() if k.startswith('release:'))['reported']
+    assert len(delegated(w['fake'])) == 1
+    assert next(v for k, v in state['active'].items() if k.startswith('release:'))['confirmed']
     fresh(w).run(NOW)
-    assert len(mutations(w)) == 3 and len(calls(w['fake'], 'notify')) == 1
+    assert len(mutations(w)) == 3 and len(delegated(w['fake'])) == 1
 
 
 @pytest.mark.parametrize('age,status,expected', [(60, 'restarting', False), (180, 'restarting', False),
@@ -130,7 +130,7 @@ def test_unsafe_or_corrupt_record_never_mutates_checkout(rollback, problem):
     assert before == (git(w['repo'], 'rev-parse', 'HEAD'), git(w['repo'], 'status', '--porcelain'))
     assert any('无法安全退回' in v['text'] for k, v in state['active'].items() if k.startswith('release:'))
     fresh(w).run(NOW)
-    assert len(calls(w['fake'], 'notify')) == 1
+    assert len(delegated(w['fake'])) == 1
 
 
 @pytest.mark.parametrize('stage,count', [('reset', 1), ('prepare', 2), ('kickstart', 3)])
@@ -152,7 +152,7 @@ def test_command_failure_is_recorded_and_not_retried(rollback, monkeypatch, stag
     assert record['rollback']['runs'][-1]['stdout'] == 'original-out\n'
     assert record['rollback']['runs'][-1]['stderr'] == 'original-err\n'
     fresh(w).run(NOW)
-    assert len(mutations(w)) == count and len(calls(w['fake'], 'notify')) == 1
+    assert len(mutations(w)) == count and len(delegated(w['fake'])) == 1
     assert git(w['repo'], 'rev-parse', 'HEAD') == (w['b'] if stage == 'reset' else w['a'])
 
 
@@ -200,13 +200,13 @@ def test_two_watchers_and_flow_lock_do_not_repeat_or_overwrite_ok(rollback):
     with ThreadPoolExecutor(max_workers=2) as pool:
         results = list(pool.map(lambda _: fresh(w).run(NOW), range(2)))
     assert all(any(k.startswith('release:') for k in r['active']) for r in results)
-    assert len(mutations(w)) == 3 and len(calls(w['fake'], 'notify')) == 1
+    assert len(mutations(w)) == 3 and len(delegated(w['fake'])) == 1
     # 一次锁忙不意味着故障恢复；保留之前的通知标识。
     with (w['root'] / 'scheduled-release.lock').open('a') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         fresh(w).run(NOW)
     fresh(w).run(NOW)
-    assert len(calls(w['fake'], 'notify')) == 1
+    assert len(delegated(w['fake'])) == 1
 
 
 def test_hold_records_without_sending(rollback):
@@ -216,8 +216,8 @@ def test_hold_records_without_sending(rollback):
         db.execute('UPDATE controls SET body=? WHERE id=?', (json.dumps({'data': w['rules']}), '@rules'))
     state = w['watch'].run(NOW)
     assert read(w)['status'] == 'rolled_back'
-    assert not calls(w['fake'], 'notify')
-    assert next(v for k, v in state['active'].items() if k.startswith('release:'))['via'] == 'held'
+    assert not calls(w['fake'])
+    assert next(v for k, v in state['active'].items() if k.startswith('release:'))['notices'] == 'hold'
 
 
 def test_corrupt_interrupted_journal_does_not_crash_watch(rollback):
@@ -227,7 +227,7 @@ def test_corrupt_interrupted_journal_does_not_crash_watch(rollback):
     assert not mutations(w) and read(w)['status'] == 'rollback_failed'
     assert read(w)['rollback']['unreadable'] == 'damaged'
     fresh(w).run(NOW)
-    assert len(calls(w['fake'], 'notify')) == 1
+    assert len(delegated(w['fake'])) == 1
 
 
 def test_corrupt_rules_fail_closed_but_existing_faults_still_run(rollback):
@@ -240,19 +240,16 @@ def test_corrupt_rules_fail_closed_but_existing_faults_still_run(rollback):
     assert 'heartbeat' in state['active'] and any(k.startswith('release:') for k in state['active'])
 
 
-def test_delivery_failure_reuses_notice_without_repeating_rollback(rollback):
+def test_manager_failure_does_not_repeat_rollback(rollback):
     w = rollback
-    configure(w['fake'], notify_exit=1)
-    state = w['watch'].run(NOW)
-    incident = next(v for k, v in state['active'].items() if k.startswith('release:'))
-    assert not incident['reported'] and incident['via'] == 'attention'
-    fresh(w).run(NOW)
+    configure(w['fake'], manager_exit=1)
+    with pytest.raises(RuntimeError):
+        w['watch'].run(NOW)
+    assert read(w)['status'] == 'rolled_back'
     configure(w['fake'])
     fresh(w).run(NOW)
     assert len(mutations(w)) == 3
-    assert len(calls(w['fake'], 'notify')) == 3
-    assert len({r['args'][r['args'].index('--request-id') + 1] for r in calls(w['fake'], 'notify')}) == 1
-    assert len((w['fake'].parent / 'attention.jsonl').read_text().splitlines()) == 1
+    assert len(delegated(w['fake'])) == 1 and not calls(w['fake'])
 
 
 def test_system_python_can_rollback_without_project_environment(rollback):
@@ -264,7 +261,7 @@ def test_system_python_can_rollback_without_project_environment(rollback):
     launchctl.chmod(0o755)
     interpreter = '/usr/bin/python3' if Path('/usr/bin/python3').exists() else sys.executable
     script = Path(__file__).resolve().parents[1] / 'src/workshop/watch/__init__.py'
-    result = subprocess.run([interpreter, '-I', str(script), '--state-dir', str(w['root']), '--ask-kun', str(w['fake'])],
+    result = subprocess.run([interpreter, '-I', str(script), '--state-dir', str(w['root']), '--manager-command', json.dumps(manager_command(w['fake']))],
         cwd=w['root'], env={**os.environ, 'PATH': str(binary) + os.pathsep + os.environ['PATH']}, capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
     assert read(w)['status'] == 'rolled_back'

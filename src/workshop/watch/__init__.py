@@ -1,4 +1,4 @@
-"""独立看门：只读核心状态，通知失败时登记等你清单。"""
+"""独立看门：只读核心状态，故障和空闲交给独立项目经理入口。"""
 from contextlib import contextmanager, closing
 from datetime import datetime, timezone, timedelta
 import fcntl
@@ -8,14 +8,11 @@ import math
 import os
 from pathlib import Path
 import re
-import shutil
 import sqlite3
 import subprocess
 import sys
 import tempfile
 
-DEFAULT_ASK = Path.home() / "workspace/runtime/worktrees/oh-my-assistant/workbench/workbench/agent-bin/ask-kun"
-DEFAULT_ATTENTION = Path.home() / "workspace/runtime/tools/stuck_watch/attention.py"
 
 
 def timestamp(value):
@@ -203,15 +200,14 @@ class ReleaseRollback:
 
 
 class Watch:
-    def __init__(self, state_dir, *, ask_kun=None, attention=None, attention_directory=None, python=None, timeout=30):
+    def __init__(self, state_dir, *, manager_command=None, timeout=30):
         self.directory = Path(state_dir).expanduser().resolve()
-        command = str(ask_kun or os.environ.get("WORKSHOP_ASK_KUN", DEFAULT_ASK))
-        self.ask_kun = str(Path(shutil.which(command) or command).expanduser().absolute())
-        self.attention = str(Path(attention or DEFAULT_ATTENTION).expanduser().resolve())
-        self.python = str(Path(python or sys.executable).resolve())
-        self.timeout = timeout
-        self.attention_directory = attention_directory
-        self.changed = False
+        repository = Path(__file__).resolve().parents[3]
+        self.manager_command = manager_command or [str(repository / '.venv/bin/python'), '-m',
+            'workshop.manager_cli', '--state-dir', str(self.directory), '--rules', str(repository / 'rules/workshop.yaml')]
+        if not isinstance(self.manager_command, list) or not all(isinstance(x, str) and x for x in self.manager_command):
+            raise ValueError('manager-command 必须为非空 argv')
+        self.timeout, self.changed = timeout, False
         self.scope = hashlib.sha256(str(self.directory).encode()).hexdigest()[:16]
 
     def faults(self, now):
@@ -219,7 +215,14 @@ class Watch:
         try:
             heartbeat = json.loads((self.directory / "heartbeat.json").read_text())
             age = (now - timestamp(heartbeat["last_ok_at"])).total_seconds()
-            if age > 180 or age < -60:
+            process_dead = False
+            pid = heartbeat.get('process', {}).get('pid')
+            if type(pid) is int and pid > 0:
+                try:
+                    os.kill(pid, 0)
+                except ProcessLookupError:
+                    process_dead = True
+            if process_dead or age > 180 or age < -60:
                 faults["heartbeat"] = {"anchor": heartbeat["last_ok_at"],
                                        "text": "车间 heartbeat.json 已超过 3 分钟没更新或时间异常，需要你检查守护进程。"}
             if (type(heartbeat.get("delivery_failed_count")) is int and heartbeat["delivery_failed_count"] > 0
@@ -290,32 +293,27 @@ class Watch:
     def _save(self, state):
         save_json(self.directory / "watch.json", state)
 
-    def _send(self, incident):
+    def delegate(self, state, now):
         try:
-            result = subprocess.run([self.ask_kun, "notify", "--request-id", incident["id"],
-                                     "--from", "车间", "-"], input=incident["text"],
-                                    capture_output=True, text=True, timeout=self.timeout)
-            if result.returncode == 0:
-                return "ask-kun"
-        except (OSError, subprocess.TimeoutExpired):
-            pass
-        if incident.get("attention_written"):
-            return "attention"
-        row = {"来源会话": incident["id"], "从几点起": incident["since"], "种类": "等你",
-               "要什么": incident["text"], "推荐": "检查守护进程和通道日志，修复后由看门确认恢复",
-               "去哪看": str(self.directory), "状态": "待处理", "推飞书": True, "持续告警": True}
-        args = [self.python, self.attention, "--writer", "车间", "--row", json.dumps(row, ensure_ascii=False)]
-        if self.attention_directory:
-            args.extend(["--directory", str(self.attention_directory)])
-        result = subprocess.run(args, capture_output=True, text=True, timeout=self.timeout)
+            heartbeat = json.loads((self.directory / 'heartbeat.json').read_text())
+            business = heartbeat.get('business', {})
+        except (OSError, ValueError):
+            business = {}
+        # 核心失效时仍保留最后可信快照；不把未知当空闲重新发放额度。
+        payload = {'at': now.isoformat(), 'faults': state['active'], 'business': business,
+                   'takeover': 'heartbeat' in state['active'] or 'database' in state['active']}
+        path = self.directory / 'manager-input.json'
+        save_json(path, payload)
+        result = subprocess.run([*self.manager_command, 'tick', '--file', str(path)],
+                                capture_output=True, text=True, timeout=self.timeout)
         if result.returncode:
-            raise RuntimeError(f"看门通知和等你清单均失败：{result.stderr[:500]}")
-        incident["attention_written"] = True
-        return "attention"
+            raise RuntimeError('项目经理入口失败：' + result.stderr[:500])
+        state['manager_result'] = result.stdout[-2000:]
+        state.pop('manager_error', None)
 
     @staticmethod
     def summary(state):
-        return {key: {name: incident.get(name) for name in ("id", "confirmed", "reported", "via")}
+        return {key: {name: incident.get(name) for name in ("id", "confirmed")}
                 for key, incident in state["active"].items()}
 
     def run(self, now=None):
@@ -348,22 +346,14 @@ class Watch:
                 active[key]["confirmed"] = awake or fault.get("immediate", False)
             # 同一次故障跨日期不重复；确认恢复后再次故障会分配新 id。
             self._save(state)
-            errors = []
-            for incident in active.values():
-                if incident.get("confirmed") and not incident["reported"]:
-                    try:
-                        if incident.get("notices") == "hold":
-                            incident.update(reported=True, via="held")
-                            self._save(state)
-                            continue
-                        incident["via"] = self._send(incident)
-                        incident["reported"] = incident["via"] == "ask-kun"
-                        self._save(state)
-                    except (OSError, RuntimeError, subprocess.TimeoutExpired) as exc:
-                        errors.append(str(exc))
+            try:
+                self.delegate(state, now)
+            except (OSError, RuntimeError, subprocess.TimeoutExpired) as exc:
+                state['manager_error'] = str(exc)
+                self._save(state)
+                raise
+            self._save(state)
             self.changed = before != self.summary(state)
-            if errors:
-                raise RuntimeError("; ".join(errors))
             return state
 
 
@@ -371,12 +361,9 @@ def main(argv=None):
     import argparse
     parser = argparse.ArgumentParser(description="独立检查车间成功心跳和未结算轮")
     parser.add_argument("--state-dir", type=Path, default=Path(os.environ.get("WORKSHOP_STATE_DIR", "~/.local/state/workshop")))
-    parser.add_argument("--ask-kun")
-    parser.add_argument("--attention", type=Path)
-    parser.add_argument("--attention-directory", type=Path)
+    parser.add_argument("--manager-command", type=json.loads)
     args = parser.parse_args(argv)
-    watcher = Watch(args.state_dir, ask_kun=args.ask_kun, attention=args.attention,
-                    attention_directory=args.attention_directory)
+    watcher = Watch(args.state_dir, manager_command=args.manager_command)
     try:
         state = watcher.run()
     except Exception as exc:

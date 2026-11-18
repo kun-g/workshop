@@ -261,3 +261,9 @@ ask 成功时记录 sent_at，丢回包后找回原卡时保留上游发送时�
 `Evidence.action_targets: dict[str,str]` 绑定本次动作与确定目标，`Evidence.authorized_actions: list[dict]` 保存流程已在授权中心核实的记录。每项必有非空 action、target、request、result 和布尔 applied。核心在交付/验收前（包括返工直接回验收）核对所需动作和目标，只有 result=approved 且 applied=true 放行。普通会话及旧批准投影不参与计算。流程还须独立保存原 execution 结果，不能用批准代替实际生效证据。
 
 `After.wake_on_completed` 默认 false。true 时核心在暂停位置保存完成事实游标；同目标另一件活完成后，下一拍提前回查，取消原回查定时器。重启可重放，仍核实原完成钩子，不启动模型轮，不绕过故障重试期限。
+
+## 执行者的新情况投递（#175，D5）
+
+可选 `Executor.inform(token, started, operation, text) -> bool` 由项目经理协调器调用。operation 绑定不可变内容；True 表示确认收下，不代表已经处理；False 表示未确认，协调器保留未送达事实，等当前轮退出、确认 stop 后，用完整记录 resume。存活查询不确定时不另开会话，健康会话没有时长上限。
+
+本地适配器仅对仍在运行且会话、终端匹配的 Orca 会话调用 `terminal send --enter`。意图先落盘，同一操作不因回包丢失重复敲入。headless 不支持运行中输入，返回 False；后续走同一会话的 resume。可选方法缺失也走这条退路。

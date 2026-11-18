@@ -239,7 +239,7 @@ def test_timer_only_runs_when_due(engine):
     assert engine.log.all("timers")[0]["fired"]
 
 
-def test_failure_backoff_notifies_once_and_stops_at_ten(engine):
+def test_failure_backoff_records_and_stops_without_notices(engine):
     reach(engine, "执行")
     for n in range(1, 11):
         row = current(engine)
@@ -255,7 +255,7 @@ def test_failure_backoff_notifies_once_and_stops_at_ten(engine):
             engine.tick()
     assert item(engine)["state"] == "卡住"
     notices = [c for c in engine.log.all("cards") if c["mode"] == "notice"]
-    assert len(notices) == 1
+    assert len(notices) == 0
     engine.clock.now += timedelta(days=2)
     engine.tick()
     assert not engine.active()
@@ -289,7 +289,7 @@ def test_pausing_does_not_interrupt_existing_round(engine):
     assert current(engine)["stage"] == "说清楚"
 
 
-def test_flow_crash_isolates_other_type_and_only_one_notice(engine):
+def test_flow_crash_isolates_other_type_without_notice(engine):
     engine.plugins.get("flow", "flow").crash = True
     engine.ingest(event())
     engine.ingest(event(target="beta", ext_id="2"))
@@ -298,7 +298,7 @@ def test_flow_crash_isolates_other_type_and_only_one_notice(engine):
     assert item(engine)["state"] == "卡住"
     assert item(engine, target="beta")["state"] == "跑着"
     assert len([f for f in engine.log.facts() if f["kind"] == "plugin_failed"]) == 1
-    assert len([c for c in engine.log.all("cards") if c["mode"] == "notice"]) == 1
+    assert len([c for c in engine.log.all("cards") if c["mode"] == "notice"]) == 0
 
 
 def test_channel_outage_keeps_work_running_and_delivers_after_recovery(engine):

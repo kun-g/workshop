@@ -128,6 +128,97 @@ def inspect_deliveries(rules, state, endpoint, since):
     return {'transport':config['transport'], 'deliveries':checked}
 
 
+def inspect_busy(log, state):
+    from types import SimpleNamespace
+    from workshop.core.activity import snapshot
+    # 快照被下一拍替换就重读；不把跨拍采样差算成漏计。
+    for _ in range(8):
+        before = read(state / 'heartbeat.json')
+        now = datetime.now(timezone.utc).isoformat()
+        actual = snapshot(SimpleNamespace(log=log, active=lambda: log.all('rounds', unless=('status', 'ended'))), before['business'], now)
+        after = read(state / 'heartbeat.json')
+        if before == after:
+            break
+    else:
+        raise ValueError('业务快照一直变化，尚未取得一致采样')
+    for field in ('agents', 'jobs', 'total', 'round_tokens', 'job_ids'):
+        observed, expected = actual[field], before['business'][field]
+        if isinstance(observed, list):
+            observed, expected = sorted(observed), sorted(expected)
+        if observed != expected:
+            raise ValueError('业务计数不符：' + field)
+    return {'heartbeat': before['business'], 'observed': actual}
+
+
+def inspect_managers(log, state, rules, plugins):
+    from workshop.reports.manager_status import read_managers, sections, HEADINGS
+    rows = read_managers(state)
+    ids = [r['id'] for r in rows]
+    tokens = [r['token'] for r in rows if r.get('token')]
+    sessions = [(r['executor'], r['started']['session']) for r in rows if r.get('token') and r.get('started')]
+    if len(ids) != len(set(ids)) or len(tokens) != len(set(tokens)) or len(sessions) != len(set(sessions)):
+        raise ValueError('同事项或会话重复归属')
+    normal = {r['token'] for r in log.all('rounds', unless=('status', 'ended'))}
+    if normal.intersection(tokens):
+        raise ValueError('项目经理占用普通轮次')
+    projected = sections(overview(log, rules=rules.data, plugins=plugins))
+    if set(projected) != set(HEADINGS):
+        raise ValueError('项目经理栏目缺失')
+    return {'managers': rows, 'ordinary_tokens': sorted(normal), 'sections': projected}
+
+
+def manager_deliveries(rules, state):
+    endpoint = resident_path(rules.data['wait_services']['intervention']['endpoint'], state)
+    path = endpoint.parent.parent / 'intervention.db'
+    with closing(sqlite3.connect(path.as_uri() + '?mode=ro', uri=True)) as db:
+        rows = [json.loads(r[0]) for r in db.execute("SELECT body FROM records WHERE kind='delivery'")]
+        permits = {r['id']: r for r in (json.loads(x[0]) for x in db.execute("SELECT body FROM records WHERE kind='permit'"))}
+    return rows, permits
+
+
+def inspect_pushes(log, state, rules, since):
+    watch = read(state / 'watch.json') if (state / 'watch.json').exists() else {}
+    if any(r.get('via') in ('ask-kun', 'attention') and r.get('since', '') >= since for r in watch.get('active', {}).values()):
+        raise ValueError('看门仍直接推送')
+    source = (Path(__file__).resolve().parents[1] / 'src/workshop/watch/__init__.py').read_text()
+    if 'notify' in source or 'attention' in source:
+        raise ValueError('看门含旧推送出口')
+    for fact in log.selected_facts(('card_created',), ('mode', 'key')):
+        if fact['at'] >= since and fact['body'].get('mode') == 'notice' and fact['body'].get('key', '').startswith(('plugin:', 'failing:', 'pending:', 'reconcile:', 'undeliverable:')):
+            raise ValueError('仍创建通用故障通知')
+    deliveries, permits = manager_deliveries(rules, state)
+    scopes = []
+    checked = []
+    for d in deliveries:
+        if d['payload'].get('kind') != 'manager_help' or d['state'] != 'sent':
+            continue
+        permit = permits[d['permit']]
+        if permit['point'] != 'manager_help':
+            raise ValueError('求助未走指定介入点')
+        scopes.append(permit['scope'])
+        checked.append({'id': d['id'], 'scope': permit['scope'], 'external': d['external']})
+    if len(scopes) != len(set(scopes)):
+        raise ValueError('同范围重复求助')
+    return {'since_release': since, 'sent': checked}
+
+
+def inspect_button(log, state, rules, plugins):
+    from workshop.reports.manager_status import sections, HEADINGS
+    from workshop.reports.status_page import page
+    from workshop.plugins.intervention.manager import reply_card
+    view = overview(log, rules=rules.data, plugins=plugins)
+    terminal, html = status(log, rules=rules.data, plugins=plugins), page(view)
+    for heading in HEADINGS:
+        if heading not in terminal.splitlines() or '<h2>' + heading + '</h2>' not in html:
+            raise ValueError('终端与网页栏目不一致：' + heading)
+    deliveries, _ = manager_deliveries(rules, state)
+    for row in deliveries:
+        if row['payload'].get('kind') == 'manager_help' and row['payload'].get('section') not in HEADINGS:
+            raise ValueError('已发送按钮指向未知栏目')
+    cards = [reply_card(s, 'dry-run') for s in sections(view).values()]
+    return {'terminal_headings': list(HEADINGS), 'html_headings': list(HEADINGS), 'dry_run_cards': cards}
+
+
 def verify(args):
     state = args.state_dir.resolve()
     since, version = release_start(state)
@@ -138,7 +229,17 @@ def verify(args):
             if isinstance(config.get('endpoint'), str):
                 config['endpoint'] = str(resident_path(config['endpoint'], state))
         plugins = Registry()
-        if args.check == 'status':
+        if args.check in ('busy-count', 'managers', 'pushes', 'button'):
+            if args.check == 'busy-count':
+                value = inspect_busy(log, state)
+            elif args.check == 'managers':
+                value = inspect_managers(log, state, rules, plugins)
+            elif args.check == 'pushes':
+                value = inspect_pushes(log, state, rules, since)
+            else:
+                value = inspect_button(log, state, rules, plugins)
+            print(json.dumps(value, ensure_ascii=False))
+        elif args.check == 'status':
             text = status(log, rules=rules.data, plugins=plugins)
             print(text)
             if not all(s in text for s in ('优先级', '等你', '推荐', '等了多久')):
@@ -212,7 +313,7 @@ def verify(args):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('check', choices=['no-cards', 'no-approval-cards', 'authorization', 'deliveries', 'status', 'intake', 'service'])
+    parser.add_argument('check', choices=['no-cards', 'no-approval-cards', 'authorization', 'deliveries', 'status', 'intake', 'service', 'busy-count', 'managers', 'pushes', 'button'])
     parser.add_argument('--since-release', action='store_true', help='从本次成功发版起查；四项检查均采用此窗口')
     parser.add_argument('--state-dir', type=Path, default=Path(pwd.getpwuid(os.getuid()).pw_dir) / '.local/state/workshop')
     args = parser.parse_args()

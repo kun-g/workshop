@@ -77,7 +77,7 @@ def test_structured_brief_reaches_executor(engine, monkeypatch, tmp_path):
 
 
 @pytest.mark.parametrize('rerun', [False, True])
-def test_pending_stops_at_limit_and_notifies_once(engine, monkeypatch, rerun):
+def test_pending_stops_at_limit_without_notice(engine, monkeypatch, rerun):
     reach(engine, '交付')
     flow = engine.plugins.get('flow', 'flow')
     keys = []
@@ -100,7 +100,7 @@ def test_pending_stops_at_limit_and_notifies_once(engine, monkeypatch, rerun):
         engine.clock.now += timedelta(hours=2)
         engine.tick()
     assert len(keys) == 5 and not engine.active()
-    assert len([c for c in engine.log.all('cards') if 'pending:' in c['key']]) == 1
+    assert len([c for c in engine.log.all('cards') if 'pending:' in c['key']]) == 0
 
 
 def test_pending_recheck_recovers_without_executor_and_replays(engine, monkeypatch):

@@ -18,7 +18,7 @@ def waiting_card(engine, key="first"):
     return cid
 
 
-def test_rejected_card_records_reason_waits_and_notifies_once(engine):
+def test_rejected_card_records_reason_and_waits_without_notice(engine):
     cid = waiting_card(engine)
     channel = engine.plugins.get("channel", "channel")
     attempts = []
@@ -36,15 +36,14 @@ def test_rejected_card_records_reason_waits_and_notifies_once(engine):
     assert item(engine)["state"] == "卡住" and item(engine)["wait_for_ready"]
     assert "上游 stderr：不合规，尚未发送" in why(engine.log, "alpha:one")
     notices = [v for v in channel.messages.values() if v[0] == "notice"]
-    assert len(notices) == 1
-    assert notices[0][1]["text"] == "车间有一张卡发不出去，原因已记录，请看 workshop why alpha:one"
+    assert len(notices) == 0
     assert not [f for f in engine.log.facts() if f["kind"] == "reconcile_failed"]
     before = engine.log.all("cards")
     engine.log.rebuild()
     assert engine.log.all("cards") == before
 
 
-def test_rejection_notice_itself_rejected_does_not_recurse(engine):
+def test_rejected_card_creates_no_secondary_notice(engine):
     waiting_card(engine)
     channel = engine.plugins.get("channel", "channel")
 
@@ -54,8 +53,8 @@ def test_rejection_notice_itself_rejected_does_not_recurse(engine):
     channel.ask = channel.notify = reject
     for _ in range(5):
         engine.channels()
-    assert len(engine.log.all("cards")) == 2
-    assert len([f for f in engine.log.facts() if f["kind"] == "card_rejected"]) == 2
+    assert len(engine.log.all("cards")) == 1
+    assert len([f for f in engine.log.facts() if f["kind"] == "card_rejected"]) == 1
     engine.heartbeat()
     heartbeat = json.loads(engine.log.path.with_name("heartbeat.json").read_text())
     assert heartbeat["delivery_failed_count"] >= 1 and heartbeat["delivery_failed_since"]
@@ -77,7 +76,7 @@ def test_cancelled_external_card_is_not_answer_and_does_not_authorize(engine):
     assert item(engine)["state"] == "卡住" and item(engine)["wait_for_ready"]
     assert "作废" in why(engine.log, "alpha:one")
     assert not [f for f in engine.log.facts() if f["kind"] == "answer"]
-    assert len([c for c in engine.log.all("cards") if c["mode"] == "notice"]) == 1
+    assert len([c for c in engine.log.all("cards") if c["mode"] == "notice"]) == 0
 
 
 def test_other_card_answer_does_not_clear_undeliverable_wait(engine):

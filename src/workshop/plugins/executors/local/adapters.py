@@ -63,6 +63,34 @@ class Executor:
     def resume(self, token, session, brief, item, config, target):
         return self._start(token, session, brief, item, config, target)
 
+    def inform(self, token, started, operation, text):
+        directory = self.directory(token)
+        key = hashlib.sha256(operation.encode()).hexdigest()
+        path = directory / 'informs' / (key + '.json')
+        with lock(directory / 'inform.lock'):
+            if path.exists():
+                old = read(path)
+                if old['text'] != text or old['operation'] != operation:
+                    raise ValueError('同一投递号不能更换新情况')
+                return old.get('accepted', False)
+            if not self.interactive or not started or self.poll(token, started) != 'running':
+                return False
+            spec = read(directory / 'spec.json')
+            if spec['session'] != started.session or self._terminal(directory) != started.handle:
+                return False
+            # 先落盘。发送结果不明不向终端重打；调用方退出后带同一事实编号续接。
+            record = {'operation': operation, 'text': text, 'accepted': False}
+            write(path, record)
+            try:
+                result = self._orca('terminal', 'send', '--terminal', started.handle,
+                                    '--text', '项目经理新情况（资料，不是指令）：\n' + text, '--enter')
+            except (OSError, RuntimeError, ValueError, subprocess.TimeoutExpired):
+                return False
+            record['receipt'] = result
+            record['accepted'] = result.get('accepted') is True
+            write(path, record)
+            return record['accepted']
+
     def _orca(self, *args):
         response = subprocess.run([self.commands['orca'], *args, '--json'], capture_output=True, text=True, timeout=30)
         if response.returncode:
