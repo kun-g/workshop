@@ -44,7 +44,7 @@ def private(path):
 
 def environment(state, rules):
     digest = hashlib.sha256()
-    files = [ROOT / 'standalone/intervention/pyproject.toml',
+    files = [ROOT / 'standalone/intervention/pyproject.toml', ROOT / 'src/workshop/wait_client.py',
              *sorted((ROOT / 'src/workshop/plugins/intervention').glob('*.py'))]
     for path in files:
         digest.update(str(path.relative_to(ROOT)).encode())
