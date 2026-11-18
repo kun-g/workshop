@@ -447,3 +447,26 @@ def test_renaming_out_of_frozen_path_stops_for_kun(world):
     assert card['frozen_files'] == ['scripts/check.sh']
     assert not remote(world)['pr']['merged']
     engine.log.close()
+
+
+@pytest.mark.parametrize('accepted', [False, True])
+def test_legacy_acceptance_return_with_delivered_merge_closes_without_rounds(world, accepted):
+    """在途迁移：旧流程验收没过退回执行、代码已合并交付的活（现役 ws#214）不再起执行轮，程序核对后收尾；
+    验收通过过的活被返工，照常起执行轮。"""
+    engine = engine_for(world, f'legacy-{accepted}')
+    engine.ingest(Event('github', 'labeled', 'alpha', '7', 'test', {}, action='ready'))
+    row = engine.log.get('items', 'alpha:7')
+    engine.change(row, stage='执行', checks=[['scripts/check.sh']],
+                  history=[{'stage': '接单'}, {'stage': '说清楚'}, {'stage': '执行'}, {'stage': '交付'}, {'stage': '验收'}])
+    sha = world['sha']
+    set_pr(world, merged=True, state='closed', merge_commit_sha=sha, merged_at='2026-11-18T06:04:41Z')
+    world['io'].save(row, world['target'], {'effects': {}, 'issue': 7, 'pr': 11, 'merge': sha, 'delivered': [sha],
+                                            **({'accepted': True} if accepted else {})})
+    for _ in range(4):
+        engine.tick()
+    if accepted:
+        assert stages_run(engine) == ['执行']
+    else:
+        assert item(engine, '7')['state'] == '完成' and remote(world)['issue']['state'] == 'closed'
+        assert stages_run(engine) == []
+    engine.log.close()

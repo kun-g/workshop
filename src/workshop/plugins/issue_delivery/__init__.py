@@ -112,7 +112,18 @@ class IssueDelivery:
         """接单、交付、收尾都是程序步；只有 issue 写了要亲眼看、还没送过时，收尾先起一轮按 issue 写的方式送。"""
         if stage == "收尾":
             return not self._visual_pending(item, self.io.read(item, target))
-        return stage != "执行"
+        if stage == "执行":
+            return self._legacy_rejected(item, self.io.read(item, target))
+        return True
+
+    @staticmethod
+    def _legacy_rejected(item, state):
+        """旧流程验收没过退回执行、代码已合并交付的在途活（换流程时）：新流程没有验收，不再起执行轮，
+        由程序交接到交付核对后收尾。新流程的活不会到过验收；验收通过过（accepted）的返工照常执行。"""
+        merge = state.get("merge")
+        return (any(entry.get("stage") == "验收" for entry in item.get("history", []))
+                and bool(merge) and merge in state.get("delivered", [])
+                and not state.get("accepted") and not item.get("pending_rework"))
 
     def stages(self, target):
         """issue交付 R13：接单核对 → 执行一轮做到去 Draft → 交付由程序做 → 收尾由程序做。规则写的阶段须和它一致。"""
@@ -456,6 +467,9 @@ class IssueDelivery:
         except ValueError as exc:
             return Evidence(checks, False, reason=f"执行没做完：{exc}", handoff="交付")
         files, paths = self._changed_paths(pr, target)
+        if self._legacy_rejected(item, self.io.read(item, target)) and pr.get("merged"):
+            return Evidence(checks, True, actions, paths=paths, handoff="交付",
+                            reason=f'旧流程验收退回、PR #{pr["number"]} 已合并交付：新流程没有验收，进交付核对后收尾')
         if pr.get("merged") or pr["state"] != "open":
             return Evidence(checks, False, reason=f'执行没做完：PR #{pr["number"]} 已合并或已关闭，须开新的 PR',
                             paths=paths, handoff="交付")
@@ -732,6 +746,8 @@ class IssueDelivery:
                     # 飞书进来新开的 issue 只有原话：别名先绑上，留在接单，下一次程序步核对登记。
                     result = After(aliases=result.aliases, pending=True, rerun=True,
                                    reason=f'已开 issue #{state["issue"]}，核对登记后接单', next="核对登记")
+            elif completed_stage == "执行" and self._legacy_rejected(item, state):
+                pass  # 旧流程验收退回、已合并交付：保留合并和交付记录，交付程序步核对后收尾。
             elif completed_stage == "执行":
                 pr = self.io.pr(item, target)
                 if pr.get("merged") or pr["state"] != "open" or pr.get("draft"):
