@@ -35,6 +35,13 @@ class Source(Protocol):
 
 
 class Flow(Protocol):
+    def relations(self, objects: list[dict], target: dict) -> dict:
+        """可选、只读。按活 id 返回 Relations 完整快照；objects 仅含 id/object_key。
+
+        来源完成状态由插件回查；每件读取错误填 error，不能用空列表代替。
+        批量作业五秒过期，不占执行位置；核心在派轮之前强制核对。
+        """
+        ...
     def classify(self, event: Event, item: dict | None, target: dict,
                  find_external: Callable[..., dict | None]) -> Classification | Literal["update", "ready", "rework"]:
         """只对无轮次令牌的 CLI 入口判定动作和归件；尚未创建活，输入 action=update。

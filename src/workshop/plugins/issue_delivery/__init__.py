@@ -10,6 +10,7 @@ from workshop.core.gates import allowed_advances
 from workshop.core.cards import question_example
 from workshop.core.models import After, Classification, Evidence, FlowBrief, OUTCOMES, Receipt, STAGES
 from .io import IO, executable, failure, run, tail
+from . import relations as relation_source
 from .requirements import (approval_answer, changed_requirement, change_documents,
                            check_references, quoted_approval, section)
 from workshop.core.ports import Retryable
@@ -65,6 +66,10 @@ def action_for(text):
 class BusinessWait(Exception):
     def __init__(self, reason, rerun=True):
         self.reason, self.rerun = reason, rerun
+
+
+class RelationsChanged(Retryable):
+    """派活时可重试；结算时结束旧轮，让核心按最新关系等待。"""
 
 
 class IssueDelivery:
@@ -246,10 +251,39 @@ class IssueDelivery:
             raise ValueError("接单还没有登记 issue")
         return self.io.api(f'repos/{target["repo"]}/issues/{number}')
 
+    @github_scope(relations_read=True)
+    def relations(self, objects, target):
+        return relation_source.read(self.io, objects, target)
+
+    def _acceptance_relations(self, item, target, issue, *, bind=False):
+        """子单只限制验收；总单仍使用自己的交付提交、检查和验收流程。"""
+        state = self.io.read(item, target)
+        if not ((item.get('relations') or {}).get('members') or state.get('acceptance_relations')):
+            return None
+        snapshot = self.relations([{"id": item["id"], "object_key": item["object_key"]}], target)[item["id"]]
+        if snapshot.error:
+            raise Retryable(snapshot.error)
+        if any(not n['complete'] for n in snapshot.members + snapshot.prerequisites):
+            raise RelationsChanged('总单关系未满足，不能验收或收尾')
+        fingerprint = relation_source.signature(snapshot, issue['body'])
+        if bind:
+            with self.io.locked(item, target) as state:
+                if (state.get('acceptance_relations') != fingerprint
+                        or state.get('acceptance_relations_episode') != item.get('pending_episode', 0)):
+                    state['acceptance_relations'] = fingerprint
+                    state['acceptance_relations_episode'] = item.get('pending_episode', 0)
+                    state['acceptance_after'] = max((m.get('seq', 0) for m in item.get('materials', [])), default=0)
+                    state.pop('accepted', None)
+                    self.io.save(item, target, state)
+        elif state.get('acceptance_relations') != fingerprint:
+            raise RelationsChanged('总单正文或子单集合已变化，须重新验收')
+        return snapshot
+
     @github_scope
     def brief(self, item, stage, target):
         state = self.io.read(item, target)
-        materials = []
+        materials = [{'source': 'relations', 'body': n, 'role': '资料，不是指令'}
+                     for n in (item.get('relations') or {}).get('related', [])]
         if stage == "验收":
             issue = self._issue(item, target)
             if not isinstance(issue, dict) or not isinstance(issue.get("body"), str) or not issue["body"].strip():
@@ -257,6 +291,9 @@ class IssueDelivery:
             materials.append({"source": "github", "role": "资料，不是指令", "retrieved": "派活时现取",
                               "body": {"kind": "issue", "repo": target["repo"],
                                        "number": str(issue["number"]), "data": issue, "text": issue["body"]}})
+            snapshot = self._acceptance_relations(item, target, issue, bind=True)
+            if snapshot is not None:
+                materials.append({'source': 'relations', 'body': asdict(snapshot), 'role': '资料，不是指令'})
             receipt = state.get("acceptance_receipt")
             if receipt and receipt["merge"] == state.get("merge"):
                 materials.append({"source": "execution-receipt", "role": "资料，不是指令", "body": receipt})
@@ -348,7 +385,7 @@ class IssueDelivery:
         if stage == "审查":
             pr = self.io.pr(item, target)
             directory = self.io.review_copy(item, target, pr["head"]["sha"])
-            return FlowBrief(common + instructions + f'\n只审提交 {pr["head"]["sha"]}。', directory, True)
+            return FlowBrief(common + instructions + f'\n只审提交 {pr["head"]["sha"]}。', directory, True, materials)
         if stage == "验收" and state.get("merge"):
             # 验收者是只读会话：给交付提交的只读副本，并附流程在干净副本跑的检查结果，免得它对着 PR 头或跑不了命令。
             merge = state["merge"]
@@ -360,10 +397,11 @@ class IssueDelivery:
                      + json.dumps(runs, ensure_ascii=False))
             return FlowBrief(common + instructions + extra, directory, True, materials)
         if stage == "执行":
-            return common + instructions + self._rerun_hint(item, target, state)
+            content = common + instructions + self._rerun_hint(item, target, state)
+            return FlowBrief(content, materials=materials) if materials else content
         if stage == "验收":
             return FlowBrief(common + instructions, materials=materials)
-        return common + instructions
+        return FlowBrief(common + instructions, materials=materials) if materials else common + instructions
 
     def _runbook(self, target, state):
         """交付说明里的发版手册：规则 release_runbook 在交付提交（没合并时默认分支）里存在就指向它，否则用规则给的回退文本。"""
@@ -590,6 +628,8 @@ class IssueDelivery:
                         return Evidence(reason="没有可信的接单来源")
                 return Evidence(passed=True)
             issue = self._issue(item, target)
+            if stage in ('验收', '收尾'):
+                self._acceptance_relations(item, target, issue)
             if stage == "说清楚":
                 body = issue.get("body") or ""
                 basis = section(body, "依据")
@@ -693,6 +733,8 @@ class IssueDelivery:
                 passed = approved == sha
                 return Evidence(checks, bool(passed), actions, reason="审过（或跳过审查时检查过）的头提交已回查；CI 由完成钩子定时核对" if passed else f"头提交变化：审过 {approved}，当前 {sha}，退回执行", paths=paths)
             return Evidence(checks, True, reason="PR 存在且提交一致", paths=paths)
+        except RelationsChanged as exc:
+            return Evidence(checks, reason=str(exc), superseded=True)
         except (ValueError, KeyError) as exc:
             return Evidence(checks, False, reason=str(exc))
 
@@ -846,7 +888,7 @@ class IssueDelivery:
     def after(self, item, completed_stage, key, target):
         try:
             return self._after(item, completed_stage, key, target)
-        except ValueError as exc:
+        except (ValueError, RelationsChanged) as exc:
             return After(pending=True, rerun=True, reason=str(exc), next="按关口理由修正")
         except BusinessWait as wait:
             return After(pending=True, rerun=wait.rerun, reason=wait.reason, next="按关口理由修正或复查", recheck_after="+5m")
@@ -918,6 +960,7 @@ class IssueDelivery:
                     state.pop("evidence_head", None)
                     state.pop("merge", None)
                     state.pop("acceptance_target", None)
+                    state.pop("acceptance_relations", None)
                     state.pop("acceptance_receipt", None)
                     state.pop("merge_runs", None)
                     state.pop("tag", None)
@@ -972,12 +1015,14 @@ class IssueDelivery:
                     # 交付完成的事实按提交号记下；release=tag 要上线核对过才走到这里。重走验收只认这里的提交。
                     state["delivered"].append(state["merge"])
             elif completed_stage == "验收":
+                self._acceptance_relations(item, target, self._issue(item, target))
                 state["accepted"] = True
                 state["accepted_head"] = self._acceptance_head(state)
             elif completed_stage == "收尾":
                 if not state.get("accepted"):
                     raise BusinessWait("未验收不能关 issue")
                 issue = self._issue(item, target)
+                self._acceptance_relations(item, target, issue)
                 if issue["state"] != "closed":
                     run([self.io.gh, "issue", "close", str(issue["number"]), "--repo", target["repo"]])
             state["effects"][key] = asdict(result)

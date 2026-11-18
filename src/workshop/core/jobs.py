@@ -11,6 +11,7 @@ lock 由作业进程从启动起一直持有（父进程先锁好再交给它）
 - 新鲜期 0：取一次就清掉。
 - 出错的结果取一次就清掉，下次重跑；错误类型照原样抛回，由核心照原来的退避和隔离规则处理。
 """
+from contextlib import suppress
 from dataclasses import fields, is_dataclass
 from concurrent.futures import ThreadPoolExecutor
 import fcntl
@@ -23,10 +24,11 @@ import shutil
 import signal
 from subprocess import DEVNULL, Popen
 import sys
+import threading
 import time
 import traceback
 
-from .models import After, Answer, Brief, ChannelPoll, Classification, Event, Evidence, FlowBrief, Poll, Receipt, Release, RoundUsage, Selection, Started, Usage
+from .models import After, Answer, Brief, ChannelPoll, Classification, Event, Evidence, FlowBrief, Poll, Receipt, Relations, Release, RoundUsage, Selection, Started, Usage
 from .ports import ChannelRejected, Retryable, Unavailable, TargetBlocked, InputBlocked
 from .wake import ring
 from .records import StoredBrief, RoundHistory, ResultHistory, materialize
@@ -55,6 +57,7 @@ class JobFailed(Exception):
 
 # 结果新鲜期（秒）；不在表里的结果一直可用。
 FRESH = {
+    ("flow", "relations"): 5,
     ("source", "poll"): 20,
     ("channel", "poll"): 20,
     ("channel", "reconcile"): 0,
@@ -73,7 +76,7 @@ LABELS = {
 ERRORS = {"Retryable": Retryable, "Unavailable": Unavailable, "ChannelRejected": ChannelRejected,
           "TargetBlocked": TargetBlocked, "InputBlocked": InputBlocked}
 TYPES = {cls.__name__: cls for cls in (After, Answer, Brief, ChannelPoll, Classification, Event, Evidence, FlowBrief, Poll,
-                                        Receipt, Release, RoundUsage, Selection, Started, Usage, StoredBrief, RoundHistory, ResultHistory)}
+                                        Receipt, Relations, Release, RoundUsage, Selection, Started, Usage, StoredBrief, RoundHistory, ResultHistory)}
 KEEP_SECONDS = 86400
 SWEEP_SECONDS = 600
 # 一拍最多登记几个新作业；进程创建交给后台，避免系统调用拖住一拍。
@@ -163,6 +166,7 @@ class Jobs:
         self.children = {}
         self.spawned = 0
         self.swept = 0.0
+        self.sweeper = None
         self.due = []
         self.again = False
         self.retries = {}
@@ -211,7 +215,9 @@ class Jobs:
                 if fresh == 0:
                     shutil.rmtree(path, ignore_errors=True)
                 else:
-                    os.utime(path / "result.json")
+                    # 后台清理可能刚删掉一天没人取的旧结果；这次照常用读到的内容。
+                    with suppress(FileNotFoundError):
+                        os.utime(path / "result.json")
                 if fresh is not None and fresh > 0:
                     self.due.append(result.get("finished", 0) + fresh)
                 self.retries.pop(path, None)
@@ -332,6 +338,15 @@ class Jobs:
         if now - self.swept < SWEEP_SECONDS or not self.directory.is_dir():
             return
         self.swept = now
+        # 上千个目录逐个 stat、删除要一两百毫秒，曾占满整拍；放到单独线程，一拍不等（核心 R27）。
+        # 不用启动线程：清理慢时不能拖住新作业的进程创建。上一次还没清完就不再起。
+        if self.sweeper is None or not self.sweeper.is_alive():
+            self.sweeper = threading.Thread(target=self.sweep, args=(now,), name="workshop-sweep", daemon=True)
+            self.sweeper.start()
+
+    def sweep(self, now):
+        """清掉一天没人取的结果和没启动成的目录。和主线程并发也安全：
+        主线程刚取用的旧结果被删，下次只是重跑；新登记的目录不满 60 秒且有结果或 pid，不会被删。"""
         for path in self.directory.iterdir():
             try:
                 result = path / "result.json"

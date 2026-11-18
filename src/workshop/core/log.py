@@ -134,6 +134,10 @@ class Log:
         row = self.db.execute(f"SELECT body FROM {table} WHERE id=?", (key,)).fetchone()
         return json.loads(row[0]) if row else None
 
+    def open_items(self):
+        """没结束的活（含还有后续动作的）：走部分索引，不解析已结束的。"""
+        return [json.loads(row[0]) for row in self.db.execute(f"SELECT body FROM items WHERE {OPEN_ITEMS} = 1 ORDER BY rowid")]
+
     def all(self, table, *, where=None, unless=None):
         """where=(字段, 值) 只要该字段等于值的行，unless=(字段, 值) 筛掉等于值的行；在库里先筛，
         不在 Python 里逐行解析（例如已结束的轮、别的活的轮）。"""

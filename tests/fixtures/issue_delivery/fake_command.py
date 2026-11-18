@@ -8,6 +8,7 @@ import base64
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 import subprocess
 import sys
@@ -93,6 +94,14 @@ def handle(name, args, *, stdin='', env=None, cwd=None, git=real_git):
         elif args[:2] == ['issue', 'close']:
             state['issue']['state'] = 'closed'
             save()
+        elif args[:2] == ['api', 'graphql']:
+            query = next(a.removeprefix('query=') for a in args if a.startswith('query='))
+            empty = {'totalCount': 0, 'nodes': [], 'pageInfo': {'hasNextPage': False, 'endCursor': None}}
+            values = {f'i{n}': {'number': int(n), 'parent': None, 'blockedBy': empty,
+                               'issueDependenciesSummary': {'totalBlockedBy': 0}, 'subIssuesSummary': {'total': 0},
+                               'subIssues': empty, 'relatesTo': empty}
+                      for n in re.findall(r'issue\(number:(\d+)\)', query)}
+            emit({'data': {'repository': values}})
         elif args and args[0] == 'api':
             endpoints = [a for a in args if a.startswith('repos/')]
             endpoint = endpoints[0]

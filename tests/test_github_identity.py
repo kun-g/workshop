@@ -144,3 +144,45 @@ def test_target_blocked_serialized_and_only_one_target_notified(tmp_path):
     execute(directory, engine.plugins)
     assert read(directory / 'result.json')['error']['kind'] == 'TargetBlocked'
     engine.log.close()
+
+
+def test_nested_relationship_reads_use_separate_scope_and_restore_write_scope(signing, monkeypatch):
+    calls = []
+    def fake(argv, **kwargs):
+        calls.append((argv, kwargs))
+        if argv[-2:] == ['--repo', 'kun-g/workshop']:
+            return subprocess.CompletedProcess(argv, 0, 'read-token' if '--relations-read' in argv else 'write-token', '')
+        return subprocess.CompletedProcess(argv, 0, kwargs['env']['GH_TOKEN'], '')
+    monkeypatch.setattr(subprocess, 'run', fake)
+    @identity.scoped(relations_read=True)
+    def read(target):
+        return identity.run(['gh', 'api', 'graphql'], capture_output=True, text=True)
+    @identity.scoped
+    def action(target):
+        identity.run(['gh', 'api', 'before'], capture_output=True, text=True)
+        read(target)
+        identity.run(['gh', 'api', 'after'], capture_output=True, text=True)
+    action({'repo': 'kun-g/workshop', 'github_identity': signing})
+    commands = [(argv, kw['env']['GH_TOKEN']) for argv, kw in calls if argv[0] == '/usr/bin/gh']
+    assert [token for _, token in commands] == ['write-token', 'read-token', 'write-token']
+    assert sum('--relations-read' in argv for argv, _ in calls) == 1
+
+
+def test_failed_relationship_signer_never_falls_back_to_existing_write_token(signing, monkeypatch):
+    calls = []
+    def fake(argv, **kwargs):
+        calls.append(argv)
+        return subprocess.CompletedProcess(argv, 1, '', 'secret')
+    monkeypatch.setattr(subprocess, 'run', fake)
+    @identity.scoped(relations_read=True)
+    def read(target):
+        identity.run(['gh', 'api', 'graphql'])
+    with pytest.raises(identity.IdentityError):
+        read({'repo': 'kun-g/workshop', 'github_identity': signing})
+    assert len(calls) == 1 and '--relations-read' in calls[0]
+
+
+def test_relation_identity_override_does_not_change_normal_identity(signing):
+    target = {'repo': 'kun-g/grant-console', 'github_identity': {'mode': 'inherit'}, 'relations_identity': signing}
+    assert identity.configuration(target) == {'mode': 'inherit'}
+    assert identity.configuration(target, relations_read=True) == signing

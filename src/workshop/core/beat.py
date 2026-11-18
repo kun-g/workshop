@@ -1,17 +1,19 @@
 """一拍的顺序。
 
-这一拍只做这些：收作业结果、清一次流程目录、收事件、归类、读通道、定时、结算开着的轮、推进每件活、收回目录、再读通道、写心跳。
+这一拍只做这些：收作业结果、归类外部事件、清一次流程目录、收来源事件、读通道、定时、结算开着的轮、推进每件活、收回目录、再读通道、写心跳、状态有变就重写 status.html。
 失败记账和心跳放在一起。
 一拍超过 100 毫秒时，等锁和各步耗时追加到状态目录的 tick-slow.jsonl，只留最近 100 条。
 """
 import json
 import os
+import sqlite3
 import sys
 import time
+from datetime import timedelta
 
 from .jobs import Pending
 from .models import stamp
-from . import rounds, waits
+from . import rounds, relations, waits
 
 SLOW_TICK_MS = 100
 SLOW_ITEM_MS = 5
@@ -53,14 +55,15 @@ def one(engine, began=None):
             with Span(spans, "reap"):
                 if engine.jobs:
                     engine.jobs.reap()
+            # 外部事件先归件：事件到开始处理不排在清目录、读来源之后（核心 R27）。
+            with Span(spans, "classify"):
+                engine.classify_events()
             if not getattr(engine, "cleaned_flows", False):
                 with Span(spans, "cleanup"):
                     engine.cleanup_flows()
                 engine.cleaned_flows = True
             with Span(spans, "sources"):
                 engine.sources()
-            with Span(spans, "classify"):
-                engine.classify_events()
             with Span(spans, "channels"):
                 engine.channels()
             with Span(spans, "timers"):
@@ -77,8 +80,34 @@ def one(engine, began=None):
                 engine.channels()
             with Span(spans, "heartbeat"):
                 engine.heartbeat(began)
+            with Span(spans, "status_page"):
+                refresh_status_page(engine)
         finally:
             note_slow_tick(engine, began, spans, slow, count)
+
+
+PAGE_KINDS = ("item_changed", "card_changed", "round_changed", "control", "answer")
+PAGE_MIN_GAP = timedelta(seconds=5)   # 两次重写至少隔这么久
+PAGE_MAX_AGE = timedelta(minutes=5)   # 没变化也至少这么久重写一次，页面上的生成时间才不会无谓地变旧
+
+
+def refresh_status_page(engine):
+    """状态有变化就重写状态目录里的 status.html（核心 R1 补注：页面反映当前）；写失败不挡这一拍，页面上的更新时间会因此变红。"""
+    now = engine.clock()
+    last = getattr(engine, "status_page", None)
+    if last and (now - last < PAGE_MIN_GAP or (not engine.page_dirty and now - last < PAGE_MAX_AGE)):
+        return
+    engine.page_dirty = False
+    from .report import overview
+    from .status_page import page
+    path = engine.log.path.parent / "status.html"
+    temporary = path.with_suffix(".tmp")
+    try:
+        temporary.write_text(page(overview(engine.log), now.astimezone()))
+        temporary.replace(path)
+    except (OSError, ValueError, KeyError, TypeError, sqlite3.Error) as exc:
+        print(f"车间 status.html 没写成：{exc!r}", file=sys.stderr)
+    engine.status_page = now
 
 
 def advance(engine, item):
@@ -86,6 +115,9 @@ def advance(engine, item):
         return
     control = engine.control(item["target"])
     if control.get("paused") or engine.flow_broken(item["target"], item.get("flow", "")):
+        return
+    item = relations.admit(engine, item)
+    if item is None:
         return
     if item["state"] == "等你" and not engine.answerable(item):
         engine.change(item, state="等你", next=item.get("next"), leave=item.get("leave"),
@@ -110,14 +142,16 @@ def advance(engine, item):
                           after_pending_count=0, after_wait=None, pending_episode=item.get("pending_episode", 0) + 1,
                           wait_for_ready=False, retry_executor=None, gate_count=0, next="按新事件返工")
         item = engine.log.get("items", item["id"])
-    # 没有待办时这些操作不会改活，沿用本拍已读的正文。
-    # 有待办仍在操作后重读，后续推进必须看到刚结算的阶段和状态。
+    # 有待办才结算；后续推进看到最新阶段和状态。
     if item.get("after_wait"):
         engine.recheck_after(item)
         item = engine.log.get("items", item["id"])
     if item.get("pending_advance"):
         engine.complete_approval(item)
         item = engine.log.get("items", item["id"])
+    item = relations.admit(engine, item)
+    if item is None:
+        return
     if engine.rules.data.get("taskhome"):
         if not engine.taskhome(item):
             return
@@ -132,11 +166,12 @@ def advance_open(engine):
     items = {item["id"]: item for item in engine.log.open_items()}
     if engine.rules.data.get("taskhome"):
         items.update((item["id"], item) for item in engine.log.ended_home_items())
+    relations.refresh(engine, [i for i in items.values() if i["state"] not in ("完成", "放弃")])
     slow = []
     for item in items.values():
         started = time.monotonic()
         try:
-            engine.advance(item)
+            engine.advance(engine.log.get("items", item["id"]))
         except Pending:
             pass  # 这件活在等作业出结果，下一拍再看；别的活照常推进。
         finally:

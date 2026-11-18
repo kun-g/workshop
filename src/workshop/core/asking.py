@@ -1,11 +1,14 @@
 """卡片和通道：发出、读回、作废、在这里回答。"""
 from dataclasses import asdict
+from datetime import timedelta
 from .models import stamp
 from .ports import ChannelRejected
 from .cards import notice, validate_question, validate_notice
 from .models import Answer, ChannelPoll
 from .jobs import Pending
 
+# 对账连续不确定、已告警之后，隔多久再对一次（秒）。
+RECONCILE_AGAIN = 60
 
 def card(engine, item, key, mode, payload, **extra):
     if mode == "ask":
@@ -73,13 +76,17 @@ def invalid_answer(engine, card, value):
     engine.fact("card_changed", {"id": card["id"], "invalid_answer_noticed": True}, card["item"])
 
 
+def reconcile_due(engine, card):
+    return (engine.control(f"reconcile:{card['id']}").get("at") or "") <= stamp(engine.clock())
+
+
 def reconcile_uncertain(engine, card):
+    """连续 3 次不确定就告警；之后每 RECONCILE_AGAIN 秒再对一次，不每拍起作业把主循环叫醒。"""
     key = f"reconcile:{card['id']}"
     count = engine.control(key).get("count", 0)
-    if count >= 3:
-        return
+    at = stamp(engine.clock() + timedelta(seconds=RECONCILE_AGAIN)) if count + 1 >= 3 else None
     with engine.log.transaction():
-        engine.fact("control", {"id": key, "count": count + 1})
+        engine.fact("control", {"id": key, "count": min(count + 1, 3), "at": at})
         if count + 1 == 3:
             engine.fact("reconcile_failed", {"card": card["id"], "reason": "连续 3 次无法确定是否已发送"}, card["item"])
             incident = engine.log.db.execute("SELECT max(seq) FROM facts").fetchone()[0]
@@ -92,8 +99,9 @@ def reconcile_uncertain(engine, card):
 
 def reconcile_clear(engine, card):
     key = f"reconcile:{card['id']}"
-    if engine.control(key).get("count"):
-        engine.fact("control", {"id": key, "count": 0})
+    state = engine.control(key)
+    if state.get("count") or state.get("at"):
+        engine.fact("control", {"id": key, "count": 0, "at": None})
     if card.get("reconcile_failed"):
         engine.fact("card_changed", {"id": card["id"], "reconcile_failed": False}, card["item"])
 
@@ -155,6 +163,8 @@ def channels(engine):
                     sending = [card["id"]]
                     # 发送作业还在跑或已出结果，就认它，不另去对账，免得把自己的发送算成不确定。
                     if card.get("sending") and not (engine.jobs and engine.jobs.exists("channel", name, method, sending)):
+                        if not reconcile_due(engine, card):
+                            continue
                         external = engine.call("channel", name, "reconcile", card["id"], card, identity=[card["id"]])
                         if external is None:
                             engine.reconcile_uncertain(card)

@@ -11,9 +11,31 @@ from .flows import configured
 ENDED = ("完成", "放弃")
 
 
+def state_since(log, item):
+    """这件活进入当前状态的时间（事实里最近一次改状态的时刻）；查不到返回 None，页面写「时长未知」。"""
+    found = log.db.execute("SELECT at FROM facts WHERE item=? AND kind='item_changed' AND json_extract(body,'$.state') IS NOT NULL "
+                           "ORDER BY seq DESC LIMIT 1", (item,)).fetchone()
+    return found[0] if found else None
+
+
+def origin(item):
+    """这件活从哪份来源资料来：标题、链接、简称，以及 Kun 原话的第一句（页面给人回忆背景用）；资料里没有标题和链接的返回 None。"""
+    found = [m["body"] for m in item.get("materials") or []
+             if isinstance(m.get("body"), dict) and isinstance(m["body"].get("data"), dict)
+             and m["body"]["data"].get("title") and m["body"]["data"].get("html_url")]
+    if not found:
+        return None
+    data = found[-1]["data"]
+    quotes = [line.lstrip("> ").strip() for line in (data.get("body") or "").splitlines() if line.startswith(">") and line.lstrip("> ").strip()]
+    return {"title": data["title"], "url": data["html_url"],
+            "ref": f'{str(found[-1].get("repo", "")).split("/")[-1]}#{found[-1].get("number", "")}', "quote": quotes[0] if quotes else ""}
+
+
 def overview(log, *, everything=False, states=(), targets=(), flows=()):
     """总览要用的数据，文字和网页共用。默认只取没结束的活；states、targets、flows 是筛选，空表示不筛。"""
-    items = log.all("items")
+    count = log.db.execute("SELECT count(*) FROM items").fetchone()[0]
+    # 默认不列已结束的活：在库里先筛掉，不逐行解析它们（已结束的占绝大多数，解析一遍要 200 多毫秒）。
+    items = log.all("items") if everything or states else log.open_items()
     cards = log.all("cards")
     unreadable = [c for c in cards if c["mode"] == "ask" and not c["answered"]
                   and not c.get("cancelled") and not c.get("rejected") and c.get("read_failures", 0) >= 10]
@@ -34,13 +56,16 @@ def overview(log, *, everything=False, states=(), targets=(), flows=()):
         rows.append({"id": item["id"], "title": item.get("title") or item["id"], "target": item["target"],
                      "flow": item.get("flow") or "", "stage": item["stage"], "state": item["state"], "shown": shown,
                      "stuck": stuck, "who": row["executor"] if row else "车间", "next": next_step, "blocker": blocker,
-                     "reason": item["blocked_by"], "advice": item["next"]})
+                     "reason": item["blocked_by"], "advice": item["next"],
+                     "owner": (item.get("leave") or {}).get("owner") or "", "origin": origin(item)})
     filtered = bool(states or targets or flows)
     picked = [r for r in rows
               if (everything or states or r["state"] not in ENDED)
               and (not states or r["shown"] in states or r["state"] in states)
               and (not targets or r["target"] in targets)
               and (not flows or r["flow"] in flows)]
+    for r in picked:
+        r["since"] = state_since(log, r["id"])
     ids = {r["id"] for r in picked}
     keep = (lambda card: card["item"] in ids) if filtered else (lambda card: True)
     by_id = {r["id"]: r for r in rows}
@@ -52,8 +77,8 @@ def overview(log, *, everything=False, states=(), targets=(), flows=()):
             and not c.get("rejected") and keep(c)]
     uncertain = [{"item": c["item"], "card": c["id"]} for c in cards
                  if c.get("reconcile_failed") and not c["sent"] and not c.get("cancel_done") and keep(c)]
-    return {"rows": picked, "total": len(rows), "ended": sum(r["state"] in ENDED for r in rows),
-            "hidden": len(rows) - len(picked), "everything": everything, "filtered": filtered,
+    return {"rows": picked, "total": count, "ended": count - sum(r["state"] not in ENDED for r in rows),
+            "hidden": count - len(picked), "everything": everything, "filtered": filtered,
             "unreadable": unread, "asks": asks, "uncertain": uncertain,
             "filters": {"states": list(states), "targets": list(targets), "flows": list(flows)}}
 
@@ -66,6 +91,8 @@ def status(log, **options):
     head = f"活 {len(rows)} 件 · 跑着 {count('跑着')} · 等你 {count('等你') - reads} · 卡住 {count('卡住') + reads}"
     head += f" · 排队 {count('排队')}" if count("排队") else ""
     head += f" · 定时 {count('定时')}" if count("定时") else ""
+    for waiting in ("等前置", "等子单"):
+        head += f" · {waiting} {count(waiting)}" if count(waiting) else ""
     if view["hidden"]:
         head += f"\n另有 {view['hidden']} 件没列出" + ("（筛掉的）" if view["filtered"] else "（已结束；workshop status --all 看全部）")
     lines = [head, "活\t阶段\t状态\t谁在推\t下一步\t卡在谁手里"]
@@ -242,6 +269,18 @@ def why(log, item_id, rules=None, plugins=None, raw=False):
             detail = f'恢复 {body["mode"]} 从 {body["from_state"]}/{body["stage"]}：{body["reason"]}；Kun 原话：{body["quote"]}；计划：{json.dumps(body["plan"], ensure_ascii=False)}'
         elif kind == "recovery_applied":
             detail = f'已消费恢复机会 {body["id"]}'
+        elif kind == "item_changed" and "relations" in body:
+            snapshot = body["relations"]
+            labels = (("prerequisites", "前置"), ("members", "子单"),
+                      ("collections", "所属总单"), ("related", "相关"))
+            parts = [label + "=" + "、".join(n["name"] + ("（已完成）" if n["complete"] else "（未完成）")
+                                                for n in snapshot.get(key, []))
+                     for key, label in labels if snapshot.get(key)]
+            detail = "关系快照：" + ("；".join(parts) or "没有关系")
+            if snapshot.get("error"):
+                detail = "关系未确认：" + snapshot["error"]
+        elif kind == "item_changed" and any(k in body for k in ("relation_hold", "aggregate")):
+            detail = f'关系准入：{body.get("state", "")} {body.get("next", "")}'
         else:
             continue
         lines.append(f'{fact["at"]} {one_line(detail)}')

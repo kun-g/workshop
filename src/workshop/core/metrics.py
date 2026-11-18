@@ -7,7 +7,7 @@ import re
 import sqlite3
 
 
-STATES = ('在跑', '定时', '卡住', '排队', '等你', '其他')
+STATES = ('在跑', '定时', '卡住', '排队', '等你', '等前置', '等子单', '其他')
 TERMINAL = ('完成', '放弃', '移除')
 FIELDS = ('target', 'flow', 'title', 'action', 'release_gate', 'pending_classification',
           'unmatched', 'state', 'wait_for_ready', 'token', 'executor', 'stopped',
