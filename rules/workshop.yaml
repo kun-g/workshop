@@ -172,6 +172,8 @@ targets:
     ask_kun_state: ~/.local/state/ask-kun/asks.json
     ci: none
     prepare: [{argv: [uv, sync, --locked]}]
+    release_prepare:
+      - {argv: [uv, run, python, scripts/install_intervention.py, --rules, rules/workshop.yaml]}
     check_timeout: 300
     bot_review: false
     repo: kun-g/workshop
