@@ -2,10 +2,10 @@
 from dataclasses import fields
 from datetime import datetime, timedelta
 import json
-import re
 from .jobs import running as running_jobs
 from .models import Event, utcnow
 from .flows import configured
+from .holding import resolve
 
 
 ENDED = ("完成", "放弃")
@@ -111,19 +111,6 @@ def status(log, **options):
     for card in view["uncertain"]:
         lines.append(f'通道待对账\t{card["item"]}\t{card["card"]}\t连续 3 次不能确定是否已发送，需检查通道')
     return "\n".join(lines)
-
-
-def resolve(log, targets, text, *, allow_new=False):
-    """`<短名>#<对象键>` 或 `<交付对象>:<对象键>` 找到活 id；对象键先查别名。"""
-    short = {t["short_name"]: name for name, t in targets.items() if isinstance(t, dict) and t.get("short_name")}
-    named = re.fullmatch(r"([^\s:#]+)#(\S+)", text)
-    target, key = (short.get(named[1]), named[2]) if named else text.split(":", 1) if ":" in text else (None, None)
-    if target and (not allow_new or target in targets) and key and not re.search(r'\s', key):
-        alias = log.get("aliases", f"{target}:{key}")
-        item_id = alias["item"] if alias else f"{target}:{key}"
-        if allow_new or log.get("items", item_id):
-            return item_id
-    raise ValueError(f'找不到活：{text}；可用短名：{"、".join(sorted(short)) or "无"}')
 
 
 def one_line(text):

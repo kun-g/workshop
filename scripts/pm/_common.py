@@ -8,7 +8,7 @@ from pathlib import Path
 
 from workshop.core.engine import Engine, stamp
 from workshop.core.log import Log
-from workshop.core.report import resolve
+from workshop.core.holding import resolve
 from workshop.core.rules import Rules
 from workshop.registry import Registry
 

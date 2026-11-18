@@ -6,7 +6,8 @@ import json
 from conftest import build, configuration
 from test_watch_updates import world, software, judgment, item_for, advance
 from workshop.core.models import Event
-from workshop.core.report import resolve, status, why
+from workshop.core.holding import resolve
+from workshop.core.report import status, why
 from workshop.plugins.watch_updates.flow import Flow
 from workshop.plugins.watch_updates.io import read, write
 from workshop.plugins.watch_updates.migration import migrate

@@ -10,7 +10,8 @@ from .core.engine import Engine, finder
 from .core.jobs import Jobs, execute
 from .core.log import Log
 from .core.models import Event
-from .core.report import overview, resolve, status, unfiled, usage, why
+from .core.holding import resolve
+from .core.report import overview, status, unfiled, usage, why
 from .core.rules import Rules
 from .core.wake import Mailbox, ring
 from .registry import Registry, load_rules
