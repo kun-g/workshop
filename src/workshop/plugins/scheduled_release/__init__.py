@@ -35,7 +35,7 @@ class ScheduledRelease:
         return Classification(discard=True)
 
     def describe(self, event, target):
-        return f"整点比较：{event.body.get('from', '')[:12]} → {event.body.get('to', '')[:12]}"
+        return f"定时比较：{event.body.get('from', '')[:12]} → {event.body.get('to', '')[:12]}"
 
     def path(self, item, target):
         return self.io.root(target) / 'scheduled_release' / (hashlib.sha256(item['id'].encode()).hexdigest() + '.json')

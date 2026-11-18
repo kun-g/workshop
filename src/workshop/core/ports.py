@@ -33,6 +33,10 @@ class WaitUnavailable(Exception):
 
 
 class Source(Protocol):
+    def validate(self, target: dict) -> None:
+        """可选，装配时纯本地校验来源配置；无效时抛 ValueError，先于守护进程启动。"""
+        ...
+
     def normalize(self, batch: Poll, target: dict,
                   find_external: Callable[..., dict | None]) -> Poll:
         """可选，核心 intake 调用：整理未 normalized 的批次，保留游标。
