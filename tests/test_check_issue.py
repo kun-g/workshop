@@ -54,7 +54,30 @@ def test_missing_items_match_intake_next(command, world, capsys, body):
     assert not output.err
     evidence = world['flow'].assess(snapshot(world, '接单'), Receipt('done', '核对'), world['target'])
     assert evidence.awaits_update
-    assert evidence.reason == '接单核对没过，issue 补齐后自动接单：' + '；'.join(output.out.splitlines())
+    problems = [line for line in output.out.splitlines() if not line.startswith('进交付时要求 PR 改的需求文档：')]
+    assert evidence.reason == '接单核对没过，issue 补齐后自动接单：' + '；'.join(problems)
+
+
+@pytest.mark.parametrize('draft', [False, True])
+def test_requirement_changes_show_gate_documents_only(command, world, capsys, draft):
+    from workshop.plugins.issue_delivery.requirements import change_documents, section
+
+    documents = {'docs/requirements/核心.md': '**R14 要求。**',
+                 'docs/requirements/交付.md': '**R6 要求。**'}
+    path = world['root'] / 'rules.yaml'
+    config = yaml.safe_load(path.read_text())
+    config['targets']['alpha']['requirement_docs'] = ['docs/requirements/']
+    path.write_text(yaml.safe_dump(config))
+    body = BODY.replace('核心 R14', '需求变更：在 核心.md 新增：失败后只通知一次。\n\n参见交付 R6。')
+    edit(world, requirement_contents=documents, issue={'number': 7, 'body': body})
+    draft_path = world['root'] / 'draft.md'
+    draft_path.write_text(body)
+    args = ['--file', str(draft_path), '--target', 'ws'] if draft else ['ws#7']
+    assert command(*args) == 0
+    required = change_documents(section(body, '依据'), documents, config['targets']['alpha'])
+    assert required == {'docs/requirements/核心.md'}
+    assert capsys.readouterr().out == ('进交付时要求 PR 改的需求文档：' + '、'.join(sorted(required))
+                                    + '\n接单核对通过，能跑的检查：\n["scripts/check.sh"]\n')
 
 
 @pytest.mark.parametrize('body,code', [(BODY, 0), (BODY.replace('核心 R14', 'R14'), 1)])

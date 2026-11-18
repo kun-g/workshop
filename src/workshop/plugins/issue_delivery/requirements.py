@@ -27,14 +27,20 @@ def registered(path, target):
 
 
 def changed_requirement(basis):
-    match = re.search(r"需求变更\s*[：:]\s*(.*)", basis, re.S)
-    return match[1].strip() if match else None
+    # 先切段，避免冒号后的空白匹配跨过空行，把后面的引用也算成变更。
+    for paragraph in re.split(r"\r?\n[ \t]*\r?\n", basis):
+        match = re.search(r"需求变更\s*[：:]\s*(.*)", paragraph, re.S)
+        if match:
+            return match[1].strip()
+    return None
 
 
 def change_documents(basis, documents, target):
     """以文件全路径或无歧义的文件名指明要改哪份文档；目录登记允许新增文档。
-    只看「需求变更：」之后的文字：前面「已有需求」里引用的文档不算要改的。"""
-    change = changed_requirement(basis) or basis
+    只看「需求变更：」所在段落中冒号后的文字，其他段落的引用不算。"""
+    change = changed_requirement(basis)
+    if change is None:
+        change = basis
     paths = set(re.findall(r"[\w./\-]+\.md", change))
     selected = {p for p in paths if registered(p, target)}
     for path in documents:
@@ -48,6 +54,20 @@ def change_documents(basis, documents, target):
     if not selected:
         raise ValueError("依据：需求变更须写明登记的需求文档位置和需求原文")
     return selected
+
+
+def updated_documents(files, target):
+    """只认登记文档的新增、修改；重命名只认有内容修改的新路径。"""
+    return {f["filename"] for f in files
+            if (f.get("status") in ("added", "modified")
+                or (f.get("status") == "renamed" and f.get("changes", 0) > 0))
+            and registered(f["filename"], target)}
+
+
+def missing_documents(basis, documents, target, files, state):
+    """当前 PR 和这件活已合入的记录共同满足文档要求。"""
+    return (change_documents(basis, documents, target)
+            - updated_documents(files, target) - state.get("requirement_changes", {}).keys())
 
 
 def check_references(basis, documents):

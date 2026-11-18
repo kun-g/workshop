@@ -14,7 +14,7 @@ from workshop.core.models import After, Classification, Evidence, FlowBrief, OUT
 from .io import IO, executable, failure, run, tail
 from . import dod, decisions, intake
 from . import relations as relation_source
-from .requirements import change_documents, changed_requirement, section
+from .requirements import changed_requirement, missing_documents, section, updated_documents
 from workshop.core.ports import Retryable
 from workshop.github_identity import scoped as github_scope
 from workshop.path_policy import only_ignored_paths
@@ -546,10 +546,8 @@ class IssueDelivery:
         problems = dod.evidence_problems(pr.get("body") or "", body, checks)
         basis = section(body, "依据")
         if changed_requirement(basis) is not None:
-            # issue交付 R10：需求变更在同一个 PR 里改登记的需求文档；删掉或只挪走不算改。
-            required = change_documents(basis, self.io.requirement_documents(target), target)
-            updated = {f["filename"] for f in files if f.get("status") != "removed"}
-            missing = required - updated
+            # issue交付 R10：修复 PR 沿用本活已合入的需求文档；新加的文档仍须改。
+            missing = missing_documents(basis, self.io.requirement_documents(target), target, files, state)
             if missing:
                 problems.append("需求变更没改登记的需求文档：" + "、".join(sorted(missing)))
         runs = self.io.verify(target, sha, checks)
@@ -855,6 +853,7 @@ class IssueDelivery:
                     self._merge_failed(pr, state, argv, merging, target)
             if not pr.get("merged") or not pr.get("merge_commit_sha"):
                 raise BusinessWait("合并结果未确认")
+            self._remember_requirements(pr, target, state)
             state["merge"] = pr["merge_commit_sha"]
             state["pr"] = pr["number"]
             state["visual_after"] = max((m.get("seq", 0) for m in item.get("materials", [])), default=0)
@@ -898,6 +897,12 @@ class IssueDelivery:
             # 交付完成的事实按提交号记下：要上线的已核对线上包含它，写了上线后 DoD 的已跑过。
             state["delivered"].append(merge)
         return After()
+
+    def _remember_requirements(self, pr, target, state):
+        """合并确认后记本活改过的文档；执行重来时保留。"""
+        files, _ = self._changed_paths(pr, target)
+        changes = state.setdefault("requirement_changes", {})
+        changes.update({path: pr["merge_commit_sha"] for path in updated_documents(files, target)})
 
 
 
