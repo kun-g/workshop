@@ -24,7 +24,7 @@
 - E4 给 Kun 的报告：顶部总数，一句话理由，按实例一行，空的不显示。
 - E8 测试不用 sleep：慢调用用闸门或假时钟，等状态用查条件加总超时的循环。
 - E9 不给 Kun 发通知；只有要他拍板的事才发问卡，一张卡问一件事。
-- E10 GitHub 上的动作用 App 身份；kun-g 只代表 Kun 亲手做的事。grant-console 的 issue 例外，正文写明代办。
+- E10 GitHub 上的动作用 App 身份；kun-g 只代表 Kun 亲手做的事，agent 要以他的名义做只能走 gh-human 批准卡。
 - E11 主检出只读；改代码开 worktree，急着上线用 `workshop release-now`。
 
 ## 检查
