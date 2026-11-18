@@ -4,7 +4,7 @@ from datetime import datetime, timedelta
 from .gates import decide
 from .models import Event, Receipt, STAGES, Started, due, stamp
 from .ports import Unavailable, Retryable
-from .cards import frozen_question, question, notice
+from .cards import notice
 from .models import After, Evidence, RoundUsage
 from .jobs import Pending
 
@@ -264,15 +264,11 @@ def finish(engine, row):
                                leave=receipt.leave or {"kind": "工序", "at": stamp(engine.clock()), "owner": "车间", "about": decision.stage})
                 if decision.stage == "执行" and item["stage"] not in ("接单", "说清楚"):
                     changes.update(approved=[], reviews=[], review_required=1)
-                engine.fact("gate_passed", {"gate_reason": decision.reason}, item["id"])
-            elif (decision.needs_approval or decision.frozen) and receipt.outcome == "done" and not receipt.ask:
-                payload = (frozen_question(item, decision.frozen, decision.needs_approval) if decision.frozen
-                           else question(decision.reason, approval=True))
-                card_id = engine.card(item, f"approval:{token}", "ask", payload, actions=list(decision.needs_approval),
-                                    frozen_files=list(decision.frozen), core_approval=True)
-                changes.update(state="等你", next=decision.reason, blocked_by="Kun", leave={"kind": "等你", "about": decision.reason},
-                               pending_advance={"token": token, "card": card_id, "from": item["stage"], "to": receipt.advance,
-                                                "evidence": asdict(evidence), "receipt": row["receipt"], "stages": list(stages)})
+                engine.fact("gate_passed", {"gate_reason": decision.reason, "gate_stage": decision.stage, "actions": evidence.actions,
+                            "action_targets": evidence.action_targets, "authorized_actions": evidence.authorized_actions}, item["id"])
+            elif decision.needs_approval and receipt.outcome == "done" and not receipt.ask:
+                changes.update(state="卡住", next="流程按原申请号核实授权中心的结果后恢复",
+                               blocked_by=decision.reason, leave=engine.blocked_leave(decision.reason))
                 engine.fact("gate_blocked", {"gate_reason": decision.reason}, item["id"])
             elif not program and (receipt.ask or receipt.later or receipt.leave):
                 leave = receipt.leave
@@ -308,46 +304,6 @@ def finish(engine, row):
         engine.retry_failure(item["target"], port, name, f"finish:{token}", exc)
     except Exception as exc:
         engine.broken(item["target"], port, name, exc)
-
-
-def complete_approval(engine, item):
-    pending = item.get("pending_advance")
-    if not pending or engine.waiting(item) or item["state"] != "空闲":
-        return
-    receipt = Receipt.parse(pending["receipt"], engine.clock())
-    evidence = Evidence(**pending["evidence"])
-    decision = decide(item, receipt, evidence, pending["stages"], engine.rules)
-    if not decision.allowed:
-        with engine.log.transaction():
-            card = engine.log.get("cards", pending["card"])
-            label = card.get("choice_label", card.get("answer", "未批准"))
-            reason = f"Kun 没批准，选择了：{label}（{card.get('answer', '未知')}）"
-            engine.fact("core_feedback", {"body": reason, "card": card["id"], "choice": card.get("answer")}, item["id"])
-            engine.change(item, stage="执行", state="空闲", next=reason, pending_advance=None, reviews=[],
-                        review_required=1, approved=[], retry_executor=None, gate_count=0, gate_reason=reason,
-                        leave={"kind": "工序", "owner": "车间", "at": stamp(engine.clock()), "about": "按拒绝意见修改"})
-        return
-    target = engine.item_target(item)
-    try:
-        key = f"after:{pending['token']}"
-        with engine.log.transaction():
-            latest = engine.log.get("items", item["id"])
-            if latest["pending_rework"] or latest["stage"] != pending["from"]:
-                return
-            if not engine.log.get("effects", key):
-                engine.fact("effect", {"id": key, "done": False})
-        result = engine.after({**item, "result": receipt.json()}, pending["from"], key, target)
-        with engine.log.transaction():
-            latest = engine.log.get("items", item["id"])
-            if latest["pending_rework"]:
-                return
-            changes = (engine.pending_changes(latest, result, target, {"key": key, "receipt": receipt.json(), "to": decision.stage, "complete": decision.complete}) if result.pending else
-                       dict(state="空闲", next=decision.stage, gate_reason="已按原证据授权推进",
-                            after_pending_count=0, pending_episode=latest.get("pending_episode", 0) + 1))
-            engine.change(latest, "gate_passed", stage=pending["from"] if result.pending else decision.stage,
-                        pending_advance=None, gate_count=0, **changes)
-    except Exception as exc:
-        engine.broken(item["target"], "flow", target["plugin"], exc)
 
 
 def drive(engine):

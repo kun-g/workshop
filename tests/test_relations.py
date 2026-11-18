@@ -231,19 +231,14 @@ def test_rework_while_waiting_for_members_can_execute(engine):
     assert current(engine)['stage'] == '执行'
 
 
-def test_pending_approval_rejection_cannot_be_swallowed_by_convergence(engine):
+def test_authorization_block_cannot_be_swallowed_by_convergence(engine):
     from conftest import reach, finish
-    from workshop.core.models import Answer
-    flow = engine.plugins.get('flow', 'flow')
-    flow.actions = ['对外发消息']
+    engine.plugins.get('flow', 'flow').actions = ['对外发消息']
     reach(engine, '审查')
     finish(engine, '交付')
-    card = next(c for c in engine.log.all('cards') if c.get('actions'))
     install(engine, Relations(members=[ref(complete=True)], converge='验收'))
-    engine.plugins.get('channel', 'channel').answers = [Answer(card['id'], 'no', True)]
     for _ in range(3):
         engine.tick()
-    assert item(engine)['stage'] == '执行'
-    assert item(engine)['state'] == '跑着'
-    assert current(engine)['stage'] == '执行'
-    assert any(f['kind'] == 'core_feedback' for f in engine.log.facts())
+    assert item(engine)['stage'] == '审查'
+    assert item(engine)['state'] == '卡住'
+    assert not engine.log.all('cards')

@@ -247,20 +247,16 @@ def cancel_questions(engine, item):
 def record_answer(engine, card, answer, provenance=None):
     """记下 Kun 对一张卡的回答。provenance 记回答从哪个渠道来（飞书卡片不写；会话转录写会话号和原话）。"""
     engine.delivery_ok(f"read:{card['id']}")
-    approved = answer.value == "yes" if card.get("core_approval") else answer.approved
+    approved = answer.approved
     choice_label = next((c["label"] for c in card["payload"]["choices"] if c["key"] == answer.value), answer.value)
     # 回答单独追加，由 evolve 在最新资料上追加，不回写旧资料快照。
     engine.fact("answer", {**asdict(answer), "approved": approved, "choice_label": choice_label, "key": card["payload"].get("key", card["key"]),
-              "title": card["payload"]["decision"], "actions": card.get("actions", []), "billing_configs": card.get("billing_configs", []),
-              "frozen_files": card.get("frozen_files", []), **({"via": provenance} if provenance else {})},
+              "title": card["payload"]["decision"], **({"via": provenance} if provenance else {})},
               card["item"], source="answer", ext_id=card["id"])
     engine.fact("card_changed", {"id": card["id"], "answered": True, "answer": answer.value, "choice_label": choice_label,
               "approved": approved, "read_failures": 0, "read_error": ""}, card["item"])
     item = engine.log.get("items", card["item"])
-    if card.get("billing_configs") and not approved:
-        engine.change(item, state="等你", wait_for_ready=True, next="按量计费未获批准，等待放行", blocked_by="Kun",
-                    leave={"kind": "等你", "about": "调整执行者或授权后放行"})
-    elif item["state"] == "等你" and not item.get("wait_for_ready") and not engine.waiting(item):
+    if item["state"] == "等你" and not item.get("wait_for_ready") and not engine.waiting(item):
         engine.change(item, state="空闲", next="按回答继续", blocked_by="")
     elif item["state"] == "等你" and not engine.answerable(item):
         engine.change(item, state="等你", next="卡片无法继续，需要检查后放行")

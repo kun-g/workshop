@@ -219,20 +219,15 @@ def test_program_pending_recheck_completes_after_restart(engine, monkeypatch):
     assert len(engine.log.all('rounds')) == 1
 
 
-def test_program_delivery_waits_for_approval(engine, monkeypatch):
-    from workshop.core.models import Answer
+def test_program_delivery_requires_center_authorization(engine, monkeypatch):
     flow = automatic(engine, monkeypatch)
     flow.actions = ['对外发消息']
     engine.ingest(event())
     for _ in range(8):
         engine.tick()
-    assert item(engine)['stage'] == '审查' and item(engine)['state'] == '等你'
+    assert item(engine)['stage'] == '审查' and item(engine)['state'] == '卡住'
     assert len(flow.after_keys) == 4
-    card = next(c for c in engine.log.all('cards') if c['mode'] == 'ask')
-    engine.plugins.get('channel', 'channel').answers = [Answer(card['id'], 'yes', True)]
-    engine.tick()
-    assert item(engine)['stage'] in ('交付', '验收')
-    assert not engine.log.all('rounds')
+    assert not engine.log.all('cards') and not engine.log.all('rounds')
 
 
 def test_program_jobs_resume_without_inline_calls(tmp_path, monkeypatch):

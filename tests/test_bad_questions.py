@@ -20,7 +20,7 @@ def samples(text):
     return [json.loads(s) for s in re.findall(r'```json\n(.*?)\n```', text, re.S)]
 
 
-@pytest.mark.parametrize('stage,key', [('收尾', 'visual-acceptance')])
+@pytest.mark.parametrize('stage,key', [('执行', 'question')])
 def test_actual_brief_examples_pass_both_validators(world, stage, key):
     value = world['flow'].brief({**snapshot(world, stage), 'allowed_advances': ['执行']}, stage, world['target'])
     brief = value if isinstance(value, str) else value.instructions
@@ -29,7 +29,7 @@ def test_actual_brief_examples_pass_both_validators(world, stage, key):
     for card in cards:
         validate_question(card)
         Receipt.parse({'outcome': 'nothing', 'summary': '等待', 'ask': [card]}, utcnow())
-    assert next(c for c in cards if c['key'] == key)['kind'] == 'approval'
+    assert 'visual-acceptance' not in brief
     for text in ('subject 为非空字符串且≤30', 'decision 为非空字符串且≤42',
                  'context 为非空字符串（无长度上限）', 'reason 为非空字符串且≤60',
                  'key 为非空字符串且≤18', 'label 为非空字符串且≤18',
@@ -40,15 +40,11 @@ def test_actual_brief_examples_pass_both_validators(world, stage, key):
 
 @pytest.mark.parametrize('first,second', [(0, 0), (1, 1), (0, 1)])
 def test_wrapper_two_bad_cards_blocks_without_failed_or_rerun(world, monkeypatch, first, second):
-    source = remote(world)['issue']
-    source['body'] = source['body'].replace('要不要亲眼看\n否', '要不要亲眼看\n是')
-    edit(world, issue=source)
     engine = engine_for(world, 'bad-cards')
     start(engine)
     ensure_round(engine)
-    hand_over(engine, world)
-    assert ensure_round(engine)['stage'] == '收尾'
-    sha = remote(world)['pr']['merge_commit_sha']
+    assert ensure_round(engine)['stage'] == '执行'
+    sha = world['sha']
     token = current(engine, '7')['token']
     evidence = [result(world, acceptance={'passed': True, 'head': sha, 'output': 'machine checks passed'})]
     def receipt(index):
@@ -80,7 +76,7 @@ def test_wrapper_two_bad_cards_blocks_without_failed_or_rerun(world, monkeypatch
     assert engine.submit(token, receipt(second)) is False
     engine.tick()
     stopped = item(engine, '7')
-    assert (stopped['stage'], stopped['state'], stopped['blocked_by']) == ('收尾', '卡住', '问卡格式不对')
+    assert (stopped['stage'], stopped['state'], stopped['blocked_by']) == ('执行', '卡住', '问卡格式不对')
     assert '修正问卡格式' in stopped['next']
     assert engine.log.all('cards') == []
     row = engine.log.get('rounds', token)

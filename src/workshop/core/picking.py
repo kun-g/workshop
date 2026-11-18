@@ -127,19 +127,16 @@ def reserve(engine, item, unavailable=()):
                 continue
             if not available:
                 continue
-            billing_key = hashlib.sha256(json.dumps(config, sort_keys=True).encode()).hexdigest()
-            if config["billing"] == "metered" and billing_key not in item.get("billing_approved", []):
-                metered.append((billing_key, config))
+            if config["billing"] == "metered":
+                metered.append(config)
                 continue
             candidates.append({"config": config, "available": True})
         if waiting:
             raise waiting
         if not candidates and metered:
-            context = "没有可用的订阅候选；是否授权本件活使用这些按量计费候选：" + json.dumps([c for _, c in metered], ensure_ascii=False)
-            payload = question("是否批准本件活使用按量计费执行者", approval=True)
-            payload["context"] = context
-            engine.card(item, f'billing:{item["revision"]}', "ask", payload, billing_configs=[k for k, _ in metered], core_approval=True)
-            engine.change(item, state="等你", next="按量计费先授权", blocked_by="Kun", leave={"kind": "等你", "about": "按量计费授权"})
+            reason = "没有可用的订阅候选；授权中心尚缺按量计费授权类别"
+            engine.change(item, state="卡住", next="补齐授权中心按量计费能力或恢复订阅候选",
+                          blocked_by=reason, leave=engine.blocked_leave(reason))
             return
         history = engine.log.history(item["id"])
         selection_target = {**target, "selection": {"writer": item["writer"], "reviewed": item.get("reviews", []),
@@ -161,7 +158,7 @@ def reserve(engine, item, unavailable=()):
                 engine.fact("selection_failed", {"reason": reason, "selector": selector_name}, item["id"])
                 raise Retryable(reason)
         if chosen is None:
-            # 没有候选属于操作阻塞；按量计费授权已在前面单独发问卡。
+            # 没有候选属于操作阻塞；按量计费缺能力已在前面阻断。
             why_none = choice.reason.strip() if choice is not None and isinstance(choice.reason, str) else ""
             if why_none:
                 engine.fact("selection_none", {"reason": why_none, "selector": selector_name}, item["id"])

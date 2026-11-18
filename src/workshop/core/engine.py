@@ -353,8 +353,6 @@ class Engine:
     def finish(self, *args, **kwargs):
         return rounds.finish(self, *args, **kwargs)
 
-    def complete_approval(self, *args, **kwargs):
-        return rounds.complete_approval(self, *args, **kwargs)
 
     def wake_paths(self, *args, **kwargs):
         return waking.wake_paths(self, *args, **kwargs)

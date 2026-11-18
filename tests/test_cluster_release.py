@@ -135,7 +135,8 @@ def test_batch_failure_preserves_reason_and_does_not_repeat(cluster, monkeypatch
     flow.after(data, '证据', 'build', target)
     result = flow.after(data, '交付', 'deploy', target)
     assert bool(result.blocked) == (status == 'blocked')
-    assert 'req-one' in (result.blocked or result.notice)
+    assert 'req-one' in (result.blocked or read(io.root(target) / 'batches' / (hashlib.sha256(data['id'].encode()).hexdigest() + '.json'))['reason'])
+    assert not result.notice
     assert read(io.root(target) / 'cluster-release.json')['status'] == status
     assert flow.after(data, '交付', 'deploy', target) == result
     assert not (io.root(target) / 'release.json').exists()
@@ -297,23 +298,23 @@ def test_timed_out_pending_grant_only_polls_existing_request(cluster, monkeypatc
         if phase == 'build':
             return {'status': 'ok', 'checkout': '/isolated/checkout'}
         return {'status': 'awaiting_grant', 'reason': 'local timeout; req-one',
-                'grant': {'id': 'req-one', 'log': '/evidence/grant.log'}}
+                'production': P, 'grant': {'id': 'req-one', 'log': '/evidence/grant.log'}}
     monkeypatch.setattr(ClusterRelease, 'worker', worker)
     flow = ScheduledRelease(io)
     flow.after(data, '证据', 'build', target)
     assert flow.after(data, '交付', 'deploy', target).pending
     monkeypatch.setattr(ClusterRelease, 'worker', lambda *a: pytest.fail('不能重启同步程序'))
-    status, calls = 'decision_in_progress', []
-    def command(argv, **kwargs):
-        calls.append(argv)
-        return {'argv': argv, 'exit_code': 0, 'stdout': json.dumps({'status': status}), 'stderr': ''}
-    monkeypatch.setattr(io, 'command', command)
+    status, calls = 'pending', []
+    def reader(spec, client):
+        calls.append(spec['request'])
+        return {'verification': {'result': status}, 'execution': {}}
+    monkeypatch.setattr('workshop.plugins.scheduled_release.cluster.read_authorization', reader)
     assert ScheduledRelease(io).after(data, '交付', 'deploy', target).pending
     status = 'expired'
     result = ScheduledRelease(io).after(data, '交付', 'deploy', target)
-    assert not result.pending and not result.blocked
+    assert not result.pending and not result.blocked and not result.notice
     assert read(io.root(target) / 'cluster-release.json')['status'] == 'rejected'
-    assert all(argv[2:] == ['status', 'req-one'] for argv in calls)
+    assert calls == ['req-one', 'req-one']
 
 
 def test_real_worker_survives_adapter_recreation_and_holds_inherited_lock(cluster, tmp_path, monkeypatch):
@@ -390,7 +391,7 @@ def test_lost_worker_reports_existing_grant_id(cluster, monkeypatch):
     (evidence / 'grant.log').write_text('request req-preserved status=pending\n')
     monkeypatch.setattr(subprocess, 'Popen', lambda *a, **k: pytest.fail('不得重复发卡'))
     result = ClusterRelease(io).worker(target, {'item': data['id']}, 'deploy')
-    assert result['status'] == 'blocked' and result['grant']['id'] == 'req-preserved'
+    assert result['status'] == 'awaiting_grant' and result['grant']['id'] == 'req-preserved'
     assert result['grant']['log'] == str(evidence / 'grant.log')
 
 
@@ -445,19 +446,18 @@ def test_exec_log_recognizes_request_kind_and_uncertain_does_not_restart(cluster
     (directory / 'grant.log').write_text('exec exec-one status=pending\nexec exec-one status=uncertain\n')
     grant = grant_record(io.root(target))
     assert grant['id'] == 'exec-one' and grant['kind'] == 'exec'
-    state = {'built': {'checkout': '/checkout'}, 'result': {'grant': grant}}
+    state = {'item': data['id'], 'to': B, 'built': {'checkout': '/checkout'}, 'result': {'grant': grant, 'production': P}}
     calls = []
-    status = 'approved-executing'
-    def command(argv, **kwargs):
-        calls.append(argv)
-        return dict(exit_code=0, stdout=json.dumps({'status': status}), stderr='')
-    monkeypatch.setattr(io, 'command', command)
+    def reader(spec, client):
+        calls.append(spec)
+        return {'verification': {'result': 'unknown'}, 'execution': {}}
+    monkeypatch.setattr('workshop.plugins.scheduled_release.cluster.read_authorization', reader)
     controller = ClusterRelease(io)
-    assert controller.grant_outcome(state).pending
-    status = 'uncertain'
-    assert controller.grant_outcome(state).blocked
-    assert state['status'] == 'blocked'
-    assert all(argv[2:] == ['status', 'exec-one', '--kind', 'exec'] for argv in calls)
+    assert controller.grant_outcome(state, target).pending
+    assert ClusterRelease(io).grant_outcome(state, target).pending
+    assert calls[0] == calls[1] and calls[0]['request'] == 'exec-one'
+    assert state['status'] == 'awaiting_grant'
+
 
 
 @pytest.mark.parametrize('status,expected', [('approved-executing', 'awaiting_grant'), ('completed', 'blocked'), ('uncertain', 'blocked'), ('failed', 'blocked')])

@@ -73,7 +73,6 @@ forbidden_modules =
 allow_indirect_imports = True
 ignore_imports =
     # H6：卡片移到介入点插件后删除。
-    workshop.plugins.issue_delivery -> workshop.core.cards
     # H6：旧通道卡片路径迁走后删除。
     workshop.plugins.channels.ask_kun -> workshop.core.cards
 
@@ -91,6 +90,8 @@ forbidden_modules =
 name = 共用库不引用插件
 type = forbidden
 source_modules =
+    workshop.wait_client
+    workshop.authorization
     workshop.github_identity
     workshop.path_policy
     workshop.running

@@ -8,6 +8,7 @@ import subprocess
 import sys
 
 from workshop.core.models import After
+from workshop.authorization import read as read_authorization
 from .io import grant_record, read, write, release_path
 
 
@@ -29,7 +30,7 @@ class ClusterRelease:
                 return result
             if (directory / 'spec.json').exists():
                 grant = grant_record(directory)
-                return {'status': 'blocked', 'reason': f"批次进程退出但结果不明；授权 {grant['id'] or '编号未知'}；不重新执行，核对 {directory}",
+                return {'status': 'awaiting_grant' if phase == 'deploy' and grant.get('id') else 'blocked', 'reason': f"批次进程退出但结果不明；授权 {grant['id'] or '编号未知'}；不重新执行，核对 {directory}",
                         'log': str(directory), 'grant': grant}
             spec = {'item': state['item'], 'to': state['to'], 'phase': phase,
                     'initial': state.get('initial', False),
@@ -47,24 +48,38 @@ class ClusterRelease:
                 write(directory / 'pid.json', {'pid': child.pid})
         return None
 
-    def grant_outcome(self, state):
+    def grant_outcome(self, state, target):
         grant = state['result']['grant']
-        checkout = Path(state['built']['checkout'])
-        result = self.io.command(['python3', str(checkout / 'scripts/request_grant.py'), 'status', grant['id'],
-                                  *(['--kind', 'exec'] if grant.get('kind') == 'exec' else [])], timeout=30)
-        try:
-            status = json.loads(result['stdout']).get('status') if result['exit_code'] == 0 else None
-        except (ValueError, AttributeError):
-            status = None
+        directory = self.io.root(target) / 'batches' / hashlib.sha256(state['item'].encode()).hexdigest() / 'deploy'
+        checkpoint = read(directory / 'production.json')
+        production = checkpoint.get('revision') or state['result'].get('production')
+        if not grant.get('id') or not production or checkpoint.get('source_commit', state['to']) != state['to']:
+            state.update(status='blocked', reason='原同步缺原申请号或固定目标检查点，不能推测或重做')
+            return After(blocked=state['reason'], next='核对原批次 production.json 和原申请')
+        spec = {'request': grant['id'], 'kind': grant.get('kind', 'exec' if grant['id'].startswith('exec-') else 'grant'),
+                'action': '集群同步', 'provider_action': 'argocd/sync_app', 'checkpoint': str(directory),
+                'target': {'instance': target.get('grant_instance', 'central'),
+                           'app': target['deployment']['app'], 'revision': production}}
+        if state.get('authorization') and state['authorization'] != spec:
+            return After(blocked='批次原申请或目标检查点变了', next='核对原申请；禁止改目标或重跑同步')
+        state['authorization'] = spec
+        # 在网络调用前落盘，进程重启只从同一检查点恢复。
+        path = directory.parent.with_suffix('.json')
+        write(path, state)
+        result = read_authorization(spec, target.get('authorization_client') or
+                                    str(Path(state['built']['checkout']) / 'scripts/request_grant.py'))
         state['grant_check'] = result
-        if status in ('denied', 'rejected', 'expired', 'expired-unfetched'):
-            state.update(status='rejected', reason=f"授权 {grant['id']} {status}；日志 {grant['log']}")
-            return After(notice=state['reason'])
-        if status is None or status in ('pending', 'decision_in_progress', 'approved-executing'):
-            return After(pending=True, reason=f"已有授权 {grant['id']} 仍未确认终止；日志 {grant['log']}",
-                         next='只查询这次申请，不重新发卡', recheck_after='+5m')
-        state.update(status='blocked', reason=f"授权 {grant['id']} {status}，原同步程序已退出；日志 {grant['log']}")
-        return After(blocked=state['reason'], next='项目经理核对已有授权和线上状态；同步脚本不支持续接，不可直接重跑')
+        outcome = result['verification']['result']
+        if outcome == 'approved':
+            state.update(status='ok', deployed={'status': 'ok', 'production': production, 'grant': grant,
+                         'verification': result['verification'], 'execution': result['execution']})
+            return After()
+        reason = f"授权中心 {grant['id']}：{outcome}；只核实原同步检查点"
+        if outcome in ('pending', 'unknown'):
+            state['status'] = 'awaiting_grant'
+            return After(pending=True, reason=reason, next=f"只查询原申请 {grant['id']}，不重跑同步", recheck_after='+5m')
+        state.update(status='rejected', reason=reason)
+        return After()
 
     def after(self, item, stage, key, target, intent):
         with self.io.locked(target):
@@ -83,8 +98,8 @@ class ClusterRelease:
             if not active or active['item'] == item['id'] or state['status'] == 'reserved':
                 write(release_path(root, cluster=True), {k: state[k] for k in ('item', 'to', 'status')})
             result = After()
-            if state['status'] == 'awaiting_grant':
-                result = self.grant_outcome(state)
+            if state['status'] == 'awaiting_grant' or (state['status'] == 'blocked' and state.get('result', {}).get('grant', {}).get('id')):
+                result = self.grant_outcome(state, target)
             elif state['status'] == 'blocked':
                 result = After(blocked=state['reason'], next='项目经理核对批次日志和已有授权；不得重新调用同步脚本')
             elif state['status'] not in ('ok', 'failed', 'rejected'):
@@ -103,15 +118,17 @@ class ClusterRelease:
                             state['status'] = 'built' if phase == 'build' else 'ok'
                         else:
                             state.update(status=finished['status'], reason=finished['reason'], result=finished)
+                            if phase == 'deploy' and finished.get('grant', {}).get('id'):
+                                state['status'] = 'awaiting_grant'
                             if state['status'] == 'awaiting_grant':
                                 result = After(pending=True, reason=finished['reason'],
                                                next='只查询已有授权状态，不重新发卡', recheck_after='+5m')
                             elif state['status'] == 'blocked':
                                 result = After(blocked=finished['reason'], next='项目经理核对批次日志和已有授权；不自动回滚或重新发卡')
                             else:
-                                result = After(notice=f"整点发版 {state['to']} 停止：{finished['reason']}")
+                                result = After()
             if stage == '收尾' and state['status'] == 'ok':
-                result = After(notice=f"整点发版完成：{state['to']}，production {state['deployed']['production']} 已上线。")
+                result = After()
             if not result.pending:
                 state['effects'][key] = asdict(result)
             write(path, state)

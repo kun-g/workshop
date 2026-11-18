@@ -144,10 +144,6 @@ def evolve(db, fact: dict) -> None:
         item["materials"].append({"seq": fact["seq"], "body": body["value"], "source": "回答",
                                   "role": "Kun 的回答", "card": body["card_id"], "key": body["key"], "title": body["title"], "choice_label": body.get("choice_label", body["value"])})
         item["cause"] = max(item["cause"], fact["seq"])
-        if body["approved"]:
-            item["approved"] = sorted(set(item["approved"] + body.get("actions", [])))
-            item["billing_approved"] = sorted(set(item.get("billing_approved", []) + body.get("billing_configs", [])))
-            item["frozen_approved"] = sorted(set(item.get("frozen_approved", []) + body.get("frozen_files", [])))
         put("items", item_id, item)
     elif kind in ("round_result", "program_result"):
         item = get("items", item_id)

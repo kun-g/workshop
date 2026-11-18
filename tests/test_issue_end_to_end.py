@@ -332,40 +332,56 @@ def test_round_on_removed_stage_is_superseded(world, stage):
 
 
 def visual_until_card(world, name):
-    set_body(world, BODY.replace('## 要不要亲眼看\n否\n', '## 要不要亲眼看\n是\n打开状态页看错误提示\n'))
+    from test_intervention_business import Port
+    from workshop.plugins.intervention.service import Service
+    set_body(world, BODY.replace('## 要不要亲眼看\n否\n', '## 要不要亲眼看\n是\n看什么：打开状态页看错误提示\n在哪看：飞书私聊\n怎么回：引用送达回复过或不对\n'))
     engine = engine_for(world, name)
+    service = Service(world['root'] / (name+'service'), Path('rules/workshop.yaml'))
+    service.transport = lambda *a: {'state':'sent','external':'om_visual'}
+    service.poll_reply = lambda wait: None
+    port = Port(service)
+    engine.plugins.register('wait', 'intervention', port)
+    engine.rules.data['wait_services'] = {'intervention': {}}
     start(engine)
     ensure_round(engine)
     hand_over(engine, world)
-    row = ensure_round(engine)
-    assert row['stage'] == '收尾' and 'visual-acceptance' in row['brief']['instructions']
-    card = {**question('请按 issue 写的方式亲眼看错误提示', approval=True), 'key': 'visual-acceptance'}
-    finish(engine, key='7', ask=[card])
-    asked = next(c for c in engine.log.all('cards') if c['mode'] == 'ask')
+    for _ in range(3):
+        engine.tick()
     assert item(engine, '7')['state'] == '等你'
-    return engine, asked
+    assert not engine.log.all('cards')
+    [wait] = service.store.all('wait')
+    return engine, service, wait
+
+
+def visual_reply(service, wait, value):
+    return service.call('answer', {'operation':'reply', 'ref':wait['id'], 'value':value,
+        'source': {'channel':'external','reference':'om_reply','evidence':'回源身份核实',
+                   'version':wait['content']['version'],'delivery':wait['content']['delivery']}})
 
 
 def test_visual_yes_closes_by_program(world):
-    """issue交付 R7：要亲眼看的，DoD 过了以后起一轮按 issue 写的方式送一次；答 yes 后程序关 issue。"""
-    engine, card = visual_until_card(world, 'visual-yes')
+    engine, service, wait = visual_until_card(world, 'visual-yes')
     assert remote(world)['issue']['state'] == 'open'
-    engine.plugins.get('channel', 'channel').answers = [Answer(card['id'], 'yes', True)]
-    engine.tick()
-    engine.tick()
+    visual_reply(service, wait, '过')
+    for _ in range(4):
+        engine.clock.now += timedelta(seconds=60)
+        engine.tick()
     assert item(engine, '7')['state'] == '完成' and remote(world)['issue']['state'] == 'closed'
-    assert stages_run(engine) == ['执行', '收尾']
+    assert stages_run(engine) == ['执行']
+    assert len(service.store.all('delivery')) == 1
     engine.log.close()
 
 
 def test_visual_no_returns_to_execution(world):
-    engine, card = visual_until_card(world, 'visual-no')
-    engine.plugins.get('channel', 'channel').answers = [Answer(card['id'], 'no', False)]
-    engine.tick()
-    engine.tick()
-    back = item(engine, '7')
-    assert back['stage'] == '执行' and remote(world)['issue']['state'] == 'open'
-    assert '亲眼看' in ensure_round(engine)['brief']['instructions']
+    engine, service, wait = visual_until_card(world, 'visual-no')
+    visual_reply(service, wait, '不对：错误提示看不到')
+    for _ in range(4):
+        engine.clock.now += timedelta(seconds=60)
+        engine.tick()
+    assert item(engine, '7')['stage'] == '执行' and remote(world)['issue']['state'] == 'open'
+    brief = ensure_round(engine)['brief']
+    assert '亲眼看' in brief['instructions']
+    assert '不对：错误提示看不到' in json.dumps(brief['materials'], ensure_ascii=False)
     engine.log.close()
 
 
@@ -435,18 +451,15 @@ def test_head_changed_after_dod_is_rechecked_not_merged(world):
     assert not remote(world)['pr']['merged']
 
 
-def test_renaming_out_of_frozen_path_stops_for_kun(world):
-    """改名移出冻结路径也算碰到（核心 R27）：交付前停下发卡问放不放行，不合并。"""
-    edit(world, files=[{'filename': 'docs/check.sh', 'previous_filename': 'scripts/check.sh', 'status': 'renamed'}])
+def test_renaming_out_of_legacy_frozen_path_has_no_approval_gate(world):
+    edit(world, files=[{'filename':'docs/check.sh','previous_filename':'scripts/check.sh','status':'renamed'}])
     engine = engine_for(world, 'frozen', frozen_paths=['scripts/'])
     start(engine)
     ensure_round(engine)
     hand_over(engine, world)
-    row = item(engine, '7')
-    assert row['state'] == '等你', row
-    [card] = [c for c in engine.log.all('cards') if c.get('frozen_files')]
-    assert card['frozen_files'] == ['scripts/check.sh']
-    assert not remote(world)['pr']['merged']
+    engine.tick()
+    assert remote(world)['pr']['merged']
+    assert not engine.log.all('cards')
     engine.log.close()
 
 

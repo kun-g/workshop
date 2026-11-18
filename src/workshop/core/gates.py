@@ -11,8 +11,6 @@ class Decision:
     reason: str = ""
     needs_approval: tuple[str, ...] = ()
     complete: bool = False
-    # 碰到规则冻结路径、Kun 还没放行的文件；非空时停下发卡问放不放行。
-    frozen: tuple[str, ...] = ()
 
 
 def touched(paths, prefixes):
@@ -75,6 +73,14 @@ def decide(item: dict, receipt: Receipt, evidence: Evidence, stages, rules: Rule
         return Decision("执行", True, "验收不过，退回执行")
     if requested == "执行" and current in ("证据", "审查", "交付", "验收", "收尾"):
         return Decision("执行", True, "退回执行")
+    if requested in ("交付", "验收"):
+        required = set(evidence.actions) & set(rules.data["ask_first"]) - set(rules.data["skip_ask"])
+        verified = {r['action'] for r in evidence.authorized_actions
+                    if r.get('request') and r.get('result') == 'approved' and r.get('applied') is True
+                    and r.get('target') and r['target'] == evidence.action_targets.get(r['action'])}
+        pending = tuple(sorted(required - verified))
+        if pending:
+            return Decision(current, False, "动作等待授权中心核实原申请和实际生效：" + "、".join(pending), pending)
     if (current == "执行" and requested == "验收" and stages.index("验收") > stages.index("执行") + 1
             and any(entry.get("stage") == "验收" for entry in item.get("history", []))):
         # 到过验收又退回执行，执行确认已交付的结果不用改：直接回验收重走。
@@ -96,16 +102,6 @@ def decide(item: dict, receipt: Receipt, evidence: Evidence, stages, rules: Rule
         return Decision(current, False, "还没有登记能跑的检查")
     if not evidence.passed:
         return Decision(current, False, evidence.reason or "本阶段证据未通过")
-    frozen = ()
-    if STAGES.index(current) > STAGES.index("执行"):
-        # 执行之后按实际改动查冻结路径；放行过的文件不再问，退回执行后碰到新的冻结文件再问。
-        prefixes = rules.target(item["target"], item.get("flow", "")).get("frozen_paths", [])
-        frozen = tuple(p for p in touched(evidence.paths, prefixes) if p not in item.get("frozen_approved", []))
-    pending = ()
-    if requested == "交付" or ("交付" not in stages and requested == "验收"):
-        pending = tuple(sorted(set(evidence.actions) & set(rules.data["ask_first"])
-                               - set(rules.data["skip_ask"]) - set(item.get("approved", []))))
-    if frozen or pending:
-        # 两道同时要批时合成一张卡：批一次两样都放行，不批退回执行。
-        return Decision(current, False, "改动碰到冻结路径，等 Kun 放行" if frozen else "交付动作等待授权", pending, frozen=frozen)
+    if requested != "交付" and not ("交付" not in stages and requested == "验收"):
+        return Decision(requested, True)
     return Decision(requested, True)

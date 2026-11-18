@@ -380,6 +380,7 @@ class Entries:
         return After()
 
     def after(self, item, completed_stage, key, target, services=None):
+        self.io.services = services
         data = origin(item)
         with self.io.locked(target):
             state = self.io.state(target)

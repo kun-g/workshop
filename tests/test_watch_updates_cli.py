@@ -167,14 +167,21 @@ def test_resend_uses_delivery_journal_and_does_not_bypass_unknown_result(world):
     def failed(argv, **kwargs):
         calls.append(argv)
         return subprocess.CompletedProcess(argv, 1, '', 'disconnected')
-    actual.command = failed
+    from test_intervention_business import Port
+    from workshop.plugins.intervention.service import Service
+    service = Service(Path(config['state_dir']) / 'service', Path('rules/workshop.yaml'))
+    def channel(*args):
+        calls.append(args)
+        return {'state':'unknown'}
+    service.transport = channel
+    actual.services = lambda name: (Port(service), {})
     with pytest.raises(ValueError, match='发送未确认'):
         resend_weekly(target, 'supplement', actual)
     io.time += timedelta(hours=1)
     # 新 request 也要继续未确认的报告，不能绕过发送窗口另发一份。
-    with pytest.raises(ValueError, match='结果不明'):
+    with pytest.raises(ValueError, match='发送未确认'):
         resend_weekly(target, 'another-request', actual)
-    assert len(calls) == 1
+    assert [c[1] for c in calls] == ['send', 'reconcile']
     state = io.state(target)
     assert state['resends']['supplement']['report'] == state['resends']['another-request']['report']
 
@@ -189,7 +196,14 @@ def test_resend_delivery_success_before_state_save_is_not_sent_twice(world, monk
     def command(argv, **kwargs):
         calls.append(argv)
         return subprocess.CompletedProcess(argv, 0, '{"ok":true,"data":{"message_id":"om_sent"}}', '')
-    actual.command = command
+    from test_intervention_business import Port
+    from workshop.plugins.intervention.service import Service
+    service = Service(Path(target['watch_updates']['state_dir']) / 'service', Path('rules/workshop.yaml'))
+    def channel(*args):
+        calls.append(args)
+        return {'state':'sent', 'external':'om_sent'}
+    service.transport = channel
+    actual.services = lambda name: (Port(service), {})
     save = actual.save
     def crash_after_sent(target, state):
         if any(r.get('sent') and '-resend-' in r['id'] for r in state['reports'].values()):

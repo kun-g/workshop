@@ -401,23 +401,10 @@ def test_unknown_version_snapshot_and_git_commit(world):
 
 def test_report_delivery_journal_survives_partial_failure(world):
     io, target, flow, source = world
-    c = target['watch_updates']
-    c.update(lark='lark-cli', profile='test', kun_open_id='test')
     real = IO(io.clock)
-    calls = []
-    def command(argv, **kwargs):
-        calls.append(argv)
-        fail = '--file' in argv and len(calls) == 1
-        return subprocess.CompletedProcess(argv, 1 if fail else 0, json.dumps({'ok': not fail, 'data': {'message_id': 'om_sent'}}), '')
-    real.command = command
-    report = {'id': 'weekly', 'path': str(Path(c['reports'])/'weekly.html'), 'summary': 'summary'}
-    with pytest.raises(ValueError, match='发送未确认'):
-        real.send_report(target, report)
-    real.send_report(target, report)
-    assert sum('--text' in a for a in calls) == 0
-    assert sum('--file' in a for a in calls) == 2
-    real.send_report(target, report)
-    assert len(calls) == 2
+    with pytest.raises(ValueError, match='缺介入点服务'):
+        real.send_report(target, {'id': 'weekly', 'path': '/unused'})
+
 
 
 def test_unknown_deployment_does_not_block_known_deployment_or_invent_judgment(world):
@@ -577,16 +564,15 @@ def test_feishu_gets_only_the_attachment_and_summary_stays_on_record(world):
     lines = [line for line in report['summary'].splitlines() if line.startswith('n8n ·')]
     assert lines == ['n8n · 1.0.0 / 1.1.0→2.0.0 · 该升 · 2 个实例']
     assert '影响公开服务' not in report['summary']
-    target['watch_updates'].update(lark='lark-cli', profile='test', kun_open_id='test')
-    real = IO(io.clock)
+    from test_intervention_business import Port
+    from workshop.plugins.intervention.service import Service
+    service = Service(Path(target['watch_updates']['state_dir']) / 'intervention', Path('rules/workshop.yaml'))
     calls = []
-    def send(argv, **kwargs):
-        calls.append(argv)
-        return subprocess.CompletedProcess(argv, 0, '{"ok":true}', '')
-    real.command = send
-    real.send_report(target, report)
-    # R14（11-15）：飞书只发附件，逐行摘要只留在报告记录里。
-    assert len(calls) == 1 and '--file' in calls[0] and '--text' not in calls[0]
+    service.transport = lambda config, action, record: (calls.append(record['payload']) or {'state': 'sent', 'external': 'om_sent'})
+    real = IO(io.clock)
+    real.send_report(target, report, lambda name: (Port(service), {}))
+    assert len(calls) == 1 and calls[0]['artifact'] == report['path']
+    assert 'text' not in calls[0] and 'summary' not in calls[0]
 
 
 def test_real_engine_wait_feedback_rework_completion_and_replay(world, tmp_path):

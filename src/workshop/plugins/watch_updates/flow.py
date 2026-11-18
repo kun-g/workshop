@@ -181,6 +181,7 @@ class Flow(Entries):
         return After()
 
     def after(self, item, completed_stage, key, target, services=None):
+        self.io.services = services
         if self.upgrade(item):
             if completed_stage == '验收':
                 return After(pending=True, reason='升级执行未实现；保留全部选择与原话',

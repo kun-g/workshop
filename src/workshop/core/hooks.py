@@ -1,6 +1,5 @@
 """完成钩子：阶段走完之后要做的事，以及到点再查一次。"""
 from dataclasses import asdict
-from datetime import timedelta
 from .models import due, stamp
 from .ports import Retryable
 from .cards import notice
@@ -38,6 +37,8 @@ def after(engine, item, stage, key, target, *, recheck=False, restarting=False):
     if (type(result.pending) is not bool or type(result.rerun) is not bool or not isinstance(result.reason, str)
             or not isinstance(result.next, str) or result.pending and (not result.reason or not result.next)):
         raise ValueError("仍留本阶段须有原因和下一步")
+    if type(result.wake_on_completed) is not bool:
+        raise ValueError("完成唤醒标记须是布尔值")
     if type(result.restart) is not bool or not isinstance(result.notice, str):
         raise ValueError("重启标记须是布尔值，通知须是字符串")
     if not isinstance(result.recovery_id, str):
@@ -109,6 +110,8 @@ def resume_restarts(engine):
 def pending_changes(engine, item, result, target, hook):
     if result.wait is not None:
         return waits.pending(engine, item, result.wait, hook)
+    if result.wake_on_completed:
+        hook = {**hook, "completion_cursor": engine.log.db.execute("SELECT coalesce(max(seq),0) FROM facts").fetchone()[0]}
     count = item.get("after_pending_count", 0) + 1
     changes = dict(next=result.next, gate_reason=result.reason, after_pending_count=count, after_wait=None)
     if count >= target.get("pending_limit", 5):
@@ -121,9 +124,8 @@ def pending_changes(engine, item, result, target, hook):
     elif result.rerun:
         changes.update(state="空闲", leave={"kind": "工序", "owner": "车间", "at": stamp(engine.clock()), "about": result.next})
     else:
-        # 取插件建议与核心指数退避较晚者，等待不占执行者。
-        at = max(due(result.recheck_after, engine.clock()),
-                 stamp(engine.clock() + timedelta(seconds=min(300 * 2 ** (count - 1), 3600))))
+        # 正常等待采用流程的回查间隔；故障重试才走 retry 的指数退避。
+        at = due(result.recheck_after, engine.clock())
         engine.timer(item, f"{hook['key']}:{item.get('pending_episode', 0)}:{count}", at, result.next)
         changes.update(state="定时", after_wait={**hook, "at": at},
                        leave={"kind": "工序", "owner": "车间", "at": at, "about": result.next})
@@ -166,3 +168,25 @@ def effect(engine, key, action):
         engine.fact("effect", {"id": key, "done": True, "result": result})
     return engine.log.get("effects", key).get("result")
 
+
+
+def wake_completed(engine):
+    """完成事实只提前叫醒同目标订阅者；故障重试期限和授权仍由原路径核验。"""
+    for item in engine.log.all('items', where=('state', '定时'), fields=('id', 'target', 'state', 'after_wait')):
+        hook = item.get('after_wait') or {}
+        if item['state'] != '定时' or 'completion_cursor' not in hook:
+            continue
+        if engine.control(item['target']).get('paused'):
+            continue
+        facts = engine.log.selected_facts(('item_changed',), ('state',), after=hook['completion_cursor'])
+        completed = [f for f in facts if f['body'].get('state') == '完成' and f['item'] != item['id']
+                     and (engine.log.db.execute("SELECT json_extract(body,'$.target') FROM items WHERE id=?",
+                                               (f['item'],)).fetchone() or [None])[0] == item['target']]
+        if not completed:
+            continue
+        with engine.log.transaction():
+            for timer in engine.log.all('timers', unless=('fired', True)):
+                if timer['item'] == item['id'] and timer['id'].startswith(item['id'] + ':' + hook['key']):
+                    engine.fact('timer_fired', {'id':timer['id']}, item['id'])
+            engine.change(item, state='空闲', after_wait={**hook, 'at':stamp(engine.clock())},
+                          next='同目标有活完成，回查原阶段')
