@@ -117,7 +117,7 @@ def test_runner_failure_stops_before_agent_and_submits_once(tmp_path, signing, m
     assert not (tmp_path / 'child.json').exists()
 
 
-def test_target_blocked_serialized_and_only_one_target_notified(tmp_path):
+def test_target_blocked_serialized_without_notice(tmp_path):
     config = configuration()
     config['targets']['beta']['plugin'] = 'flow'
     engine = build(tmp_path / 'state', config)
@@ -132,7 +132,7 @@ def test_target_blocked_serialized_and_only_one_target_notified(tmp_path):
     assert not engine.log.get('items', 'alpha:one')['plugin_blocked']
     assert engine.log.get('items', 'alpha:one')['state'] == '空闲'
     notices = [c for c in engine.log.all('cards') if c['mode'] == 'notice']
-    assert len(notices) == 1
+    assert len(notices) == 0
     # Production job boundary preserves the typed failure, not a generic plugin failure.
     class Plugin:
         def fail(self):

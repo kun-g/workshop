@@ -134,7 +134,7 @@ def test_program_gate_failure_never_calls_after(engine, monkeypatch):
 
 @pytest.mark.parametrize('rerun', [False, True])
 @pytest.mark.parametrize('notices', ['send', 'hold'])
-def test_program_pending_limit_and_notice(engine, monkeypatch, rerun, notices):
+def test_program_pending_limit_without_notice(engine, monkeypatch, rerun, notices):
     flow = automatic(engine, monkeypatch)
     engine.rules.data['notices'] = notices
     keys = []
@@ -158,9 +158,9 @@ def test_program_pending_limit_and_notice(engine, monkeypatch, rerun, notices):
         engine.tick()
     assert len(keys) == 5 and not engine.log.all('rounds')
     cards = [c for c in engine.log.all('cards') if 'pending:' in c['key']]
-    assert len(cards) == (0 if notices == 'hold' else 1)
+    assert len(cards) == 0
     held = [f for f in engine.log.facts() if f['kind'] == 'notice_held']
-    assert len(held) == (1 if notices == 'hold' else 0)
+    assert len(held) == 0
 
 
 def test_program_after_retry_survives_restart_with_same_key(engine, monkeypatch):

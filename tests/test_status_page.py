@@ -60,7 +60,7 @@ def test_channel_problems_folded_at_end_with_explanation():
     broken = view(row(), asks=[])
     broken["uncertain"] = [{"item": "g:1", "card": "c-1"}]
     html = page(broken, NOW)
-    assert "消息通道有问题（项目经理处理，你不用动）" in html and "不敢重发" in html and html.index("消息通道有问题") > html.index("卡住 1 件")
+    assert "通道待对账" in html and "不敢重发" in html and html.index("通道待对账") > html.index("卡住 1 件")
     assert "消息通道" not in page(view(row()), NOW)
 
 

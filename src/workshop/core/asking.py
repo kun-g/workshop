@@ -76,12 +76,7 @@ def reconcile_uncertain(engine, card):
         engine.fact("control", {"id": key, "count": min(count + 1, 3), "at": at})
         if count + 1 == 3:
             engine.fact("reconcile_failed", {"card": card["id"], "reason": "连续 3 次无法确定是否已发送"}, card["item"])
-            incident = engine.log.db.execute("SELECT max(seq) FROM facts").fetchone()[0]
             engine.fact("card_changed", {"id": card["id"], "reconcile_failed": True}, card["item"])
-            # 告警自身若也无法对账，保留状态，不递归制造更多告警。
-            if not card.get("reconciliation_alert"):
-                engine.card({"id": card["item"]}, f"reconcile:{incident}", "notice",
-                          notice(f"卡片 {card['id']} 连续 3 次对账不确定，需要检查通道"), reconciliation_alert=True)
 
 
 def reconcile_clear(engine, card):
@@ -125,10 +120,6 @@ def undeliverable(engine, card, reason, *, cancelled=False):
             elif item["state"] != "跑着":
                 changes.update(waiting)
             engine.change(item, **changes)
-        if not card.get("rejection_alert"):
-            engine.card({"id": card["item"]}, f"undeliverable:{card['id']}", "notice",
-                      notice(f"车间有一张卡发不出去，原因已记录，请看 workshop why {card['item']}"),
-                      rejection_alert=True, rejection_of=card["id"])
 
 
 def channels(engine):

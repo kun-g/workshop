@@ -138,3 +138,33 @@ def test_deliveries_audit_rejects_non_html_and_duplicate_send(live):
     service.delivery_state(entry,'sending')
     with pytest.raises(ValueError, match='超过一次'):
         code['inspect_deliveries'](rules,state,endpoint,'2026')
+
+
+def test_manager_count_sections_and_duplicate_session_checks_are_readonly(live):
+    from workshop.core.managers import Store
+    from workshop.core.rules import Rules
+    from workshop.registry import Registry
+    code,log,state=live
+    rules=Rules.load(ROOT/'rules/workshop.yaml')
+    before=log.db.total_changes
+    value=code['inspect_managers'](log,state,rules,Registry())
+    assert set(value['sections'])=={'等你','项目经理处理中','处理不了'}
+    store=Store(state)
+    try:
+        for key in ('a','b'):
+            row=store.observe(key,{'reason':'真实记录'},'core','2026-11-18T00:00:00+00:00')
+            row.update(token=key,executor='codex',started={'session':'same'})
+            store.save(row,'started')
+        with pytest.raises(ValueError,match='重复'):
+            code['inspect_managers'](log,state,rules,Registry())
+    finally:store.close()
+    assert log.db.total_changes==before
+
+
+def test_business_count_mismatch_is_not_silently_accepted(live):
+    code,log,state=live
+    (state/'heartbeat.json').write_text(json.dumps({'business':{'agents':1,'jobs':0,'total':1,'round_tokens':['missing'],'job_ids':[]}}))
+    with pytest.raises(ValueError,match='业务计数不符'):
+        code['inspect_busy'](log,state)
+    (state/'heartbeat.json').write_text(json.dumps({'business':{'agents':0,'jobs':0,'total':0,'round_tokens':[],'job_ids':[]}}))
+    assert code['inspect_busy'](log,state)['observed']['total']==0

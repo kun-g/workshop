@@ -174,7 +174,7 @@ def test_K_missing_authorization_blocks_without_repeating_review(engine):
     assert len(engine.log.all("rounds")) == count
 
 
-def test_L_each_plugin_incident_notifies_once(engine):
+def test_L_each_plugin_incident_records_without_notice(engine):
     flow = engine.plugins.get("flow", "flow")
     engine.ingest(event())
     flow.crash = True
@@ -186,7 +186,7 @@ def test_L_each_plugin_incident_notifies_once(engine):
     flow.crash = True
     engine.tick()
     engine.tick()
-    assert len([c for c in engine.log.all("cards") if c["mode"] == "notice"]) == 2
+    assert len([c for c in engine.log.all("cards") if c["mode"] == "notice"]) == 0
 
 
 def test_1_timeout_and_abort_are_failed_rounds(engine):
@@ -224,7 +224,7 @@ def test_5_cli_requires_seen_and_rejects_stale_list(engine, monkeypatch, capsys)
     assert engine.control("alpha")["paused"] and len(engine.missed("alpha")) == 2
 
 
-def test_8_failure_notice_has_new_episode(engine):
+def test_8_failure_episode_changes_without_notice(engine):
     reach(engine, "执行")
     def three():
         for n in range(3):
@@ -235,7 +235,7 @@ def test_8_failure_notice_has_new_episode(engine):
     three()
     finish(engine, "证据")
     three()
-    assert len([c for c in engine.log.all("cards") if ":failing:" in c["id"]]) == 2
+    assert len([c for c in engine.log.all("cards") if ":failing:" in c["id"]]) == 0
 
 
 def test_9_executor_receives_target_and_absolute_runtime_cli(engine, tmp_path):

@@ -115,8 +115,6 @@ def pending_changes(engine, item, result, target, hook):
     count = item.get("after_pending_count", 0) + 1
     changes = dict(next=result.next, gate_reason=result.reason, after_pending_count=count, after_wait=None)
     if count >= target.get("pending_limit", 5):
-        engine.card(item, f"pending:{item['stage']}:{item.get('pending_episode', 0)}", "notice",
-                  notice(result.reason + "；" + result.next))
         changes.update(state="卡住", blocked_by="阶段等待达到上限",
                        after_wait={**hook, "delay": result.recheck_after, "rerun": result.rerun},
                        next=result.next + "；处理后用 recover --mode wait --reason 续等",

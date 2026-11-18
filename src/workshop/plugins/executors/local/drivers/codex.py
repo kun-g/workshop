@@ -47,6 +47,8 @@ class Driver(Base):
         'permission_mode': lambda v: v in ('untrusted', 'on-request', 'never'),
         'model_provider': text, 'ignore_user_config': lambda v: type(v) is bool,
         'ignore_rules': lambda v: type(v) is bool,
+        'require_subscription_login': lambda v: type(v) is bool,
+        'skip_git_repo_check': lambda v: type(v) is bool,
     }
 
     def environment(self, config):
@@ -57,7 +59,7 @@ class Driver(Base):
             missing = [key for key in ('model', 'effort') if not text(config.get(key))]
             if missing:
                 raise ValueError(f'配置档 {executor.kind} 缺 {"、".join(missing)}，拒绝启动')
-        if executor.interactive and config.get('billing') == 'subscription':
+        if (executor.interactive or config.get('require_subscription_login')) and config.get('billing') == 'subscription':
             import os
             env = dict(os.environ)
             env.update(self.environment(config))
@@ -107,6 +109,8 @@ class Driver(Base):
                      '-c', 'hooks.SessionStart=' + hooks, '-c', 'hooks.UserPromptSubmit=' + hooks]
         else:
             argv += ['exec']
+            if config.get('skip_git_repo_check'):
+                argv += ['--skip-git-repo-check']
             for field, native in (('sandbox', 'sandbox_mode'), ('permission_mode', 'approval_policy')):
                 if field in config:
                     argv += ['-c', native + '=' + json.dumps(config[field])]

@@ -206,7 +206,7 @@ def test_5_receipt_reads_snapshot_even_with_broken_rule_file(engine, tmp_path):
     assert loaded.log.get("rounds", token)["status"] == "finishing"
 
 
-def test_6_uncertain_delivery_escalates_once_and_is_visible(engine, monkeypatch):
+def test_6_uncertain_delivery_records_failure_and_is_visible(engine, monkeypatch):
     reach(engine, "执行")
     channel = engine.plugins.get("channel", "channel")
     sends = []
@@ -221,7 +221,7 @@ def test_6_uncertain_delivery_escalates_once_and_is_visible(engine, monkeypatch)
     card = engine.log.all("cards")[0]
     assert len(sends) == 1
     assert len([f for f in engine.log.facts() if f["kind"] == "reconcile_failed"]) == 1
-    assert len([c for c in engine.log.all("cards") if c.get("reconciliation_alert")]) == 1
+    assert len([c for c in engine.log.all("cards") if c.get("reconciliation_alert")]) == 0
     assert "通道待对账" in status(engine.log) and card["id"] in status(engine.log)
     reconciled = []
     def found(key, card):
@@ -247,8 +247,8 @@ def test_6_uncertain_alert_does_not_recursively_create_alerts(engine, monkeypatc
     finish(engine, ask=[{"key": "q", "title": "选择", "options": ["A", "B"]}])
     for _ in range(12):
         engine.channels()
-    assert len(engine.log.all("cards")) == 2
-    assert len([f for f in engine.log.facts() if f["kind"] == "reconcile_failed"]) == 2
+    assert len(engine.log.all("cards")) == 1
+    assert len([f for f in engine.log.facts() if f["kind"] == "reconcile_failed"]) == 1
 
 
 def test_7_finish_retryable_backs_off_and_faults_at_three(engine, monkeypatch):

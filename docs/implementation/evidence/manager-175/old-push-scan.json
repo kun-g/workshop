@@ -1,0 +1,11 @@
+{
+  "argv": [
+    "grep",
+    "-n",
+    "notify\\|attention",
+    "src/workshop/watch/__init__.py"
+  ],
+  "exit_code": 1,
+  "stdout": "",
+  "stderr": ""
+}

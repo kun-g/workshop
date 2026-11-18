@@ -11,7 +11,7 @@ import time
 
 from .jobs import Pending
 from .models import stamp
-from . import rounds, relations, waits, hooks
+from . import rounds, relations, waits, hooks, activity, managers
 
 SLOW_TICK_MS = 100
 SLOW_ITEM_MS = 5
@@ -73,6 +73,8 @@ def one(engine, began=None):
             with Span(spans, "advance"):
                 hooks.wake_completed(engine)
                 slow, count = advance_open(engine)
+            with Span(spans, "managers"):
+                managers.tick(engine)
             with Span(spans, "release"):
                 engine.release_workdirs()
             with Span(spans, "channels_2"):
@@ -204,6 +206,11 @@ def heartbeat(engine, began=None):
     now = stamp(engine.clock())
     heartbeat = engine.log.path.parent / "heartbeat.json"
     temporary = heartbeat.with_suffix(".tmp")
+    try:
+        previous_activity = json.loads(heartbeat.read_text()).get('business', {})
+    except (OSError, ValueError):
+        previous_activity = {}
+    business = activity.snapshot(engine, previous_activity, now)
     heartbeat_process = getattr(engine, "heartbeat_process", None)
     if heartbeat_process is None:
         try:
@@ -227,7 +234,7 @@ def heartbeat(engine, began=None):
             engine.fact("control", {"id": failure["id"], "since": now})
     # tick_ms：这一拍从进入到写心跳前的耗时；一拍只读写事实库和本地文件，应是毫秒级。
     elapsed = round((time.monotonic() - began) * 1000) if began is not None else None
-    temporary.write_text(json.dumps({"at": now, "last_ok_at": now, "process": heartbeat_process, "tick_ms": elapsed, "wake_ms": getattr(engine, "wake_ms", None), "active": engine.occupied(),
+    temporary.write_text(json.dumps({"at": now, "last_ok_at": now, "process": heartbeat_process, "tick_ms": elapsed, "wake_ms": getattr(engine, "wake_ms", None), "active": engine.occupied(), "business": business,
         "delivery_failed_count": len(failures),
         "delivery_failed_since": min((c.get("since", now) for c in failures), default=None)}))
     with engine.log.transaction():

@@ -147,7 +147,7 @@ def test_deadline_survives_restart_and_isolates_once(engine, tmp_path, monkeypat
     assert len([f for f in engine.log.facts() if f['kind'] == 'plugin_failed']) == 1
     notifications = [c for c in engine.log.all('cards') if c['id'].startswith('@alpha:plugin:source:')]
     held = [f for f in engine.log.facts() if f['kind'] == 'notice_held' and f['item'] == '@alpha']
-    assert len(notifications) + len(held) == 1
+    assert len(notifications) + len(held) == 0
     engine.resume('alpha', [])
     state['fault'] = None
     engine.sources()

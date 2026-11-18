@@ -4,7 +4,6 @@ from datetime import datetime, timedelta
 from .gates import decide
 from .models import Event, Receipt, STAGES, Started, due, stamp
 from .ports import Unavailable, Retryable
-from .cards import notice
 from .models import After, Evidence, RoundUsage
 from .jobs import Pending
 
@@ -63,8 +62,6 @@ def failure_changes(engine, item, row):
     failures = item["failures"] + 1
     episode = item.get("failure_episode") if item["failures"] else row["token"]
     changes = {"failures": failures, "failure_episode": episode}
-    if failures == 3:
-        engine.card(item, f"failing:{episode}", "notice", notice(f'{item["title"]} 连续 3 次没跑成'))
     if failures >= 10:
         changes.update(state="卡住", next="项目经理处理失败原因后恢复", blocked_by="连续 10 次没跑成",
                        leave={"kind": "等你", "about": "连续失败"})

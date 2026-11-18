@@ -21,7 +21,7 @@ def test_waiting_requires_live_question_and_hold_does_not_hold_ask(tmp_path):
     finish(engine, outcome='nothing', notice=[{'key': 'blocked', 'text': '缺工具'}],
            leave={'kind': '等你', 'about': '缺工具'})
     assert item(engine)['state'] == '卡住'
-    assert '缺工具' in status(engine.log) and '卡住清单' in status(engine.log)
+    assert '缺工具' in status(engine.log) and '卡住' in status(engine.log).splitlines()
     assert not engine.log.all('cards')
     engine.recover('alpha:one', 'rework', '工具已装', '继续')
     engine.tick()

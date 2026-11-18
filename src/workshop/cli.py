@@ -281,6 +281,8 @@ def main(argv=None):
     finally:
         if jobs is not None:
             jobs.launcher.shutdown(wait=True)
+        if "engine" in locals() and getattr(engine, "manager_jobs", None):
+            engine.manager_jobs.launcher.shutdown(wait=True)
         log.close()
 
 
