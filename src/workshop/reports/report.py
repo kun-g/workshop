@@ -4,6 +4,7 @@ from datetime import datetime, timedelta
 import json
 from workshop.core.jobs import running as running_jobs
 from workshop.core.models import Event, utcnow
+from workshop.core.ports import Flow, Plugins
 from workshop.core.flows import configured
 from workshop.core.holding import resolve
 
@@ -118,7 +119,7 @@ def one_line(text):
 ACTIONS = {"update": "更新", "rework": "返工", "ready": "放行"}
 
 
-def flow_for(targets, name, plugins, selected=""):
+def flow_for(targets, name, plugins: Plugins, selected=""):
     """规则里的交付对象和它的流程；装不上流程时只回交付对象，查看起因不依赖插件。"""
     try:
         target = configured(name, targets[name], selected) if name in targets else None
@@ -133,7 +134,7 @@ def flow_for(targets, name, plugins, selected=""):
     return target, flow
 
 
-def summarize(body, target, flow):
+def summarize(body, target, flow: Flow | None):
     """流程给的一句话说明；流程没有说明或出错时退回事件种类。"""
     content = body["body"]
     kind = content.get("kind") if isinstance(content, dict) and isinstance(content.get("kind"), str) else "资料"

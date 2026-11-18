@@ -44,6 +44,16 @@ class Source(Protocol):
 
 
 class Flow(Protocol):
+    def describe(self, event: Event, target: dict) -> str:
+        """可选，查看工具调用：只读给出事件的一句话说明。"""
+        ...
+    def cleanup(self, target: dict, keep: list[str | None]) -> None:
+        """可选，核心 workdirs 调用：清理流程自有的临时目录，保留 keep 中的工作目录。"""
+        ...
+    def configure_target(self, target: dict) -> dict:
+        """可选，装配层调用的旧写法兼容；去掉未配置 flows 的旧写法时一并删除。"""
+        ...
+
     def relations(self, objects: list[dict], target: dict) -> dict:
         """可选、只读。按活 id 返回 Relations 完整快照；objects 仅含 id/object_key。
 
@@ -75,6 +85,7 @@ class Flow(Protocol):
     def brief(self, item: dict, stage: str, target: dict) -> str | FlowBrief:
         """可信说明；item.history 含每轮结论，gate_reason 含需要修正的关口理由。
 
+        必需；若 automatic 的实现恒为 True，可不实现 brief。
         item.allowed_advances 是本阶段回执可填的阶段名列表，只在 brief 调用的快照里提供。"""
         ...
     def assess(self, item: dict, receipt: Receipt, target: dict) -> Evidence:
@@ -159,7 +170,23 @@ class TaskHome(Protocol):
     def update(self, key: str, ticket: str, item: dict, target: dict) -> None: ...
 
 
+class Driver(Protocol):
+    """装配层 Registry 调用；这里的三个成员均为必需。驱动内部方法不属于装配端口。"""
+    family: str
+
+    def validate(self, name: str, config: dict) -> None:
+        """必需，装配层在启动任何会话前核对配置档。"""
+        ...
+    def executor(self, name: str, config: dict) -> Executor:
+        """必需，装配层按配置档创建执行者。"""
+        ...
+
+
 class Plugins(Protocol):
+    def configure(self, rules):
+        """可选，核心 Engine 初始化时调用：装配层核对并补全规则。"""
+        ...
+
     def get(self, port: str, name: str) -> object: ...
 
 
@@ -172,6 +199,9 @@ class Selector(Protocol):
 
 class WaitService(Protocol):
     """独立服务端口。content/read 的内容只由流程解释，核心只用引用和完成标识。"""
+    def wake_paths(self, config: dict) -> list[str]:
+        """可选，核心 waking 调用；收等待服务的配置，返回可叫醒核心的本地路径。"""
+        ...
     def invoke(self, action: str, content: dict, config: dict) -> dict:
         """流程调用服务的业务操作；核心不解释或保存 content。"""
         ...

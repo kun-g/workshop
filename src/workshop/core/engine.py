@@ -4,6 +4,7 @@ import fcntl
 
 from .flows import default_flow, entries
 from .log import Log
+from .ports import Plugins
 from .models import stamp, utcnow
 from .records import defer_items, materialize
 from .stages import serial_stage
@@ -39,7 +40,7 @@ def finder(log, target):
 
 class Engine:
 
-    def __init__(self, log: Log, rules, plugins, clock=utcnow, jobs=None):
+    def __init__(self, log: Log, rules, plugins: Plugins, clock=utcnow, jobs=None):
         """jobs 为空时插件调用就地进行（测试和单次命令）；守护进程传入作业，一拍里不等任何外部调用。"""
         if hasattr(plugins, "configure"):
             rules = plugins.configure(rules)

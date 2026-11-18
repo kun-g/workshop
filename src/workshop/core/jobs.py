@@ -11,6 +11,7 @@ lock 由作业进程从启动起一直持有（父进程先锁好再交给它）
 - 新鲜期 0：取一次就清掉。
 - 出错的结果取一次就清掉，下次重跑；错误类型照原样抛回，由核心照原来的退避和隔离规则处理。
 """
+from workshop.core.ports import Plugins
 from contextlib import suppress
 from dataclasses import fields, is_dataclass
 from concurrent.futures import ThreadPoolExecutor
@@ -359,7 +360,7 @@ class Jobs:
                 continue
 
 
-def execute(path, plugins, lookup=None):
+def execute(path, plugins: Plugins, lookup=None):
     """作业进程里跑：按 spec 调插件，把结果或错误原子写进 result.json。"""
     path = Path(path)
     spec = json.loads((path / "spec.json").read_text())
