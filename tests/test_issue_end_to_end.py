@@ -420,7 +420,8 @@ def test_merge_conflict_does_not_merge(world):
     engine.tick()
     row = item(engine, '7')
     assert not remote(world)['pr']['merged'] and remote(world)['issue']['state'] == 'open'
-    assert '合并冲突' in (row.get('gate_reason') or '') + (row.get('next') or '') + (row.get('blocked_by') or ''), row
+    assert row['stage'] == '执行' and remote(world)['pr']['draft']
+    assert '合并冲突' in current(engine, '7')['brief']['instructions']
     assert not engine.flow_broken('alpha', '')
     engine.log.close()
 
@@ -469,4 +470,153 @@ def test_legacy_acceptance_return_with_delivered_merge_closes_without_rounds(wor
     else:
         assert item(engine, '7')['state'] == '完成' and remote(world)['issue']['state'] == 'closed'
         assert stages_run(engine) == []
+    engine.log.close()
+
+
+@pytest.mark.parametrize('mergeable,merge_state', [(False, 'clean'), (True, 'dirty'), (False, 'dirty')])
+def test_conflict_returns_to_draft_then_rechecks_new_head(world, monkeypatch, mergeable, merge_state):
+    set_pr(world, mergeable=mergeable, mergeable_state=merge_state)
+    verified = []
+    verify = world['io'].verify
+
+    def record(target, sha, checks):
+        verified.append(sha)
+        return verify(target, sha, checks)
+
+    monkeypatch.setattr(world['io'], 'verify', record)
+    engine = engine_for(world, 'conflict-roundtrip')
+    start(engine)
+    ensure_round(engine)
+    hand_over(engine, world)
+    back = item(engine, '7')
+    assert back['stage'] == '执行' and back['state'] != '卡住'
+    assert remote(world)['pr']['draft'] and not verified
+    assert not any(c[1:3] == ['pr', 'merge'] for c in calls(world))
+    [comment] = remote(world)['comments']
+    assert 'mergeable_state' in comment['body'] and 'mergeable' in comment['body']
+    assert '合并冲突' in comment['body'] and '<!-- workshop-comment: alpha:7 -->' in comment['body']
+    brief = ensure_round(engine)['brief']['instructions']
+    assert '合最新 main、解冲突、重跑检查后推新提交' in brief
+    sha = commit(world, {'resolved.txt': 'resolved'}, 'resolve conflict')
+    set_pr(world, head={'sha': sha}, mergeable=True, mergeable_state='clean', draft=False)
+    edit(world, sha=sha)
+    hand_over(engine, world)
+    engine.tick()
+    assert item(engine, '7')['state'] == '完成'
+    assert verified == [sha] and remote(world)['pr']['merged']
+    assert world['io'].read(back, world['target'])['returns'] == 1
+    assert stages_run(engine) == ['执行', '执行'] and not engine.log.all('cards')
+    engine.log.close()
+
+
+@pytest.mark.parametrize('mergeable,merge_state', [(False, 'dirty'), (True, 'dirty'),
+                                                   (False, 'clean'), (True, 'behind'),
+                                                   (True, 'blocked'), (True, 'unstable')])
+def test_merge_rejection_returns_once_and_can_deliver_after_fix(world, mergeable, merge_state):
+    edit(world, merge_error='gh rejection tail',
+         merge_failure_pr={'mergeable': mergeable, 'mergeable_state': merge_state})
+    engine = engine_for(world, 'merge-rejected')
+    start(engine)
+    ensure_round(engine)
+    hand_over(engine, world)
+    # A new plugin instance must consume the persisted failure, without retrying the merge.
+    engine.plugins.register('flow', 'issue_delivery', type(world['flow'])(world['io']))
+    engine.tick()
+    back = item(engine, '7')
+    assert back['stage'] == '执行' and back['state'] != '卡住', back
+    assert remote(world)['pr']['draft'] and not remote(world)['pr']['merged']
+    assert len([c for c in calls(world) if c[1:3] == ['pr', 'merge']]) == 1
+    [comment] = remote(world)['comments']
+    assert 'gh rejection tail' in comment['body'] and merge_state in comment['body']
+    brief = ensure_round(engine)['brief']['instructions']
+    assert 'gh rejection tail' in brief and '重跑检查后推新提交' in brief
+    assert world['io'].read(back, world['target'])['returns'] == 1
+    edit(world, merge_error='')
+    set_pr(world, mergeable=True, mergeable_state='clean', draft=False)
+    hand_over(engine, world)
+    engine.tick()
+    assert item(engine, '7')['state'] == '完成'
+    assert 'merge_failure' not in world['io'].read(back, world['target'])
+    assert not engine.flow_broken('alpha', '') and not engine.log.all('cards')
+    engine.log.close()
+
+
+@pytest.mark.parametrize('during_merge', [False, True])
+@pytest.mark.parametrize('mergeable,merge_state', [(None, 'clean'), (True, 'unknown'), (None, 'unknown')])
+def test_unknown_mergeability_waits_and_recovers(world, during_merge, mergeable, merge_state):
+    values = {'mergeable': mergeable, 'mergeable_state': merge_state}
+    if during_merge:
+        edit(world, merge_error='not computed', merge_failure_pr=values)
+    else:
+        set_pr(world, **values)
+    engine = engine_for(world, 'unknown')
+    start(engine)
+    ensure_round(engine)
+    hand_over(engine, world)
+    waiting = item(engine, '7')
+    assert waiting['stage'] == '交付' and waiting['state'] == '定时', waiting
+    assert not remote(world)['pr'].get('draft') and not remote(world).get('comments')
+    assert len([c for c in calls(world) if c[1:3] == ['pr', 'merge']]) == int(during_merge)
+    edit(world, merge_error='')
+    set_pr(world, mergeable=True, mergeable_state='clean')
+    engine.clock.now = datetime.fromisoformat(waiting['after_wait']['at'])
+    engine.tick()
+    engine.tick()
+    assert item(engine, '7')['state'] == '完成' and stages_run(engine) == ['执行']
+    engine.log.close()
+
+
+def test_conflicts_share_return_limit_with_both_dod_segments(world, monkeypatch):
+    sha = commit(world, {'scripts/post.sh': '#!/bin/sh\necho post-broken\nexit 3\n'}, 'post fails')
+    edit(world, sha=sha)
+    set_pr(world, head={'sha': sha})
+    set_body(world, BODY + POST)
+    monkeypatch.setattr('workshop.running.current', lambda: sha)
+    engine = engine_for(world, 'shared-limit', deployment={'kind': 'running'})
+    start(engine)
+    ensure_round(engine)
+    hand_over(engine, world)
+    engine.tick()
+    assert item(engine, '7')['stage'] == '执行'
+    assert world['io'].read(item(engine, '7'), world['target'])['returns'] == 1
+    old = remote(world)['pr']
+    edit(world, prs=[old], pr={'number': 12, 'body': PR_BODY, 'head': {'sha': sha}, 'state': 'open', 'merged': False})
+    ensure_round(engine)
+    missing_evidence(world)
+    hand_over(engine, world)
+    assert world['io'].read(item(engine, '7'), world['target'])['returns'] == 2
+    ensure_round(engine)
+    set_pr(world, body=PR_BODY, draft=False, mergeable=False, mergeable_state='dirty')
+    hand_over(engine, world)
+    assert item(engine, '7')['stage'] == '执行'
+    assert world['io'].read(item(engine, '7'), world['target'])['returns'] == 3
+    ensure_round(engine)
+    set_pr(world, draft=False, mergeable=True, mergeable_state='clean')
+    edit(world, merge_error='blocked again', merge_failure_pr={'mergeable_state': 'blocked'})
+    hand_over(engine, world)
+    engine.tick()
+    stuck = item(engine, '7')
+    assert stuck['state'] == '卡住' and '退回执行已 3 次' in stuck['blocked_by']
+    assert len(remote(world)['comments']) == 3 and not engine.log.all('cards')
+    engine.log.close()
+
+
+def test_conflict_appearing_after_dod_returns_without_attempting_merge(world, monkeypatch):
+    verify = world['io'].verify
+
+    def conflict_after_check(target, sha, checks):
+        runs = verify(target, sha, checks)
+        set_pr(world, mergeable=False, mergeable_state='dirty')
+        return runs
+
+    monkeypatch.setattr(world['io'], 'verify', conflict_after_check)
+    engine = engine_for(world, 'conflict-race')
+    start(engine)
+    ensure_round(engine)
+    hand_over(engine, world)
+    engine.tick()
+    assert item(engine, '7')['stage'] == '执行' and remote(world)['pr']['draft']
+    assert not any(c[1:3] == ['pr', 'merge'] for c in calls(world))
+    assert world['io'].read(item(engine, '7'), world['target'])['returns'] == 1
+    assert '合并冲突' in remote(world)['comments'][0]['body']
     engine.log.close()

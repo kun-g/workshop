@@ -22,7 +22,7 @@ Orca 插话钩子去掉轮次令牌后以 `cli:orca` 进入：流程用核心已
 
 - **接单（程序）**：回查 issue，核对能跑的检查（「能跑的检查」节的 `workshop-checks`，含规则 `required_checks`，默认 `[["scripts/check.sh"]]`）、合并前 DoD（逐项列表、无待定项）、「不可逆或对外的动作」、「要不要亲眼看」第一行是/否、依据（编号回查规则 `requirement_docs` 登记的文档；需求变更要写原文、文档位置，「Kun 的原话」节有原话）；写了上线后 DoD 的，每项要有 `workshop-checks`。缺一项就返回 `Evidence(awaits_update=True)`：活停在接单、状态「等资料」，next 写出缺哪几项，不派轮、不发卡；来源有任何新事件（改 issue 正文就有）时视图把活放回空闲，下一拍重核。飞书进来的需求先开 issue（只有原话），同样停在接单等写 issue 的会话补齐。代码见 `dod.py` 的 `registration`。
 - **执行（模型一轮）**：从写代码做到 PR 去掉 Draft。交接以 PR 状态为准：assess 返回 `Evidence(handoff="交付")`，核心用它代替回执的 advance；PR 没有、已合并/关闭、还是 Draft、缺活标记或带自动关 issue 的语句，都判没过，同阶段重来（核心 `gate_retry`，同因 3 次记卡住）。
-- **交付（程序）**：先查合并前 DoD——在干净副本重跑登记检查，`dod.evidence_problems` 核对 PR 正文「合并前 DoD」节逐项以 issue 合并前 DoD 每项第一行原文开头、项下附登记检查名（反引号）或原样输出代码块；需求变更的还要 PR 改了登记的需求文档。不过：记下原因和原样输出，`Evidence(handoff="执行")`，after 把 PR 改回 Draft（`gh pr ready --undo`）并在 PR 下留原样输出。过了：合并（沿用下面的合并守卫和 release 分支），写了上线后 DoD 的等上线（规则 `deployment`；车间自己是 `{kind: running}`，在跑的守护进程版本包含合并提交就算上线）后在干净副本对合并提交跑上线后检查；不过时在 issue 留原样输出、活退回执行，不回滚，修复开新 PR。两段退回合计 3 次（`RETURN_LIMIT`），第 4 次记卡住；项目经理 `recover --mode rework` 后重新计。
+- **交付（程序）**：先查合并前 DoD——在干净副本重跑登记检查，`dod.evidence_problems` 核对 PR 正文「合并前 DoD」节逐项以 issue 合并前 DoD 每项第一行原文开头、项下附登记检查名（反引号）或原样输出代码块；需求变更的还要 PR 改了登记的需求文档。不过：记下原因和原样输出，`Evidence(handoff="执行")`，after 把 PR 改回 Draft（`gh pr ready --undo`）并在 PR 下留原样输出。过了：合并（沿用下面的合并守卫和 release 分支），写了上线后 DoD 的等上线（规则 `deployment`；车间自己是 `{kind: running}`，在跑的守护进程版本包含合并提交就算上线）后在干净副本对合并提交跑上线后检查；不过时在 issue 留原样输出、活退回执行，不回滚，修复开新 PR。合并失败和两段 DoD 的退回合计 3 次（`RETURN_LIMIT`），第 4 次记卡住；项目经理 `recover --mode rework` 后重新计。
 - **收尾（程序）**：交付完成、子单全关就关 issue；收尾记录写进程序结果的 reason（合并提交、PR、两段 DoD 已过）。issue 写了「要亲眼看：是」的，收尾先起一轮按 issue 写的方式送一次（`visual-acceptance` 问卡），Kun 答 yes 后程序收尾，答 no 退回执行。
 
 不再有说清楚、证据、审查、验收轮。规则 `stages` 只能写 `[接单, 执行, 交付, 收尾]`。在途的活：闲着停在已去掉阶段的，核心按流程的 `stage_moves` 落位（说清楚→接单，证据、审查→交付，验收→已交付的进收尾、没交付完的回交付）；换代码时还在跑的旧阶段轮结算时判 superseded，活空闲后同样落位。没有一次性转换脚本。
@@ -65,8 +65,8 @@ after 遇到缺 PR、头提交变化、未交付等业务不满足时返回 pend
 
 合并前回查同一 PR、合并前 DoD 查过的 head、规则 CI；`gh pr merge --match-head-commit` 保证提交不偷换。合并失败分三类，只有说不清原因的才算插件故障：
 
-- 合并前就看得出要执行者动手的：PR 已关闭没合并、还是草稿、`mergeable=false` 或 `mergeable_state=dirty`（冲突）。不调 `gh pr merge`，pending + rerun，交付程序步重跑时按合并前 DoD 退回执行，到执行阶段合 main、解冲突。
-- `gh pr merge` 失败后回查 PR：已合并按成功走；头提交变了、或回查到上面几种、或 `mergeable_state` 是 dirty/behind/blocked/unstable（冲突、落后 main、检查没过、分支保护），同样退回执行，理由附 gh 的 stderr 结尾；`mergeable` 还是 null/unknown（GitHub 没算完）时 pending、rerun=false，稍后回查。
+- 合并前就看得出要执行者动手的：PR 已关闭没合并、还是草稿、`mergeable=false` 或 `mergeable_state=dirty`（冲突）。交付程序步直接按合并前 DoD 退回执行：PR 改回 Draft、评论附原因和 GitHub 状态，不调 `gh pr merge`，不在交付里定时重查；执行者合最新 main、解冲突、重跑检查后推新提交、去掉 Draft，重新查合并前 DoD。
+- `gh pr merge` 失败后回查 PR：已合并按成功走；回查到上面几种、或 `mergeable_state` 是 dirty/behind/blocked/unstable（冲突、落后 main、检查没过、分支保护），保存失败事实（PR、头提交、GitHub 状态和 gh 输出结尾），下一次交付程序步经同一个退回关口退回执行，不再尝试合并；合并失败与两段 DoD 共用退回上限，执行重新交接时清掉失败事实。头提交变了则重新查合并前 DoD；`mergeable` 为 null 或 `mergeable_state=unknown`（GitHub 没算完）时 pending、rerun=false，稍后回查。
 - 回查看着能合并却合并失败（网络、GitHub 5xx 这类）：抛 Retryable，错误信息带 stderr；连续三次才由核心隔离。
 
 11-13 ws#18 的 #23 和 main 冲突，`gh pr merge` exit 1 被当成 Retryable，重试三次后核心隔离了 issue_delivery，grant-console 和 workshop 一起停（事实 511–522）；按上面的分类，这次只会把 ws#18 退回执行。PR 标题和正文均拒绝自动关 issue 的语句（包括 `Closes: #7`），squash 正文固定 Related to。每个目标配置 `ci: none` 或 required check 名单；名单的所有项须 success/skipped/neutral 且至少一项 success，空结果、失败、取消或进行中均等待。等待 CI 用 rerun=false，不起执行者。

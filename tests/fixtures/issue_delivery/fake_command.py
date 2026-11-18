@@ -83,6 +83,8 @@ def handle(name, args, *, stdin='', env=None, cwd=None, git=real_git):
                 passthrough(args)
         elif args[:2] == ['pr', 'merge']:
             if state.get('merge_error'):
+                state['pr'].update(state.get('merge_failure_pr', {}))
+                save()
                 # 合并被拒：stderr 原样回放，PR 状态由测试另行设定。
                 say(state['merge_error'], stderr)
                 raise Exit(1)
@@ -155,7 +157,8 @@ def handle(name, args, *, stdin='', env=None, cwd=None, git=real_git):
                 value = state.get('reviews', [])
             elif '/pulls/' in path:
                 number = int(path.rsplit('/', 1)[1])
-                value = next((p for p in pulls if p['number'] == number), state['pr'])
+                value = {'mergeable': True, 'mergeable_state': 'clean',
+                         **next((p for p in pulls if p['number'] == number), state['pr'])}
             elif path.endswith('/issues'):
                 value = [state['issue']] if state.get('issue') else []
             elif '/issues/' in path:
