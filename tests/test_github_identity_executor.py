@@ -27,3 +27,27 @@ def test_real_runner_injects_app_without_serializing_token(setup, kind):
         if file.is_file():
             assert b'test-installation-token' not in file.read_bytes()
     executor.stop('app-round', started)
+
+
+def test_worktree_fetch_uses_target_app_identity(setup):
+    root, make, item, target = setup
+    item.pop('workdir')
+    signer = root / 'signer.py'
+    signer.write_text("import sys\nassert sys.argv[1:] == ['--repo','kun-g/workshop']\nprint('fetch-app-token')\n")
+    target['repo'] = 'kun-g/workshop'
+    target['github_identity'] = {'mode': 'app', 'gh': '/usr/bin/gh', 'signer': [sys.executable, str(signer)]}
+    git = root / 'git'
+    git.write_text('#!' + sys.executable + '\n' + """
+import os, sys
+assert os.environ['GH_TOKEN'] == os.environ['GITHUB_TOKEN'] == 'fetch-app-token'
+assert os.environ['GIT_CONFIG_VALUE_0'] == ''
+os.execv('/usr/bin/git', ['/usr/bin/git', *sys.argv[1:]])
+""")
+    git.chmod(0o755)
+    executor = make('orca-claude')
+    executor.commands['git'] = str(git)
+    workdir = executor._create_worktree(executor.directory('fetch'), item, target)
+    assert workdir == target['checkout']
+    for file in executor.root.rglob('*'):
+        if file.is_file():
+            assert b'fetch-app-token' not in file.read_bytes()

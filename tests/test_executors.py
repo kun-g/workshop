@@ -102,6 +102,10 @@ def setup(tmp_path, monkeypatch, git_template):
     repo = tmp_path / 'repo'
     template, _ = git_template({'hello.py': 'print(1)\n'})
     shutil.copytree(template, repo)
+    subprocess.run(['/usr/bin/git', '-C', str(repo), 'branch', '-M', 'main'], check=True, capture_output=True)
+    origin = tmp_path / 'origin.git'
+    subprocess.run(['/usr/bin/git', 'clone', '--bare', str(repo), str(origin)], check=True, capture_output=True)
+    subprocess.run(['/usr/bin/git', '-C', str(repo), 'remote', 'add', 'origin', str(origin)], check=True, capture_output=True)
     item = {'id': 'test:1', 'target': 'test', 'object_key': '1', 'workdir': str(repo)}
     target = {'checkout': str(repo), 'runtime': {'state_dir': str(tmp_path/'core'),
         'command': [commands['workshop']], 'env': {'WORKSHOP_STATE_DIR': str(tmp_path/'core'), 'WORKSHOP_ROUND_TOKEN': 'one'}}}
@@ -211,14 +215,55 @@ def test_orca_worktree_creation_once(setup):
     root, make, item, target = setup
     item.pop('workdir')
     executor = make('orca-claude')
+    def git(*args):
+        return executor._git('-C', target['checkout'], *args).stdout.strip()
+    before = git('rev-parse', 'HEAD'), git('reflog', '-3')
+    # origin/main 先留旧值，再让远端前进，保证测到 fetch 的效果。
+    git('fetch', 'origin')
+    new_commit = git('-c', 'user.name=Test', '-c', 'user.email=t@localhost',
+                     'commit-tree', 'HEAD^{tree}', '-p', 'HEAD', '-m', 'next')
+    git('push', 'origin', new_commit + ':refs/heads/main')
     started = executor.launch('one', BRIEF, item, CONFIG, target)
     wait_for(lambda: (executor.directory('one')/'child.json').exists())
     executor.launch('one', BRIEF, item, CONFIG, target)
     calls = [json.loads(line) for line in (root/'orca-calls').read_text().splitlines()]
     create = [call for call in calls if call[:2] == ['worktree','create']]
     assert len(create) == 1
-    assert create[0][create[0].index('--base-branch')+1] == 'origin/main'
+    commit = subprocess.run(['/usr/bin/git', '-C', target['checkout'], 'rev-parse', 'origin/main'],
+                            check=True, capture_output=True, text=True).stdout.strip()
+    assert len(commit) == 40
+    assert commit == new_commit
+    assert create[0][create[0].index('--base-branch')+1] == commit
+    assert create[0][create[0].index('--branch')+1] == 'ws/' + executor.slug(item)
+    assert (git('rev-parse', 'HEAD'), git('reflog', '-3')) == before
     assert '--no-parent' in create[0]
+    executor.stop('one', started)
+
+
+@pytest.mark.parametrize('failure', ['fetch', 'missing-commit', 'invalid-commit'])
+def test_orca_worktree_git_failure_never_creates_or_fences(setup, monkeypatch, failure):
+    root, make, item, target = setup
+    item.pop('workdir')
+    executor = make('orca-claude')
+    original = executor._git
+
+    def git(*args, **kwargs):
+        if args[2] == ('fetch' if failure == 'fetch' else 'rev-parse'):
+            if failure == 'invalid-commit':
+                return subprocess.CompletedProcess(args, 0, 'origin/main\n', '')
+            # 真 git 失败，覆盖异常的输出结尾。
+            return original('-C', target['checkout'], 'rev-parse', '--verify', 'missing-248')
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(executor, '_git', git)
+    with pytest.raises(Retryable, match='origin/main' if failure == 'invalid-commit' else 'fatal:'):
+        executor.launch('one', BRIEF, item, CONFIG, target)
+    assert not (root / 'orca-calls').exists()
+    assert not (executor.directory('one') / 'worktree-intent.json').exists()
+    assert not (executor.directory('one') / 'spec.json').exists()
+    # 修好 git 后同一轮可重试；没有伪造一个需要对账的创建记录。
+    monkeypatch.setattr(executor, '_git', original)
+    started = executor.launch('one', BRIEF, item, CONFIG, target)
     executor.stop('one', started)
 
 

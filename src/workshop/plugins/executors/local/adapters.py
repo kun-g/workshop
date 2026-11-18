@@ -3,6 +3,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import shlex
 import shutil
 import subprocess
@@ -12,6 +13,7 @@ import uuid
 from workshop.core.models import Release, Started
 from workshop.core.ports import Retryable, Unavailable
 from workshop.github_identity import configuration as identity_configuration
+from workshop.github_identity import run as identity_run, scoped
 from .storage import alive, identity, lock, read, write
 from .runner import RECEIPT_REJECTED, VENDOR_SESSION
 from .processes import stop_round
@@ -120,14 +122,7 @@ class Executor:
                 workdir = assigned or item.get('workdir')
             if (not workdir or not assigned and not Path(workdir).exists()) and self.interactive and not readonly:
                 # 收尾时收回过的工作区，返工时按同一个名字重新开。
-                slug = self.slug(item)
-                intent = directory / 'worktree-intent.json'
-                if intent.exists():
-                    raise RuntimeError('工作区创建结果不确定，需要对账: ' + str(intent))
-                write(intent, {'slug': slug})
-                result = self._orca('worktree', 'create', '--repo', 'path:' + str(Path(target['checkout']).expanduser().resolve()),
-                    '--name', slug, '--base-branch', 'origin/main', '--branch', 'ws/' + slug, '--no-parent', '--setup', 'skip')
-                workdir = result['worktree']['path']
+                workdir = self._create_worktree(directory, item, target)
             if not workdir:
                 raise ValueError('执行者没有工作目录；流程应提供 Brief.workdir')
             trust_workdir = os.path.abspath(workdir)
@@ -222,9 +217,28 @@ class Executor:
     def slug(self, item):
         return 'ws-' + hashlib.sha256(item['id'].encode()).hexdigest()[:16]
 
+    @scoped
+    def _create_worktree(self, directory, item, target):
+        slug = self.slug(item)
+        intent = directory / 'worktree-intent.json'
+        if intent.exists():
+            raise RuntimeError('工作区创建结果不确定，需要对账: ' + str(intent))
+        checkout = str(Path(target['checkout']).expanduser().resolve())
+        # Orca 会快进命名基线所在的主检出；固定提交号只用于新分支。
+        self._git('-C', checkout, 'fetch', 'origin', '+refs/heads/main:refs/remotes/origin/main')
+        result = self._git('-C', checkout, 'rev-parse', '--verify', 'refs/remotes/origin/main^{commit}')
+        commit = result.stdout.strip()
+        if not re.fullmatch(r'[0-9a-f]{40}', commit):
+            raise Retryable('git 未返回有效的 origin/main 提交号: ' + (result.stdout + result.stderr).strip()[-300:])
+        # git 失败还没有创建工作区，可以重试；调用 Orca 前才写占位。
+        write(intent, {'slug': slug, 'commit': commit})
+        result = self._orca('worktree', 'create', '--repo', 'path:' + checkout,
+            '--name', slug, '--base-branch', commit, '--branch', 'ws/' + slug, '--no-parent', '--setup', 'skip')
+        return result['worktree']['path']
+
     def _git(self, *args, check=True):
         try:
-            result = subprocess.run([self.commands['git'], *args], capture_output=True, text=True, timeout=60)
+            result = identity_run([self.commands['git'], *args], capture_output=True, text=True, timeout=60)
         except (OSError, subprocess.TimeoutExpired) as exc:
             raise Retryable('git 结果不确定: ' + ' '.join(args[:3])) from exc
         if check and result.returncode:
