@@ -2,7 +2,7 @@
 id: E10
 summary: GitHub 上的动作用 App 身份；kun-g 只代表 Kun 亲手做的事。grant-console 的 issue 例外，正文写明代办。
 written_in: [AGENTS.md]
-mechanism: '`workshop release`；规则里各交付对象的 `github_identity`'
+mechanism: '`workshop release`；规则里各交付对象的 `github_identity`；agent 会话的 gh 包装器对 kun-g/workshop 走 App（`app_routed`）'
 status: 在用
 approved: —
 sources: [20261114-用kun-g替Kun操作]
