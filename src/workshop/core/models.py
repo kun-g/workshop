@@ -173,8 +173,17 @@ class Evidence:
     # 无下一步的回执，经流程核实仍需等待；到点调用 after，完成后重跑本阶段。
     recheck_after: str = ""
     superseded: bool = False  # 来源事实已变；结束旧轮并重新安排，不算验收拒绝。
+    # 交接由流程按外部看得到的状态判定：非空时代替回执的 advance（只能是下一阶段或退回执行）。
+    handoff: str = ""
+    # 没过且要等来源资料更新：活停在本阶段「等资料」，不派轮、不发卡；来源有新事件时下一拍重核。
+    awaits_update: bool = False
 
     def validate(self) -> None:
+        if not isinstance(self.handoff, str) or self.handoff and self.handoff not in STAGES:
+            raise ValueError("交接阶段须为合法阶段名")
+        if type(self.awaits_update) is not bool or self.awaits_update and (
+                self.passed or self.blocked or self.recheck_after or self.handoff or not self.reason.strip()):
+            raise ValueError("等资料须有原因，不能同时通过、阻塞、定时回查或交接")
         if type(self.superseded) is not bool or self.superseded and (
                 self.passed or self.blocked or self.recheck_after or not self.reason):
             raise ValueError("过期证据须有原因，不能同时通过、阻塞或定时回查")

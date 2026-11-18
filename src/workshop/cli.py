@@ -54,7 +54,7 @@ def parser():
     recover = commands.add_parser("recover", help="恢复一件停止的活；记录原因，不删除历史或代替审批")
     recover.add_argument("item")
     recover.add_argument("--mode", required=True, choices=("rework", "wait", "verify"),
-                         help="rework 标准返工；wait 超限后续等；verify 追加一次验收")
+                         help="rework 标准返工；wait 超限后续等；verify 追加一次核验（流程支持时）")
     recover.add_argument("--reason", required=True, help="本次恢复原因，不能留空")
     recover.add_argument("--quote", default="", help="Kun 原话；rework 必填")
     recover.add_argument("--ref", choices=("main",), help="verify 时在包含原合并提交的当前 main 上验收")

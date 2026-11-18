@@ -19,7 +19,10 @@ targets:
   grant-console:
     default_flow: issue_delivery
     flows:
-      issue_delivery: {triggers: *issue_triggers}
+      issue_delivery:
+        triggers: *issue_triggers
+        # issue交付 R13（ws#215）：接单核对登记（程序）→ 执行一轮做到 PR 去掉 Draft → 交付查两段 DoD、合并、上线（程序）→ 收尾（程序）。
+        stages: [接单, 执行, 交付, 收尾]
       scheduled_release:
         triggers: [{source: main_branch, when: {kind: ahead}, action: ready}]
         pending_limit: 24
@@ -28,8 +31,6 @@ targets:
     selector: quota
     # 本机 ai_quota 快照（和 ai-quota MCP 同一数据源），只读；最近一次成功采集超过 45 分钟算过期（和 ai_quota 提醒同一条线）。
     quota_snapshot: &quota_snapshot {path: ~/.local/state/ai_quota/quota.db, max_age_minutes: 45}
-    # 阶段开关：去掉审查（Kun 11-13：「先跳过 Review 加快交付，反正现在的系统是我自己在用」）。要恢复就把审查加回证据和交付之间。
-    stages: [接单, 说清楚, 执行, 证据, 交付, 验收, 收尾]
     sources: {github: {}, main_branch: {every: 1h}}
     github_overlap_seconds: 60
     repo: kun-g/grant-console
@@ -101,7 +102,13 @@ targets:
   workshop:
     default_flow: issue_delivery
     flows:
-      issue_delivery: {triggers: *issue_triggers}
+      issue_delivery:
+        triggers: *issue_triggers
+        # issue交付 R13（ws#215）：接单核对登记（程序）→ 执行一轮做到 PR 去掉 Draft → 交付查两段 DoD、合并、上线（程序）→ 收尾（程序）。
+        stages: [接单, 执行, 交付, 收尾]
+        # 写了上线后 DoD 的活要等整点发版：在跑的守护进程版本包含合并提交才算上线；等待次数按整点批次放宽。
+        deployment: {kind: running}
+        pending_limit: 24
       scheduled_release:
         triggers: [{source: main_branch, when: {kind: ahead}, action: ready}]
         scheduled_release_state_dir: ~/.local/state/workshop
@@ -120,8 +127,6 @@ targets:
         pending_limit: 10000
     selector: quota
     quota_snapshot: *quota_snapshot
-    # 阶段开关：去掉审查（Kun 11-13：「先跳过 Review 加快交付，反正现在的系统是我自己在用」）。要恢复就把审查加回证据和交付之间。
-    stages: [接单, 说清楚, 执行, 证据, 交付, 验收, 收尾]
     sources: {github: {}, main_branch: {every: 1h}, watch_updates: {}}
     watch_updates:
       enabled: true

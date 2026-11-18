@@ -5,7 +5,7 @@ import re
 from workshop.core.log import Log
 
 
-STATES = ('在跑', '定时', '卡住', '排队', '等你', '等前置', '等子单', '其他')
+STATES = ('在跑', '定时', '卡住', '排队', '等你', '等前置', '等子单', '等资料', '其他')
 TERMINAL = ('完成', '放弃', '移除')
 FIELDS = ('target', 'flow', 'title', 'action', 'release_gate', 'pending_classification',
           'unmatched', 'state', 'wait_for_ready', 'token', 'executor', 'stopped',
@@ -153,8 +153,11 @@ def histories(facts, metadata, rules, end):
             if new:
                 item.update(state='空闲', plugin_blocked=False, wait_id=None,
                             waiting=bool(body.get('release_gate') and body.get('action') != 'ready'))
-            elif body.get('action') == 'ready':
-                release(item)
+            else:
+                if item['state'] == '等资料' and not item['plugin_blocked']:
+                    item['state'] = '空闲'  # 同视图：等资料的活收到任何新事件就放回空闲。
+                if body.get('action') == 'ready':
+                    release(item)
             record(item, at)
         elif key and kind == 'item_dropped':
             item = ensure(key, body)

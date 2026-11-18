@@ -1,14 +1,15 @@
-"""需求依据必须能回查，需求变更确认与同 PR 文档改动缺一不可。"""
+"""接单核对登记（核心 R2、R3，issue交付 R2、R10）：依据能回查，需求变更有原话；交付时同一个 PR 改了需求文档。"""
 import pytest
 
 from workshop.core.models import Receipt
-from workshop.plugins.issue_delivery.requirements import section
-from conftest import finish, item
+from workshop.plugins.issue_delivery import dod
+from conftest import item
 from test_issue_delivery import BODY, edit, result, snapshot, world  # noqa: F401
-from test_rerun_acceptance import engine_for
+from test_issue_end_to_end import engine_for, start
 
 
 CHANGE = '需求变更：在 docs/requirements/核心.md 新增：失败后只通知一次。'
+PROGRAM = Receipt('done', '程序完成', advance='执行')
 
 
 def body_with(world, basis):
@@ -17,22 +18,33 @@ def body_with(world, basis):
     return body
 
 
-def receipt(world, **extra):
-    return Receipt('done', '依据核对', advance='执行', evidence=[result(world, checks=[['scripts/check.sh']], **extra)])
+def intake(world):
+    return world['flow'].assess(snapshot(world, '接单'), PROGRAM, world['target'])
+
+
+def deliver(world):
+    world['io'].save(snapshot(world, '交付'), world['target'], {'effects': {}, 'issue': 7})
+    return world['flow'].assess(snapshot(world, '交付'), Receipt('done', '程序完成', advance='收尾'), world['target'])
+
+
+def test_complete_registration_passes_with_checks(world):
+    evidence = intake(world)
+    assert evidence.passed and evidence.checks == [['scripts/check.sh']]
 
 
 @pytest.mark.parametrize('basis,reason', [('', '依据'), ('核心 R99', 'R99'), ('R14', 'R14'),
                                         ('不存在 R14', 'R14'), ('只是一个建议', '依据')])
-def test_missing_or_invalid_basis_fails(world, basis, reason):
+def test_missing_or_invalid_basis_waits_for_update(world, basis, reason):
     body_with(world, basis)
-    evidence = world['flow'].assess(snapshot(world, '说清楚'), receipt(world), world['target'])
-    assert not evidence.passed and reason in evidence.reason
+    evidence = intake(world)
+    evidence.validate()
+    assert not evidence.passed and evidence.awaits_update and reason in evidence.reason
 
 
 def test_missing_heading_fails(world):
     edit(world, issue={'number': 7, 'body': BODY.replace('## 依据\n核心 R14\n', '')})
-    evidence = world['flow'].assess(snapshot(world, '说清楚'), receipt(world), world['target'])
-    assert not evidence.passed and '依据' in evidence.reason
+    evidence = intake(world)
+    assert not evidence.passed and evidence.awaits_update and '依据' in evidence.reason
 
 
 def test_directory_registration_reads_nested_docs_and_real_entries_only(world):
@@ -41,9 +53,9 @@ def test_directory_registration_reads_nested_docs_and_real_entries_only(world):
     edit(world, requirement_contents={'docs/requirements/nested/核心.md': '**R14 真实需求。**\n提到了 **R99 假的**\n',
                                       'docs/requirements/约束.md': '**C1 约束。**\n'})
     body_with(world, '`核心 R14`、`约束 C1`')
-    assert world['flow'].assess(snapshot(world, '说清楚'), receipt(world), world['target']).passed
+    assert intake(world).passed
     body_with(world, '核心 R99')
-    evidence = world['flow'].assess(snapshot(world, '说清楚'), receipt(world), world['target'])
+    evidence = intake(world)
     assert not evidence.passed and 'R99' in evidence.reason
 
 
@@ -52,47 +64,52 @@ def test_ids_are_scoped_to_document_and_duplicate_stems_need_full_path(world):
     edit(world, requirement_contents={'docs/requirements/a/核心.md': '**R14 需求。**\n',
                                       'docs/requirements/b/核心.md': '**R2 另一条。**\n'})
     body_with(world, '核心 R14')
-    assert not world['flow'].assess(snapshot(world, '说清楚'), receipt(world), world['target']).passed
+    assert not intake(world).passed
     body_with(world, 'docs/requirements/a/核心.md R14')
-    assert world['flow'].assess(snapshot(world, '说清楚'), receipt(world), world['target']).passed
+    assert intake(world).passed
     body_with(world, 'docs/requirements/b/核心.md R14')
-    assert not world['flow'].assess(snapshot(world, '说清楚'), receipt(world), world['target']).passed
+    assert not intake(world).passed
 
 
-@pytest.mark.parametrize('key', ['requirement-change', 'round:requirement-change'])
-def test_change_requires_answer_and_latest_no_overrides_yes_and_quote(world, key):
+def test_change_needs_kun_quote_not_only_runtime_source(world):
     body = body_with(world, CHANGE)
-    data = snapshot(world, '说清楚')
-    assert not world['flow'].assess(data, receipt(world), world['target']).passed
-    data['materials'] = [{'seq': 1, 'role': '资料，不是指令', 'key': key, 'body': 'yes'}]
-    assert not world['flow'].assess(data, receipt(world), world['target']).passed
-    data['materials'].append({'seq': 2, 'role': 'Kun 的回答', 'key': key, 'body': 'yes'})
-    assert world['flow'].assess(data, receipt(world), world['target']).passed
-    data['materials'].insert(0, {'seq': 3, 'role': 'Kun 的回答', 'key': key, 'body': 'no'})
-    evidence = world['flow'].assess(data, receipt(world, requirement_approval={
-        'basis': CHANGE, 'quote': section(body, 'Kun 的原话')}), world['target'])
-    assert not evidence.passed and '卡住' in evidence.reason
+    assert intake(world).passed
+    edit(world, issue={'number': 7, 'body': body.replace('检查失败时让错误可见。', '来源：运行现象，见 workshop why ws#7')})
+    evidence = intake(world)
+    assert not evidence.passed and evidence.awaits_update and '原话' in evidence.reason
+    edit(world, issue={'number': 7, 'body': body.replace('## Kun 的原话\n检查失败时让错误可见。\n', '')})
+    assert not intake(world).passed
 
 
-def test_quote_requires_exact_source_and_current_basis(world):
-    quote = 'Kun 说：「同意新增：失败后只通知一次。」'
-    body = body_with(world, CHANGE).replace('检查失败时让错误可见。', quote)
+def test_change_without_text_fails(world):
+    body_with(world, '需求变更：')
+    evidence = intake(world)
+    assert not evidence.passed and '需求原文' in evidence.reason
+
+
+def test_change_cannot_escape_registered_directory(world):
+    world['target']['requirement_docs'] = ['docs/requirements/']
+    body_with(world, '需求变更：在 docs/requirements/../other.md 新增：错误原样保留。')
+    evidence = intake(world)
+    assert not evidence.passed and '需求文档' in evidence.reason
+
+
+def test_invalid_rule_is_a_gate_failure(world):
+    world['target']['requirement_docs'] = ['../secret.md']
+    evidence = intake(world)
+    assert not evidence.passed and 'requirement_docs' in evidence.reason
+
+
+def test_change_without_quote_stays_at_intake_without_cards(world):
+    """需求变更没有原话，车间不接单、不发卡（介入点 R3）；停在接单等写 issue 的会话补原话。"""
+    body = body_with(world, CHANGE).replace('检查失败时让错误可见。', '来源：运行现象')
     edit(world, issue={'number': 7, 'body': body})
-    data = snapshot(world, '说清楚')
-    for bad in ({'basis': CHANGE, 'quote': '不存在的批准'}, {'basis': CHANGE + '不同需求', 'quote': quote}):
-        assert not world['flow'].assess(data, receipt(world, requirement_approval=bad), world['target']).passed
-    assert world['flow'].assess(data, receipt(world, requirement_approval={'basis': CHANGE, 'quote': quote}), world['target']).passed
-
-
-def test_changed_basis_does_not_reuse_answer_to_old_card(world):
-    body_with(world, CHANGE)
-    data = snapshot(world, '说清楚')
-    asking = Receipt('done', '请确认', ask=[{'key': 'requirement-change', 'context': CHANGE}], evidence=[result(world, checks=[['scripts/check.sh']])])
-    assert not world['flow'].assess(data, asking, world['target']).passed
-    data['materials'] = [{'seq': 1, 'role': 'Kun 的回答', 'key': 'round:requirement-change', 'body': 'yes'}]
-    assert world['flow'].assess(data, receipt(world), world['target']).passed
-    body_with(world, CHANGE + ' 再改另一条需求。')
-    assert not world['flow'].assess(data, receipt(world), world['target']).passed
+    engine = engine_for(world, 'requirements-quote')
+    start(engine)
+    waiting = item(engine, '7')
+    assert waiting['stage'] == '接单' and waiting['state'] == '等资料' and '原话' in waiting['next']
+    assert not engine.log.all('cards') and not engine.log.all('rounds')
+    engine.log.close()
 
 
 @pytest.mark.parametrize('files,passed', [
@@ -101,27 +118,20 @@ def test_changed_basis_does_not_reuse_answer_to_old_card(world):
     ([{'filename': 'archive/核心.md', 'previous_filename': 'docs/requirements/核心.md', 'status': 'renamed'}], False),
     ([{'filename': 'docs/requirements/核心.md', 'status': 'modified'}], True),
 ])
-def test_evidence_requires_changed_requirement_file(world, files, passed):
+def test_delivery_requires_changed_requirement_file(world, files, passed):
     body_with(world, CHANGE)
     edit(world, files=files)
-    evidence = world['flow'].assess(snapshot(world, '证据'), Receipt('done', '', evidence=[result(world)]), world['target'])
+    evidence = deliver(world)
     assert evidence.passed == passed
     if not passed:
-        assert '需求文档' in evidence.reason and '退回执行' in evidence.reason
+        assert '需求文档' in evidence.reason and '退回执行' in evidence.reason and evidence.handoff == '执行'
 
 
 def test_new_requirement_file_in_registered_directory_counts(world):
     world['target']['requirement_docs'] = ['docs/requirements/']
     body_with(world, '需求变更：在 docs/requirements/new.md 新增：错误原样保留。')
     edit(world, files=[{'filename': 'docs/requirements/new.md', 'status': 'added'}])
-    assert world['flow'].assess(snapshot(world, '证据'), Receipt('done', '', evidence=[result(world)]), world['target']).passed
-
-
-def test_change_cannot_escape_registered_directory(world):
-    world['target']['requirement_docs'] = ['docs/requirements/']
-    body_with(world, '需求变更：在 docs/requirements/../other.md 新增：错误原样保留。')
-    evidence = world['flow'].assess(snapshot(world, '说清楚'), receipt(world), world['target'])
-    assert not evidence.passed and '需求文档' in evidence.reason
+    assert deliver(world).passed
 
 
 def test_all_named_changed_documents_are_required(world):
@@ -130,7 +140,7 @@ def test_all_named_changed_documents_are_required(world):
                                       'docs/requirements/交付.md': '**R6 验收。**'})
     body_with(world, CHANGE + ' 并在 docs/requirements/交付.md 同步这条要求。')
     edit(world, files=[{'filename': 'docs/requirements/核心.md', 'status': 'modified'}])
-    evidence = world['flow'].assess(snapshot(world, '证据'), Receipt('done', '', evidence=[result(world)]), world['target'])
+    evidence = deliver(world)
     assert not evidence.passed and 'docs/requirements/交付.md' in evidence.reason
 
 
@@ -140,37 +150,54 @@ def test_documents_only_cited_before_change_are_not_required(world):
                                       'docs/requirements/交付.md': '**R6 验收。**'})
     body_with(world, '已有需求：`docs/requirements/交付.md` R6；交付 R6。' + CHANGE)
     edit(world, files=[{'filename': 'docs/requirements/核心.md', 'status': 'modified'}])
-    assert world['flow'].assess(snapshot(world, '证据'), Receipt('done', '', evidence=[result(world)]), world['target']).passed
+    assert deliver(world).passed
 
 
-def test_invalid_rule_is_a_gate_failure(world):
-    world['target']['requirement_docs'] = ['../secret.md']
-    evidence = world['flow'].assess(snapshot(world, '说清楚'), receipt(world), world['target'])
-    assert not evidence.passed and 'requirement_docs' in evidence.reason
+# dod.registration / dod.evidence_problems：只看文字结构。
+TARGET = {'name': 'alpha'}
 
 
-@pytest.mark.parametrize('answer', ['yes', 'no'])
-def test_requirement_answer_controls_stage_and_leave(world, answer):
-    from workshop.core.cards import question
-    from workshop.core.models import Answer
+@pytest.mark.parametrize('change,reason', [
+    (('- 错误输出和非零退出码保留：`scripts/check.sh` 通过。', '- 待定'), '待定'),
+    (('[["scripts/check.sh"]]', '[["echo", "pass"]]'), 'scripts/check.sh'),
+    (('[["scripts/check.sh"]]', '[["scripts/check.sh"], []]'), '格式'),
+    (('## 要不要亲眼看\n否', '## 要不要亲眼看\n再说'), '亲眼看'),
+    (('## 不可逆或对外的动作\n无\n', ''), '不可逆或对外的动作'),
+])
+def test_registration_names_problems(change, reason):
+    problems, _ = dod.registration(BODY.replace(*change), TARGET)
+    assert any(reason in p for p in problems), problems
 
-    body_with(world, CHANGE)
-    engine = engine_for(world, 'requirements-no')
-    ask = dict(key='requirement-change', **question('同意这条需求变更吗', approval=True))
-    ask['context'] = CHANGE
-    finish(engine, None, key='7', evidence=[result(world, checks=[['scripts/check.sh']])], ask=[ask])
-    card = next(c for c in engine.log.all('cards') if c['payload'].get('key') == 'requirement-change')
-    engine.plugins.get('channel', 'channel').answers = [Answer(card['id'], answer, answer == 'yes')]
-    engine.tick()
-    if answer == 'yes':
-        finish(engine, '执行', key='7', evidence=[result(world, checks=[['scripts/check.sh']])])
-        assert item(engine, '7')['stage'] == '执行'
-        return
-    finish(engine, None, key='7', evidence=[result(world, checks=[['scripts/check.sh']])],
-           leave={'kind': '等你', 'about': '等 Kun 调整需求变更并重新放行'},
-           notice=[{'key': 'requirement-change-rejected', 'text': '需调整需求变更；不对就在群里回一句「ws#7 不对」'}])
-    state = item(engine, '7')
-    assert state['stage'] == '说清楚' and state['state'] == '卡住'
-    assert state['leave']['kind'] == '工序'
-    assert not engine.answerable(state)
-    assert len([c for c in engine.log.all('cards') if c['payload'].get('key') == 'requirement-change']) == 1
+
+def test_registration_accepts_ordered_items_and_missing_visual_section_means_no():
+    body = BODY.replace('- 错误输出', '1. 错误输出').replace('## 要不要亲眼看\n否\n', '')
+    assert dod.registration(body, TARGET) == ([], [['scripts/check.sh']])
+    assert not dod.visual(body)
+
+
+def test_post_release_section_needs_checks():
+    problems, _ = dod.registration(BODY + '## 上线后 DoD\n- 线上看得到新版本\n', TARGET)
+    assert any('上线后 DoD' in p for p in problems)
+    body = BODY + '## 上线后 DoD\n- 线上：\n```workshop-checks\n[["scripts/post.sh"]]\n```\n'
+    assert dod.registration(body, TARGET)[0] == []
+    assert dod.post_checks(body) == [['scripts/post.sh']]
+    # 能跑的检查只取自己那一节，不混进上线后的检查。
+    assert dod.registration(body, TARGET)[1] == [['scripts/check.sh']]
+
+
+@pytest.mark.parametrize('pr,ok', [
+    ('## 合并前 DoD\n- 错误输出和非零退出码保留：`scripts/check.sh` 通过。\n  `scripts/check.sh`\n', True),
+    ('## 合并前 DoD\n- 错误输出和非零退出码保留：`scripts/check.sh` 通过。\n```\nraw check output\n```\n', True),
+    ('## 合并前 DoD\n- 错误输出和非零退出码保留：`scripts/check.sh` 通过。\n', False),
+    ('## 合并前 DoD\n- 错误输出和非零退出码保留：`scripts/check.sh` 通过。 `echo pass`\n', False),
+    ('## 合并前 DoD\n- 别的项 `scripts/check.sh`\n', False),
+    ('没有这一节', False),
+])
+def test_pr_evidence_matches_issue_items(pr, ok):
+    assert (dod.evidence_problems(pr, BODY, [['scripts/check.sh']]) == []) is ok
+
+
+def test_issue_without_merge_items_relies_on_rerun_checks():
+    """在途旧写法 issue 没有合并前 DoD 项：只靠干净副本重跑检查，不要求 PR 这一节。"""
+    old = BODY.replace('## 合并前 DoD\n- 错误输出和非零退出码保留：`scripts/check.sh` 通过。\n', '')
+    assert dod.evidence_problems('没有这一节', old, [['scripts/check.sh']]) == []

@@ -24,6 +24,7 @@ from workshop.core.cards import notice
 from workshop.core.engine import Engine, finder
 from workshop.core.jobs import Jobs, Pending, execute, read, write
 from workshop.core.log import Log
+from workshop.core.models import Receipt
 from workshop.core.ports import Retryable
 from workshop.reports.report import status
 from workshop.core.rules import Rules
@@ -282,19 +283,31 @@ def test_restart_recovers_running_or_finished_check_without_rerun(world, monkeyp
     revived.log.close()
 
 
-def test_check_timeout_in_job_records_check_failed(world, monkeypatch):
-    """真流程在作业里照规则 check_timeout 跑检查：超时记 exit 124、timed_out，这件活检查没过。"""
+def test_check_timeout_in_job_records_check_failed(tmp_path, monkeypatch):
+    """真流程在作业里照规则 check_timeout 跑合并前检查：超时记 exit 124，这件活退回执行。"""
+    monkeypatch.setenv("JOBTEST_DIR", str(tmp_path))
     monkeypatch.setenv("JOBTEST_REAL_FLOW", "1")
-    engine = world["engine"](real=True)
-    log = engine.log
-    wait(world, engine, monkeypatch, lambda: any(r["stage"] == "证据" and r["status"] == "ended" for r in rounds(log, "7")))
-    result = next(f["body"] for f in log.facts("alpha:7") if f["kind"] == "round_result" and f["body"]["stage"] == "证据")
-    reason = json.loads(result["reason"])
-    assert reason["reason"] == "检查失败，退回执行修正"
-    assert reason["runs"][0]["argv"] == [sys.executable, "-c", "import signal; signal.pause()"]
-    assert reason["runs"][0]["exit_code"] == 124 and reason["runs"][0]["timed_out"]
-    assert item(log, "7")["stage"] == "证据" and next(r for r in rounds(log, "7") if r["stage"] == "证据")["passed"] is None
-    log.close()
+    configure(tmp_path)
+    jobs = Jobs(tmp_path / "jobs", [sys.executable, RUNNER, str(tmp_path)])
+    Log(tmp_path / "workshop.db").close()
+    hang = [sys.executable, "-c", "import signal; signal.pause()"]
+    stage_item = {"id": "alpha:7", "object_key": "7", "stage": "交付", "checks": [hang], "materials": []}
+    target = {"name": "alpha", "plugin": "flow", "repo": "owner/repo", "check_timeout": 0.05}
+    args = (stage_item, Receipt("done", "程序完成", advance="收尾"), target)
+    deadline = time.monotonic() + 30
+    while True:
+        try:
+            evidence = jobs.call("flow", "flow", "assess", args, identity=["alpha:7", "交付", "timeout"])
+            break
+        except Pending:
+            assert time.monotonic() < deadline
+    try:
+        assert not evidence.passed and evidence.handoff == "执行" and "检查没过" in evidence.reason
+        state = json.loads(next((tmp_path / "flow-state").glob("*.json")).read_text())
+        assert "exit 124" in state["pending_return"]["output"]
+    finally:
+        jobs.launcher.shutdown(wait=True)
+        jobs.reap()
 
 
 def test_same_call_reuses_result_without_new_job(tmp_path, monkeypatch):

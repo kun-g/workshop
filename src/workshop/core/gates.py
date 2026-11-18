@@ -29,7 +29,7 @@ def validate_stages(stages):
     short = list(stages) == ["证据", "交付", "验收", "收尾"]
     if (len(set(stages)) != len(stages) or any(s not in STAGES for s in stages)
             or list(stages) != sorted(stages, key=STAGES.index)
-            or not (short or {"接单", "说清楚", "执行", "验收", "收尾"}.issubset(stages))):
+            or not (short or {"接单", "执行", "收尾"}.issubset(stages))):
         raise ValueError("阶段必须有序且包含四道关口需要的阶段")
 
 
@@ -42,12 +42,12 @@ def initial_stage(target):
 
 
 def allowed_advances(item: dict, stages) -> list[str]:
-    """本阶段回执 advance 能填的阶段：下一段；证据到验收可退回执行；到过验收的执行可直接回验收。"""
+    """本阶段回执 advance 能填的阶段：下一段；证据到收尾可退回执行；到过验收的执行可直接回验收。"""
     current = item["stage"]
     # 下一段按全局顺序取规则里还在的那一个（当前阶段被规则去掉时同样认它之后的第一个），和关口判定一致。
     following = next((s for s in stages if STAGES.index(s) > STAGES.index(current)), None)
     allowed = [following] if following else []
-    if current in ("证据", "审查", "交付", "验收") and "执行" not in allowed:
+    if current in ("证据", "审查", "交付", "验收", "收尾") and "执行" not in allowed:
         allowed.append("执行")
     if (current == "执行" and "验收" in stages and following != "验收"
             and any(entry.get("stage") == "验收" for entry in item.get("history", []))):
@@ -73,7 +73,7 @@ def decide(item: dict, receipt: Receipt, evidence: Evidence, stages, rules: Rule
     requested = receipt.advance
     if current == "验收" and not evidence.passed:
         return Decision("执行", True, "验收不过，退回执行")
-    if requested == "执行" and current in ("证据", "审查", "交付", "验收"):
+    if requested == "执行" and current in ("证据", "审查", "交付", "验收", "收尾"):
         return Decision("执行", True, "退回执行")
     if (current == "执行" and requested == "验收" and stages.index("验收") > stages.index("执行") + 1
             and any(entry.get("stage") == "验收" for entry in item.get("history", []))):
@@ -93,7 +93,7 @@ def decide(item: dict, receipt: Receipt, evidence: Evidence, stages, rules: Rule
     if requested == "执行" and not (checks and all(
             isinstance(argv, list) and argv and all(isinstance(v, str) and v.strip() for v in argv)
             for argv in checks)):
-        return Decision(current, False, "说清楚阶段尚未写出能跑的检查")
+        return Decision(current, False, "还没有登记能跑的检查")
     if not evidence.passed:
         return Decision(current, False, evidence.reason or "本阶段证据未通过")
     frozen = ()

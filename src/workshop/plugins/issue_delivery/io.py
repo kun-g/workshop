@@ -154,6 +154,14 @@ class IO:
             raise Retryable("GitHub 写入结果未确认；重试前回查" + (f"：{detail}" if detail else ""))
         return json.loads(result.stdout)
 
+    def comment(self, target, number, body):
+        """在 issue 或 PR 下留一条评论（App 身份由调用方的身份作用域给）。"""
+        return self.api(f'repos/{target["repo"]}/issues/{int(number)}/comments', data={"body": body})
+
+    def to_draft(self, target, pr):
+        """把 PR 改回 Draft：合并前 DoD 没过，交还执行。"""
+        run([self.gh, "pr", "ready", str(pr["number"]), "--repo", target["repo"], "--undo"])
+
     def pages(self, endpoint):
         pages = json.loads(run([self.gh, "api", "--paginate", "--slurp", endpoint]).stdout)
         return [entry for page in pages for entry in page]

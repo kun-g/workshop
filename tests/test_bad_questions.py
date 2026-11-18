@@ -10,7 +10,7 @@ from workshop.core.cards import question, validate_question
 from workshop.core.models import Receipt, utcnow
 from workshop.plugins.executors.local import runner
 from test_issue_delivery import world, snapshot, result, edit  # noqa: F401
-from test_rerun_acceptance import engine_for, walk, remote
+from test_issue_end_to_end import engine_for, ensure_round, hand_over, remote, start
 
 
 BAD = json.loads((Path(__file__).parent / 'fixtures/bad_questions.json').read_text())
@@ -20,7 +20,7 @@ def samples(text):
     return [json.loads(s) for s in re.findall(r'```json\n(.*?)\n```', text, re.S)]
 
 
-@pytest.mark.parametrize('stage,key', [('说清楚', 'requirement-change'), ('验收', 'visual-acceptance')])
+@pytest.mark.parametrize('stage,key', [('收尾', 'visual-acceptance')])
 def test_actual_brief_examples_pass_both_validators(world, stage, key):
     value = world['flow'].brief(snapshot(world, stage), stage, world['target'])
     brief = value if isinstance(value, str) else value.instructions
@@ -39,22 +39,20 @@ def test_actual_brief_examples_pass_both_validators(world, stage, key):
 
 
 @pytest.mark.parametrize('first,second', [(0, 0), (1, 1), (0, 1)])
-@pytest.mark.parametrize('already_rerun', [False, True])
-def test_wrapper_two_bad_cards_blocks_without_failed_or_rerun(world, monkeypatch, first, second, already_rerun):
-    engine = engine_for(world, 'bad-cards')
-    walk(engine, world, ['执行', '证据', '审查', '交付', '验收'])
-    sha = remote(world)['pr']['merge_commit_sha']
-    info = item(engine, '7')
-    state = world['io'].read(info, world['target'])
-    state['acceptance_reruns'] = [sha] if already_rerun else []
-    world['io'].save(info, world['target'], state)
+def test_wrapper_two_bad_cards_blocks_without_failed_or_rerun(world, monkeypatch, first, second):
     source = remote(world)['issue']
     source['body'] = source['body'].replace('要不要亲眼看\n否', '要不要亲眼看\n是')
     edit(world, issue=source)
+    engine = engine_for(world, 'bad-cards')
+    start(engine)
+    ensure_round(engine)
+    hand_over(engine, world)
+    assert ensure_round(engine)['stage'] == '收尾'
+    sha = remote(world)['pr']['merge_commit_sha']
     token = current(engine, '7')['token']
     evidence = [result(world, acceptance={'passed': True, 'head': sha, 'output': 'machine checks passed'})]
     def receipt(index):
-        return {'outcome': 'done', 'summary': '机器通过，待亲眼看', 'advance': '收尾',
+        return {'outcome': 'done', 'summary': '机器通过，待亲眼看',
                 'ask': BAD[index], 'evidence': evidence, 'leave': {'kind': '等你', 'about': '亲眼看'}}
     output = world['root'] / 'output.log'
     def emit(data):
@@ -82,7 +80,7 @@ def test_wrapper_two_bad_cards_blocks_without_failed_or_rerun(world, monkeypatch
     assert engine.submit(token, receipt(second)) is False
     engine.tick()
     stopped = item(engine, '7')
-    assert (stopped['stage'], stopped['state'], stopped['blocked_by']) == ('验收', '卡住', '问卡格式不对')
+    assert (stopped['stage'], stopped['state'], stopped['blocked_by']) == ('收尾', '卡住', '问卡格式不对')
     assert '修正问卡格式' in stopped['next']
     assert engine.log.all('cards') == []
     row = engine.log.get('rounds', token)
@@ -95,7 +93,7 @@ def test_wrapper_two_bad_cards_blocks_without_failed_or_rerun(world, monkeypatch
     before = len(engine.log.all('rounds'))
     engine.tick()
     assert len(engine.log.all('rounds')) == before
-    assert world['io'].read(stopped, world['target'])['acceptance_reruns'] == ([sha] if already_rerun else [])
+    assert remote(world)['issue']['state'] == 'open'
     engine.log.close()
 
 
