@@ -16,6 +16,22 @@ from workshop.core.wake import ring
 from workshop.github_identity import run as authenticated_run
 
 
+def state_root(target):
+    return Path(target.get('scheduled_release_state_dir', '~/.local/state/workshop')).expanduser().resolve()
+
+
+def release_config(target):
+    # 来源拿到对象默认流程配置；来源与流程在同一包内解析发版配置。
+    configs = [{**target, **local} for flow, local in target.get('flows', {}).items()
+               if local.get('plugin', flow) == 'scheduled_release']
+    config = configs[0] if len(configs) == 1 else target
+    return config, state_root(config)
+
+
+def release_path(root, *, cluster=False):
+    return root / ('cluster-release.json' if cluster else 'release.json')
+
+
 def read(path):
     try:
         return json.loads(path.read_text())
@@ -47,7 +63,7 @@ class IO:
         self.state_dir = Path(state_dir) if state_dir else None
 
     def root(self, target):
-        return self.state_dir or Path(target.get('scheduled_release_state_dir', '~/.local/state/workshop')).expanduser().resolve()
+        return self.state_dir or state_root(target)
 
     @contextmanager
     def locked(self, target):

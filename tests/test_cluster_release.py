@@ -15,8 +15,8 @@ from workshop.plugins.scheduled_release import ScheduledRelease
 from workshop.plugins.scheduled_release.cluster import ClusterRelease
 from workshop.plugins.scheduled_release.cluster_worker import Runner, Failure
 from workshop.plugins.scheduled_release.io import IO, read, write
-from workshop.plugins.sources.main_branch import MainBranchSource
-import workshop.plugins.sources.main_branch as source_module
+from workshop.plugins.scheduled_release.source import MainBranchSource
+import workshop.plugins.scheduled_release.source as source_module
 
 A, B, C = 'a' * 40, 'b' * 40, 'c' * 40
 P = 'd' * 40

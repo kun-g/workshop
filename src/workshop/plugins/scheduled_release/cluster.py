@@ -8,7 +8,7 @@ import subprocess
 import sys
 
 from workshop.core.models import After
-from .io import grant_record, read, write
+from .io import grant_record, read, write, release_path
 
 
 class ClusterRelease:
@@ -71,7 +71,7 @@ class ClusterRelease:
             root = self.io.root(target)
             path = root / 'batches' / (hashlib.sha256(item['id'].encode()).hexdigest() + '.json')
             state = read(path) or {**intent, 'item': item['id'], 'status': 'reserved', 'effects': {}}
-            active = read(root / 'cluster-release.json')
+            active = read(release_path(root, cluster=True))
             if (active and active['item'] != item['id']
                     and active['status'] not in ('ok', 'rejected', 'failed')):
                 return After(pending=True, reason='上一批发版尚未结束', next='等上一批结束后再处理', recheck_after='+1m')
@@ -81,7 +81,7 @@ class ClusterRelease:
                 state['initial'] = not active
             write(path, state)
             if not active or active['item'] == item['id'] or state['status'] == 'reserved':
-                write(root / 'cluster-release.json', {k: state[k] for k in ('item', 'to', 'status')})
+                write(release_path(root, cluster=True), {k: state[k] for k in ('item', 'to', 'status')})
             result = After()
             if state['status'] == 'awaiting_grant':
                 result = self.grant_outcome(state)
@@ -116,7 +116,7 @@ class ClusterRelease:
                 state['effects'][key] = asdict(result)
             write(path, state)
             # 来源只读摘要，不读核心状态库；占位从接单持续到实际完成或明确终止。
-            current = read(root / 'cluster-release.json')
+            current = read(release_path(root, cluster=True))
             if current.get('item') == item['id']:
-                write(root / 'cluster-release.json', {k: state[k] for k in ('item', 'to', 'status')})
+                write(release_path(root, cluster=True), {k: state[k] for k in ('item', 'to', 'status')})
             return result

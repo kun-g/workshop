@@ -149,11 +149,14 @@ def main(argv=None):
         elif args.command == "release-now":
             # 只写请求；比较和发版仍由守护进程按整点同一流程做（集群模式同样读这个目录）。
             from datetime import datetime, timezone
-            from .plugins.sources.main_branch import MainBranchSource, REQUEST
             rules = current_rules(args, log.get("controls", "@rules"))
-            root = MainBranchSource.release_config(rules.target(args.target))[1]
-            root.mkdir(parents=True, exist_ok=True)
-            (root / REQUEST).write_text(datetime.now(timezone.utc).isoformat())
+            source = Registry().get('source', 'main_branch')
+            paths = source.wake_paths(rules.target(args.target))
+            if len(paths) != 1:
+                raise ValueError('立即发版来源须提供唯一请求路径')
+            request = Path(paths[0])
+            request.parent.mkdir(parents=True, exist_ok=True)
+            request.write_text(datetime.now(timezone.utc).isoformat())
             print("已请求立即发版：守护进程马上比较在跑的版本与远端，有新合并就发版；进度看 workshop status")
         else:
             saved = log.get("controls", "@rules")

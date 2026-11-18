@@ -14,6 +14,7 @@ from workshop.core.ports import Retryable
 from workshop.github_identity import scoped, run
 from workshop.path_policy import only_ignored_paths
 from workshop.running import current as running_commit
+from .io import release_config, release_path, read as read_record
 
 
 REQUEST = 'release-now'
@@ -23,16 +24,8 @@ class MainBranchSource:
     def __init__(self, clock=None):
         self.clock = clock or (lambda: datetime.now(timezone.utc))
 
-    @staticmethod
-    def release_config(target):
-        # 来源拿到的是对象默认流程配置；批次目录由对应流程配置。
-        configs = [{**target, **local} for flow, local in target.get('flows', {}).items()
-                   if local.get('plugin', flow) == 'scheduled_release']
-        config = configs[0] if len(configs) == 1 else target
-        return config, Path(config.get('scheduled_release_state_dir', '~/.local/state/workshop')).expanduser().resolve()
-
     def wake_paths(self, target):
-        return [str(self.release_config(target)[1] / REQUEST)]
+        return [str(release_config(target)[1] / REQUEST)]
 
     @scoped
     def poll(self, target, cursor):
@@ -40,7 +33,7 @@ class MainBranchSource:
         if config.get('every', '1h') != '1h':
             raise ValueError('main_branch.every 目前只支持 1h')
         slot = self.clock().astimezone(timezone.utc).replace(minute=0, second=0, microsecond=0).isoformat()
-        config, root = self.release_config(target)
+        config, root = release_config(target)
         request = root / REQUEST
         # 请求由 CLI 写，来源只读。确认随事件和游标一起提交；在途结果被
         # 唤醒作废、超时或重启时，旧游标仍能重放请求，不先删除唯一凭据。
@@ -54,9 +47,7 @@ class MainBranchSource:
             return Poll([], cursor)
         cluster = config.get('scheduled_release_mode', 'self') == 'cluster'
         try:
-            release = json.loads((root / ('cluster-release.json' if cluster else 'release.json')).read_text())
-        except FileNotFoundError:
-            release = {}
+            release = read_record(release_path(root, cluster=cluster))
         except (OSError, ValueError) as exc:
             raise Retryable('无法读取发版记录，未确认是否应跳过失败提交') from exc
         if not isinstance(release, dict):

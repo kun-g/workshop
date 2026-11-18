@@ -23,7 +23,7 @@ watch_updates = "workshop.plugins.watch_updates:make_flow"
 
 [project.entry-points."workshop.source"]
 github = "workshop.plugins.sources.github:make_source"
-main_branch = "workshop.plugins.sources.main_branch:make_source"
+main_branch = "workshop.plugins.scheduled_release.source:make_source"
 watch_updates = "workshop.plugins.watch_updates:make_source"
 
 [project.entry-points."workshop.channel"]

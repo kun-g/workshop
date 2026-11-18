@@ -6,8 +6,8 @@ import pytest
 from test_scheduled_release import world, make_engine, restart
 from test_wake import jobs_in
 from workshop.core.jobs import Pending, execute
-from workshop.plugins.sources.main_branch import MainBranchSource
-import workshop.plugins.sources.main_branch as source_module
+from workshop.plugins.scheduled_release.source import MainBranchSource
+import workshop.plugins.scheduled_release.source as source_module
 
 
 @pytest.mark.parametrize('inflight', [True, False])
