@@ -22,6 +22,10 @@ def parser():
     result.add_argument("--state-dir", type=Path, default=Path(os.environ.get("WORKSHOP_STATE_DIR", "~/.local/state/workshop")).expanduser())
     result.add_argument("--rules", type=Path, default=Path(os.environ["WORKSHOP_RULES"]).expanduser().resolve() if os.environ.get("WORKSHOP_RULES") else None)
     commands = result.add_subparsers(dest="command", required=True)
+    check_issue = commands.add_parser("check-issue", help="只读核对 issue 或草稿，缺项措辞与接单一致")
+    check_issue.add_argument("issue", nargs="?", help="<短名>#<号> 或 <交付对象>:<号>")
+    check_issue.add_argument("--file", type=Path, help="本地 issue 草稿")
+    check_issue.add_argument("--target", help="草稿所属交付对象的短名或名字")
     for name in ("event", "receipt"):
         command = commands.add_parser(name)
         if name == "receipt":
@@ -130,6 +134,14 @@ def read_command(args):
 
 def main(argv=None):
     args = parser().parse_args(argv)
+    if args.command == "check-issue":
+        from .plugins.issue_delivery.check_issue import check_issue
+        from .core.ports import Retryable, TargetBlocked
+        try:
+            return check_issue(args, current_rules(args, None))
+        except (ValueError, KeyError, OSError, RuntimeError, Retryable, TargetBlocked) as exc:
+            print(f"车间：{exc}", file=sys.stderr)
+            return 2
     if args.command == "metrics":
         from .reports.metrics import metrics
         try:
