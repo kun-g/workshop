@@ -7,7 +7,6 @@ import os
 import re
 from pathlib import Path
 import subprocess
-import sqlite3
 import tempfile
 from time import monotonic
 from urllib.parse import quote
@@ -97,16 +96,6 @@ class IO:
 
     def state(self, target):
         return read(self.state_file(target), {'versions': {}, 'reports': {}, 'weeks': {}, 'outbox': {}, 'consumed': []})
-
-    def check_open(self, target, key):
-        """收尾钩子已返回、核心尚未结算的窗口里，来源继续归到旧检查活。"""
-        database = self.config(target).get('core_database')
-        if not database:
-            return False
-        with sqlite3.connect(path(database).as_uri() + '?mode=ro', uri=True) as db:
-            row = db.execute("SELECT json_extract(body, '$.state') FROM items WHERE id=?",
-                             (target['name'] + ':watch_updates:' + key,)).fetchone()
-        return bool(row and row[0] not in ('完成', '放弃'))
 
     @contextmanager
     def locked(self, target):

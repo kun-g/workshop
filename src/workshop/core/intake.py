@@ -270,7 +270,9 @@ def sources(engine):
                 # 身份只认交付对象：游标每次都可能变，带进身份就成了一出结果马上再拉；拉的间隔由新鲜期管。
                 batch = engine.call("source", name, "poll", engine.rules.target(target), cursor, identity=[target])
                 if not batch.normalized and callable(getattr(engine.plugins.get('source', name), 'normalize', None)):
-                    batch = engine.call('source', name, 'normalize', batch, engine.rules.target(target))
+                    batch = engine.call('source', name, 'normalize', batch, engine.rules.target(target),
+                                        lookup={**engine.scope(target), 'flows': {
+                                            flow: engine.scope(target, flow) for flow in entries(rule)}})
                 with engine.log.transaction():
                     for event in batch.events:
                         if event.target != target:

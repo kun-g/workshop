@@ -115,7 +115,7 @@ def test_old_poll_result_is_normalized_before_cursor_commit(world):
             assert method == 'normalize'
             if self.pending:
                 raise Pending('normalizing', 'normalizing', None)
-            return source.normalize(*args)
+            return source.normalize(*args, lambda **kw: None)
     e.jobs = CachedJobs()
     e.sources()
     assert not e.log.all('items') and not e.log.get('cursors', 'alpha:github')
@@ -135,7 +135,7 @@ def test_old_ready_is_still_checked_against_new_rule(world):
     old = Event('github', 'label:7:81', 'alpha', '7', 'old',
                 {'kind': 'label', 'data': {'actor': {'login': 'kun-g'}, 'label': {'name': 'Ready for Agent'}}}, action='ready')
     e.rules.data['targets']['alpha']['flows']['flow']['triggers'][0]['when']['actor'] = 'different-human'
-    for incoming in GitHubSource.normalize(Poll([old], 'cursor'), world['target']).events:
+    for incoming in GitHubSource.normalize(Poll([old], 'cursor'), world['target'], lambda **kw: None).events:
         e.ingest(incoming)
     assert e.log.get('items', 'alpha:7') is None
     e.log.close()

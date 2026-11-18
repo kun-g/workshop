@@ -6,6 +6,7 @@ import json
 from conftest import build, configuration
 from test_watch_updates import world, software, judgment, item_for, advance
 from workshop.core.models import Event
+from workshop.core.engine import finder
 from workshop.core.holding import resolve
 from workshop.reports.report import status
 from workshop.plugins.watch_updates.flow import Flow
@@ -27,10 +28,15 @@ def engine_for(world, tmp_path):
     return engine, flow
 
 
+def lookup(engine):
+    return finder(engine.log, {**engine.scope('alpha'), 'flows': {
+        'watch_updates': engine.scope('alpha', 'watch_updates')}})
+
+
 def ingest(engine, world, cursor=None, kinds=None):
     io, target, _, source = world
     poll = source.poll(target, cursor)
-    batch = source.normalize(poll, target)
+    batch = source.normalize(poll, target, lookup(engine))
     for event in batch.events:
         if kinds is None or event.body['kind'] in kinds:
             engine.ingest(replace(event, action='rework' if event.body.get('resume') else 'ready'))
@@ -76,7 +82,7 @@ def test_normalization_keeps_entry_identity_but_has_one_check(world):
     value['software'].append(software('second'))
     write(io.file(target, 'watchlist'), value)
     raw = source.poll(target, None)
-    batch = source.normalize(raw, target)
+    batch = source.normalize(raw, target, lambda **kw: None)
     assert len(batch.events) == 3
     assert {e.object_key for e in batch.events} == {'check'}
     assert len({e.body['entry_key'] for e in batch.events}) == 3
@@ -214,7 +220,6 @@ def test_source_does_not_open_second_check_before_core_finishes(world, tmp_path)
         state = io.state(target)
         state['checks']['check']['closed'] = True  # 收尾钩子已落盘，核心尚未结算。
         io.save(target, state)
-        target['watch_updates']['core_database'] = str(engine.log.path)
         io.time += timedelta(days=1)
         watchlist = io.watchlist(target)
         watchlist['software'].append(software('new'))
@@ -222,9 +227,9 @@ def test_source_does_not_open_second_check_before_core_finishes(world, tmp_path)
         raw = source.poll(target, cursor)
         e = Event('watch_updates', 'completion-probe', 'alpha', 'check', '检查更新', {}, flow='watch_updates')
         engine.log.append('event', asdict(e), e.item_id)
-        assert {e.object_key for e in source.normalize(raw, target).events} == {'check'}
+        assert {e.object_key for e in source.normalize(raw, target, lookup(engine)).events} == {'check'}
         engine.log.append('item_changed', {'state': '完成'}, e.item_id)
-        assert {e.object_key for e in source.normalize(raw, target).events} == {'check:2'}
+        assert {e.object_key for e in source.normalize(raw, target, lookup(engine)).events} == {'check:2'}
     finally:
         engine.log.close()
 

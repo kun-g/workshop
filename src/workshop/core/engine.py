@@ -20,7 +20,12 @@ def finder(log, target):
         alias = log.get("aliases", f"{prefix}:{object_key}")
         return alias["object_key"] if alias else object_key
 
-    def find(external=None, *, object_key=None):
+    def find(external=None, *, object_key=None, flow=None):
+        if flow is not None:
+            selected = scope.get("flows", {}).get(flow)
+            if selected is None:
+                raise ValueError(f"查找未配置的流程：{flow}")
+            return finder(log, selected)(external, object_key=object_key)
         if object_key is not None:
             found = log.get("items", f"{prefix}:{resolve(object_key)}")
             return {"item": log.full_item(found)} if found else None

@@ -25,6 +25,15 @@ class InputBlocked(Exception):
 
 
 class Source(Protocol):
+    def normalize(self, batch: Poll, target: dict,
+                  find_external: Callable[..., dict | None]) -> Poll:
+        """可选，核心 intake 调用：整理未 normalized 的批次，保留游标。
+
+        find_external(object_key=..., flow=...) 只读查同目标已配置流程的活，返回 {"item": 快照} 或 None；
+        不填 flow 时查默认流程。查找由核心及作业进程提供，来源不打开核心状态库。
+        """
+        ...
+
     def wake_paths(self, target: dict | None = None) -> list[str]:
         """可选、纯本地查询（也兼容无参数实现）。返回文件路径；文件变化使本来源在该交付对象的 poll 缓存过期。"""
         ...

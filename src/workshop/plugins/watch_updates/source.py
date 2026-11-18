@@ -27,13 +27,14 @@ class Source:
     def wake_paths(self, target):
         return [str(self.io.state_file(target))]
 
-    def normalize(self, batch, target):
+    def normalize(self, batch, target, find_external):
         """上游游标仍按版本去重；入核心前才决定检查活的归属。"""
         state = self.io.state(target)
         check, active = destination(state)
         if not active and state.get('checks'):
             previous = next(reversed(state['checks']))
-            if self.io.check_open(target, previous):
+            found = find_external(object_key=previous, flow='watch_updates')
+            if found and found['item']['state'] not in ('完成', '放弃'):
                 check, active = previous, True
         events = []
         for event in batch.events:
