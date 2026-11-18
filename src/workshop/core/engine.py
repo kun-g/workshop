@@ -222,10 +222,10 @@ class Engine:
         return intake.source_retry(self, *args, **kwargs)
 
     def delivery_error(self, *args, **kwargs):
-        return asking.delivery_error(self, *args, **kwargs)
+        return faults.delivery_error(self, *args, **kwargs)
 
     def delivery_ok(self, *args, **kwargs):
-        return asking.delivery_ok(self, *args, **kwargs)
+        return faults.delivery_ok(self, *args, **kwargs)
 
     def invalid_answer(self, *args, **kwargs):
         return asking.invalid_answer(self, *args, **kwargs)

@@ -197,3 +197,23 @@ def test_rolled_back_read_can_be_consumed_again(engine, monkeypatch):
     assert changes(engine, first) == before
     engine.channel_reads(response)
     assert engine.log.get('cards', first)['read_failures'] == 1
+
+
+def test_delivery_registration_heartbeat_and_watch_share_unchanged_contract(engine, tmp_path):
+    import json
+    from workshop.watch import Watch
+
+    engine.delivery_error('probe', RuntimeError('unavailable'))
+    engine.delivery_error('probe', RuntimeError('same failure'))
+    assert engine.control('delivery:probe')['failed'] is True
+    assert len([f for f in engine.log.facts() if f['kind'] == 'delivery_failed']) == 1
+    engine.clock.now += timedelta(seconds=181)
+    engine.heartbeat()
+    heartbeat = json.loads((tmp_path / 'heartbeat.json').read_text())
+    assert heartbeat['delivery_failed_count'] == 1
+    assert Watch(tmp_path).faults(engine.clock())['delivery']['anchor'] == heartbeat['delivery_failed_since']
+    engine.delivery_ok('probe')
+    engine.heartbeat()
+    heartbeat = json.loads((tmp_path / 'heartbeat.json').read_text())
+    assert heartbeat['delivery_failed_count'] == 0 and heartbeat['delivery_failed_since'] is None
+    assert 'delivery' not in Watch(tmp_path).faults(engine.clock())

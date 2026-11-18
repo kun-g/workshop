@@ -48,19 +48,6 @@ def receipt_notices(engine, item, stage, token, receipt, evidence, closing):
                   "subject": entry["subject"], "text": entry["text"], "reason": reason}, item["id"])
 
 
-def delivery_error(engine, key, exc, item=None):
-    state = engine.control(f"delivery:{key}")
-    if not state.get("failed"):
-        with engine.log.transaction():
-            engine.fact("delivery_failed", {"key": key, "error": repr(exc)}, item)
-            engine.fact("control", {"id": f"delivery:{key}", "failed": True, "since": stamp(engine.clock())})
-
-
-def delivery_ok(engine, key):
-    if engine.control(f"delivery:{key}").get("failed"):
-        engine.fact("control", {"id": f"delivery:{key}", "failed": False})
-
-
 def invalid_answer(engine, card, value):
     """审批卡收到非选项回答：通道没坏，记事实并通知 Kun 一次，活继续等原卡。"""
     if card.get("invalid_answer") != value:
