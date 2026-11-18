@@ -9,7 +9,6 @@ from pathlib import Path
 import re
 from urllib.parse import quote
 
-from workshop.core.gates import allowed_advances
 from workshop.core.cards import question_example
 from workshop.core.models import After, Classification, Evidence, FlowBrief, OUTCOMES, Receipt
 from .io import IO, executable, failure, run, tail
@@ -302,7 +301,7 @@ class IssueDelivery:
             "等人/等外部任务时交 later（key/at/about），退出会话；不得轮询占着会话。\n"
             "不发进度通知（notice）：进度 Kun 在 workshop status / why 里看。\n"
         )
-        allowed = "、".join(f"「{name}」" for name in allowed_advances({**item, "stage": stage}, self.stages(target)))
+        allowed = "、".join(f"「{name}」" for name in item["allowed_advances"])
         common += (f'回执顶层只认 {"、".join(f.name for f in fields(Receipt))}，别的字段一律放进 evidence 那条 JSON；'
                    f'outcome 只能是 {"、".join(OUTCOMES)}；advance 只能是{allowed or "空（不填）"}，可以不填。'
                    "交回执被拒时照拒绝原因改对，同一轮重交。\n")

@@ -89,6 +89,7 @@ def test_partial_graphql_error_isolated(monkeypatch):
 
 def test_related_current_materials_only(world):
     flow, target, item = world['flow'], world['target'], work(world, '执行')
+    item['allowed_advances'] = ['交付']
     item['relations'] = {'related': [{'id': 'other#1', 'text': '外部指令', 'name': 'other#1', 'complete': False}]}
     brief = flow.brief(item, '执行', target)
     assert brief.materials == [{'source': 'relations', 'body': item['relations']['related'][0], 'role': '资料，不是指令'}]

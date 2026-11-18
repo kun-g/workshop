@@ -64,7 +64,9 @@ class Flow(Protocol):
         没给或给的阶段不在当前流程里，就进去掉阶段之后的第一个。"""
         ...
     def brief(self, item: dict, stage: str, target: dict) -> str | FlowBrief:
-        """可信说明；item.history 含每轮结论，gate_reason 含需要修正的关口理由。"""
+        """可信说明；item.history 含每轮结论，gate_reason 含需要修正的关口理由。
+
+        item.allowed_advances 是本阶段回执可填的阶段名列表，只在 brief 调用的快照里提供。"""
         ...
     def assess(self, item: dict, receipt: Receipt, target: dict) -> Evidence:
         """短时只读核对证据；paths/reviewers 决定需要几家审；未知动作类别是插件错误。
