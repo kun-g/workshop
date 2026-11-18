@@ -53,7 +53,7 @@ def validate(name, target):
         for trigger in triggers:
             if (not isinstance(trigger, dict) or set(trigger) - {'source', 'when', 'action'}
                     or not isinstance(trigger.get('source'), str) or not trigger['source']
-                    or trigger.get('action') not in ('ready', 'rework', 'update')):
+                    or trigger.get('action') not in ('ready', 'rework', 'update', 'classify')):
                 raise ValueError(f'{prefix} triggers 的 source/action/字段无效')
             when = trigger.get('when', {})
             if not isinstance(when, dict) or not all(isinstance(k, str) and k for k in when):

@@ -25,7 +25,8 @@ def after(engine, item, stage, key, target, *, recheck=False, restarting=False):
     def invoke():
         # 同一完成钩子每次回查是一次新调用；回查次数进身份，免得认回上一次的结果。
         result = engine.call("flow", target["plugin"], "after", item, stage, key, target,
-                           identity=identity, item=item["id"])
+                             identity=identity,
+                             item=item["id"], lookup={'wait_services': engine.rules.data.get('wait_services', {})})
         return asdict(result) if isinstance(result, After) else result
     if recheck and not restarting and (engine.log.get("effects", key) or {}).get("done"):
         engine.fact("effect", {"id": key, "done": False})

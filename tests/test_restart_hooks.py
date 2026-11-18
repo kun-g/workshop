@@ -99,3 +99,37 @@ def test_callback_error_is_not_confirmed_and_does_not_crash_heartbeat(engine):
     assert new.first_ok_at
     assert not new.restart_requested
     assert new.log.get('items', 'alpha:one')['state'] == '卡住'
+
+
+def test_restarted_hook_keeps_wait_resolver_and_new_call_identity(engine, monkeypatch):
+    """#173 与 #227 接线同时成立：重调是新作业，等待配置仍是只读副本。"""
+    port = object()
+    engine.plugins.register('wait', 'test', port)
+    engine.rules.data['wait_services'] = {'test': {'nested': ['original']}}
+    calls, identities = [], []
+    original_call = Engine.call
+
+    def record_call(self, kind, name, method, *args, **kwargs):
+        if method == 'after':
+            identities.append(list(kwargs['identity']))
+        return original_call(self, kind, name, method, *args, **kwargs)
+
+    def after(item, stage, key, target, services):
+        actual, config = services('test')
+        assert actual is port and config == {'nested': ['original']}
+        config['nested'].append('local-only')
+        calls.append(deepcopy(target.get('runtime', {})))
+        return After(restart='first_ok_at' not in calls[-1])
+
+    monkeypatch.setattr(Engine, 'call', record_call)
+    engine.plugins.get('flow', 'flow').after = after
+    original = request(engine, 'wait-and-restart')
+    engine.log.rebuild()
+    new = revived(engine)
+    new.tick()
+    assert len(calls) == 2 and calls[0] == {} and calls[1]['first_ok_at']
+    assert identities[1] == [*identities[0], new.instance]
+    assert engine.rules.data['wait_services']['test'] == {'nested': ['original']}
+    assert new.log.get('restarts', 'wait-and-restart')['done']
+    assert not new.after(original, '执行', 'wait-and-restart', new.item_target(original)).restart
+    assert len(calls) == 2

@@ -12,6 +12,26 @@ from workshop.core.holding import resolve
 ENDED = ("完成", "放弃")
 
 
+def waiting_records(log, rules, plugins, item_id=None):
+    result = []
+    for wait in log.all('waits'):
+        if item_id and wait['item'] != item_id:
+            continue
+        if not item_id and wait['state'] != 'waiting':
+            continue
+        try:
+            config = rules.get('wait_services', {})[wait['provider']]
+            record = plugins.get('wait', wait['provider']).read(wait['ref'], config)
+            content = record['content']
+            seconds = max(0, int((utcnow() - datetime.fromisoformat(record['started_at'])).total_seconds()))
+            result.append({**wait, 'content': content, 'record': record, 'seconds': seconds,
+                           'question': content.get('question', '等待外部结果'),
+                           'recommend': content.get('recommend', '—'), 'reason': content.get('reason', '')})
+        except Exception as exc:
+            result.append({**wait, 'question': '等待服务读取失败：' + str(exc), 'recommend': '—', 'reason': '', 'seconds': None})
+    return result
+
+
 def state_since(log, item):
     """这件活进入当前状态的时间（事实里最近一次改状态的时刻）；查不到返回 None，页面写「时长未知」。"""
     return log.state_since(item)
@@ -57,6 +77,7 @@ def overview(log, *, everything=False, states=(), targets=(), flows=(), rules=No
         if item["id"] in read_states:
             next_step, blocker = "项目经理核对卡片读取错误（见卡住清单）", "通道"
         rows.append({"id": item["id"], "title": item.get("title") or item["id"], "target": item["target"],
+                     "priority": (item.get('relations') or {}).get('priority', 'P1'),
                      "flow": item.get("flow") or "", "stage": item["stage"], "state": item["state"], "shown": shown,
                      "stuck": stuck, "who": row["executor"] if row else "车间", "next": next_step, "blocker": blocker,
                      "reason": item["blocked_by"], "advice": item["next"],
@@ -83,6 +104,7 @@ def overview(log, *, everything=False, states=(), targets=(), flows=(), rules=No
     return {"rows": picked, "total": count, "ended": count - sum(r["state"] not in ENDED for r in rows),
             "hidden": count - len(picked), "everything": everything, "filtered": filtered,
             "unreadable": unread, "asks": asks, "uncertain": uncertain,
+            "waits": [w for w in waiting_records(log, rules, plugins) if w['item'] in ids],
             "filters": {"states": list(states), "targets": list(targets), "flows": list(flows)}}
 
 
@@ -98,9 +120,9 @@ def status(log, **options):
         head += f" · {waiting} {count(waiting)}" if count(waiting) else ""
     if view["hidden"]:
         head += f"\n另有 {view['hidden']} 件没列出" + ("（筛掉的）" if view["filtered"] else "（已结束；workshop status --all 看全部）")
-    lines = [head, "活\t阶段\t状态\t谁在推\t下一步\t卡在谁手里"]
+    lines = [head, "活\t阶段\t状态\t谁在推\t下一步\t卡在谁手里\t优先级"]
     for r in rows:
-        lines.append("\t".join((r["id"], r["stage"], r["shown"], r["who"], r["next"], r["blocker"])))
+        lines.append("\t".join((r["id"], r["stage"], r["shown"], r["who"], r["next"], r["blocker"], r['priority'])))
     lines.append("卡住清单（项目经理处理）\n活\t阶段\t原因\t建议动作")
     for r in rows:
         if r["state"] == "卡住":
@@ -108,7 +130,12 @@ def status(log, **options):
     for card in view["unreadable"]:
         lines.append("\t".join((card["item"], card["stage"], one_line(card["reason"]),
                                 "项目经理核对通道读取权限和状态；恢复后自动收取原卡回答")))
-    lines.append("等回答的问卡")
+    lines.append("等你\n活\t等待号\t版本\t等什么\t原因\t推荐\t等了多久")
+    for wait in view['waits']:
+        lines.append('\t'.join(map(one_line, (wait['item'], wait['ref'], wait.get('content', {}).get('version', '—'),
+                     wait['question'], wait['reason'], wait['recommend'],
+                     f"{wait['seconds']} 秒" if wait['seconds'] is not None else '时长未知'))))
+    lines.append("等回答的问卡（旧记录）")
     for card in view["asks"]:
         lines.append(f'{card["item"]}\t{card["card"]}\t{card["decision"]}')
     for card in view["uncertain"]:
@@ -193,6 +220,8 @@ def why(log, item_id, rules=None, plugins=None, raw=False):
     item = log.get("items", item_id)
     target, flow = flow_for(targets, item["target"], plugins, item.get("flow", ""))
     lines = [f"活 {item_id}"]
+    for wait in waiting_records(log, rules or {}, plugins, item_id):
+        lines.append('等待记录 ' + json.dumps(wait.get('record', wait), ensure_ascii=False))
     for fact in log.facts(item_id):
         body = fact["body"]
         kind = fact["kind"]

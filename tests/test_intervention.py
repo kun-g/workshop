@@ -29,12 +29,12 @@ def service(tmp_path):
 
 def create(service, operation='create:1'):
     return service.call('create', {'operation': operation, 'point': 'decision', 'owner': 'alpha:one',
-                                  'content': {'question': '继续还是停止'}})['ref']
+                                  'content': {'key': 'choice', 'version': '1', 'stage': '执行', 'question': '继续还是停止', 'reason': '需取舍', 'recommend': '停止'}})['ref']
 
 
 def answer(service, ref, value='no', operation='answer:1'):
     return service.call('answer', {'operation': operation, 'ref': ref, 'value': value,
-        'source': {'channel': 'session', 'quote': '停止', 'session': 'recorded-session'}})
+        'source': {'channel': 'session', 'quote': '停止', 'session': 'recorded-session', 'version': '1'}})
 
 
 def permit(service, operation='permit:1', scope='idle:one'):
@@ -230,7 +230,7 @@ def test_real_socket_process_restarts_without_losing_wait():
                 os.close(reader)
             return process
         process = launch()
-        data = {'operation': 'create', 'point': 'decision', 'owner': 'alpha:one', 'content': {'question': '是否继续'}}
+        data = {'operation': 'create', 'point': 'decision', 'owner': 'alpha:one', 'content': {'key': 'choice', 'version': '1', 'stage': '执行', 'question': '是否继续', 'reason': '需取舍', 'recommend': '停止'}}
         try:
             ref = request(endpoint, 'create', data)['ref']
             process.kill(); process.wait(timeout=10)

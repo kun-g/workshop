@@ -10,6 +10,7 @@ from .core.engine import Engine, finder
 from .core.jobs import Jobs, execute
 from .core.log import Log
 from .core.models import Event
+from .core.ports import WaitRejected, WaitUnavailable
 from .core.holding import resolve
 from .reports.report import overview, status, unfiled, usage, why
 from .core.rules import Rules
@@ -67,6 +68,13 @@ def parser():
     answer.add_argument("choice", help="选项的 key")
     answer.add_argument("--quote", required=True, help="Kun 的原话，逐字")
     answer.add_argument("--session", required=True, help="Kun 说这句话的会话号")
+    waiting = commands.add_parser('answer-wait', help='按等待号和问题版本登记会话回答；不代替授权中心批准')
+    waiting.add_argument('reference')
+    waiting.add_argument('value')
+    waiting.add_argument('--version', required=True)
+    waiting.add_argument('--quote', required=True)
+    waiting.add_argument('--session', required=True)
+    waiting.add_argument('--provider', default='intervention')
     release = commands.add_parser('release', help='登记 Kun 在会话里的放行；支持新对象或已有活')
     release.add_argument('item', help='<短名>#<对象键> 或 <交付对象>:<对象键>')
     release.add_argument('--quote', required=True, help='Kun 的原话，逐字')
@@ -203,6 +211,19 @@ def main(argv=None):
                 item_id = resolve(log, rules.data["targets"], args.item)
                 engine.abandon(item_id, args.reason)
                 print(f"已放弃 {item_id}；串行路径已让出，要再做就返工")
+            elif args.command == 'answer-wait':
+                import hashlib
+                source = {'channel': 'session', 'session': args.session, 'quote': args.quote, 'version': args.version}
+                if not all(v.strip() for v in source.values()) or not args.value.strip():
+                    raise ValueError('回答、版本、Kun 原话及会话号都不能为空白')
+                config = engine.rules.data.get('wait_services', {}).get(args.provider)
+                if config is None:
+                    raise ValueError('等待端口未配置')
+                payload = {'ref': args.reference, 'value': args.value, 'source': source}
+                payload['operation'] = 'session-answer:' + hashlib.sha256(
+                    json.dumps(payload, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+                result = engine.plugins.get('wait', args.provider).invoke('answer', payload, config)
+                print(json.dumps(result, ensure_ascii=False))
             elif args.command == "answer":
                 card = engine.answer_here(args.card, args.choice, args.quote, args.session)
                 ring(args.state_dir)
@@ -252,7 +273,7 @@ def main(argv=None):
                             engine.awaken(wake, paths)
                             received_at = wake.received_at
         return 0
-    except (ValueError, TypeError, KeyError, OSError) as exc:
+    except (ValueError, TypeError, KeyError, OSError, WaitRejected, WaitUnavailable) as exc:
         print(f"车间：{exc}", file=sys.stderr)
         return 2
     except KeyboardInterrupt:

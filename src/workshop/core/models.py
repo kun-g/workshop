@@ -90,8 +90,11 @@ class Relations:
     related: list[dict] = field(default_factory=list)
     converge: str = ""
     error: str = ""
+    priority: str = "P1"
 
     def validate(self):
+        if self.priority not in ("P0", "P1", "P2"):
+            raise ValueError("优先级只能是 P0/P1/P2")
         if not isinstance(self.error, str) or not isinstance(self.converge, str):
             raise ValueError("关系的错误和汇合阶段须为字符串")
         for group in (self.prerequisites, self.members, self.collections, self.related):
@@ -177,8 +180,13 @@ class Evidence:
     handoff: str = ""
     # 没过且要等来源资料更新：活停在本阶段「等资料」，不派轮、不发卡；来源有新事件时下一拍重核。
     awaits_update: bool = False
+    # 流程核实本轮需创建外部等待；调用 after 取得引用，回答后仍回本阶段。
+    pause: bool = False
 
     def validate(self) -> None:
+        if type(self.pause) is not bool or self.pause and (
+                self.passed or self.blocked or self.handoff or self.recheck_after or self.awaits_update):
+            raise ValueError("暂停不能同时通过、阻塞、交接或另设等待")
         if not isinstance(self.handoff, str) or self.handoff and self.handoff not in STAGES:
             raise ValueError("交接阶段须为合法阶段名")
         if type(self.awaits_update) is not bool or self.awaits_update and (
@@ -382,8 +390,7 @@ class Receipt:
                     check("leave.at", lambda: due(leave.get("at"), now))
                     if leave["kind"] == "工序" and not leave.get("owner"):
                         problems.append("leave.owner: 工序必须有人做")
-                elif leave.get("kind") == "等你" and not data.get("ask") and not data.get("notice"):
-                    problems.append("leave: 等你须带问卡；旧版 notice 回执只兼容转为卡住")
+                # 无卡等待内容由流程核实并交等待服务，核心不解释业务问题。
         if problems:
             raise ReceiptError(problems)
         return cls(**data)

@@ -343,6 +343,8 @@ def test_codex_missing_session_only_matches_cli_error_for_current_id(tmp_path):
     driver = Driver()
     for value, expected in [
         ('Error: no rollout found for thread id old-id', True),
+        ('Error: thread/resume: thread/resume failed: no rollout found for thread id old-id (code -32600)', True),
+        ('Error: thread/resume: thread/resume failed: no rollout found for thread id another-id (code -32600)', False),
         (json.dumps({'type': 'error', 'message': 'no rollout found for thread id old-id'}), True),
         ('Error: no rollout found for thread id another-id', False),
         (json.dumps({'type': 'item.completed', 'item': {'text': 'no rollout found for thread id old-id'}}), False),

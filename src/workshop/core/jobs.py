@@ -368,7 +368,13 @@ def execute(path, plugins: Plugins, lookup=None):
         plugin = plugins.get(spec["port"], spec["name"])
         args = materialize(decode(spec["args"]))
         if spec.get("lookup"):
-            args.append(lookup(spec["lookup"]))
+            if 'wait_services' in spec['lookup']:
+                import inspect
+                from .waits import handle
+                if len(inspect.signature(getattr(plugin, spec['method'])).parameters) >= 5:
+                    args.append(handle(plugins, spec['lookup']['wait_services']))
+            else:
+                args.append(lookup(spec["lookup"]))
         result = {"ok": encode(getattr(plugin, spec["method"])(*args))}
     except Exception as exc:
         traceback.print_exc(file=sys.stderr)

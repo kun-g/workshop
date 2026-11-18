@@ -26,6 +26,13 @@ class Registry:
                 target = adapt(target) if adapt else target
             targets[name] = target
         rules = Rules({**rules.data, 'targets': targets}, rules.path)
+        for name, config in rules.data.get('wait_services', {}).items():
+            validate = getattr(self.get('wait', name), 'validate', None)
+            if validate:
+                try:
+                    validate(config)
+                except ValueError as exc:
+                    raise ValueError(f'wait_services.{name}: {exc}') from exc
         for name, target in targets.items():
             for flow in entries(target):
                 configuration(rules.target(name, flow))

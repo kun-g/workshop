@@ -80,7 +80,7 @@ def item(row, asks, now, *, badge=True, running=False):
            ("下一步原文", row["next"]), ("原因", row["reason"] if row["state"] == "卡住" else ""),
            ("卡在谁手里", "" if row["blocker"] in ("—", row["reason"]) else row["blocker"]),
            ("Kun 原话", origin.get("quote") or ""), ("等你回答", asks.get(row["id"], "")),
-           ("流程", lane(row)), ("" if running else "阶段", f'{row["stage"]} · {row["who"]}'), ("活", row["id"]))
+           ("优先级", row.get("priority", "P1")), ("等待", row.get("wait_detail", "")), ("流程", lane(row)), ("" if running else "阶段", f'{row["stage"]} · {row["who"]}'), ("活", row["id"]))
     body = "".join(f"<p><b>{k}</b>{v if k == '等了多久' else e(v)}</p>" for k, v in raw if k and v)
     return (f'<details class="item"><summary><span class="name">{e(title)}{pill}<span class="ref">{ref}</span><button type="button" class="copy" data-copy="{e(row["id"])}" title="复制 {e(row["id"])}">复制 ID</button>{quote}</span>'
             + (f'<span class="stage">{e(row["stage"])}</span>{clock}' if running else
@@ -124,6 +124,12 @@ def page(view, now=None):
     rows = view["rows"]
     now = now or datetime.now().astimezone()
     asks = {c["item"]: c["decision"] for c in view["asks"]}
+    for wait in view.get('waits', []):
+        asks[wait['item']] = wait['question'] + '；推荐：' + wait['recommend']
+        for row in rows:
+            if row['id'] == wait['item']:
+                row['since'] = wait.get('record', {}).get('started_at', row.get('since'))
+                row['wait_detail'] = wait['ref'] + '；版本：' + wait.get('content', {}).get('version', '—') + '；原因：' + wait['reason']
     stuck = [r for r in rows if r["stuck"]]
     waiting = [r for r in rows if r["shown"] == "等你" and not r["stuck"]]
     ended = [r for r in rows if r["state"] in ENDED]

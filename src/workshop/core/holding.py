@@ -169,18 +169,18 @@ def resume(engine, target, selected: list[str], expected: list[str] | None = Non
             if replay:
                 body = dict(entry["event"])
                 ingress = body.pop("ingress", "unknown")
-                body.pop("pending_classification", None)
+                classify = body.pop("pending_classification", False) or ingress == 'external'
                 body.pop("release_gate", None)
                 event = Event(**body)
                 if ingress == "unknown":
                     event = replace(event, action="update")
                 event = replace(event, object_key=engine.resolve_key(event.target, event.object_key, event.flow))
                 event = replace(event, action=engine.after_abandon(event.item_id, int(entry["id"]), event.action))
-                engine.fact("event", {**asdict(event), "ingress": ingress, "pending_classification": ingress == "external",
+                engine.fact("event", {**asdict(event), "ingress": ingress, "pending_classification": classify,
                                     "initial_stage": initial_stage(engine.rules.target(event.target, event.flow)),
                                     **gate(ingress)}, event.item_id, source="resume", ext_id=entry["id"])
-                if ingress == "external":
-                    engine.classification_intent(event, int(entry["id"]))
+                if classify:
+                    engine.classification_intent(event, int(entry["id"]), release_gate=ingress == 'source')
                     continue
                 replayed = engine.log.get("items", event.item_id)
                 if replayed is None:

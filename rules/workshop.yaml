@@ -1,7 +1,7 @@
 # 新 flows 只使用这里的条件；兼容旧 plugin 文件的默认条件留在流程迁移适配中。
 issue_triggers: &issue_triggers
   - source: github
-    when: {kind: label, label: Ready for Agent, actor: kun-g, by_workshop: false, edited: false}
+    when: {kind: label, label: Ready for Agent, actor: [kun-g, "lambdatheory-agent[bot]"], edited: false}
     action: ready
   - source: github
     when:
@@ -11,6 +11,7 @@ issue_triggers: &issue_triggers
       by_workshop: false
       edited: false
     action: rework
+  - {source: github, when: {kind: issue}, action: classify}
   - {source: github, action: update}
   - {source: 'cli:feishu', action: update}
   - {source: 'cli:orca', action: update}
@@ -32,10 +33,17 @@ targets:
     # 本机 ai_quota 快照（和 ai-quota MCP 同一数据源），只读；最近一次成功采集超过 45 分钟算过期（和 ai_quota 提醒同一条线）。
     quota_snapshot: &quota_snapshot {path: ~/.local/state/ai_quota/quota.db, max_age_minutes: 45}
     sources: {github: {}, main_branch: {every: 1h}}
+    auto_intake: true
+    intake_app_logins: ["lambdatheory-agent[bot]"]
     github_overlap_seconds: 60
     repo: kun-g/grant-console
-    github_identity: {mode: inherit}
-    # 普通动作保留原身份；关系读取只能用完整仓库集合的 App 只读身份。
+    github_identity:
+      mode: app
+      gh: /opt/homebrew/bin/gh
+      signer: [~/workspace/runtime/repos/workshop/.venv/bin/python, -m, workshop.github_token,
+               --config, ~/workspace/runtime/tools/agent_github_identity/config.json,
+               --app, lambdatheory-agent, --key-service, lambdatheory-agent, --key-account, private-key]
+    # 普通动作和自动补标签都用 App；关系读取保留完整仓库集合的 App 只读身份。
     relations_identity: &relationship_app
       mode: app
       gh: /opt/homebrew/bin/gh
@@ -157,6 +165,8 @@ targets:
       directions:
         - {id: workshop, path: ~/workspace/contexts/projects/workshop/pm.md}
         - {id: workspace, path: ~/workspace/contexts/WORKSPACE.md}
+    auto_intake: true
+    intake_app_logins: ["lambdatheory-agent[bot]"]
     github_overlap_seconds: 60
     short_name: ws
     ask_kun_state: ~/.local/state/ask-kun/asks.json
@@ -272,7 +282,7 @@ intervention:
   # transport 留空：真实发送由迁移单接入，禁止隐式回退旧通知口。
   points:
     requirement: {wait: true, send: false}
-    decision: {wait: true, send: false}
+    decision: {wait: true, send: false, required_wait: [key, version, stage, question, reason, recommend]}
     authorization: {wait: true, send: false}
     visual:
       wait: true

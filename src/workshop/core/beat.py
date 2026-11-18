@@ -141,8 +141,10 @@ def advance_open(engine):
     if engine.rules.data.get("taskhome"):
         items.update((item["id"], item) for item in engine.log.ended_home_items())
     relations.refresh(engine, [i for i in items.values() if i["state"] not in ("完成", "放弃")])
+    # 刷新后的快照决定新轮次顺序；稳定排序保留同级的入队顺序。
+    items = {key: engine.log.get("items", key) for key in items}
     slow = []
-    for item in items.values():
+    for item in sorted(items.values(), key=lambda i: (i.get("relations") or {}).get("priority", "P1")):
         started = time.monotonic()
         try:
             engine.advance(engine.log.get("items", item["id"]))

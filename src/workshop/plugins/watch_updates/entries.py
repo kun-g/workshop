@@ -379,7 +379,7 @@ class Entries:
             versions[key].setdefault('first_reported', self.io.now())
         return After()
 
-    def after(self, item, completed_stage, key, target):
+    def after(self, item, completed_stage, key, target, services=None):
         data = origin(item)
         with self.io.locked(target):
             state = self.io.state(target)

@@ -178,7 +178,7 @@ class ScheduledRelease:
         return After()
 
     @scoped
-    def after(self, item, completed_stage, key, target):
+    def after(self, item, completed_stage, key, target, services=None):
         if target.get('scheduled_release_mode', 'self') == 'cluster':
             return ClusterRelease(self.io).after(item, completed_stage, key, target, self.intent(item))
         with self.io.locked(target):
