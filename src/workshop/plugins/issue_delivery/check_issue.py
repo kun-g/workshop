@@ -5,6 +5,7 @@ import re
 from workshop import github_identity
 from . import dod
 from .io import IO
+from .requirements import change_documents, changed_requirement, section
 
 
 def check_issue(args, rules):
@@ -24,7 +25,9 @@ def check_issue(args, rules):
         raise ValueError(f"交付对象不存在或不唯一：{name}")
     # 取 issue 流程覆盖后的配置，与接单使用同一份 required_checks / requirement_docs / 身份。
     target = rules.target(matches[0], "issue_delivery")
-    problems, checks = inspect(target, number, body)
+    problems, checks, documents = inspect(target, number, body)
+    if documents is not None:
+        print("进交付时要求 PR 改的需求文档：" + "、".join(sorted(documents)))
     if problems:
         print("\n".join(problems))
         return 1
@@ -43,4 +46,12 @@ def inspect(target, number=None, body=None):
             raise ValueError(f"#{number} 是 PR，请给 issue 号")
         body = issue.get("body") or ""
     documents = io.requirement_documents(target)
-    return dod.registration(body, target, documents)
+    problems, checks = dod.registration(body, target, documents)
+    required = None
+    basis = section(body, "依据")
+    if changed_requirement(basis) is not None:
+        try:
+            required = change_documents(basis, documents, target)
+        except ValueError:
+            pass  # 登记核对已给出缺项；没有确定的文档列表可展示。
+    return problems, checks, required

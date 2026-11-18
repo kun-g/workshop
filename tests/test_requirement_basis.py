@@ -4,7 +4,7 @@ import pytest
 from workshop.core.models import Receipt
 from workshop.plugins.issue_delivery import dod
 from conftest import item
-from test_issue_delivery import BODY, edit, result, snapshot, world  # noqa: F401
+from test_issue_delivery import BODY, PR_BODY, calls, edit, result, snapshot, world  # noqa: F401
 from test_issue_end_to_end import engine_for, start
 
 
@@ -151,6 +151,84 @@ def test_documents_only_cited_before_change_are_not_required(world):
     body_with(world, '已有需求：`docs/requirements/交付.md` R6；交付 R6。' + CHANGE)
     edit(world, files=[{'filename': 'docs/requirements/核心.md', 'status': 'modified'}])
     assert deliver(world).passed
+
+
+@pytest.mark.parametrize('separator', ['\n\n', '\n  \t\n', '\r\n\r\n'])
+def test_documents_in_later_paragraph_are_not_required(world, separator):
+    world['target']['requirement_docs'] = ['docs/requirements/']
+    edit(world, requirement_contents={'docs/requirements/核心.md': '**R14 需求。**',
+                                      'docs/requirements/交付.md': '**R6 验收。**'},
+         files=[{'filename': 'docs/requirements/核心.md', 'status': 'modified'}])
+    body_with(world, CHANGE + separator + '另外的说明（交付 R6）。')
+    assert deliver(world).passed
+
+
+def test_empty_change_does_not_consume_next_paragraph(world):
+    body_with(world, '需求变更：\n\n核心.md R14')
+    evidence = intake(world)
+    assert not evidence.passed and '没写需求原文' in evidence.reason
+
+
+def test_repair_keeps_merged_documents_but_requires_new_basis_document(world):
+    """首个 PR 改文档并合入；执行交接清理合并状态后，修复 PR 沿用记录。"""
+    target, flow, io = world['target'], world['flow'], world['io']
+    target['requirement_docs'] = ['docs/requirements/']
+    body_with(world, CHANGE)
+    edit(world, files=[{'filename': 'docs/requirements/核心.md', 'status': 'modified'}])
+    assert deliver(world).passed
+    data = snapshot(world, '交付')
+    assert not flow.after(data, '交付', 'first-merge', target).pending
+    state = io.read(data, target)
+    assert state['requirement_changes'] == {'docs/requirements/核心.md': state['merge']}
+    assert state['merge'] == world['sha']
+
+    edit(world, pr={'number': 12, 'body': PR_BODY, 'head': {'sha': world['sha']},
+                    'state': 'open', 'merged': False}, files=[{'filename': 'src/a.py', 'status': 'modified'}])
+    execution = snapshot(world, '执行')
+    assert not flow.after(execution, '执行', 'repair-handoff', target).pending
+    state = io.read(data, target)
+    assert 'merge' not in state and state['requirement_changes'] == {'docs/requirements/核心.md': world['sha']}
+    assert flow.assess(data, PROGRAM, target).passed
+
+    body_with(world, CHANGE + '\n并在 docs/requirements/新增.md 新增：保留失败原文。')
+    evidence = flow.assess(data, PROGRAM, target)
+    assert not evidence.passed and evidence.handoff == '执行'
+    assert '需求变更没改登记的需求文档：docs/requirements/新增.md' in evidence.reason
+    # 另一件活不能借用这件活的合并记录。
+    other = {**data, 'id': 'alpha:8', 'object_key': '8'}
+    assert 'requirement_changes' not in io.read(other, target)
+
+
+def test_merge_records_only_registered_added_or_modified_documents(world):
+    target, flow, io = world['target'], world['flow'], world['io']
+    target['requirement_docs'] = ['docs/requirements/']
+    files = [
+        {'filename': 'docs/requirements/新增.md', 'status': 'added'},
+        {'filename': 'docs/requirements/核心.md', 'status': 'modified'},
+        {'filename': 'docs/requirements/删除.md', 'status': 'removed'},
+        {'filename': 'archive/旧.md', 'previous_filename': 'docs/requirements/旧.md', 'status': 'renamed'},
+        {'filename': 'docs/requirements/纯移动.md', 'previous_filename': 'docs/requirements/旧名.md',
+         'status': 'renamed', 'changes': 0},
+        {'filename': 'docs/requirements/改名并修改.md', 'previous_filename': 'docs/requirements/之前.md',
+         'status': 'renamed', 'changes': 2},
+        {'filename': 'src/a.py', 'status': 'modified'},
+    ]
+    edit(world, files=files)
+    assert deliver(world).passed
+    data = snapshot(world, '交付')
+    assert 'requirement_changes' not in io.read(data, target)
+    assert not flow.after(data, '交付', 'merge', target).pending
+    expected = {p: world['sha'] for p in ('docs/requirements/新增.md', 'docs/requirements/核心.md',
+                                        'docs/requirements/改名并修改.md')}
+    assert io.read(data, target)['requirement_changes'] == expected
+    # 合并成功后本地保存丢失：回查已合并 PR，补记而不重新合并。
+    state = io.read(data, target)
+    for key in ('merge', 'requirement_changes'):
+        state.pop(key)
+    io.save(data, target, state)
+    flow.after(data, '交付', 'retry-merge', target)
+    assert io.read(data, target)['requirement_changes'] == expected
+    assert len([c for c in calls(world) if c[1:3] == ['pr', 'merge']]) == 1
 
 
 # dod.registration / dod.evidence_problems：只看文字结构。
