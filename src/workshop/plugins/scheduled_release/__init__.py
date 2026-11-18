@@ -35,7 +35,7 @@ class ScheduledRelease:
         return Classification(discard=True)
 
     def describe(self, event, target):
-        return f"整点比较：{event.body.get('from', '')[:12]} → {event.body.get('to', '')[:12]}"
+        return f"定时比较：{event.body.get('from', '')[:12]} → {event.body.get('to', '')[:12]}"
 
     def path(self, item, target):
         return self.io.root(target) / 'scheduled_release' / (hashlib.sha256(item['id'].encode()).hexdigest() + '.json')
@@ -121,25 +121,11 @@ class ScheduledRelease:
         daemon = self.io.daemon()
         self.io.git(checkout, 'merge', '--ff-only', state['to'])
         prepare = target.get('prepare', [])
-        for index, step in enumerate(prepare):
-            cwd = (checkout / step.get('cwd', '.')).resolve()
-            if not cwd.is_relative_to(checkout):
-                return self.fail(state, '准备命令目录超出主检出；已快进但未重启')
-            results = state.setdefault('prepare_runs', {})
-            old = results.get(str(index))
-            if old and old.get('exit_code') == 0:
-                continue
-            if old:
-                return self.fail(state, '准备命令未确认完成；已快进但未重启，需人工处理')
-            results[str(index)] = {'argv': step['argv'], 'status': 'running'}
-            save()
-            result = self.io.command(step['argv'], cwd=cwd, timeout=target.get('release_timeout', 300), isolated=True,
-                                     cache_dir=root / 'dependency-cache' / 'uv')
-            results[str(index)] = result
-            save()
-            if result['exit_code']:
-                return self.fail(state, f"准备命令退出 {result['exit_code']}；已快进但未重启：{result['stderr'][-500:]}")
+        failure = self.prepare_steps(target, state, save, ('prepare', 'release_prepare'))
+        if failure:
+            return failure
         # 退回点是发版前在跑的版本；主检出可能早被快进到目标提交（#126）。
+        # release_prepare 管独立服务，不作为旧版主环境的恢复命令；独立安装器自行保留旧环境。
         record = {'from': state['from'], 'to': state['to'], 'at': self.io.now(),
                   'status': 'restarting', 'prepare': [s['argv'] for s in prepare],
                   'prepare_cwds': [s.get('cwd', '.') for s in prepare], 'item': item['id'], 'daemon': daemon}
@@ -147,7 +133,33 @@ class ScheduledRelease:
         state['status'] = 'restarting'
         return After(restart=True)
 
-    def confirm(self, item, target, state):
+    def prepare_steps(self, target, state, save, groups, position='已快进但未重启'):
+        root = self.io.root(target)
+        checkout = Path(target['checkout']).expanduser().resolve()
+        # 独立常驻服务只在发版时装配；检查副本的 prepare 不得启动服务。
+        steps = [(group, index, step) for group in groups
+                 for index, step in enumerate(target.get(group, []))]
+        for group, index, step in steps:
+            cwd = (checkout / step.get('cwd', '.')).resolve()
+            if not cwd.is_relative_to(checkout):
+                return self.fail(state, f'准备命令目录超出主检出；{position}')
+            results = state.setdefault(group + '_runs', {})
+            old = results.get(str(index))
+            if old and old.get('exit_code') == 0:
+                continue
+            if old:
+                return self.fail(state, f'准备命令未确认完成；{position}，需人工处理')
+            results[str(index)] = {'argv': step['argv'], 'status': 'running'}
+            save()
+            result = self.io.command(step['argv'], cwd=cwd, timeout=target.get('release_timeout', 300), isolated=True,
+                                     cache_dir=root / 'dependency-cache' / 'uv')
+            results[str(index)] = result
+            save()
+            if result['exit_code']:
+                return self.fail(state, f"准备命令退出 {result['exit_code']}；{position}：{result['stderr'][-500:]}")
+        return None
+
+    def confirm(self, item, target, state, save):
         root = self.io.root(target)
         release = read(release_path(root))
         if release.get('item') != item['id'] or release.get('to') != state['to']:
@@ -171,6 +183,10 @@ class ScheduledRelease:
             return self.fail(state, '重启后的主检出不是检查过的提交')
         if datetime.fromisoformat(first_ok_at) < datetime.fromisoformat(release['at']):
             raise ValueError('首拍成功时间早于重启请求')
+        # 首次升级由不认识 release_prepare 的旧进程发起；新进程确认前补齐。
+        failure = self.prepare_steps(target, state, save, ('release_prepare',), '已重启但尚未确认成功')
+        if failure:
+            return failure
         release.update(status='ok', confirmed_at=self.io.now(), confirmed_daemon=daemon,
                        first_ok_at=first_ok_at)
         write(release_path(root), release)
@@ -195,7 +211,7 @@ class ScheduledRelease:
                 save()
                 return After()
             if target.get('runtime', {}).get('first_ok_at'):
-                result = self.confirm(item, target, state)
+                result = self.confirm(item, target, state, save)
                 if not result.pending:
                     state['effects'][key] = asdict(result)
                 save()
@@ -212,7 +228,7 @@ class ScheduledRelease:
                 elif completed_stage == '交付':
                     result = self.deploy(item, target, state, save)
                 elif completed_stage == '验收':
-                    result = self.confirm(item, target, state)
+                    result = self.confirm(item, target, state, save)
                 elif completed_stage == '收尾':
                     result = After(notice=f"定时发版完成：{state['to']}，新进程心跳已恢复。")
             if not result.pending:

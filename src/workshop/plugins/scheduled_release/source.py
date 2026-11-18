@@ -1,8 +1,8 @@
-"""每小时比较一次在跑的版本与远端；持久游标由核心随事件一起提交。
+"""按配置周期比较在跑的版本与远端；持久游标由核心随事件一起提交。
 
-`workshop release-now` 在发版状态目录写 release-now，来源立刻多比较一次，之后的发版流程与整点相同。
+`workshop release-now` 在发版状态目录写 release-now，来源立刻多比较一次，之后走同一发版流程。
 """
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import base64
 import json
 from pathlib import Path
@@ -18,6 +18,19 @@ from .io import release_config, release_path, read as read_record
 
 
 REQUEST = 'release-now'
+EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
+
+
+def interval_minutes(target):
+    sources = target.get('sources', {})
+    config = sources.get('main_branch', {}) if isinstance(sources, dict) else {}
+    value = config.get('every', '1h') if isinstance(config, dict) else config
+    match = re.fullmatch(r'([0-9]+)(m|h)', value) if isinstance(value, str) else None
+    minutes = int(match[1]) * (60 if match[2] == 'h' else 1) if match else 0
+    if minutes <= 0 or minutes % 5:
+        raise ValueError(f"{target['name']} sources.main_branch.every={value!r}："
+                         '须为 <数字>m 或 <数字>h，换算后为 5 分钟的正整数倍（如 5m、35m、2h）')
+    return minutes
 
 
 class MainBranchSource:
@@ -27,12 +40,14 @@ class MainBranchSource:
     def wake_paths(self, target):
         return [str(release_config(target)[1] / REQUEST)]
 
+    def validate(self, target):
+        interval_minutes(target)
+
     @scoped
     def poll(self, target, cursor):
-        config = target.get('sources', {}).get('main_branch', {}) if isinstance(target.get('sources'), dict) else {}
-        if config.get('every', '1h') != '1h':
-            raise ValueError('main_branch.every 目前只支持 1h')
-        slot = self.clock().astimezone(timezone.utc).replace(minute=0, second=0, microsecond=0).isoformat()
+        minutes = interval_minutes(target)
+        elapsed = (self.clock().astimezone(timezone.utc) - EPOCH) // timedelta(minutes=1)
+        slot = (EPOCH + timedelta(minutes=elapsed // minutes * minutes)).isoformat()
         config, root = release_config(target)
         request = root / REQUEST
         # 请求由 CLI 写，来源只读。确认随事件和游标一起提交；在途结果被
@@ -53,7 +68,7 @@ class MainBranchSource:
         if not isinstance(release, dict):
             raise Retryable('发版记录须为对象')
         if cluster and release and release.get('status') not in ('ok', 'rejected', 'failed'):
-            # pending、结果不明或上线失败都保留占位；不能整点再发一张卡。
+            # pending、结果不明或上线失败都保留占位；不能下个周期再发一张卡。
             return Poll([], position(acknowledged))
         checkout = str(Path(target['checkout']).expanduser().resolve())
         remote = f"https://github.com/{target['repo']}.git"
@@ -61,9 +76,9 @@ class MainBranchSource:
             try:
                 result = run(argv, capture_output=True, text=True, timeout=30)
             except (OSError, subprocess.TimeoutExpired) as exc:
-                raise Retryable('整点比较未完成') from exc
+                raise Retryable('定时比较未完成') from exc
             if result.returncode:
-                raise Retryable('整点比较失败：' + result.stderr[-500:])
+                raise Retryable('定时比较失败：' + result.stderr[-500:])
             return result.stdout.strip()
         rows = read(['git', 'ls-remote', remote, 'refs/heads/main']).split()
         if len(rows) != 2 or rows[1] != 'refs/heads/main' or not re.fullmatch('[0-9a-f]{40}', rows[0]):

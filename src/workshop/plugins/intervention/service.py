@@ -1,6 +1,8 @@
 """等待、回答和送达的权威记录。许可目录只从唯一规则文件加载。"""
 import json
 import hashlib
+import os
+import sys
 from pathlib import Path
 import subprocess
 import yaml
@@ -66,6 +68,7 @@ class Service:
         if action == 'ping':
             self.configuration()
             return {'protocol': 1, 'rules': str(self.rules.resolve()),
+                    'pid': os.getpid(), 'python': sys.executable,
                     'rules_sha256': hashlib.sha256(self.rules.read_bytes()).hexdigest()}
         if action == 'get':
             return self.store.get(data['ref'])

@@ -79,7 +79,7 @@ def parser():
     release.add_argument('item', help='<短名>#<对象键> 或 <交付对象>:<对象键>')
     release.add_argument('--quote', required=True, help='Kun 的原话，逐字')
     release.add_argument('--session', required=True, help='Kun 说这句话的会话号')
-    commands.add_parser("release-now", help="不等整点，立刻比较在跑的版本与远端；有新合并就走与整点相同的发版流程").add_argument(
+    commands.add_parser("release-now", help="不等下个周期，立刻比较在跑的版本与远端；有新合并就走同一发版流程").add_argument(
         "target", nargs="?", default="workshop", help="交付对象，默认 workshop")
     commands.add_parser("pause").add_argument("target")
     resume = commands.add_parser("resume")
@@ -167,7 +167,7 @@ def main(argv=None):
             saved = log.get("controls", "@rules") or {}
             execute(args.directory, Registry(saved.get('data', {}).get('executor_profiles')), lambda target: finder(log, target))
         elif args.command == "release-now":
-            # 只写请求；比较和发版仍由守护进程按整点同一流程做（集群模式同样读这个目录）。
+            # 只写请求；比较和发版仍由守护进程按同一发版流程做（集群模式同样读这个目录）。
             from datetime import datetime, timezone
             rules = current_rules(args, log.get("controls", "@rules"))
             source = Registry().get('source', 'main_branch')
@@ -189,7 +189,7 @@ def main(argv=None):
             jobs = None
             if args.command == "run":
                 from .running import record, process_identity
-                record()  # 作业子进程继承；整点发版拿它和远端比
+                record()  # 作业子进程继承；定时发版拿它和远端比
             if args.command == "run" and not args.once:
                 state_dir = str(args.state_dir.resolve())
                 jobs = Jobs(args.state_dir / "jobs", [sys.executable, "-m", "workshop.cli", "--state-dir", state_dir, "job"])

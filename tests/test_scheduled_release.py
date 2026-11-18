@@ -189,6 +189,57 @@ def test_prepare_failure_records_fast_forward_and_no_restart(world):
     assert not (w['io'].root(w['target']) / 'release.json').exists()
 
 
+def test_release_prepare_runs_only_on_deploy_and_is_not_main_rollback_prepare(world):
+    w = world
+    marker = w['root'] / 'independent-service'
+    command = [sys.executable, '-c', f'from pathlib import Path; p=Path({str(marker)!r}); p.write_text(p.read_text()+"start\\n" if p.exists() else "start\\n")']
+    w['target']['release_prepare'] = [{'argv': command}]
+    after(w, '证据')
+    assert not marker.exists()
+    assert after(w, '交付').restart
+    assert marker.read_text() == 'start\n'
+    assert after(w, '交付', 'retry-deploy').restart
+    assert marker.read_text() == 'start\n'
+    assert state(w)['release_prepare_runs']['0']['exit_code'] == 0
+    assert read(w['io'].root(w['target']) / 'release.json')['prepare'] == []
+
+
+def test_release_prepare_failure_does_not_request_daemon_restart(world):
+    w = world
+    w['target']['release_prepare'] = [{'argv': [sys.executable, '-c', 'raise SystemExit(9)']}]
+    after(w, '证据')
+    result = after(w, '交付')
+    assert not result.restart and '已快进但未重启' in result.notice
+    assert state(w)['release_prepare_runs']['0']['exit_code'] == 9
+    assert not (w['io'].root(w['target']) / 'release.json').exists()
+
+
+def test_new_daemon_installs_service_when_old_deploy_did_not_know_step(world):
+    w = world
+    after(w, '证据')
+    assert after(w, '交付').restart  # 旧版代码和规则没有独立服务安装步骤。
+    marker = w['root'] / 'installed-after-upgrade'
+    w['target']['release_prepare'] = [{'argv': [sys.executable, '-c',
+        f'from pathlib import Path; Path({str(marker)!r}).write_text("ready")']}]
+    restart(w)
+    assert not after(w, '验收').pending
+    assert marker.read_text() == 'ready'
+    assert state(w)['release_prepare_runs']['0']['exit_code'] == 0
+    assert read(w['io'].root(w['target']) / 'release.json')['status'] == 'ok'
+
+
+
+def test_bootstrap_install_failure_leaves_release_unconfirmed(world):
+    w = world
+    after(w, '证据')
+    assert after(w, '交付').restart
+    w['target']['release_prepare'] = [{'argv': [sys.executable, '-c', 'raise SystemExit(9)']}]
+    restart(w)
+    result = after(w, '验收')
+    assert '已重启但尚未确认成功' in result.notice
+    assert state(w)['status'] == 'failed'
+    assert read(w['root'] / 'state/release.json')['status'] == 'restarting'
+
 def make_engine(w, notices='send'):
     config = configuration()
     config['notices'] = notices
@@ -510,3 +561,116 @@ def test_release_now_uses_registered_source_wake_path(tmp_path, monkeypatch):
     assert cli.main(['--state-dir', str(tmp_path), 'release-now', 'alpha']) == 0
     assert datetime.fromisoformat(request.read_text()).tzinfo is not None
     assert not (tmp_path / 'configured' / 'release-now').exists()
+
+
+@pytest.mark.parametrize(('every', 'boundary'), [
+    ('1h', '2026-11-18T10:00:00+00:00'),
+    ('5m', '2026-11-18T10:05:00+00:00'),
+    ('30m', '2026-11-18T10:30:00+00:00'),
+    ('35m', '1970-01-02T00:30:00+00:00'),  # 跨日也沿 UTC epoch 切，不从当天零点重切。
+    ('2h', '2026-11-18T12:00:00+00:00'),
+])
+def test_configured_period_slots_and_deduplication(world, monkeypatch, every, boundary):
+    w = world
+    w['target']['sources']['main_branch']['every'] = every
+    calls = []
+    def remote(argv, **kwargs):
+        calls.append(argv)
+        return subprocess.CompletedProcess(argv, 0, w['b'] + '\trefs/heads/main\n', '')
+    monkeypatch.setattr(source_module, 'run', remote)
+    edge = datetime.fromisoformat(boundary)
+    now = edge - timedelta(microseconds=1)
+    source = MainBranchSource(lambda: now.astimezone(timezone(timedelta(hours=8))))
+    first = source.poll(w['target'], None)
+    minutes = int(every[:-1]) * (60 if every.endswith('h') else 1)
+    assert first.cursor == (edge - timedelta(minutes=minutes)).isoformat()
+    assert first.events[0].ext_id == first.cursor
+    assert source.poll(w['target'], first.cursor).events == []
+    assert len(calls) == 1
+    now = edge
+    second = source.poll(w['target'], first.cursor)
+    assert second.cursor == boundary
+    assert second.events[0].ext_id == boundary
+    now += timedelta(minutes=minutes) - timedelta(microseconds=1)
+    assert MainBranchSource(lambda: now).poll(w['target'], second.cursor).events == []
+    assert len(calls) == 2
+
+
+def test_default_period_preserves_existing_hour_cursor(world, monkeypatch):
+    w = world
+    w['target']['sources']['main_branch'] = {}
+    monkeypatch.setattr(source_module, 'run', lambda *a, **k: pytest.fail('同小时不能重新访问远端'))
+    now = datetime(2026, 11, 18, 10, 59, 59, tzinfo=timezone.utc)
+    old_cursor = now.replace(minute=0, second=0, microsecond=0).isoformat()
+    assert MainBranchSource(lambda: now).poll(w['target'], old_cursor).cursor == old_cursor
+
+
+@pytest.mark.parametrize('value', ['7m', '90s', '0m', '0h', '-5m', '1.5h', '5M', ' 5m', '5m\n', '', None, 5, True, [], {}])
+def test_daemon_rejects_invalid_period_at_startup(tmp_path, capsys, value):
+    import yaml
+    from workshop.cli import main
+    config = configuration()
+    config['targets'] = {'workshop': {
+        'flows': {'scheduled_release': {'triggers': []}},
+        'sources': {'main_branch': {'every': value}},
+    }}
+    rules = tmp_path / 'rules.yaml'
+    rules.write_text(yaml.safe_dump(config))
+    assert main(['--state-dir', str(tmp_path / 'state'), '--rules', str(rules), 'run']) == 2
+    message = capsys.readouterr().err
+    assert 'workshop' in message and repr(value) in message
+    assert '<数字>m 或 <数字>h' in message and '5 分钟的正整数倍' in message
+
+
+def test_targets_read_independent_periods(world, monkeypatch):
+    from workshop.core.rules import Rules
+    from workshop.registry import Registry
+    w = world
+    config = configuration()
+    config['targets'] = {}
+    for name, period in [('workshop', '30m'), ('grant-console', '1h')]:
+        config['targets'][name] = {**deepcopy(w['target']),
+            'flows': {'scheduled_release': {'triggers': []}},
+            'sources': {'main_branch': {'every': period}}}
+    rules = Registry().configure(Rules.validate(config))
+    calls = []
+    def remote(argv, **kwargs):
+        calls.append(argv)
+        return subprocess.CompletedProcess(argv, 0, w['b'] + '\trefs/heads/main\n', '')
+    monkeypatch.setattr(source_module, 'run', remote)
+    now = datetime(2026, 11, 18, 10, 29, 59, tzinfo=timezone.utc)
+    source = MainBranchSource(lambda: now)
+    first = {name: source.poll(rules.target(name), None) for name in config['targets']}
+    now += timedelta(seconds=1)
+    workshop = source.poll(rules.target('workshop'), first['workshop'].cursor)
+    grant = source.poll(rules.target('grant-console'), first['grant-console'].cursor)
+    assert len(workshop.events) == 1 and workshop.cursor == '2026-11-18T10:30:00+00:00'
+    assert grant.events == [] and grant.cursor == first['grant-console'].cursor
+    assert len(calls) == 3
+
+
+def test_cli_release_now_within_five_minute_slot(world, monkeypatch):
+    import yaml
+    from workshop.cli import main
+    w = world
+    config = configuration()
+    config['targets'] = {'workshop': {**w['target'],
+        'flows': {'scheduled_release': {'triggers': []}},
+        'sources': {'main_branch': {'every': '5m'}}}}
+    path = w['root'] / 'rules.yaml'
+    path.write_text(yaml.safe_dump(config))
+    target = {**config['targets']['workshop'], 'name': 'workshop'}
+    calls = []
+    def remote(argv, **kwargs):
+        calls.append(argv)
+        return subprocess.CompletedProcess(argv, 0, w['b'] + '\trefs/heads/main\n', '')
+    monkeypatch.setattr(source_module, 'run', remote)
+    now = datetime(2026, 11, 18, 10, 3, tzinfo=timezone.utc)
+    source = MainBranchSource(lambda: now)
+    first = source.poll(target, None)
+    assert main(['--state-dir', str(w['root'] / 'cli-state'), '--rules', str(path), 'release-now', 'workshop']) == 0
+    asked = source.poll(target, first.cursor)
+    assert asked.cursor.split('\n')[0] == first.cursor
+    assert asked.events[0].ext_id.startswith('now:')
+    assert source.poll(target, asked.cursor).events == []
+    assert len(calls) == 2
