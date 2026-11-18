@@ -16,15 +16,22 @@ GitHub 来源用 `gh api --include` 在游标保存每个分页 endpoint 的 ETa
 
 Orca 插话钩子去掉轮次令牌后以 `cli:orca` 进入：流程用核心已回查的活快照核对 `body.item_id` 与目标，归到该活，始终只记普通更新。原话即使包含“不对”或“继续”也不放行、不返工，不增加事件连锁深度，不改派或拦住正在运行的会话。
 
-## 证据与审查
+## 阶段（ws#215）
 
-阶段开关：规则里交付对象写 `stages`（按顺序列出阶段）时，`stages()` 照它返回；本流程只允许省掉审查，少了证据或交付就报错。省掉审查时，能合并的头提交是证据检查过的 `evidence_head`；合并前若配了 bot_review，在交付的 after 里补一条 bot 批准，正文写明「未审查」。核心按全局阶段顺序取规则里还在的下一阶段：规则改掉某阶段时，在跑的那一轮交回的推进仍认；闲着的活派轮前直接挪到下一阶段，不起轮。
+四段，只有执行起模型轮（issue交付 R13）：
 
-说清楚时回查 issue 五项，并核对回执检查与 `workshop-checks` 内容一致，包含 `required_checks`（默认 `[["scripts/check.sh"]]`）。回执 JSON 的 `paths` 登记预计会改的路径（仓库根起的相对路径，目录以 / 结尾），作为说清楚的 Evidence.paths 交给核心，规则配了 `serial_paths` 时按它在执行前排队；不是字符串列表时说清楚不过。之后各阶段的实际改动取 PR 文件列表，改名的文件新旧路径都算（冻结、串行、两家审都按它判）。缺少判断时用带推荐的 ask；操作阻塞交 blocked={reason,next}，由项目经理处理。不能仅靠 notice 等你。
+- **接单（程序）**：回查 issue，核对能跑的检查（「能跑的检查」节的 `workshop-checks`，含规则 `required_checks`，默认 `[["scripts/check.sh"]]`）、合并前 DoD（逐项列表、无待定项）、「不可逆或对外的动作」、「要不要亲眼看」第一行是/否、依据（编号回查规则 `requirement_docs` 登记的文档；需求变更要写原文、文档位置，「Kun 的原话」节有原话）；写了上线后 DoD 的，每项要有 `workshop-checks`。缺一项就返回 `Evidence(awaits_update=True)`：活停在接单、状态「等资料」，next 写出缺哪几项，不派轮、不发卡；来源有任何新事件（改 issue 正文就有）时视图把活放回空闲，下一拍重核。飞书进来的需求先开 issue（只有原话），同样停在接单等写 issue 的会话补齐。代码见 `dod.py` 的 `registration`。
+- **执行（模型一轮）**：从写代码做到 PR 去掉 Draft。交接以 PR 状态为准：assess 返回 `Evidence(handoff="交付")`，核心用它代替回执的 advance；PR 没有、已合并/关闭、还是 Draft、缺活标记或带自动关 issue 的语句，都判没过，同阶段重来（核心 `gate_retry`，同因 3 次记卡住）。
+- **交付（程序）**：先查合并前 DoD——在干净副本重跑登记检查，`dod.evidence_problems` 核对 PR 正文「合并前 DoD」节逐项以 issue 合并前 DoD 每项第一行原文开头、项下附登记检查名（反引号）或原样输出代码块；需求变更的还要 PR 改了登记的需求文档。不过：记下原因和原样输出，`Evidence(handoff="执行")`，after 把 PR 改回 Draft（`gh pr ready --undo`）并在 PR 下留原样输出。过了：合并（沿用下面的合并守卫和 release 分支），写了上线后 DoD 的等上线（规则 `deployment`；车间自己是 `{kind: running}`，在跑的守护进程版本包含合并提交就算上线）后在干净副本对合并提交跑上线后检查；不过时在 issue 留原样输出、活退回执行，不回滚，修复开新 PR。两段退回合计 3 次（`RETURN_LIMIT`），第 4 次记卡住；项目经理 `recover --mode rework` 后重新计。
+- **收尾（程序）**：交付完成、子单全关就关 issue；收尾记录写进程序结果的 reason（合并提交、PR、两段 DoD 已过）。issue 写了「要亲眼看：是」的，收尾先起一轮按 issue 写的方式送一次（`visual-acceptance` 问卡），Kun 答 yes 后程序收尾，答 no 退回执行。
 
-证据轮在干净副本（见下节）的 detached 完整 SHA 上真实重跑登记检查；环境白名单清除 GitHub/SSH/云凭据，原样 stdout/stderr、退出码、SHA 写入核心证据 reason。每条检查默认限时 60 秒，可在目标配置 `check_timeout`；超时记退出码 124、timed_out=true 和已得到的原样输出，判检查不过，不隔离流程。准备命令由 prepare 的 argv/cwd 指定，cwd 限定在干净副本中；grant-console 先在 services/devops-console 跑 uv sync --locked。这个检查没有业务写入，但会建立临时副本并运行仓库脚本；不是恶意代码安全沙箱。
+不再有说清楚、证据、审查、验收轮。规则 `stages` 只能写 `[接单, 执行, 交付, 收尾]`。在途的活：闲着停在已去掉阶段的，核心按流程的 `stage_moves` 落位（说清楚→接单，证据、审查→交付，验收→已交付的进收尾、没交付完的回交付）；换代码时还在跑的旧阶段轮结算时判 superseded，活空闲后同样落位。没有一次性转换脚本。
 
-审查和验收副本同样是主检出上的 detached worktree（见下节），文件与目录去写位。`FlowBrief.workdir/readonly` 交给执行者，执行者负责启动环境去凭据。审查只读，必须改与建议分开；核心按改动路径和规则要求两家不同家族。审查轮结束并停止执行者后清理副本；daemon 启动清残留时保留未停止轮的目录。头提交变了，证据、审查、合并守卫均拒绝推进。验收由核心排除写代码家族，插件核对原样输出与实际交付提交。验收轮的 `FlowBrief` 给合并提交的只读副本；生成说明时在干净副本对合并提交重跑登记检查（按提交号缓存为 merge_runs，只跑一次），原样附进说明，因为验收者是只读会话，跑不了命令，也不能落在停在 PR 头的活 worktree 里。写了亲眼看才要求 `visual-acceptance` 卡的 yes 答案。
+总单（issue交付 R12）：关系汇合阶段是收尾，总单自己照常执行、交付，走到收尾还有子单没关时核心显示「等子单」、不派轮；插件在收尾的 assess 和 after 里再回查一次子单全关。
+
+串行路径（`serial_paths`）现在只按 PR 的实际改动判：以前说清楚轮登记的「预计会改的路径」没有了，执行开始前不排队。
+
+交付查合并前 DoD、上线后 DoD 都在干净副本（见下节）的 detached 完整 SHA 上真实重跑登记检查；环境白名单清除 GitHub/SSH/云凭据，原样 stdout/stderr、退出码、SHA 写入核心证据 reason。每条检查默认限时 60 秒，可在目标配置 `check_timeout`；超时记退出码 124、timed_out=true 和已得到的原样输出，判检查不过，不隔离流程。准备命令由 prepare 的 argv/cwd 指定，cwd 限定在干净副本中；grant-console 先在 services/devops-console 跑 uv sync --locked。这个检查没有业务写入，但会建立临时副本并运行仓库脚本；不是恶意代码安全沙箱。
 
 ## 干净副本、依赖缓存和执行者 worktree 怎么管
 
@@ -44,53 +51,37 @@ Orca 插话钩子去掉轮次令牌后以 `cli:orca` 进入：流程用核心已
 
 上面的 `hold_workdir` 和 `release` 在守护进程中都由后台作业执行，一拍只提交调用或读取结果；同一次收回重启后认回，一小时后的复查和返工后的再次收尾用新的调用身份。见 [作业.md](作业.md)。
 
-## 重走验收
-
-已合并的活验收没过、回到执行后，执行者判断问题不在代码（例如验收者拿不到合并提交、只读环境跑不了检查），可以不开 PR 直接回验收，同一合并提交只给一次。
-
-- 什么时候给这条路：活到过验收（`item.history` 里有验收轮），本活没有打开的 PR，最近一次合并的带活标记 PR 存在，而且这个合并提交交付完成过。合并提交取 GitHub 上该 PR 的 `merge_commit_sha`，不只靠插件状态：执行阶段开新 PR 时会清掉状态里的 `merge`，新 PR 后来被关掉时（11-13 的 ws#18 和 #23）仍能找回上一次交付。
-- 执行说明：满足上面的条件时写出 PR 号、合并提交，以及两条路：要改代码照常开新 PR；不用改就交下面的回执。这个合并提交已经重走过且没有新增机会时，改写成「不能再走，交 nothing 和 blocked 原因及建议动作」。
-- 回执：`outcome=done`、`advance="验收"`，evidence 里 issue-delivery/v1 的 JSON 加 `rerun_acceptance={"merge": "<合并提交>", "reason": "为什么不用改"}`。
-- 交付完成按提交号记：after(交付) 返回不 pending 的结果时，把合并提交加进插件状态 `delivered`。release=none/self 合并后就算；release=tag 要线上核对通过（`_deployed`）才走到这一步，合并了没上线不算。旧版本写的状态没有 `delivered`：none/self 按合并算，tag 当场核对线上是否包含该提交（ws#5、ws#18 是 release=none 时合并的，按合并算）。
-- assess(执行)：回执没写 `merge`、有打开的 PR、没有合并过、`merge` 不是最近的合并提交、最近的合并提交没交付完成、这个提交已验收通过、或已在 `acceptance_reruns` 里且没有新增机会，都判不过，理由写清原因和下一步。审查 PR #25 时复现过的反例：A 上线后验收没过，执行者改出 B 合并了但还没上线，交付轮退回执行后请求重走 B——现在判「还没交付完成」，请求 A 判「不是最近的合并提交」，都进不了验收。
-- assess(验收)：验收输出要对应固定检查提交（默认原交付提交，追加机会可选当时 main），该提交的实际检查必须通过；原交付提交仍须完成交付，不能用新 main 的检查冒充上线。
-- 核心关口：执行提议直接到验收，只有活到过验收、且流程证据过了才放行（核心改动，见 [ports.md](ports.md)）；没到过验收照旧「不能越过流程阶段和关口」。
-- after(执行)：结算时按回执请求的提交再查一遍（不改选别的提交），把它记进 `acceptance_reruns`，`merge`/`pr` 改成该 PR，`acceptance_after` 移到当前最新资料，清掉 `accepted` 和 `merge_runs`（流程在交付提交上的检查也重跑一次，环境问题可能就出在那一步）。有新增机会时固定其检查提交并记消费，返回 `After(recovery_id=机会号)`；否则返回空的 `After()`，核心把活推到验收。
-- 次数用完后卡住，项目经理核对原因，用 `recover --mode verify --reason` 追加一次；可以用 `--ref main` 固定包含原合并提交的当前 main。历史次数保留，机会由完成钩子幂等消费，why 记录原因、提交和消费。相同关口连续失败 3 次也记卡住，不为操作故障自动发问卡。详见 [恢复与重验](恢复与重验.md)。
-
 ## 交付和崩溃恢复
 
-插件自己在 `issue_delivery_state_dir`（默认 `~/.local/state/workshop/issue_delivery`）保存每件活的 side-effect key、issue、证据提交、审过的提交、合并提交、tag、验收记录、重走过验收的合并提交（acceptance_reruns）和自更新结果（self_update）。文件锁加原子替换；不读写核心数据库。每个 after key 已成功结果重放返回原结果；pending 允许重查条件，远端动作还要回查实际状态，防止“远端成功，本地没记成功”的重复。
+插件自己在 `issue_delivery_state_dir`（默认 `~/.local/state/workshop/issue_delivery`）保存每件活的 side-effect key、issue、登记核对结果（registered、visual）、合并前 DoD 查过的提交（dod_head）、合并提交、tag、上线后检查结果（post_runs）、交付完成的提交（delivered）、待退回的原样输出（pending_return、last_return）和退回次数（returns）。文件锁加原子替换；不读写核心数据库。每个 after key 已成功结果重放返回原结果；pending 允许重查条件，远端动作还要回查实际状态，防止“远端成功，本地没记成功”的重复。
 
-派活说明带上上一轮 gate_reason；检查失败、头提交变化、合并冲突或 PR 已关闭没合并时（理由里都写「退回执行」），明确让执行者交 advance="执行"，不发问卡、不问 Kun。交付 assess 失败会写实际审过的 SHA 和当前 SHA；检查输出保留在 reason，供重派时定位。核心仍只处理通用关口，不新增业务退回规则。
+执行的派活说明带上上一次没交接或没过关的原因（gate_reason）和上次退回执行的原样输出（last_return）；上线后 DoD 退回的，说明里写明原 PR 已上线不回滚、从最新 main 开新 PR。
 
-执行说明写明边界：只改本 issue 要的东西；遇到车间流程或环境的问题（验收拿不到提交、检查在车间里跑不起来、关口不认等），交 `outcome=nothing`，summary 写清原因，evidence 的 JSON 写 `blocked={reason,next}`；不改车间自己的流程代码（本 issue 要改的除外），不动主检出和车间正在跑的代码，不重启车间。明确的 blocked 会停成卡住，不落进 nothing 的五分钟复看循环。11-13 ws#5 的执行者自己快进主检出、kickstart 守护进程，ws#18 的执行者在自己的活里重写了别的活的修正，这两件都由这段说明拦。
+执行说明写明边界：只改本 issue 要的东西；遇到车间流程或环境的问题（检查在车间里跑不起来、关口不认等），交 `outcome=nothing`，summary 写清原因，evidence 的 JSON 写 `blocked={reason,next}`；不改车间自己的流程代码（本 issue 要改的除外），不动主检出和车间正在跑的代码，不重启车间。明确的 blocked 会停成卡住，不落进 nothing 的五分钟复看循环。11-13 ws#5 的执行者自己快进主检出、kickstart 守护进程，ws#18 的执行者在自己的活里重写了别的活的修正，这两件都由这段说明拦。
 
-after 遇到缺 PR、头提交变化、未验收等业务不满足时返回 pending，而不是把所有同流程交付对象隔离。核心所有前进都要求 Evidence.passed；显式退回执行、验收失败仍能往回走。
+after 遇到缺 PR、头提交变化、未交付等业务不满足时返回 pending，而不是把所有同流程交付对象隔离。核心所有前进都要求 Evidence.passed；交付、收尾判 handoff="执行" 时往回走。
 
 `io.run` 失败时错误信息带 stderr 结尾（没有 stderr 用 stdout，最多 400 字），解不了码的字节换成替代字符，不让坏输出变成插件崩溃。这些信息进 plugin_retry/plugin_failed 事实和故障通知，Kun 不用翻日志就能判断。
 
-合并前回查同一 PR、审过的 head、规则 CI；`gh pr merge --match-head-commit` 保证提交不偷换。合并失败分三类，只有说不清原因的才算插件故障：
+合并前回查同一 PR、合并前 DoD 查过的 head、规则 CI；`gh pr merge --match-head-commit` 保证提交不偷换。合并失败分三类，只有说不清原因的才算插件故障：
 
-- 合并前就看得出要执行者动手的：PR 已关闭没合并、还是草稿、`mergeable=false` 或 `mergeable_state=dirty`（冲突）。不调 `gh pr merge`，pending + rerun，理由写「退回执行」，交付轮执行者照说明交 advance="执行"，到执行阶段合 main、解冲突。
+- 合并前就看得出要执行者动手的：PR 已关闭没合并、还是草稿、`mergeable=false` 或 `mergeable_state=dirty`（冲突）。不调 `gh pr merge`，pending + rerun，交付程序步重跑时按合并前 DoD 退回执行，到执行阶段合 main、解冲突。
 - `gh pr merge` 失败后回查 PR：已合并按成功走；头提交变了、或回查到上面几种、或 `mergeable_state` 是 dirty/behind/blocked/unstable（冲突、落后 main、检查没过、分支保护），同样退回执行，理由附 gh 的 stderr 结尾；`mergeable` 还是 null/unknown（GitHub 没算完）时 pending、rerun=false，稍后回查。
 - 回查看着能合并却合并失败（网络、GitHub 5xx 这类）：抛 Retryable，错误信息带 stderr；连续三次才由核心隔离。
 
 11-13 ws#18 的 #23 和 main 冲突，`gh pr merge` exit 1 被当成 Retryable，重试三次后核心隔离了 issue_delivery，grant-console 和 workshop 一起停（事实 511–522）；按上面的分类，这次只会把 ws#18 退回执行。PR 标题和正文均拒绝自动关 issue 的语句（包括 `Closes: #7`），squash 正文固定 Related to。每个目标配置 `ci: none` 或 required check 名单；名单的所有项须 success/skipped/neutral 且至少一项 success，空结果、失败、取消或进行中均等待。等待 CI 用 rerun=false，不起执行者。
 
-需要 bot 批准的目标配置 bot_review.login/signer。after(审查) 回查同一 head 的该 bot APPROVED review，已存在不再发；否则调用规则中的 agent_gh_token.py 签发，只在内存中用 token POST commit_id 绑定的 APPROVE，不落 token、不记录响应中的凭据。grant-console 配置 lambdatheory-agent[bot]，供主分支规则集的一票批准使用。
+需要 bot 批准的目标配置 bot_review.login/signer。合并前 after(交付) 回查同一 head 的该 bot APPROVED review，已存在不再发；否则调用规则中的 agent_gh_token.py 签发，只在内存中用 token POST commit_id 绑定的 APPROVE，不落 token、不记录响应中的凭据。grant-console 配置 lambdatheory-agent[bot]，供主分支规则集的一票批准使用。
 
-- `release: none`：合并后进入验收。
-- `release: self`：交付对象就是车间自己（规则里 workshop 用这个，不按仓库名判断）。合并后在规则 `checkout`（主检出）里：`git status --porcelain` 为空（含未跟踪文件）且当前分支是 main 时，从 `https://github.com/<repo>.git` 取 main 到 `origin/main`，`git merge --ff-only <合并提交>`（已包含就跳过），再在主检出跑规则 `prepare`（workshop 是 `uv sync --locked`，依赖或入口点变了不装好，拉起后起不来）。都成功才返回 `After(restart=True)`：核心记下重启请求，这一拍照常结算并推进到验收，`workshop run` 在这一拍结束后正常退出，launchd 的 KeepAlive 拉起新代码。执行者会话是独立进程组（`start_new_session`），守护进程退出不影响它们，重启后按 token 接回。主检出不干净、不在 main 或快进不了（例如主检出 main 上有本地提交、和合并提交分叉）时不动它、不重启；准备命令失败或没跑成时，主检出已经快进到新代码、环境可能只装了一半，同样不重启。两种都返回 `After(notice=…)`：核心经通道给 Kun 发一条不用回的通知（同一个完成钩子只发一次），写明合并提交、原因和要跑的命令；准备命令失败的那条会说主检出已是新代码、要重跑准备命令再重启，而且在那之前车间因别的原因重启会用新代码起来。活照常进验收（验收在合并提交的只读副本上做，不依赖守护进程跑的版本），合并提交也记为交付完成。取 main 失败是网络故障，抛 Retryable。结果记在插件状态 `self_update`。
-- `release: tag`：在插件状态目录 `issue_delivery_state_dir/releases/<目标及仓库的哈希>` 建普通专用 clone，沿用 Kun 的 git 凭据；fetch 后 detached 到合并 SHA，运行该提交里的 tag_command（grant-console 的 scripts/tag-release.sh）并传合并 SHA。checkout 规则仍只供读取主检出，发布操作不在该目录做。专用检出按目标加锁，避免两件活同时切 HEAD；首次 clone 在临时目录完成后原子就位。先查远端已有 tag，恢复不重复打 tag；不从去凭据的副本推送。tag 推完后 rerun=true，执行者照规则 `release_runbook` 指向的手册完成发布：交付说明生成时经 GitHub contents 接口查合并提交里有没有这个文件，有就写「照交付对象 <路径>（<合并提交>上的版本）」；GitHub 明确答 404 才原样用 `release_runbook_fallback`，503、超时等查不到不算不存在，抛 Retryable 由核心退避重试后再派活（grant-console 在 #143 合并前是「照 issue kun-g/grant-console#143 正文的步骤」）。说明里写明上线批准卡和集群授权卡都要 Kun 批，批了到生效有延迟要轮询；换版不删 Pod，只靠 rollout。
-
-grant-console 的 ECR/render/push-production/sync 仍由执行者申请集群授权后做；只用仓库 scripts/request_grant.py，requested-by 带活 id，保存申请号，不复用过期授权、不换身份。真正 sync 完且确认上线后才给 release_submitted=true；还在等授权卡的回执只给 later，不带 advance 或 release_submitted，之后转 rerun=false，只定时核对线上状态。
+- `release: none`：合并即交付；issue 写了上线后 DoD 的，按规则 `deployment` 等上线后跑完上线后检查才算交付。
+- `release: self`：交付对象就是车间自己（规则里 workshop 用这个，不按仓库名判断）。合并后在规则 `checkout`（主检出）里：`git status --porcelain` 为空（含未跟踪文件）且当前分支是 main 时，从 `https://github.com/<repo>.git` 取 main 到 `origin/main`，`git merge --ff-only <合并提交>`（已包含就跳过），再在主检出跑规则 `prepare`（workshop 是 `uv sync --locked`，依赖或入口点变了不装好，拉起后起不来）。都成功才返回 `After(restart=True)`：核心记下重启请求，这一拍照常结算并推进，`workshop run` 在这一拍结束后正常退出，launchd 的 KeepAlive 拉起新代码。执行者会话是独立进程组（`start_new_session`），守护进程退出不影响它们，重启后按 token 接回。主检出不干净、不在 main 或快进不了（例如主检出 main 上有本地提交、和合并提交分叉）时不动它、不重启；准备命令失败或没跑成时，主检出已经快进到新代码、环境可能只装了一半，同样不重启。两种都返回 `After(notice=…)`：核心经通道给 Kun 发一条不用回的通知（同一个完成钩子只发一次），写明合并提交、原因和要跑的命令；准备命令失败的那条会说主检出已是新代码、要重跑准备命令再重启，而且在那之前车间因别的原因重启会用新代码起来。合并提交照常记为交付完成。（规则里车间自己现在用 `release: none` 加整点定时发版，这一段是旧路径。）取 main 失败是网络故障，抛 Retryable。结果记在插件状态 `self_update`。
+- `release: tag`：在插件状态目录 `issue_delivery_state_dir/releases/<目标及仓库的哈希>` 建普通专用 clone，沿用 Kun 的 git 凭据；fetch 后 detached 到合并 SHA，运行该提交里的 tag_command（grant-console 的 scripts/tag-release.sh）并传合并 SHA。checkout 规则仍只供读取主检出，发布操作不在该目录做。专用检出按目标加锁，避免两件活同时切 HEAD；首次 clone 在临时目录完成后原子就位。先查远端已有 tag，恢复不重复打 tag；不从去凭据的副本推送。tag 推完后定时回查线上版本包含合并提交，不再起执行者发版（ws#215 起交付是程序步；现在没有交付对象用 `release: tag`）。
 
 线上回查命令由 deployment.context/namespace/app 指定，用 `kubectl --request-timeout=20s --context central-admin-agent -n argocd get application grant-console-centaladmin -o json`。要求 Synced/Healthy，deployment.revision_field（status.sync.revision）等于 deployment.branch（production）的远端头提交，并读取该 revision 的 deployment.release_file（release.json），通过 `git merge-base --is-ancestor` 确认合并提交被 deployment.source_field（source_commit）包含。再用 `kubectl --request-timeout=20s --context <deployment.context> -n <rollout.namespace> get deployment <rollout.name> -o json` 读 deployment.rollout 指定的 Deployment（grant-console 是 agent-ops/grant-console），按 kubectl rollout status 的判定要求换版完成：observedGeneration 不小于 generation、Progressing 不是 ProgressDeadlineExceeded、updatedReplicas 不少于 spec.replicas、replicas 等于 updatedReplicas、availableReplicas 不少于 updatedReplicas；规则没配 rollout 时回查不过。fetch 和 merge-base 均在同一专用检出中做，HEAD 仍 detached 到本活合并提交；不会给 Kun 的主检出留下 fetch 记录或本地 tag。允许之后的其他已交付提交，不要求源码 SHA 精确相等。
 
 2026-11-13 只读实查：本机 Argo CLI 列出 argocd-central.hillingo.top、argocd.hillingo.top，但应用查询登录过期；没有改认证。经协调者确认改用上述 kubectl 只读路径，查到 source 为 git@github.com:kun-g/grant-console.git / production / manifests，revision 为 a7b09d7d2d39dcdeca0837f518708adf8ad421f8，Synced/Healthy。参数已写规则；查询未触发同步或发版。
 
-pending=false 才放行；rerun=false 用定时工序和指数退避回查，rerun=true 才接回执行者。同阶段连续 pending 达 pending_limit（默认 5）卡住并通知一次，不再循环。验收不过回执行；收尾只有验收记录、leave、含群内返工活名的通知才能关 issue，通知经核心通道发。验收通过或收尾判过时 Evidence.done_key 给合并提交号，核心按它对每个合并提交只发一张完成卡：验收通过当轮或收尾轮的第一条出卡，随后同一提交多发的、换 key 的都不出卡，只记进 why。各阶段说明（收尾除外）写明不发进度通知，notice 只在留下等你或验收通过当轮发。
+pending=false 才放行；rerun=false 用定时工序和指数退避回查，rerun=true 让交付程序步重跑（不起模型轮）。同阶段连续 pending 达 pending_limit（默认 5；车间自己的 issue_delivery 为 24，够等整点发版）卡住并通知一次，不再循环。收尾判过时 Evidence.done_key 给合并提交号；两段 DoD 过了不通知 Kun（issue交付 R6）。
 
 ## 手动只读验收（本轮未执行）
 
@@ -109,17 +100,17 @@ print(json.dumps([asdict(e) for e in batch.events], ensure_ascii=False, indent=2
 PY
 ```
 
-测试覆盖假 gh/git/lark-cli/kubectl/tag-release.sh 的 JSON 回放（默认在测试进程内调用同一份替身代码，省掉每次起解释器），以及本地真实 git 提交上的检查与只读副本。测试不连接 GitHub、飞书、Orca 或集群。跨块测试将流程生成的只读审查副本通过 Brief.workdir 交给 Codex/Orca Claude 执行者插件，用假的 CLI 记录实际子进程 cwd/env，断言没有 GH_TOKEN、SSH_AUTH_SOCK 等凭据。
+测试覆盖假 gh/git/lark-cli/kubectl/tag-release.sh 的 JSON 回放（默认在测试进程内调用同一份替身代码，省掉每次起解释器），以及本地真实 git 提交上的检查与只读副本。测试不连接 GitHub、飞书、Orca 或集群。跨块测试将只读副本通过 Brief.workdir 交给 Codex/Orca Claude 执行者插件，用假的 CLI 记录实际子进程 cwd/env，断言没有 GH_TOKEN、SSH_AUTH_SOCK 等凭据。
 
 ## GitHub 身份与会话放行（issue #31）
 
 `targets.<对象>.github_identity` 配置身份：`inherit` 保持原来的身份链（grant-console）；`app` 指定 `signer` argv 和真实 `gh` 的绝对路径（workshop）。装配时验证配置。签发器接收 `--repo owner/repo`，stdout 只返回令牌；异常输出不进入诊断。内置 `python -m workshop.github_token` 从既有身份配置读取仓库白名单和权限，从 Keychain 读密钥，经内存管道签 JWT，取得仅限此仓库的 installation token，无磁盘缓存，也不修改旧身份配置。使用标准库与本机 security/openssl，无新增 Python 依赖。
 
-执行者的 spec 只保存非秘密配置和仓库。runner 在实际启动 agent 前签发并装配环境；只读审查和验收继续清理全部部署凭据，不签写令牌。真实 gh 优先于全局身份 wrapper；git helper 只为 HTTPS github.com 上的同一仓库提供本进程令牌，不存凭据。签发失败时 runner 不起 agent，交等你回执；程序作业的签发失败通过通用 TargetBlocked 端口只隔离本交付对象、通知一次，不影响共用流程的其他交付对象。通知沿用 notices 开关。程序动作的令牌只在一次插件调用的内存范围内复用，离开即释放；返回的命令输出先遮去令牌。检查脚本仍使用干净环境。
+执行者的 spec 只保存非秘密配置和仓库。runner 在实际启动 agent 前签发并装配环境；只读执行者继续清理全部部署凭据，不签写令牌。真实 gh 优先于全局身份 wrapper；git helper 只为 HTTPS github.com 上的同一仓库提供本进程令牌，不存凭据。签发失败时 runner 不起 agent，交等你回执；程序作业的签发失败通过通用 TargetBlocked 端口只隔离本交付对象、通知一次，不影响共用流程的其他交付对象。通知沿用 notices 开关。程序动作的令牌只在一次插件调用的内存范围内复用，离开即释放；返回的命令输出先遮去令牌。检查脚本仍使用干净环境。
 
-`workshop release ws#31 --quote '放' --session <会话号>`（也支持 `workshop:31`）写入可信 session 放行事件；新对象从接单开始，同一对象不重复建活。原话和会话号不能为空，why 显示 channel=session、原话、会话号。外部 event 自报 session 不提升权限。已有卡住/等你的活按放行状态规则继续；接单、说清楚保留原阶段，已有未答审批不被替代。
+`workshop release ws#31 --quote '放' --session <会话号>`（也支持 `workshop:31`）写入可信 session 放行事件；新对象从接单开始，同一对象不重复建活。原话和会话号不能为空，why 显示 channel=session、原话、会话号。外部 event 自报 session 不提升权限。已有卡住/等你的活按放行状态规则继续；接单保留原阶段，已有未答审批不被替代。
 
 
 ## 整点批次上线（issue #122）
 
-`release: scheduled` 合并后不打 tag、不推 production、不启动发布执行者；只通过既有线上检查确认 Argo Synced/Healthy、production 源提交包含本次合并、Deployment rollout 完成，满足后记录 delivered 并进入验收。同一版可以包含多件 issue 的合并提交，每件分别验收。重走验收也不能仅凭已合并就绕过这条线上条件。发布由独立 scheduled_release 流程处理，等待和恢复见[定时发版](定时发版.md)。
+`release: scheduled` 合并后不打 tag、不推 production、不启动发布执行者；只通过既有线上检查确认 Argo Synced/Healthy、production 源提交包含本次合并、Deployment rollout 完成，满足后记录 delivered（写了上线后 DoD 的再跑完上线后检查）并进收尾。同一版可以包含多件 issue 的合并提交，每件分别收尾。发布由独立 scheduled_release 流程处理，等待和恢复见[定时发版](定时发版.md)。

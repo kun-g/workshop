@@ -89,7 +89,7 @@ def status(log, **options):
     head = f"活 {len(rows)} 件 · 跑着 {count('跑着')} · 等你 {count('等你') - reads} · 卡住 {count('卡住') + reads}"
     head += f" · 排队 {count('排队')}" if count("排队") else ""
     head += f" · 定时 {count('定时')}" if count("定时") else ""
-    for waiting in ("等前置", "等子单"):
+    for waiting in ("等前置", "等子单", "等资料"):
         head += f" · {waiting} {count(waiting)}" if count(waiting) else ""
     if view["hidden"]:
         head += f"\n另有 {view['hidden']} 件没列出" + ("（筛掉的）" if view["filtered"] else "（已结束；workshop status --all 看全部）")

@@ -65,18 +65,3 @@ def check_references(basis, documents):
         if ref[1] not in numbers:
             raise ValueError(f"依据：{name} {ref[1]} 在需求文档中找不到")
 
-
-def approval_answer(item):
-    answers = [m for m in item.get("materials", []) if m.get("role") == "Kun 的回答"
-               and (m.get("key") == "requirement-change"
-                    or str(m.get("key", "")).endswith(":requirement-change"))]
-    return max(answers, key=lambda m: m.get("seq", 0)) if answers else None
-
-
-def quoted_approval(body, basis, data):
-    """执行者引用原话并绑定完整依据；这里只核对出处，语义由执行者及验收者判断。"""
-    value = data.get("requirement_approval")
-    if not isinstance(value, dict) or value.get("basis") != basis:
-        return False
-    quote = value.get("quote")
-    return isinstance(quote, str) and bool(quote.strip()) and quote in section(body, "Kun 的原话")

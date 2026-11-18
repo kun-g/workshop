@@ -1,5 +1,4 @@
 """GitHub 关系翻译为通用快照；同一交付对象合批读，分页完成才发布。"""
-import hashlib
 import json
 import re
 import time
@@ -86,7 +85,7 @@ def read(io, objects, target):
                 value = values[f'i{number}']
                 if not isinstance(value, dict) or value.get('number') != number:
                     raise ValueError('关系查询未返回指定 issue')
-                result = dict(converge='验收', collections=[node(value['parent'], target)] if value.get('parent') else [])
+                result = dict(converge='收尾', collections=[node(value['parent'], target)] if value.get('parent') else [])
                 expected = {'blockedBy': value['issueDependenciesSummary']['totalBlockedBy'],
                             'subIssues': value['subIssuesSummary']['total']}
                 for field, name in GROUPS.items():
@@ -122,8 +121,3 @@ def read(io, objects, target):
                 results[identity] = Relations(error=str(exc))
     return results
 
-
-def signature(snapshot, body):
-    """验收绑定总单当前正文和完整子单集合；交付提交另由正常验收路径核对。"""
-    payload = {'members': snapshot.members, 'prerequisites': snapshot.prerequisites, 'body': body}
-    return hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True).encode()).hexdigest()

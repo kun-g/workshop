@@ -12,7 +12,7 @@ from conftest import build, configuration, event, current
 from workshop.core.engine import Engine
 from workshop.core.models import Event
 from workshop.core.ports import Retryable
-from workshop.plugins.scheduled_release import ScheduledRelease, CHECKS
+from workshop.plugins.scheduled_release import ScheduledRelease, CHECKS, STAGES as SCHEDULED_STAGES
 from workshop.plugins.scheduled_release.io import IO, read, write
 from workshop.plugins.scheduled_release.source import MainBranchSource
 import workshop.plugins.scheduled_release.source as source_module
@@ -369,8 +369,9 @@ def test_registered_rules_load_both_flows_and_default_issue_ids():
     assert not release['flow_default']
     assert release['sources']['main_branch']['every'] == '1h'
     assert ScheduledRelease().stages(release) == ('证据', '交付', '验收', '收尾')
-    assert issue['stages'] == ['接单', '说清楚', '执行', '证据', '交付', '验收', '收尾']
-    assert ScheduledRelease().stages(rules.target('grant-console', 'scheduled_release')) == tuple(issue['stages'])
+    assert issue['stages'] == ['接单', '执行', '交付', '收尾']
+    # 集群批次保留全部七段（含接单占位），不跟 issue 交付的阶段走。
+    assert ScheduledRelease().stages(rules.target('grant-console', 'scheduled_release')) == SCHEDULED_STAGES
     assert isinstance(Registry().get('flow', 'scheduled_release'), ScheduledRelease)
     assert isinstance(Registry().get('source', 'main_branch'), MainBranchSource)
 

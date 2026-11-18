@@ -91,6 +91,10 @@ def handle(name, args, *, stdin='', env=None, cwd=None, git=real_git):
             state['pr']['merge_commit_sha'] = state['sha']
             state['pr']['merged_at'] = state.get('merged_at', '2026-11-13T08:00:00Z')
             save()
+        elif args[:2] == ['pr', 'ready']:
+            # 只认改回 Draft：合并前 DoD 没过时程序把 PR 交还执行。
+            state['pr']['draft'] = '--undo' in args
+            save()
         elif args[:2] == ['issue', 'close']:
             state['issue']['state'] = 'closed'
             save()
@@ -107,6 +111,12 @@ def handle(name, args, *, stdin='', env=None, cwd=None, git=real_git):
             endpoint = endpoints[0]
             if '--method' in args and args[args.index('--method') + 1] == 'POST':
                 data = json.loads(stdin)
+                if endpoint.split('?')[0].endswith('/comments'):
+                    number = int(endpoint.split('?')[0].split('/')[-2])
+                    state.setdefault('comments', []).append({'number': number, **data})
+                    save()
+                    emit({'id': len(state['comments']), **data})
+                    raise Exit(0)
                 state['issue'] = {'number': 7, 'state': 'open', **data}
                 save()
                 emit(state['issue'])

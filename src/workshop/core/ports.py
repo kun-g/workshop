@@ -59,6 +59,10 @@ class Flow(Protocol):
         不挑执行者、不启动会话、不记录执行轮；未实现或返回 False 保持原路径。
         """
         ...
+    def stage_moves(self, item: dict, target: dict) -> dict[str, str]:
+        """可选、只读。活停在规则已去掉的阶段时落到哪一段，例如 {"说清楚": "接单"}；
+        没给或给的阶段不在当前流程里，就进去掉阶段之后的第一个。"""
+        ...
     def brief(self, item: dict, stage: str, target: dict) -> str | FlowBrief:
         """可信说明；item.history 含每轮结论，gate_reason 含需要修正的关口理由。"""
         ...
@@ -66,6 +70,7 @@ class Flow(Protocol):
         """短时只读核对证据；paths/reviewers 决定需要几家审；未知动作类别是插件错误。
 
         无下一步的 nothing 可返回 recheck_after；核心定时调用 after，完成后只重跑本阶段。
+        handoff 由流程按外部状态判交接，代替回执自报的 advance；awaits_update 让活停在本阶段等来源更新。
         """
         ...
     def prepare_recovery(self, item: dict, options: dict, target: dict) -> dict:

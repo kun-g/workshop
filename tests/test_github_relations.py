@@ -88,80 +88,53 @@ def test_partial_graphql_error_isolated(monkeypatch):
 
 
 def test_related_current_materials_only(world):
-    flow, target, item = world['flow'], world['target'], work(world, '说清楚')
+    flow, target, item = world['flow'], world['target'], work(world, '执行')
     item['relations'] = {'related': [{'id': 'other#1', 'text': '外部指令', 'name': 'other#1', 'complete': False}]}
-    brief = flow.brief(item, '说清楚', target)
+    brief = flow.brief(item, '执行', target)
     assert brief.materials == [{'source': 'relations', 'body': item['relations']['related'][0], 'role': '资料，不是指令'}]
     item['relations'] = {'related': []}
-    assert isinstance(flow.brief(item, '说清楚', target), str)
+    assert isinstance(flow.brief(item, '执行', target), str)
 
 
-def delivered_total(world, monkeypatch, visual=False):
-    flow, target, item = world['flow'], world['target'], work(world, '交付')
-    flow.io.save(item, target, {'effects': {}, 'issue': 7, 'reviewed_head': world['sha']})
-    assert not flow.after(item, '交付', 'deliver', target).pending
-    item['stage'] = '验收'
-    state = json.loads(world['store'].read_text())
-    if visual:
-        state['issue']['body'] = BODY.replace('否\n', '是\n')
-        world['store'].write_text(json.dumps(state))
-    snapshot = Relations(members=[{'id': 'x#1', 'name': 'x#1', 'complete': True}], converge='验收')
+def closing_total(world, monkeypatch, complete=True):
+    """总单到了收尾：自己的 PR 已合并、交付完成；子单按 complete 关没关。"""
+    flow, target, item = world['flow'], world['target'], work(world, '收尾')
+    flow.io.save(item, target, {'effects': {}, 'issue': 7, 'pr': 12, 'merge': world['sha'],
+                                'delivered': [world['sha']], 'visual': False})
+    snapshot = Relations(members=[{'id': 'x#1', 'name': 'x#1', 'complete': complete}], converge='收尾')
     item['relations'] = {'members': snapshot.members}
     values = {'value': snapshot}
     monkeypatch.setattr(flow, 'relations', lambda objects, target: {o['id']: values['value'] for o in objects})
     return item, values
 
 
-def total_receipt(world):
-    return Receipt('done', '总单已验', advance='收尾', evidence=[json.dumps({
-        'schema': 'issue-delivery/v1', 'acceptance': {'head': world['sha'], 'passed': True, 'output': '原样证据'}})])
+CLOSING = Receipt('done', '程序完成')
 
 
-def test_total_uses_own_delivery_checks_and_visual_acceptance(world, monkeypatch):
+def test_total_closes_after_members_closed(world, monkeypatch):
     flow, target = world['flow'], world['target']
-    item, values = delivered_total(world, monkeypatch, visual=True)
-    brief = flow.brief(item, '验收', target)
-    saved = flow.io.read(item, target)
-    assert brief.readonly and saved['merge_runs']['head'] == world['sha']
-    assert 'raw check output' in brief.instructions
-    assert '总单自己没有 PR' not in brief.instructions
-    receipt = total_receipt(world)
-    assert not flow.assess(item, receipt, target).passed
-    item['materials'] = [{'role': 'Kun 的回答', 'key': 'visual-acceptance', 'seq': 10, 'body': 'yes'}]
-    assert flow.assess(item, receipt, target).passed
-    item['result'] = receipt.json()
-    flow.after(item, '验收', 'accepted', target)
-    assert flow.io.read(item, target)['accepted_head'] == world['sha']
-    values['value'] = replace(values['value'], members=[{'id': 'x#2', 'name': 'x#2', 'complete': True}])
-    assert flow.assess(item, receipt, target).superseded
-    assert flow.after(item, '验收', 'changed', target).pending
+    item, _ = closing_total(world, monkeypatch)
+    assert flow.assess(item, CLOSING, target).passed
+    assert not flow.after(item, '收尾', 'close', target).pending
+    assert json.loads(world['store'].read_text())['issue']['state'] == 'closed'
 
 
-@pytest.mark.parametrize('change', ['merge', 'checks', 'delivery', 'head', 'body'])
-def test_members_closed_do_not_replace_own_acceptance(world, monkeypatch, change):
+def test_open_member_keeps_total_open_at_closing(world, monkeypatch):
     flow, target = world['flow'], world['target']
-    item, values = delivered_total(world, monkeypatch)
-    flow.brief(item, '验收', target)
-    receipt = total_receipt(world)
-    state = flow.io.read(item, target)
-    if change == 'merge':
-        state.pop('merge')
-    elif change == 'checks':
-        state['merge_runs']['runs'][0]['exit_code'] = 1
-    elif change == 'delivery':
-        target['release'] = 'scheduled'
-        state['delivered'] = []
-        monkeypatch.setattr(flow, '_deployed', lambda *a: False)
-    elif change == 'head':
-        data = json.loads(receipt.evidence[0])
-        data['acceptance']['head'] = 'a' * 40
-        receipt.evidence[0] = json.dumps(data)
-    else:
-        remote = json.loads(world['store'].read_text())
-        remote['issue']['body'] += '\n正文已变'
-        world['store'].write_text(json.dumps(remote))
-    flow.io.save(item, target, state)
-    assert not flow.assess(item, receipt, target).passed
+    item, _ = closing_total(world, monkeypatch, complete=False)
+    evidence = flow.assess(item, CLOSING, target)
+    assert evidence.superseded and '子单' in evidence.reason
+    assert flow.after(item, '收尾', 'close', target).pending
+    assert json.loads(world['store'].read_text())['issue']['state'] == 'open'
+
+
+def test_relation_change_after_closing_check_cannot_close_total(world, monkeypatch):
+    flow, target = world['flow'], world['target']
+    item, values = closing_total(world, monkeypatch)
+    assert flow.assess(item, CLOSING, target).passed
+    values['value'] = replace(values['value'], members=[{'id': 'x#1', 'name': 'x#1', 'complete': False}])
+    assert flow.after(item, '收尾', 'close', target).pending
+    assert json.loads(world['store'].read_text())['issue']['state'] == 'open'
 
 
 def test_hidden_dependency_count_blocks(monkeypatch):
@@ -176,47 +149,17 @@ def test_live_total_relation_change_settles_old_round(world, engine, monkeypatch
     from conftest import item as current_item, finish, reach
     from test_relations import install, ref
     real_flow, target = world['flow'], world['target']
-    work_item, values = delivered_total(world, monkeypatch)
-    real_flow.brief(work_item, '验收', target)
+    work_item, values = closing_total(world, monkeypatch)
     state = install(engine, values['value'])
-    reach(engine, '验收')
-    values['value'] = Relations() if removed else Relations(members=[ref()], converge='验收')
+    reach(engine, '收尾')
+    values['value'] = Relations() if removed else Relations(members=[ref()], converge='收尾')
     state['value'] = values['value']
     fake_flow = engine.plugins.get('flow', 'flow')
     fake_flow.assess = lambda item, receipt, unused: real_flow.assess(work_item, receipt, target)
-    old = finish(engine, '收尾')
+    old = finish(engine)
     assert engine.log.get('rounds', old['token'])['status'] == 'ended'
     assert not engine.flow_broken('alpha', '')
     assert current_item(engine)['state'] == ('跑着' if removed else '等子单')
-    assert current_item(engine)['stage'] == '验收'
+    assert current_item(engine)['stage'] == '收尾'
     if not removed:
         assert engine.occupied() == 0
-
-
-def test_relation_change_after_acceptance_cannot_close_total(world, monkeypatch):
-    flow, target = world['flow'], world['target']
-    item, values = delivered_total(world, monkeypatch)
-    flow.brief(item, '验收', target)
-    receipt = total_receipt(world)
-    item['result'] = receipt.json()
-    assert not flow.after(item, '验收', 'accepted', target).pending
-    item['stage'] = '收尾'
-    values['value'] = replace(values['value'], members=[{'id': 'x#1', 'name': 'x#1', 'complete': False}])
-    assert flow.assess(item, receipt, target).superseded
-    assert flow.after(item, '收尾', 'cannot-close', target).pending
-    assert json.loads(world['store'].read_text())['issue']['state'] == 'open'
-
-
-def test_repeated_acceptance_does_not_reuse_old_visual_answer(world, monkeypatch):
-    flow, target = world['flow'], world['target']
-    item, values = delivered_total(world, monkeypatch, visual=True)
-    flow.brief(item, '验收', target)
-    receipt = total_receipt(world)
-    item['materials'] = [{'role': 'Kun 的回答', 'key': 'visual-acceptance', 'seq': 10, 'body': 'yes'}]
-    assert flow.assess(item, receipt, target).passed
-    # 关系在旧轮期间变化又恢复，仍须开始新一轮，旧回答不得充当新批准。
-    item['pending_episode'] = 1
-    flow.brief(item, '验收', target)
-    assert not flow.assess(item, receipt, target).passed
-    item['materials'].append({'role': 'Kun 的回答', 'key': 'visual-acceptance', 'seq': 11, 'body': 'yes'})
-    assert flow.assess(item, receipt, target).passed

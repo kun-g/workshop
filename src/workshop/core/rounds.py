@@ -1,5 +1,5 @@
 """一轮结算：查结果、失败、收尾、授权推进。"""
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from datetime import datetime, timedelta
 from .gates import decide
 from .models import Event, Receipt, STAGES, Started, due, stamp
@@ -151,6 +151,12 @@ def finish(engine, row):
         evidence.validate()
         if evidence.superseded:
             receipt = Receipt("nothing", receipt.summary)
+        elif (evidence.handoff and not evidence.blocked and receipt.outcome != "failed"
+              and (program or not (receipt.ask or receipt.later or receipt.leave))):
+            # 流程按外部状态判交接：不看回执自报的推进，没交接到就按本阶段没做完重来。
+            # 程序步在最后一段自带「已收尾」登记，交接走了就不算收尾，去掉它。
+            receipt = replace(receipt, outcome="done", advance=evidence.handoff,
+                              **({"leave": None} if program else {}))
         stages = engine.call(port, name, "stages", target)
         decision = decide(item, receipt, evidence, stages, engine.rules)
         if program:
@@ -168,7 +174,8 @@ def finish(engine, row):
         wait_ready = receipt.leave and receipt.leave["kind"] == "等你" and not receipt.ask and not engine.answerable(item)
         missing_leave = decision.complete and not (receipt.leave or receipt.ask or receipt.later)
         advancing = (receipt.outcome == "done" and decision.allowed and not missing_leave
-                     and not receipt.ask and not engine.waiting(item) and not wait_ready and not another_review and not rejected and not evidence.blocked)
+                     and not receipt.ask and not engine.waiting(item) and not wait_ready and not another_review and not rejected and not evidence.blocked
+                     and not evidence.awaits_update)
         after_result = After()
         rechecking = (bool(evidence.recheck_after) and receipt.outcome == "nothing" and not receipt.advance
                       and not receipt.ask and not receipt.later and not receipt.leave and not engine.waiting(item))
@@ -215,6 +222,11 @@ def finish(engine, row):
             elif evidence.blocked:
                 changes.update(state="卡住", blocked_by=evidence.blocked, next=evidence.next,
                                leave=engine.blocked_leave(evidence.next))
+            elif evidence.awaits_update:
+                # 等来源补资料：不派轮、不发卡，来源有新事件时视图把活放回空闲重核。
+                changes.update(state="等资料", next=evidence.reason, blocked_by="", gate_reason=evidence.reason,
+                               gate_count=0, leave={"kind": "工序", "owner": "车间", "at": stamp(engine.clock()),
+                                                    "about": evidence.reason})
             elif rechecking:
                 # 新的一段等待，沿用完成钩子的定时、退避与恢复；不能推进到下一阶段。
                 changes.update(engine.pending_changes({**item, "after_pending_count": 0},
@@ -248,7 +260,7 @@ def finish(engine, row):
                 changes.update(stage=decision.stage, state="完成" if decision.complete else "空闲",
                                next="已收尾" if decision.complete else decision.stage, blocked_by="", gate_count=0,
                                leave=receipt.leave or {"kind": "工序", "at": stamp(engine.clock()), "owner": "车间", "about": decision.stage})
-                if decision.stage == "执行" and item["stage"] != "说清楚":
+                if decision.stage == "执行" and item["stage"] not in ("接单", "说清楚"):
                     changes.update(approved=[], reviews=[], review_required=1)
                 engine.fact("gate_passed", {"gate_reason": decision.reason}, item["id"])
             elif (decision.needs_approval or decision.frozen) and receipt.outcome == "done" and not receipt.ask:

@@ -18,6 +18,9 @@ def evolve(db, fact: dict) -> None:
 
     def apply_action(item, action):
         reference_pending = get("waits", item.get("wait_id", "")).get("state") == "waiting"
+        if item.get("state") == "等资料" and not item.get("plugin_blocked"):
+            # 停在本阶段等来源补资料的活：来源有任何新事件，下一拍重新核对。
+            item.update(state="空闲", next="来源有更新，重新核对", blocked_by="")
         if action == "rework":
             item["pending_rework"] = True
         if action == 'ready' and item['state'] in ('卡住', '等你') and not item.get('plugin_blocked'):

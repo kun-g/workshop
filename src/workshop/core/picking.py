@@ -74,10 +74,18 @@ def reserve(engine, item, unavailable=()):
         stages = engine.call(port, name, "stages", target)
         validate_stages(stages)
         if item["stage"] not in stages:
-            following = next(s for s in stages if ALL_STAGES.index(s) > ALL_STAGES.index(item["stage"]))
+            # 流程可声明去掉的阶段落到哪一段（例如在途的活换新流程）；没声明就进它之后的第一个。
+            moves = {}
+            if callable(getattr(engine.plugins.get(port, name), "stage_moves", None)):
+                moves = engine.call(port, name, "stage_moves", item, target,
+                                    identity=[item["id"], item["stage"], item["revision"]], item=item["id"])
+                if not isinstance(moves, dict):
+                    raise ValueError("阶段迁移须返回对象")
+            following = (moves[item["stage"]] if moves.get(item["stage"]) in stages else
+                         next(s for s in stages if ALL_STAGES.index(s) > ALL_STAGES.index(item["stage"])))
             engine.change(item, stage=following, state="空闲", next=following, failures=0, retry_at=None,
                         retry_executor=None, review_required=1, reviews=[],
-                        gate_reason=f'规则已去掉「{item["stage"]}」阶段，直接进{following}')
+                        gate_reason=f'规则已去掉「{item["stage"]}」阶段，转到{following}')
             return
         automatic = False
         if callable(getattr(engine.plugins.get(port, name), "automatic", None)):
