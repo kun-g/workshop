@@ -76,8 +76,6 @@ ignore_imports =
     workshop.plugins.issue_delivery -> workshop.core.cards
     # H6：旧通道卡片路径迁走后删除。
     workshop.plugins.channels.ask_kun -> workshop.core.cards
-    # H3：核心完成重启确认后删除。
-    workshop.plugins.scheduled_release.io -> workshop.core.wake
 
 [importlinter:contract:plugins-outer]
 name = 插件不引用装配层、看门和查看工具

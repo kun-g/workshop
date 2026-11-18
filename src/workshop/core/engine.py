@@ -1,6 +1,8 @@
 """一轮一轮推进：外部副作用有持久标识；视图只经事实演进。"""
 from contextlib import contextmanager
 import fcntl
+import uuid
+import os
 
 from .flows import default_flow, entries
 from .log import Log
@@ -40,12 +42,16 @@ def finder(log, target):
 
 class Engine:
 
-    def __init__(self, log: Log, rules, plugins: Plugins, clock=utcnow, jobs=None):
+    def __init__(self, log: Log, rules, plugins: Plugins, clock=utcnow, jobs=None, daemon=None):
         """jobs 为空时插件调用就地进行（测试和单次命令）；守护进程传入作业，一拍里不等任何外部调用。"""
         if hasattr(plugins, "configure"):
             rules = plugins.configure(rules)
         self.log, self.rules, self.plugins, self.clock, self.jobs = log, rules, plugins, clock, jobs
         self.restart_requested = False
+        self.instance = str(uuid.uuid4())
+        self.process = daemon or {"pid": os.getpid(), "start": None}
+        self.first_ok_at = None
+        self.restart_completed = False
         self.channel_read_tokens = {}
         self.tick_failures = self.control("@tick").get("failures", 0)
         saved = self.log.get("controls", "@rules") or {}

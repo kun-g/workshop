@@ -112,6 +112,10 @@ class Flow(Protocol):
         """准许推进或核实等待到期后调用，item.result 含本轮回执，key 必须持久幂等。
 
         After 可绑定别名、仍留本阶段或返回 blocked 停下；回查完成不等于准许推进。
+        restart=True 持久登记原钩子，暂停该钩子的结算，由外部守护重启。
+        新进程首拍成功后立即重调同一 key，不经过 pending 退避；仅此次重调的
+        target.runtime 有 daemon（与心跳 process 相同，含 pid/start）和 first_ok_at。
+        其他调用不带这两个字段；重调须重新核验状态，不可缓存旧的 restart=True。
         """
         ...
     def hold_workdir(self, item: dict, target: dict) -> str:

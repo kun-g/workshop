@@ -168,12 +168,13 @@ def main(argv=None):
                 rules = current_rules(args, saved)
             jobs = None
             if args.command == "run":
-                from .running import record
+                from .running import record, process_identity
                 record()  # 作业子进程继承；整点发版拿它和远端比
             if args.command == "run" and not args.once:
                 state_dir = str(args.state_dir.resolve())
                 jobs = Jobs(args.state_dir / "jobs", [sys.executable, "-m", "workshop.cli", "--state-dir", state_dir, "job"])
-            engine = Engine(log, rules, Registry(), jobs=jobs)
+            engine = Engine(log, rules, Registry(), jobs=jobs,
+                            daemon=process_identity(os.getpid()) if args.command == "run" else None)
             if args.command in ("event", "receipt"):
                 data = json.loads(args.json if args.json is not None else args.file.read_text() if args.file else sys.stdin.read())
                 added = engine.ingest(Event(**data), round_token=os.environ.get("WORKSHOP_ROUND_TOKEN"), ingress="external") if args.command == "event" else engine.submit(args.token, data)
