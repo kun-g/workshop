@@ -202,18 +202,19 @@ def heartbeat(engine, began=None):
     heartbeat = engine.log.path.parent / "heartbeat.json"
     temporary = heartbeat.with_suffix(".tmp")
     try:
-        previous_activity = json.loads(heartbeat.read_text()).get('business', {})
+        previous = json.loads(heartbeat.read_text())
     except (OSError, ValueError):
-        previous_activity = {}
+        previous = {}
+    if not isinstance(previous, dict):
+        previous = {}
+    previous_activity = previous.get("business")
+    previous_activity = previous_activity if isinstance(previous_activity, dict) else {}
+    if not previous_activity.get("scanned_at") and previous.get("at"):
+        # 旧版心跳没有 scanned_at：它那一拍是全量扫的，上一次心跳的时刻就是那时的扫描起点。
+        previous_activity = {**previous_activity, "scanned_at": previous["at"]}
     business = activity.snapshot(engine, previous_activity, now)
     heartbeat_process = getattr(engine, "heartbeat_process", None)
     if heartbeat_process is None:
-        try:
-            previous = json.loads(heartbeat.read_text())
-        except (OSError, ValueError):
-            previous = {}
-        if not isinstance(previous, dict):
-            previous = {}
         process = previous.get("process")
         process = process if isinstance(process, dict) else {}
         heartbeat_process = {
