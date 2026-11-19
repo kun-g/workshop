@@ -1,6 +1,6 @@
 """实验分配：按活号把每件活固定分给阶段候选里的一个，用来比不同执行者做活的效果。
 
-- 可用候选 = 核心交来的候选（已去掉不可用的；订阅和按量计费的一样交来）− 额度不够的（额度门槛和 quota 挑法同一套，见 workshop.quota_gate）。
+- 可用候选 = 核心交来的候选（已去掉不可用的；订阅和按量计费的一样交来）− 额度不够的（额度门槛保底或配速和 quota 挑法同一套，见 workshop.quota_gate.judge）。
 - 本该分给谁 = 规则候选[哈希(活号) 对规则候选数取模]；它可用就分给它，同一件活每一轮都算出同一个。
 - 它这一轮不可用时，分给 可用候选[哈希(活号) 对可用候选数取模]，理由写明本该分给谁、为什么换。
 - 一个可用的都没有时返回 Selection(None, 理由)，核心照 quota 挑法的情形记卡住。
@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 import hashlib
 
 from workshop.core.models import Selection
-from workshop.quota_gate import Snapshot, Unreadable, label, threshold
+from workshop.quota_gate import Snapshot, Unreadable, judge, threshold
 
 
 def bucket(item, size):
@@ -43,15 +43,15 @@ class ExperimentSelector:
             if snapshot is None:
                 snapshot = Snapshot(target.get("quota_snapshot") or {}, self.clock())
             try:
-                left = snapshot.remaining(quota["provider"], quota["window"])
+                passed, text = judge(quota, snapshot)
             except Unreadable as exc:
                 skipped[config["use"]] = str(exc)
                 continue
-            if left >= quota["min_remaining"]:
+            if passed:
                 usable.append(config)
-                notes.append(f'{label(quota)}剩 {left:g}%（门槛 {quota["min_remaining"]:g}%）')
+                notes.append(text)
             else:
-                skipped[config["use"]] = f'{label(quota)}剩 {left:g}%，低于门槛 {quota["min_remaining"]:g}%'
+                skipped[config["use"]] = text
         rule = list(dict.fromkeys(selection.get("rule_candidates") or [c["config"]["use"] for c in candidates]))
         counts = f"规则候选 {len(rule)} 个，可用 {len(usable)} 个"
         if not usable:
