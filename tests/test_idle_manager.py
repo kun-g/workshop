@@ -301,8 +301,14 @@ def run_tick(tmp_path, monkeypatch, capsys, business):
     executor, calls = Executor(), []
 
     class FakeJobs:
-        def __init__(self, directory, command):
+        def __init__(self, directory, command, **kwargs):
             self.launcher = SimpleNamespace(shutdown=lambda wait=True: None)
+
+        def clock(self):
+            return 0.0
+
+        def sweep(self, now):
+            pass
 
         def call(self, port, name, method, args, **kwargs):
             calls.append((port, method))
