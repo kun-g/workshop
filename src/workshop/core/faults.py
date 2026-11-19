@@ -158,6 +158,20 @@ def broken(engine, target, port, name, exc, retry=None):
                                       leave=engine.blocked_leave("项目经理修复阻塞后恢复"))
 
 
+def active_broken(engine, target, flow=''):
+    """当前真正生效的隔离控制：流程级优先，其次对象级；都没坏返回空。
+
+    多流程交付对象里来源仍会读，隔离期间还会有新事件进来；record_event 用这段
+    控制上的自动重试安排把新活挂到同一段隔离上，到点一起恢复。
+    """
+    plugin = engine.rules.target(target, flow)['plugin']
+    for key in (f'@flow:{target}:{plugin}', target):
+        control = engine.control(key)
+        if control.get('broken'):
+            return control
+    return {}
+
+
 def retry_due(engine, key):
     return (engine.control(f"retry:{key}").get("at") or "") <= stamp(engine.clock())
 

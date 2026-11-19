@@ -5,6 +5,7 @@ import pytest
 
 from conftest import build, configuration, event, item
 from workshop.core import faults
+from workshop.core.managers import Store, observe_failures, observe_items
 from workshop.core.ports import Retryable, WaitUnavailable
 from workshop.github_identity import IdentityError
 from workshop.reports.manager_status import sections
@@ -110,6 +111,78 @@ def test_transient_flow_failure_blocks_only_the_affected_flow(tmp_path):
         assert control['broken'] and control['auto_retry']
         assert not engine.control('alpha').get('broken')
         assert engine.flow_broken('alpha', 'flow') and not engine.flow_broken('alpha', 'watch')
+    finally:
+        engine.log.close()
+
+
+def multi_flow_config():
+    config = configuration()
+    config['targets']['alpha'] = {'sources': [], 'plugin': 'flow', 'default_flow': 'flow',
+        'flows': {'flow': {'triggers': []}, 'other': {'plugin': 'other', 'triggers': []}}}
+    return config
+
+
+def test_items_arriving_during_auto_retry_join_that_isolation(tmp_path):
+    engine = build(tmp_path / 'state', multi_flow_config())
+    try:
+        # 一件已完成的活，隔离期间会收到 update。
+        engine.ingest(event(key='done', ext_id='done'), directed=True)
+        engine.change(item(engine, key='done'), state='完成', stage='收尾',
+                      next='', blocked_by='', leave=None)
+        # 另一流程永久隔离，和自动重试的流程隔离同时在。
+        engine.broken('alpha', 'flow', 'other', RuntimeError('代码错误'))
+        at = (engine.clock() + timedelta(hours=1)).isoformat()
+        engine.broken('alpha', 'flow', 'flow', Retryable('暂时不通'),
+                      retry={'at': at, 'count': 3, 'key': 'start:alpha:flow'})
+        # 隔离期间新进来一件 ready，另一件已完成的活收到 update。
+        engine.ingest(event(key='new', ext_id='new'), directed=True)
+        engine.ingest(event(key='done', ext_id='done-update', action='update'), directed=True)
+        for key in ('new', 'done'):
+            row = item(engine, key=key)
+            assert row['state'] == '卡住' and row['plugin_blocked']
+            assert row['plugin_failure_key'] == '@flow:alpha:flow'
+            assert row['plugin_retry_at'] == at
+            assert row['leave']['owner'] == '车间'
+        store = Store(tmp_path / 'managers')
+        try:
+            now = engine.clock().isoformat()
+            observe_items(store, engine.log.open_items(), 'core', now)
+            observe_failures(store, engine.log, 'core', now, engine.rules)
+            concerns = {row['id'] for row in store.all()}
+        finally:
+            store.close()
+        # 自动重试的隔离不登记事项，代码错误照旧登记。
+        assert 'item:alpha:new' not in concerns and 'item:alpha:done' not in concerns
+        assert 'fault:@flow:alpha:flow' not in concerns
+        assert 'fault:@flow:alpha:other' in concerns
+        # 到点只解除这一段；另一段还坏着，两件活也回到隔离前的状态。
+        engine.clock.now = datetime.fromisoformat(at)
+        assert faults.wake_broken(engine) is True
+        assert engine.control('@flow:alpha:other')['broken']
+        assert not engine.control('@flow:alpha:flow').get('broken')
+        assert item(engine, key='new')['state'] == '空闲'
+        assert not item(engine, key='new').get('plugin_blocked')
+        assert item(engine, key='done')['state'] == '完成'
+        assert not item(engine, key='done').get('plugin_blocked')
+    finally:
+        engine.log.close()
+
+
+def test_event_does_not_move_an_item_into_another_isolation(tmp_path):
+    engine = build(tmp_path / 'state', multi_flow_config())
+    try:
+        engine.ingest(event(key='one', ext_id='1'), directed=True)
+        engine.tick()
+        engine.broken('alpha', 'source', 'source', RuntimeError('来源代码错误'))
+        before = item(engine, key='one')
+        assert before['plugin_failure_key'] == 'alpha' and not before.get('plugin_retry_at')
+        at = (engine.clock() + timedelta(hours=1)).isoformat()
+        engine.broken('alpha', 'flow', 'flow', Retryable('暂时不通'),
+                      retry={'at': at, 'count': 3, 'key': 'start:alpha:flow'})
+        engine.ingest(event(key='one', ext_id='2', action='update'), directed=True)
+        after = item(engine, key='one')
+        assert after['plugin_failure_key'] == 'alpha' and after['plugin_retry_at'] is None
+        assert after['blocked_by'] == before['blocked_by']
     finally:
         engine.log.close()
 

@@ -9,7 +9,7 @@ from .models import Classification
 from .jobs import Pending
 from .flows import entries, matches
 from .stages import gate
-from .faults import RETRY_CAP_SECONDS
+from .faults import RETRY_CAP_SECONDS, active_broken
 
 
 def ingest(engine, event: Event, round_token: str | None = None, *, ingress: str = "source", directed=False) -> bool:
@@ -91,7 +91,14 @@ def record_event(engine, event, ingress, *, namespaced=False, classify=False):
             if item["depth"] > engine.rules.data["limits"]["chain_depth"]:
                 engine.block(item, "事件连锁超过上限")
             elif engine.flow_broken(event.target, event.flow):
-                engine.block(item, "流程插件等待修复", plugin=True)
+                control = active_broken(engine, event.target, event.flow)
+                if control.get('auto_retry') and control.get('retry_at'):
+                    # 自动重试中的隔离：隔离期间新进来或被更新的活挂到同一段隔离上，
+                    # 到点一起恢复。已经属于别段隔离的活由 block 保持原样。
+                    engine.block(item, "流程插件等待修复", plugin=True,
+                                 retry_at=control.get('retry_at'), failure_key=control.get('id'))
+                else:
+                    engine.block(item, "流程插件等待修复", plugin=True)
         return added
 
 
