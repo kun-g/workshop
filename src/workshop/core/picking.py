@@ -110,7 +110,8 @@ def reserve(engine, item, unavailable=()):
         candidates = []
         metered = []
         waiting = None
-        for config in engine.rules.candidates(item["stage"], item["target"], item["writer"], item.get("flow", "")):
+        configured = engine.rules.candidates(item["stage"], item["target"], item["writer"], item.get("flow", ""))
+        for config in configured:
             if (config["use"] in unavailable or item.get("retry_executor") and config["use"] != item["retry_executor"]
                     or item["stage"] == "审查" and config["family"] in item.get("reviews", [])):
                 continue
@@ -139,7 +140,8 @@ def reserve(engine, item, unavailable=()):
             return
         history = engine.log.history(item["id"])
         selection_target = {**target, "selection": {"writer": item["writer"], "reviewed": item.get("reviews", []),
-                            "retry_executor": item.get("retry_executor"), "excluded": list(unavailable)}}
+                            "retry_executor": item.get("retry_executor"), "excluded": list(unavailable),
+                            "item": item["id"], "rule_candidates": [c["use"] for c in configured]}}
         selector_name = engine.rules.selector(item["stage"], item["target"], item.get("flow", ""))
         port, name = "selector", selector_name
         engine.plugins.get(port, name)
