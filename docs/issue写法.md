@@ -102,7 +102,7 @@ Kun 在会话里明确说「放」后，项目经理用 `workshop release ws#31 
 
 写全了车间会自动用 App 打 Ready for Agent 接单，开工按 P0 → P1 → P2，同级按入队先后；正文不写优先级时为 P1。还没想清楚的 issue 不要写全那几节。没有写全的原地保留，不建活、不评论、不发卡；补全正文后再核对。同一版正文只核对一次。Kun 亲手打标签、会话 `workshop release` 仍保留，但放行不能代答取舍。
 
-执行中需要 Kun 判断，执行者交无卡等待：证据 JSON 的 `decision` 写 `key`、`version`、`question`、`reason`、`recommend` 五个非空字符串；改问题换版本。回执 `outcome=nothing`、`leave={"kind":"等你","about":"问题"}`，不发 ask/notice，不填 advance。核心只存等待引用；问题和起始时间由介入点服务持久保存。
+执行中需要 Kun 判断，执行者交无卡等待：证据 JSON 的 `decision` 写 `key`、`version`、`question`、`reason`、`recommend` 五个非空字符串；改问题换版本。回执 `outcome=nothing`、`leave={"kind":"等你","about":"问题"}`，不填 advance。核心只存等待引用；问题和起始时间由介入点服务持久保存。
 
 协调对话先看 `workshop status` 或 `workshop why <活>`，再用 `workshop answer-wait <等待号> <回答> --version <问题版本> --quote <Kun原话> --session <会话号>` 登记。回答必须来自 Kun 本人，不能拿泛化放行代答；重复回答幂等，旧版本拒绝。到点再看用 later，自动续跑，不找 Kun。亲眼看等待也用这条命令登记：回答「过」或「不对：哪里不对」，送达必须已发出、版本与等待一致；外部回复仍以引用原送达为准。
 
@@ -128,7 +128,7 @@ Kun 在会话里明确说「放」后，项目经理用 `workshop release ws#31 
 
 程序先核验固定合并提交的两段 DoD，再按约定经介入点服务送一次。飞书私聊送的是卡片：标题是 issue 标题，标题下第一行是 issue 链接和合并它的 PR 链接；正文只有「看什么」（在哪看就是这张卡，怎么回就是按钮，这两段只写在 issue 里供接单核对）；卡底一个「通过」按钮，一个输入框加「不通过」按钮，不通过必须写哪里不对；活号、合并提交、送达号只在默认折叠的「详情」里。点了以后 Ash 回一张「已收到：通过/不通过」，重复点不重复作答，已答了不能改成另一个。工作台转发按钮点击（oh-my-assistant#148）上线前，引用那张卡回「过」「不对：…」照旧认，卡上不写这一句。没通过退回执行时，Kun 写的原文进下一轮派活说明的「上次退回执行的原因」。送达和回答都绑定活、合并提交及送达号；结果不明时只按原号对账。旧版本回答不能批准新版本，不再发通用 yes/no 验收卡。当前通道实现飞书私聊的卡片按钮和引用回复「过」「不对：…」；其它约定须有对应通道支持，否则保持等待，不能自行解释为通过。验收通过直接收尾，不要求完成通知、七天送回或群内返工提示；issue 下新评论「不对」仍退回执行。
 
-需要授权时，只在授权中心申请。执行者持久保存原申请后交 `outcome=nothing`，不填 advance/ask/notice/later/leave，在证据 JSON 写：
+需要授权时，只在授权中心申请。执行者持久保存原申请后交 `outcome=nothing`，不填 advance/later/leave，在证据 JSON 写：
 
 ```json
 {"schema":"issue-delivery/v1","authorization":{"request":"exec-原申请号","kind":"exec","action":"有别人在用的交付对象上线","provider_action":"argocd/sync_app","target":{"instance":"central","app":"原应用","revision":"原固定提交"},"checkpoint":"本次持久检查点"}}

@@ -254,3 +254,27 @@ def test_cutover_failure_holds_the_rest_and_still_lets_the_release_go_on(state, 
     assert "存量转换没成" in out and "前一批 workshop 没转成，本批没跑" in out
     for target in convert.ORDER:
         assert log.get("controls", target)["hold"] == "cutover"
+
+
+def test_group_message_table_lists_every_group_message_and_switchboard_delivery(tmp_path):
+    import sqlite3
+    log = Log(tmp_path / "workshop.db")
+    try:
+        owner = item(log, "grant-console", "109", "完成")
+        event = {"source": "cli:feishu", "ext_id": "om_1", "target": "grant-console", "object_key": "109",
+                 "title": "gc#109 不对", "body": {"chat_id": "oc_group", "text": "gc#109 不对"}, "depth": 0, "action": "update", "flow": ""}
+        log.append("event", event, owner, source="cli:feishu", ext_id="om_1")
+        seq = log.db.execute("SELECT seq FROM facts WHERE source='cli:feishu'").fetchone()[0]
+        log.append("event_classified", {"id": f"classify:{seq}", "action": "rework", "event_seq": seq}, owner)
+        board = tmp_path / "core.sqlite3"
+        with sqlite3.connect(board) as db:
+            db.execute("CREATE TABLE actions (key TEXT, task TEXT, claimed_by TEXT, claimed_at TEXT, result TEXT, data TEXT)")
+            for key, result in (("workshop:feishu:om_1", json.dumps({"status": "done"})), ("workshop:feishu:om_2", None)):
+                db.execute("INSERT INTO actions VALUES (?, NULL, '', NULL, ?, ?)",
+                           (key, result, json.dumps({"kind": "workshop", "args": {"message": key[-4:], "chat": "oc_group"}})))
+        lines = convert.group_messages(log, board)
+    finally:
+        log.close()
+    assert lines[1].split("\t") == ["车间", "om_1", "oc_group", "grant-console", "rework", owner, "执行/完成", "已结束，不再处理"]
+    assert lines[2].split("\t")[-1] == "已投完" and lines[3].split("\t")[-1].startswith("没投完")
+    assert lines[-1] == "车间收下的群消息 1 条；接线台未完成的车间投递 1 条"

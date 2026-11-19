@@ -19,6 +19,7 @@
   convert_intervention.py run --target T            备份后执行这一批
   convert_intervention.py reconcile [--target T]   对账表：每条旧记录一行去向；有没转的退出码 1
   convert_intervention.py cutover                   上线时用：备份，先 workshop 后 grant-console，计时
+  convert_intervention.py groups                    飞书群消息核对表（只读）
 """
 import argparse
 from dataclasses import dataclass, field
@@ -401,6 +402,41 @@ def summary(rows, done=None):
     return [f"{t}\t{c}\t{d}\t{n}" for (t, c, d), n in sorted(counts.items(), key=lambda kv: (ORDER.index(kv[0][0]) if kv[0][0] in ORDER else 9, kv[0]))]
 
 
+def group_messages(log, switchboard_db):
+    """飞书群入口停用（#176 DoD 12）的核对表：进过车间的每条群消息、它当时的处理和那件活的现状；接线台那头的车间投递。只读。"""
+    lines = ["来源\t消息号\t群\t交付对象\t当时处理\t活\t活的现状\t去向"]
+    classified = {}
+    for owner, body in log.db.execute("SELECT item, body FROM facts WHERE kind='event_classified'"):
+        body = json.loads(body)
+        classified[body.get("event_seq")] = {**body, "item": owner}
+    count = 0
+    for seq, item, body in log.db.execute("SELECT seq, item, body FROM facts WHERE kind='event' AND source='cli:feishu' ORDER BY seq"):
+        body = json.loads(body)
+        result = classified.get(seq, {})
+        owner = result.get("item") or item
+        current = log.get("items", owner) if owner else None
+        state = f'{current["stage"]}/{current["state"]}' if current else "—"
+        ended = current is None or current["state"] in ENDED
+        lines.append("\t".join(["车间", body["ext_id"], (body.get("body") or {}).get("chat_id", ""), body["target"],
+                                 result.get("action", "未归类"), owner or "—", state,
+                                 "已结束，不再处理" if ended else "活还开着：按普通活走，群消息不再推进它"]))
+        count += 1
+    pending = 0
+    if switchboard_db and Path(switchboard_db).exists():
+        db = sqlite3.connect(f"file:{switchboard_db}?mode=ro", uri=True)
+        try:
+            for key, result, data in db.execute("SELECT key, result, data FROM actions WHERE json_extract(data,'$.kind')='workshop' ORDER BY key"):
+                status = (json.loads(result) or {}).get("status") if result else "待处理"
+                pending += status != "done"
+                args = (json.loads(data).get("args") or {})
+                lines.append("\t".join(["接线台", args.get("message", key), args.get("chat", ""), "—", f"车间投递 {status}", "—", "—",
+                                         "已投完" if status == "done" else "没投完：接线台改版后不再投，作废"]))
+        finally:
+            db.close()
+    lines.append(f"车间收下的群消息 {count} 条；接线台未完成的车间投递 {pending} 条")
+    return lines
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--state-dir", default="~/.local/state/workshop")
@@ -408,7 +444,8 @@ def main(argv=None):
     parser.add_argument("--rules", default=str(Path(__file__).resolve().parents[1] / "rules/workshop.yaml"))
     parser.add_argument("--backup-dir", help="默认在状态目录的 cutover-backups/")
     parser.add_argument("--inject-failure", help="只给隔离回放用：<交付对象>:<写几条后失败>")
-    parser.add_argument("command", choices=("inventory", "preview", "run", "reconcile", "cutover"))
+    parser.add_argument("--switchboard-db", default="~/.local/state/switchboard/core.sqlite3", help="groups 用：接线台状态库，只读")
+    parser.add_argument("command", choices=("inventory", "preview", "run", "reconcile", "cutover", "groups"))
     parser.add_argument("--target", action="append", help="交付对象；可重复；默认按 workshop、grant-console 顺序全部")
     parser.add_argument("--rows", action="store_true", help="逐条列出，不只列合计")
     args = parser.parse_args(argv)
@@ -417,6 +454,13 @@ def main(argv=None):
     rules = Rules.load(Path(os.environ["WORKSHOP_CUTOVER_RULES"]))
     targets = tuple(args.target or [t for t in ORDER if t in rules.data["targets"]])
     service_db = resident(args.intervention_db)
+    if args.command == "groups":
+        log = Log.readonly(state_dir / "workshop.db")
+        try:
+            print("\n".join(group_messages(log, resident(args.switchboard_db))))
+            return 0
+        finally:
+            log.close()
     log = Log(state_dir / "workshop.db")
     try:
         if args.command in ("inventory", "preview", "reconcile"):

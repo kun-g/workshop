@@ -67,7 +67,7 @@ def main():
             'executors': {k: {'use': 'codex', 'family': 'codex', 'billing': 'subscription'}
                           for k in ('writer', 'reviewer', 'acceptor')},
             'limits': {'concurrent': 2, 'chain_depth': 8}, 'selector': 'ordered',
-            'channel': 'ask_kun', 'notices': 'hold', 'ask_first': [], 'skip_ask': []}
+            'ask_first': [], 'skip_ask': []}
         rules = root / 'rules.yaml'
         rules.write_text(yaml.safe_dump(config, allow_unicode=True))
         command = [sys.executable, '-m', 'workshop.cli', '--state-dir', str(state), '--rules', str(rules)]

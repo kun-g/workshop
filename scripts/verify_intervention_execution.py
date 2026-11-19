@@ -158,7 +158,6 @@ def replay(args):
     target = {**target, 'sources': [], 'issue_delivery_state_dir': str(output / 'flow')}
     config = deepcopy(rules.data)
     config['targets'] = {'workshop': {**target, 'flows': {'issue_delivery': target['flows']['issue_delivery']}}}
-    config['notices'] = 'hold'
     config['executors'] = {role: {'use': args.executor} for role in ('writer', 'reviewer', 'acceptor')}
     config['stage_executors'] = {}
     config['targets']['workshop']['selector'] = 'ordered'
