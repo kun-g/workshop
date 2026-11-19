@@ -189,6 +189,42 @@ targets:
     label: Ready for Agent
     # issue 合并即交付；整点上线由 scheduled_release 程序流程完成。
     release: none
+  switchboard:
+    default_flow: issue_delivery
+    flows:
+      issue_delivery:
+        triggers: *issue_triggers
+        # issue交付 R13（ws#215）：接单核对登记（程序）→ 执行一轮做到 PR 去掉 Draft → 交付查两段 DoD、合并、上线（程序）→ 收尾（程序）。
+        stages: [接单, 执行, 交付, 收尾]
+        pending_limit: 24
+    selector: quota
+    quota_snapshot: *quota_snapshot
+    sources: {github: {}}
+    auto_intake: true
+    intake_app_logins: ["lambdatheory-agent[bot]"]
+    github_overlap_seconds: 60
+    short_name: sb
+    # 新库 .github/workflows/ci.yml 的 job 名；它跑 scripts/check.sh。
+    ci: [test]
+    prepare: [{argv: [uv, sync, --locked]}]
+    check_timeout: 900
+    bot_review: false
+    authorization_client: ~/workspace/runtime/repos/grant-console/scripts/request_grant.py
+    repo: kun-g/switchboard
+    relations_identity: *relationship_app
+    github_identity:
+      mode: app
+      gh: /opt/homebrew/bin/gh
+      signer: [~/workspace/runtime/repos/workshop/.venv/bin/python, -m, workshop.github_token,
+               --config, ~/workspace/runtime/tools/agent_github_identity/config.json,
+               --app, lambdatheory-agent, --key-service, lambdatheory-agent, --key-account, private-key]
+    requirement_docs: ['docs/requirements/']
+    checkout: ~/workspace/runtime/repos/switchboard
+    skill: issue-delivery
+    permissions: repository
+    label: Ready for Agent
+    # Kun 11-19：车间只做到合并；现役跑 ~/workspace/runtime/worktrees/switchboard/live，上线手工做，issue 不写上线后 DoD。
+    release: none
 # 配置档集中定义；use 是持久身份，不随 driver 或运行方式改变。
 managers:
   target: workshop
