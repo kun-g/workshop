@@ -289,6 +289,11 @@ def classify_idle(log):
     return 'waiting'
 
 
+def last_situation(row):
+    """事项最后一条事实里的空闲分类；没有就是 None。"""
+    return row['facts'][-1]['value'].get('situation') if row.get('facts') else None
+
+
 def idle_conclusion(row):
     """两种不用判断的空闲由程序出结论：没有活 → 要新需求；全在明确等 → 静默结束。"""
     fact = row['facts'][-1]['value'] if row.get('facts') else {}
@@ -351,8 +356,25 @@ class Coordinator:
         row['published_revision'] = row.get('revision', 0)
         self.store.save(row, 'published')
 
+    def conclude_idle(self, row):
+        """不用判断的空闲按最后一条事实写程序结论；会话交过的结论也照事实重写。"""
+        state = 'resolved' if last_situation(row) == 'waiting' else 'blocked'
+        conclusion = idle_conclusion(row)
+        if row.get('conclusion') != conclusion or row['state'] != state:
+            row['conclusion'] = conclusion
+            row['state'] = state
+            self.store.save(row, 'concluded')
+
     def drive(self, row):
         configs = self.config['candidates']
+        if row.get('token') and row['id'] == 'idle' and row['active'] and last_situation(row) in ('none', 'waiting'):
+            # 空闲已经变成不用判断：停掉会话，会话自己交的结论作废，同一拍改由程序出结论。
+            token = row['token']
+            started = Started(**row['started']) if row.get('started') else None
+            self.invoke(row['executor'], 'stop', (token, started), [token])
+            row['last_session'] = (row.get('started') or {}).get('session') if row.get('resume_allowed', True) else None
+            row.update(token=None, started=None, state='queued', conclusion=None)
+            self.store.save(row, 'stopped')
         if row.get('token'):
             token, name = row['token'], row['executor']
             started = Started(**row['started']) if row.get('started') else None
@@ -397,20 +419,15 @@ class Coordinator:
                     row['delivered'] = upto
                     self.store.save(row, 'informed')
             return
-        if not row['active'] or row['state'] == 'resolved':
+        if not row['active']:
             return
-        if row['id'] == 'idle':
-            fact = row['facts'][-1]['value'] if row.get('facts') else {}
-            situation = fact.get('situation')
-            if situation in ('none', 'waiting'):
-                # 不用判断的两种空闲：程序直接出结论，不启动会话。
-                state = 'resolved' if situation == 'waiting' else 'blocked'
-                if row.get('conclusion') is None or row['state'] != state:
-                    row['conclusion'] = idle_conclusion(row)
-                    row['state'] = state
-                    self.store.save(row, 'concluded')
-                return
-            # 判断不了、或者有活不是明确在等：照旧交给项目经理会话。
+        if row['id'] == 'idle' and last_situation(row) in ('none', 'waiting'):
+            # 不用判断的两种空闲：程序直接出结论，不启动会话。
+            self.conclude_idle(row)
+            return
+        # 判断不了、或者有活不是明确在等：照旧交给项目经理会话。
+        if row['state'] == 'resolved':
+            return
         if row['state'] in ('blocked', 'unavailable'):
             return
         if row['candidate'] >= len(configs):

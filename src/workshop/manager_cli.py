@@ -71,11 +71,12 @@ def main(argv=None):
                     store.resolve(row, now)
             business = message.get('business', {})
             idle = business.get('idle_since')
-            active_idle = any(row['id'] == 'idle' and row['active'] for row in store.all())
+            # 只看当前空闲段是否满五分钟。两拍之间做完的短作业看门会漏看，
+            # idle_since 已经前移；新段还没满五分钟，不能拿当前核心状态提前出结论。
             due = (business.get('total') == 0 and idle
                    and (datetime.fromisoformat(now) - datetime.fromisoformat(idle)).total_seconds() >= 300)
-            if business.get('total') == 0 and idle and (due or active_idle):
-                # 每拍按核心的真实状态重新分类；状态变了才记新事实，判断不了归 other。
+            if due:
+                # 满五分钟之后每拍按核心的真实状态重新分类；状态变了才记新事实，判断不了归 other。
                 store.observe('idle', {'idle_since': idle, 'reason': '业务连续五分钟为零',
                                        'situation': idle_situation(args.state_dir)}, 'watch', now)
             elif business.get('total', 0) > 0:

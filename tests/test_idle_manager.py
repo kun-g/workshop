@@ -114,6 +114,58 @@ def test_idle_that_needs_judgment_still_starts_a_manager_session(coordinator, si
     assert c.store.all()[0]['state'] == 'running'
 
 
+@pytest.mark.parametrize('situation', ['none', 'waiting'])
+def test_running_idle_session_is_stopped_when_idle_needs_no_judgment(coordinator, situation):
+    c, executor, _ = coordinator
+    c.store.observe('idle', idle_fact(situation='other'), 'watch', NOW)
+    c.drive(c.store.all()[0])
+    token = c.store.all()[0]['token']
+    assert token and c.store.all()[0]['state'] == 'running'
+    c.store.observe('idle', idle_fact(situation=situation), 'watch', NOW)
+    c.drive(c.store.all()[0])
+    row = c.store.all()[0]
+    assert ('stop', token) in executor.calls
+    assert [call[0] for call in executor.calls] == ['available', 'launch', 'stop']
+    assert row['active'] and not row.get('token')
+    if situation == 'waiting':
+        assert row['state'] == 'resolved'
+        assert row['conclusion'] == {'schema': 'manager/v1', 'result': 'resolved'}
+    else:
+        assert row['state'] == 'blocked'
+        assert row['conclusion']['action'] == '车间空了，要新需求'
+
+
+@pytest.mark.parametrize(('situation', 'session', 'state', 'action'), [
+    ('none', {'schema': 'manager/v1', 'result': 'resolved'}, 'blocked', '车间空了，要新需求'),
+    ('none', {'schema': 'manager/v1', 'result': 'blocked', 'action': '回复检查结果', 'reason': '卡在验证',
+              'evidence': '看过', 'status_location': '等你'}, 'blocked', '车间空了，要新需求'),
+    ('waiting', {'schema': 'manager/v1', 'result': 'blocked', 'action': '回复检查结果', 'reason': '卡在验证',
+                 'evidence': '看过', 'status_location': '等你'}, 'resolved', None),
+])
+def test_session_conclusion_is_rewritten_from_the_last_fact(coordinator, situation, session, state, action):
+    c, executor, _ = coordinator
+    c.store.observe('idle', idle_fact(situation='other'), 'watch', NOW)
+    c.drive(c.store.all()[0])
+    token = c.store.all()[0]['token']
+    c.store.observe('idle', idle_fact(situation=situation), 'watch', NOW)
+    row = c.store.all()[0]
+    row['delivered'] = len(row['facts'])  # 会话已经看过最后一条事实
+    c.store.save(row, 'informed')
+    c.store.db.execute('INSERT INTO receipts VALUES (?,?)', (token, json.dumps(session)))
+    c.drive(c.store.all()[0])
+    row = c.store.all()[0]
+    assert ('stop', token) in executor.calls
+    assert row['active'] and not row.get('token')
+    assert row['state'] == state
+    if action:
+        assert row['conclusion']['action'] == action
+    else:
+        assert row['conclusion'] == {'schema': 'manager/v1', 'result': 'resolved'}
+    c.drive(c.store.all()[0])
+    assert c.store.all()[0]['state'] == state
+    assert [call[0] for call in executor.calls] == ['available', 'launch', 'stop']
+
+
 def test_new_idle_segment_is_classified_again(coordinator):
     c, executor, _ = coordinator
     c.store.observe('idle', idle_fact(situation='waiting'), 'watch', NOW)
@@ -253,6 +305,39 @@ def test_manager_cli_without_core_state_starts_a_session(tmp_path, monkeypatch, 
                                        {'total': 0, 'idle_since': IDLE})
     assert row['state'] == 'running', row.get('error')
     assert ('executor', 'launch') in calls
+
+
+def active_idle_from_previous_segment(tmp_path):
+    state = tmp_path / 'state'
+    state.mkdir()
+    Log(state / 'workshop.db').close()
+    store = Store(state)
+    row = store.observe('idle', idle_fact('2026-11-19T07:00:00+00:00', situation='waiting'),
+                        'watch', '2026-11-19T07:05:00+00:00')
+    row.update(state='resolved', conclusion={'schema': 'manager/v1', 'result': 'resolved'})
+    store.save(row, 'concluded')
+    store.close()
+
+
+def test_manager_cli_new_idle_segment_is_not_observed_before_five_minutes(tmp_path, monkeypatch, capsys):
+    # 旧空闲段还开着，新段才过 60 秒：不能拿当前核心状态给新段提前出结论。
+    active_idle_from_previous_segment(tmp_path)
+    row, executor, calls, _ = run_tick(tmp_path, monkeypatch, capsys,
+                                       {'total': 0, 'idle_since': '2026-11-19T08:05:00+00:00'})
+    assert row['state'] == 'resolved'
+    assert row['conclusion'] == {'schema': 'manager/v1', 'result': 'resolved'}
+    assert [fact['value']['idle_since'] for fact in row['facts']] == ['2026-11-19T07:00:00+00:00']
+    assert executor.calls == [] and not [call for call in calls if call[0] == 'executor']
+
+
+def test_manager_cli_reclassifies_the_new_segment_once_it_is_due(tmp_path, monkeypatch, capsys):
+    active_idle_from_previous_segment(tmp_path)
+    row, executor, calls, _ = run_tick(tmp_path, monkeypatch, capsys,
+                                       {'total': 0, 'idle_since': IDLE})
+    assert row['state'] == 'blocked'
+    assert row['conclusion']['action'] == '车间空了，要新需求'
+    assert IDLE in row['conclusion']['evidence']
+    assert executor.calls == [] and not [call for call in calls if call[0] == 'executor']
 
 
 @pytest.fixture
