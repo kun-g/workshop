@@ -45,6 +45,12 @@ class Registry:
             for flow in entries(target):
                 configuration(rules.target(name, flow))
                 configuration(rules.target(name, flow), relations_read=True)
+                try:
+                    validate = getattr(self.get('flow', rules.target(name, flow)['plugin']), 'validate', None)
+                except LookupError:
+                    continue  # 与上面一致：查询和恢复命令允许流程插件暂未装上。
+                if validate:
+                    validate(rules.target(name, flow))
         profiles = {}
         for name, profile in rules.data.get('executor_profiles', {}).items():
             try:

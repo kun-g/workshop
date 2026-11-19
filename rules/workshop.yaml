@@ -35,6 +35,7 @@ targets:
     sources: {github: {}, main_branch: {every: 1h}}
     auto_intake: true
     intake_app_logins: ["lambdatheory-agent[bot]"]
+    # intake_require_session 不写即 true：App 开的单「Kun 的原话」节引用行以外要有会话号；写 false 只要求有 > 原话（issue交付 R11）。
     github_overlap_seconds: 60
     authorization_client: ~/workspace/runtime/repos/grant-console/scripts/request_grant.py
     repo: kun-g/grant-console
@@ -161,6 +162,7 @@ targets:
         - {id: workspace, path: ~/workspace/contexts/WORKSPACE.md}
     auto_intake: true
     intake_app_logins: ["lambdatheory-agent[bot]"]
+    # intake_require_session 不写即 true：App 开的单「Kun 的原话」节引用行以外要有会话号；写 false 只要求有 > 原话（issue交付 R11）。
     github_overlap_seconds: 60
     short_name: ws
     ci: none

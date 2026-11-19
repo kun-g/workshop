@@ -64,6 +64,9 @@ class Flow(Protocol):
     def cleanup(self, target: dict, keep: list[str | None]) -> None:
         """可选，核心 workdirs 调用：清理流程自有的临时目录，保留 keep 中的工作目录。"""
         ...
+    def validate(self, target: dict) -> None:
+        """可选，装配时纯本地校验流程配置；无效时抛 ValueError，先于守护进程启动。"""
+        ...
     def configure_target(self, target: dict) -> dict:
         """可选，装配层调用的旧写法兼容；去掉未配置 flows 的旧写法时一并删除。"""
         ...
