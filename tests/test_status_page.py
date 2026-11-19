@@ -18,9 +18,9 @@ def row(**extra):
     return {**base, **extra}
 
 
-def view(*rows, asks=(), hidden=0):
+def view(*rows, hidden=0, holds=()):
     return {"rows": list(rows), "total": len(rows) + hidden, "ended": hidden, "hidden": hidden, "everything": False, "filtered": False,
-            "unreadable": [], "asks": list(asks), "uncertain": [], "filters": {"states": [], "targets": [], "flows": []}}
+            "holds": list(holds), "filters": {"states": [], "targets": [], "flows": []}}
 
 
 def text(html):
@@ -56,12 +56,11 @@ def test_top_card_has_project_and_flow_views():
     assert "按流程分布" not in html  # 底部那张旧图已删，只留顶部卡片
 
 
-def test_channel_problems_folded_at_end_with_explanation():
-    broken = view(row(), asks=[])
-    broken["uncertain"] = [{"item": "g:1", "card": "c-1"}]
-    html = page(broken, NOW)
-    assert "通道待对账" in html and "不敢重发" in html and html.index("通道待对账") > html.index("卡住 1 件")
-    assert "消息通道" not in page(view(row()), NOW)
+def test_paused_targets_listed_after_stuck_with_reason():
+    html = page(view(row(), holds=[{"target": "grant-console", "reason": "存量转换没成：备份失败"}]), NOW)
+    assert "停了新派发" in html and "存量转换没成：备份失败" in html and html.index("停了新派发") > html.index("卡住 1 件")
+    assert "停了新派发" not in page(view(row()), NOW)
+    assert "通道待对账" not in html and "问卡" not in html
 
 
 def test_one_line_per_item_title_and_next_step_with_wait_inside():

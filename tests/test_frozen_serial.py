@@ -3,9 +3,10 @@ from copy import deepcopy
 
 import pytest
 
-from workshop.core.models import Answer, Evidence
+from workshop.core.models import Evidence
+from workshop.core import waits
 from workshop.core.rules import Rules
-from conftest import FakeFlow, build, configuration, current, event, finish, item
+from conftest import FakeFlow, build, configuration, current, event, finish, item, pause_for_kun
 
 
 class PathFlow(FakeFlow):
@@ -319,14 +320,19 @@ def test_abandoned_holder_releases_next(make):
     assert back["stage"] == "执行" and back["state"] == "排队" and back["blocked_by"] == "alpha:two"
 
 
-def test_abandon_cancels_open_questions(make):
+def test_abandon_supersedes_open_wait(make):
     engine = make()
     start(engine, 'one')
-    finish(engine, key='one', ask=[{'key':'q', 'title':'选择方案', 'options':['A','B']}])
+    port = pause_for_kun(engine)
+    finish(engine, '说清楚', key='one')
+    assert item(engine, 'one')['state'] == '等你'
     engine.abandon('alpha:one', '需求取消')
-    assert engine.log.all('cards')[0]['cancelled']
+    waits.reconcile(engine)
+    assert engine.log.get('waits', 'bind:decision')['state'] == 'superseded'
+    port.ready['decision'] = 'late'
     engine.tick()
     assert item(engine, 'one')['state'] == '放弃' and not engine.active()
+    assert not engine.log.all('cards')
 
 
 def test_cli_abandon(make, tmp_path, capsys):

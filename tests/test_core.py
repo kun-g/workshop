@@ -7,11 +7,11 @@ import sqlite3
 import pytest
 
 from workshop.core.log import Log
-from workshop.core.models import Answer, Event, FlowBrief, Receipt, STAGES, stamp
+from workshop.core.models import Event, FlowBrief, Receipt, STAGES, stamp
 from workshop.reports.report import status, usage, why
 from workshop.core.rules import Rules
 from workshop.core.view import TABLES
-from conftest import build, configuration, current, event, finish, item, reach
+from conftest import build, configuration, current, event, finish, item, pause_for_kun, reach
 
 
 def test_flow_materials_survive_job_encoding_and_remain_untrusted(engine, monkeypatch):
@@ -34,8 +34,7 @@ def test_flow_materials_survive_job_encoding_and_remain_untrusted(engine, monkey
 
 def test_entire_flow_and_material_boundary(engine):
     reach(engine, "收尾")
-    finish(engine, leave={"kind": "工序", "owner": "车间", "at": "+1d", "about": "观察结果"},
-           notice=[{"key": "accepted", "text": "验收已过，不用回", "fyi": True}])
+    finish(engine, leave={"kind": "工序", "owner": "车间", "at": "+1d", "about": "观察结果"})
     assert item(engine)["state"] == "完成"
     assert item(engine)["ticket"] == "ticket:alpha:one"
     rounds = engine.log.all("rounds")
@@ -204,26 +203,19 @@ def test_close_requires_leave(engine):
 def test_asking_frees_executor_and_resumes_same_session(engine):
     reach(engine, "执行")
     original = item(engine)["session"]
-    finish(engine, ask=[{"key": "design", "title": "选哪一个", "options": ["A", "B"]}])
+    port = pause_for_kun(engine)
+    finish(engine, "证据")
     assert not engine.active()
-    assert item(engine)["state"] == "等你"
+    assert item(engine)["state"] == "等你" and item(engine)["stage"] == "执行"
     assert not engine.plugins.get("executor", "writer").live
-    card = engine.log.all("cards")[0]
-    engine.plugins.get("channel", "channel").answers = [Answer(card["id"], "A")]
+    port.ready["decision"] = "answered"
     engine.tick()
+    engine.tick()
+    assert current(engine)["stage"] == "执行"
     assert current(engine)["started"]["session"] == original
     assert engine.plugins.get("executor", "writer").calls[-1][0] == "resume"
-    assert any(f["kind"] == "answer" for f in engine.log.facts())
-
-
-def test_all_answers_required(engine):
-    reach(engine, "执行")
-    finish(engine, ask=[{"key": str(i), "title": "选择", "options": ["A"]} for i in range(2)])
-    cards = engine.log.all("cards")
-    engine.plugins.get("channel", "channel").answers = [Answer(cards[0]["id"], "A")]
-    engine.tick()
-    assert not engine.active()
-    assert item(engine)["state"] == "等你"
+    assert any(f["kind"] == "wait_resumed" for f in engine.log.facts())
+    assert not engine.log.all("cards")
 
 
 def test_timer_only_runs_when_due(engine):
@@ -299,20 +291,6 @@ def test_flow_crash_isolates_other_type_without_notice(engine):
     assert item(engine, target="beta")["state"] == "跑着"
     assert len([f for f in engine.log.facts() if f["kind"] == "plugin_failed"]) == 1
     assert len([c for c in engine.log.all("cards") if c["mode"] == "notice"]) == 0
-
-
-def test_channel_outage_keeps_work_running_and_delivers_after_recovery(engine):
-    channel = engine.plugins.get("channel", "channel")
-    channel.down = True
-    reach(engine, "收尾")
-    finish(engine, leave={"kind": "送回", "at": "+7d", "about": "复看"},
-           notice=[{"key": "accepted", "text": "验收已过，不用回"}])
-    assert item(engine)["state"] == "完成"
-    assert engine.log.all("cards")[0]["sent"] is False
-    channel.down = False
-    engine.tick()
-    assert engine.log.all("cards")[0]["sent"] is True
-    assert len(channel.messages) == 1
 
 
 def test_chain_depth_is_derived_and_ninth_level_is_blocked(engine):
@@ -446,7 +424,7 @@ def test_direct_rework_event_reopens_completed_item(engine):
 @pytest.mark.parametrize("change", [
     {"limits": {"concurrent": 0, "chain_depth": 8}},
     {"limits": {"concurrent": 2, "chain_depth": 9}},
-    {"executors": {}}, {"targets": {}}, {"channel": None},
+    {"executors": {}}, {"targets": {}}, {"channel": None}, {"channel": "ask_kun"}, {"notices": "hold"},
 ])
 def test_invalid_rules_rejected(change):
     with pytest.raises(ValueError):
@@ -497,17 +475,15 @@ def test_paused_timer_is_listed_and_selected_timer_wakes_item(engine):
     assert current(engine)["stage"] == "执行"
 
 
-def test_ask_does_not_advance_or_run_completed_stage_hook(engine):
+def test_pause_does_not_advance_and_resumes_same_stage(engine):
     reach(engine, "执行")
-    before = len(engine.plugins.get("flow", "flow").after_keys)
-    finish(engine, "证据", ask=[{"key": "question", "title": "先定方案", "options": ["A"]}])
-    assert item(engine)["stage"] == "执行"
-    assert len(engine.plugins.get("flow", "flow").after_keys) == before
-    card = engine.log.all("cards")[0]
-    engine.plugins.get("channel", "channel").answers = [Answer(card["id"], "A")]
+    port = pause_for_kun(engine)
+    finish(engine, "证据")
+    assert item(engine)["stage"] == "执行" and item(engine)["state"] == "等你"
+    port.ready["decision"] = "answered"
     engine.tick()
-    cause = current(engine)["cause"]
-    assert next(f for f in engine.log.facts() if f["seq"] == cause)["kind"] == "answer"
+    engine.tick()
+    assert current(engine)["stage"] == "执行"
 
 
 def test_rework_cannot_escape_chain_limit(engine):
@@ -680,7 +656,7 @@ def test_early_timer_cannot_bypass_failure_backoff(engine):
 @pytest.mark.parametrize("extra", [
     {"leave": "oops"}, {"ask": [{"key": "k", "title": "x", "options": [None]}]},
     {"later": [{"key": "k", "at": 42, "about": "x"}]},
-    {"ask": [{"key": "k", "title": "x", "options": ["A"], "recommend": 2}]},
+    {"notice": [{"key": "k", "subject": "x", "text": "x", "fyi": True}]},
 ])
 def test_malformed_receipt_is_rejected(extra, engine):
     with pytest.raises(ValueError):
@@ -717,15 +693,12 @@ def test_receipt_collects_top_level_and_field_errors(engine):
 def test_receipt_collects_nested_errors_without_cascading_type_failures(engine):
     with pytest.raises(ValueError) as caught:
         Receipt.parse({"outcome": "done", "summary": "x", "evidence": [3, None],
-                       "notice": [None, {"key": []}, {"key": "same"}, {"key": "same"}],
-                       "ask": [{"key": "q", "choices": [None, {"key": []}], "recommend": []}],
-                       "later": [{"key": "timer"}, None], "events": [None, {}],
+                       "later": [{"key": "timer"}, None, {"key": "same", "at": "+1m", "about": "x"},
+                                 {"key": "same", "at": "+1m", "about": "x"}], "events": [None, {}],
                        "leave": {"kind": "工序"}}, engine.clock())
     reason = str(caught.value)
-    for field in ("evidence[0]", "evidence[1]", "notice[0]", "notice[1]", "subject", "text", "fyi",
-                  "notice[3]", "ask[0]", "choices[0]", "choices[1]", "recommend", "kind",
-                  "later[0].about", "later[0].at", "later[1]", "events[0]", "events[1]",
-                  "leave.kind/about", "leave.at", "leave.owner"):
+    for field in ("evidence[0]", "evidence[1]", "later[0].about", "later[0].at", "later[1]", "later[3]",
+                  "events[0]", "events[1]", "leave.kind/about", "leave.at", "leave.owner"):
         assert field in reason
     assert "unhashable" not in reason and "has no attribute" not in reason
 
@@ -734,12 +707,10 @@ def test_receipt_examples_are_valid_and_optional_defaults_unchanged(engine):
     import re
     instructions = Receipt.format_help()
     examples = [json.loads(raw) for raw in re.findall(r"```json\n(.*?)\n```", instructions, re.S)]
-    minimal, notification, question = examples
-    Receipt.parse({**minimal, **question}, engine.clock())
+    [minimal] = examples
     parsed = Receipt.parse(minimal, engine.clock())
-    assert parsed.advance is None and parsed.notice == [] and parsed.leave is None
-    parsed = Receipt.parse({**minimal, **notification}, engine.clock())
-    assert parsed.notice[0]["fyi"] is True
+    assert parsed.advance is None and parsed.leave is None and parsed.later == []
+    assert "ask" not in parsed.json() and "notice" not in parsed.json()
 
 
 @pytest.mark.parametrize('bad', [

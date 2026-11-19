@@ -1,18 +1,16 @@
 """核心 R27：事件进车间 1 秒内开始处理，一拍 ≤100 毫秒。
 
-11-16 11:45 的 2.3 秒有三处来源，各用闸门复现、不用 sleep（E8）：
+11-16 11:45 的 2.3 秒有三处来源，现存两处各用闸门复现、不用 sleep（E8）：
 - 一拍里别的步骤慢：外部事件的归件排在这些步骤之前；
 - 每 10 分钟一次的作业目录清理在一拍里删上千个目录：清理移出主线程；
-- 对账不确定的卡每拍起一个作业、作业完成又叫醒主循环，守护进程一刻不停：告警后按间隔再对账。
+- （第三处是对账不确定的卡每拍起作业；卡片通道已退役，#176 删掉了这条测试。）
 """
-from datetime import timedelta
 import threading
 import time
 
-from conftest import build, event, reach
+from conftest import build, event
 from workshop.core import jobs as job_module
 from workshop.core.jobs import Jobs, write
-from workshop.core.cards import question
 
 
 GATE_SECONDS = 10  # 只作兜底：闸门没放开时测试失败而不是挂住。
@@ -96,32 +94,6 @@ def test_job_sweep_runs_outside_the_tick(tmp_path, monkeypatch):
         gate.set()
         jobs.launcher.shutdown(wait=True)
         engine.log.close()
-
-
-def test_uncertain_reconcile_does_not_keep_the_loop_awake(tmp_path, monkeypatch):
-    """对账结果取一次就清；结果为「不确定」时，告警后不再每拍起作业，下一次唤醒按间隔算。"""
-    engine = build(tmp_path)
-    reach(engine, "执行")
-    channel = engine.plugins.get("channel", "channel")
-    monkeypatch.setattr(channel, "ask", lambda *a: (_ for _ in ()).throw(ConnectionError("回包丢失")))
-    calls = []
-    monkeypatch.setattr(channel, "reconcile", lambda key, card: calls.append(key))
-    card = engine.card({"id": "alpha:one"}, "q", "ask", question("选用哪个方案"))
-    engine.fact("card_changed", {"id": card, "sending": True}, "alpha:one")
-    for _ in range(3):
-        engine.channels()
-    assert len(calls) == 3
-    assert engine.log.get("cards", card)["reconcile_failed"]
-    # 已告警：同一时刻再跑多少拍都不再对账。
-    for _ in range(20):
-        engine.channels()
-    assert len(calls) == 3
-    # 不起作业，就不会有作业完成把主循环叫醒；下一次唤醒落在约好的对账时刻。
-    assert 59 <= engine.wait_timeout() <= 60
-    engine.clock.now += timedelta(seconds=60)
-    engine.channels()
-    assert len(calls) == 4
-    engine.log.close()
 
 
 def test_slow_tick_still_leaves_event_handling_within_one_second(tmp_path):

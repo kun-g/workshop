@@ -8,7 +8,9 @@ GitHub 来源用 `gh api --include` 在游标保存每个分页 endpoint 的 ETa
 
 程序建单带 `workshop-intake` 标记，来源记录该 issue 初次标签事件 id 到 own_labels，此事件只算 update；只有之后 `kun-g` 再打的标签可放行。评论和审查正文以独立一行的“不对”开头，后面为空或标点/空白加说明，才返工。引用、代码块或叙述中的“不对”不生效。控制事件 ext_id 固定为仓库、类型、对象编号、评论/标签事件 id，不含内容指纹；评论编辑、表情变化只发 update，游标丢失后重放控制事件仍可由核心去重。CLI 自称 GitHub 的输入永远是普通更新。
 
-飞书仅处理 `cli:feishu`，按 `om_` 消息号回查 [获取指定消息接口](https://open.feishu.cn/document/server-docs/im-v1/message/get)，使用 `lark-cli --profile <规则> api GET /open-apis/im/v1/messages/<om_> --as bot`。这里使用原始消息接口，是为了核对 sender 的 id/type、chat_id、parent_id/root_id 和原始文本，避免消息展示快捷命令转换丢失引用。身份与群编号取规则，绝不信输入 `from_kun`、sender_id、quote 或 text。
+**飞书群入口已停（#176）**：`cli:feishu` 事件归类为 discard（「飞书群入口已停，群消息不建活、不推进活」），不建活、不返工、不开 issue；工作台那头也不再把绑定车间的群消息转进来（oh-my-assistant 另一 PR）。需求和返工在协调对话里说。下面三段是停用前的做法，留作历史。
+
+（历史）飞书仅处理 `cli:feishu`，按 `om_` 消息号回查 [获取指定消息接口](https://open.feishu.cn/document/server-docs/im-v1/message/get)，使用 `lark-cli --profile <规则> api GET /open-apis/im/v1/messages/<om_> --as bot`。这里使用原始消息接口，是为了核对 sender 的 id/type、chat_id、parent_id/root_id 和原始文本，避免消息展示快捷命令转换丢失引用。身份与群编号取规则，绝不信输入 `from_kun`、sender_id、quote 或 text。
 
 真实文本先去开头 @Ash。群内写法 `<short_name>#<issue号> 不对`（也接受无空格，如 `gc#12不对`） 先核对规则 feishu_chat_id，再经核心只读查已有活（含别名），核实发送者后才 rework，未知活丢弃。通知要求写出这个群内返工办法；例如 grant-console 为 `gc#123 不对`。引用卡回复可位于 Kun/Ash 私聊：真实引用消息号经只读 ask_kun_state 的 asks/notices 映射到 Q/N 编号，原消息 chat_id 必须等于这张卡记录的 chat_id，经核心回查所属活后，才识别“不对”或“继续”“可以继续”“说清楚了”“Ready for Agent”。`ask-kun list --all` 当前不提供 message_id，暂时依赖状态文件；读失败按查不到，不无限重试、不猜归件。核实不了 Kun、非目标群且无可核实卡片的消息返回 discard，记事实后不建活；同目标群的普通消息仍作为新资料。
 
@@ -23,7 +25,7 @@ Orca 插话钩子去掉轮次令牌后以 `cli:orca` 进入：流程用核心已
 - **接单（程序）**：回查 issue，核对能跑的检查（「能跑的检查」节的 `workshop-checks`，含规则 `required_checks`，默认 `[["scripts/check.sh"]]`）、合并前 DoD（逐项列表、无待定项）、「不可逆或对外的动作」、「要不要亲眼看」第一行是/否、依据（编号回查规则 `requirement_docs` 登记的文档；需求变更要写原文、文档位置，「Kun 的原话」节有原话）；写了上线后 DoD 的，每项要有 `workshop-checks`。缺一项就返回 `Evidence(awaits_update=True)`：活停在接单、状态「等资料」，next 写出缺哪几项，不派轮、不发卡；来源有任何新事件（改 issue 正文就有）时视图把活放回空闲，下一拍重核。飞书进来的需求先开 issue（只有原话），同样停在接单等写 issue 的会话补齐。代码见 `dod.py` 的 `registration`。
 - **执行（模型一轮）**：从写代码做到 PR 去掉 Draft。交接以 PR 状态为准：assess 返回 `Evidence(handoff="交付")`，核心用它代替回执的 advance；PR 没有、已合并/关闭、还是 Draft、缺活标记或带自动关 issue 的语句，都判没过，同阶段重来（核心 `gate_retry`，同因 3 次记卡住）。
 - **交付（程序）**：先查合并前 DoD——在干净副本重跑登记检查，`dod.evidence_problems` 核对 PR 正文「合并前 DoD」节逐项以 issue 合并前 DoD 每项第一行原文开头、项下附登记检查名（反引号）或原样输出代码块；需求变更的还要 PR 改了登记的需求文档。不过：记下原因和原样输出，`Evidence(handoff="执行")`，after 把 PR 改回 Draft（`gh pr ready --undo`）并在 PR 下留原样输出。过了：合并（沿用下面的合并守卫和 release 分支），写了上线后 DoD 的等上线（规则 `deployment`；车间自己是 `{kind: running}`，在跑的守护进程版本包含合并提交就算上线）后在干净副本对合并提交跑上线后检查；不过时在 issue 留原样输出、活退回执行，不回滚，修复开新 PR。合并失败和两段 DoD 的退回合计 3 次（`RETURN_LIMIT`），第 4 次记卡住；项目经理 `recover --mode rework` 后重新计。
-- **收尾（程序）**：交付完成、子单全关就关 issue；收尾记录写进程序结果的 reason（合并提交、PR、两段 DoD 已过）。issue 写了「要亲眼看：是」的，收尾先起一轮按 issue 写的方式送一次（`visual-acceptance` 问卡），Kun 答 yes 后程序收尾，答 no 退回执行。
+- **收尾（程序）**：交付完成、子单全关就关 issue；收尾记录写进程序结果的 reason（合并提交、PR、两段 DoD 已过）。issue 写了「要亲眼看：是」的，收尾先起一轮按 issue 写的方式送一次（介入点服务的亲眼看送达，见介入点契约），Kun 答通过后程序收尾，答不通过退回执行。
 
 不再有说清楚、证据、审查、验收轮。规则 `stages` 只能写 `[接单, 执行, 交付, 收尾]`。在途的活：闲着停在已去掉阶段的，核心按流程的 `stage_moves` 落位（说清楚→接单，证据、审查→交付，验收→已交付的进收尾、没交付完的回交付）；换代码时还在跑的旧阶段轮结算时判 superseded，活空闲后同样落位。没有一次性转换脚本。
 

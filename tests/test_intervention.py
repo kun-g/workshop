@@ -153,7 +153,7 @@ def test_core_preserves_pause_on_outage_and_resumes_once_without_approval(engine
     waits.reconcile(engine)
     item = engine.log.get('items', 'alpha:one')
     assert item['state'] == '等你' and item['stage'] == '接单'
-    assert engine.answerable(item) and engine.waiting(item)
+    assert engine.waiting(item)
     engine.advance(item)
     assert not engine.active()
     answer(service, ref)  # 否也只是唤醒，不能被核心解释为批准。

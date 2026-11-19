@@ -10,14 +10,12 @@ import time
 
 import pytest
 
-from conftest import build, configuration, current, event, reach
+from conftest import build, configuration, current, event, hold_for_kun, reach
 from workshop import cli
-from workshop.core.cards import question
 from workshop.core.jobs import Jobs, Pending, execute, write
 from workshop.core.log import Log
 from workshop.core.models import Poll, stamp
 from workshop.core.wake import Mailbox, Wake, ring
-from workshop.plugins.channels.ask_kun import AskKun
 
 
 @pytest.fixture
@@ -106,11 +104,11 @@ def test_named_source_invalidates_only_matching_target_and_source(state):
         engine.jobs = jobs
         first = completed(jobs, "source", "source", ["alpha"])
         other_target = completed(jobs, "source", "source", ["beta"])
-        channel = completed(jobs, "channel", "channel", ["poll"], [])
+        wait = completed(jobs, "wait", "wait", ["bind:decision", 0])
         engine.awaken(Wake(messages={"source:alpha:source", "source:unknown:source", ""}), {})
         assert (first / "invalidated").exists()
         assert not (other_target / "invalidated").exists()
-        assert not (channel / "invalidated").exists()
+        assert not (wait / "invalidated").exists()
         with pytest.raises(Pending):
             jobs.call("source", "source", "poll", [{}, None], identity=["alpha"])
         assert (first / "spec.json").exists()
@@ -159,31 +157,31 @@ def test_deadline_and_expiry_are_exact_and_do_not_keep_old_results_awake(state):
     engine.log.close()
 
 
-def test_optional_paths_and_channel_invalidation(state):
+def test_optional_paths_and_wait_invalidation(state):
     engine = build(state)
-    channel = engine.plugins.get("channel", "channel")
-    channel.wake_paths = lambda target: [str(state / "answers.json")]
+    engine.ingest(event())
+    port, _ = hold_for_kun(engine)
+    port.wake_paths = lambda config: [str(state / "answers.json")]
     source = engine.plugins.get("source", "source")
     source.wake_paths = lambda: [str(state / "source.json")]
     paths = engine.wake_paths()
-    assert paths[state / "answers.json"] == {("channel", "channel", ("poll",))}
+    assert paths[state / "answers.json"] == {("wait", "wait", ())}
+    assert paths[state / "source.json"] == {("source", "source", ("alpha",))}
     with jobs_in(state) as jobs:
         engine.jobs = jobs
-        cached = completed(jobs, "channel", "channel", ["poll"], [])
+        cached = completed(jobs, "wait", "wait", ["bind:decision", 0])
         engine.awaken(Wake(paths={state / "answers.json"}), paths)
         assert (cached / "invalidated").exists()
-    channel.wake_paths = None
+    port.wake_paths = None
     source.wake_paths = None
     assert engine.wake_paths() == {}
-    assert AskKun(state_dir=state).wake_paths({"ask_kun_state": str(state / "custom")}) == [str(state / "custom")]
     engine.log.close()
 
 
-def test_cli_rings_only_after_successful_event_receipt_and_answer_commit(state, monkeypatch):
+def test_cli_rings_only_after_successful_event_and_receipt_commit(state, monkeypatch):
     engine = build(state)
     reach(engine, "执行")
     row = current(engine)
-    engine.card(engine.log.get("items", "alpha:one"), "test", "ask", question("继续吗"))
     monkeypatch.setattr(cli, "Registry", lambda: engine.plugins)
     monkeypatch.delenv("WORKSHOP_ROUND_TOKEN", raising=False)
     snapshots = []
@@ -198,8 +196,6 @@ def test_cli_rings_only_after_successful_event_receipt_and_answer_commit(state, 
     assert any(f["ext_id"] == "wake" for f in snapshots[-1])
     assert cli.main([*prefix, "receipt", row["token"], "--json", json.dumps({"outcome": "nothing", "summary": "test"})]) == 0
     assert any(f["kind"] == "receipt" and f["body"]["token"] == row["token"] for f in snapshots[-1])
-    assert cli.main([*prefix, "answer", "alpha:one:test", "yes", "--quote", "继续", "--session", "test"]) == 0
-    assert any(f["kind"] == "answer" for f in snapshots[-1])
     before = len(snapshots)
     assert cli.main([*prefix, "receipt", "missing", "--json", '{}']) == 2
     assert len(snapshots) == before
@@ -231,20 +227,20 @@ def test_immediate_error_wake_does_not_spin_retries(state):
     from workshop.core.ports import Retryable
     now = [100.0]
     with jobs_in(state, clock=lambda: now[0]) as jobs:
-        path = jobs.path("channel", "channel", "poll", ["poll"])
+        path = jobs.path("wait", "wait", "poll", ["poll"])
         for delay in (1, 2, 4):
             path.mkdir(parents=True, exist_ok=True)
             write(path / "result.json", {"error": {"kind": "Retryable", "message": "offline"}, "finished": now[0]})
             with pytest.raises(Retryable, match="offline"):
-                jobs.call("channel", "channel", "poll", [[]], identity=["poll"])
+                jobs.call("wait", "wait", "poll", [[]], identity=["poll"])
             jobs.reap()
             with pytest.raises(Pending):
-                jobs.call("channel", "channel", "poll", [[]], identity=["poll"])
+                jobs.call("wait", "wait", "poll", [[]], identity=["poll"])
             assert not path.exists()
             assert jobs.wait_timeout() == delay
             now[0] += delay
-        completed(jobs, "channel", "channel", ["poll"], [])
-        assert jobs.call("channel", "channel", "poll", [[]], identity=["poll"]) == []
+        completed(jobs, "wait", "wait", ["poll"], [])
+        assert jobs.call("wait", "wait", "poll", [[]], identity=["poll"]) == []
         assert not jobs.retries
 
 

@@ -9,8 +9,7 @@ import subprocess
 
 import pytest
 
-from workshop.core.cards import question
-from workshop.core.models import Answer, Event, Receipt
+from workshop.core.models import Event, Receipt
 from workshop.reports.report import status, why
 from conftest import build, configuration, current, finish, item
 from test_issue_delivery import BODY, PR_BODY, world, edit, calls, result, snapshot  # noqa: F401

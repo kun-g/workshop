@@ -58,7 +58,7 @@ def read_snapshot(path):
 
 def histories(facts, metadata, rules, end):
     """保留窗口前的状态与轮次端点，用于裁剪和当前等待年龄。"""
-    items, rounds, cards, waits = {}, {}, {}, {}
+    items, rounds, waits = {}, {}, {}
 
     def ensure(key, body):
         if key not in items:
@@ -88,10 +88,8 @@ def histories(facts, metadata, rules, end):
             timeline.append((at, label))
 
     def release(item):
-        reference_pending = waits.get(item.get('wait_id'), {}).get('state') == 'waiting'
-        pending = reference_pending or any(card.get('item') == item['id'] and card.get('mode') == 'ask'
-                                          and not any(card.get(k) for k in ('answered', 'cancelled', 'rejected'))
-                                          for card in cards.values())
+        # 和核心 view.apply_action 一致：只看等待引用（#176 起旧卡片不再算等回答）。
+        pending = waits.get(item.get('wait_id'), {}).get('state') == 'waiting'
         if item['state'] in ('卡住', '等你') and not item['plugin_blocked'] and not pending:
             item['state'] = '空闲'
         # 尚未建活的未接单与已有活的拒收等待分别沿用原口径。
@@ -114,8 +112,7 @@ def histories(facts, metadata, rules, end):
         # 轮次的最终结果可在窗口之后出现；状态快照只能用终点以前的事实。
         if at >= end:
             continue
-        if kind in ('card_created', 'card_changed'):
-            cards.setdefault(body['id'], {}).update(body)
+        if kind in ('card_created', 'card_changed'):  # 旧卡片只留作历史，不影响状态
             continue
         if kind in ('wait_bound', 'wait_changed', 'wait_resumed'):
             waits.setdefault(body['id'], {}).update(body)
@@ -128,7 +125,6 @@ def histories(facts, metadata, rules, end):
                 record(item, at)
             continue
         if kind == 'reset':
-            cards.clear()
             waits.clear()
             for item in items.values():
                 item['state'] = '移除'

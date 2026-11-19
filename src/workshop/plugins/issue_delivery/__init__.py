@@ -373,7 +373,7 @@ class IssueDelivery:
         if item['stage'] == '执行':
             if report(receipt).get('authorization') is not None:
                 if receipt.outcome != 'nothing' or receipt.advance or receipt.later or receipt.leave:
-                    raise ValueError('授权等待须 outcome=nothing 且不同时推进、问卡、定时或 leave')
+                    raise ValueError('授权等待须 outcome=nothing 且不同时推进、定时或 leave')
                 return
             value = decisions.content(receipt, report(receipt), item['stage'])
             if receipt.leave and receipt.leave.get('kind') == '等你' and value is None:

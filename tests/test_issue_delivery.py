@@ -68,8 +68,8 @@ def world(tmp_path, monkeypatch, git_template):
     target = {'name': 'alpha', 'repo': 'kun-g/workshop', 'checkout': str(repo), 'release': 'none',
               'requirement_docs': ['docs/requirements/核心.md'],
               'ci': ['check'], 'short_name': 'ws', 'github_cache_dir': str(tmp_path / 'cache'),
-              'tag_command': ['scripts/tag-release.sh'], 'delivery_action': '自己的交付', 'feishu_chat_id': 'oc_group', 'kun_feishu_open_id': 'ou_kun',
-              'ask_kun_state': str(tmp_path / 'asks.json'), 'deployment': {'app': 'test', 'context': 'readonly', 'namespace': 'argocd', 'revision_field': 'status.sync.revision', 'branch': 'production', 'release_file': 'release.json', 'source_field': 'source_commit',
+              'tag_command': ['scripts/tag-release.sh'], 'delivery_action': '自己的交付',
+              'deployment': {'app': 'test', 'context': 'readonly', 'namespace': 'argocd', 'revision_field': 'status.sync.revision', 'branch': 'production', 'release_file': 'release.json', 'source_field': 'source_commit',
               'rollout': {'namespace': 'apps', 'name': 'web'}}}
     io = IO(str(commands / 'gh'), str(commands / 'git'), tmp_path / 'flow', str(commands / 'lark-cli'))
     return dict(store=store, commands=commands, target=target, io=io, flow=IssueDelivery(io), sha=sha, root=tmp_path)
@@ -170,39 +170,6 @@ def test_source_pr_marker_and_pagination(world):
     assert all(e.object_key == '7' for e in events)
     assert any(e.body['kind'] == 'pr-comment' and e.action == 'rework' for e in events)
     assert any(e.body['kind'] == 'pr-ci' for e in events)
-
-
-def test_classify_checks_upstream_sender_text_chat_and_reference(world):
-    flow, target = world['flow'], world['target']
-    event = Event('cli:feishu', 'om_real', 'alpha', 'om_real', 'untrusted', {'from_kun': True, 'text': '不对'})
-    edit(world, message=message(sender='ou_attacker'))
-    assert flow.classify(event, None, target, lambda _: None) == Classification(discard=True)
-    edit(world, message=message(text='普通资料'))
-    assert flow.classify(event, None, target, lambda _: None) == Classification()
-    edit(world, message=message(chat='oc_other'))
-    assert flow.classify(event, None, target, lambda _: None) == Classification(discard=True)
-    edit(world, message=message(text='@Ash 不对', parent='om_card'))
-    Path(target['ask_kun_state']).write_text(json.dumps({'asks': {'Q1': {'id': 'Q1', 'message_id': 'om_card', 'chat_id': 'oc_group'}}}))
-    assert flow.classify(event, None, target, lambda q: {'item': {'object_key': '7'}} if q == 'Q1' else None) == Classification('rework', '7')
-    assert flow.classify(Event('cli:github', 'om_real', 'alpha', '7', 'x', {'from_kun': True}), None, target, lambda _: None) == Classification()
-    Path(target['ask_kun_state']).write_text('{broken')
-    assert flow.classify(event, None, target, lambda _: None) == Classification()
-
-
-def test_intake_creates_issue_once_and_binds_alias(world):
-    edit(world, issue=None, message=message(text='改一下错误提示'))
-    data = snapshot(world)
-    data.update(id='alpha:om_real', object_key='om_real', materials=[{'source': 'cli:feishu', 'ext_id': 'om_real'}])
-    assert world['flow'].after(data, '接单', 'key-intake', world['target']).aliases == ['7']
-    assert world['flow'].after(data, '接单', 'key-intake', world['target']).aliases == ['7']
-    assert len([c for c in calls(world) if '--input' in c]) == 1
-    # 写入成功、本地结果丢失：以远端标记回查，不重新创建。
-    state = world['io'].read(data, world['target'])
-    state.pop('issue')
-    state['effects'].clear()
-    world['io'].save(data, world['target'], state)
-    assert world['flow'].after(data, '接单', 'key-intake', world['target']).aliases == ['7']
-    assert len([c for c in calls(world) if '--input' in c]) == 1
 
 
 def test_after_merge_close_tag_are_idempotent_and_merge_keeps_issue(world):
@@ -355,28 +322,6 @@ def test_title_auto_close_and_missing_business_data_are_pending(world):
     assert not any(c[1:3] in (['pr', 'merge'], ['issue', 'close']) for c in calls(world))
 
 
-@pytest.mark.parametrize("text", ["@Ash ws#7 不对，重做", "@Ash ws#7不对，重做"])
-def test_feishu_group_name_and_dm_card_are_verified(world, text):
-    flow, target = world['flow'], world['target']
-    event = Event('cli:feishu', 'om_real', 'alpha', 'om_real', 'data', {'from_kun': True, 'text': 'ws#7 不对'})
-    def lookup(external=None, *, object_key=None):
-        return {'item': {'object_key': '7'}} if external == 'Q1' or object_key == '7' else None
-    edit(world, message=message(text))
-    assert flow.classify(event, None, target, lookup) == Classification('rework', '7')
-    edit(world, message=message('ws#7 不对', sender='attacker'))
-    assert flow.classify(event, None, target, lookup).discard
-    edit(world, message=message('ws#999 不对'))
-    assert flow.classify(event, None, target, lookup).discard
-    Path(target['ask_kun_state']).write_text(json.dumps({'asks': {'Q1': {'id': 'Q1', 'message_id': 'om_card', 'chat_id': 'oc_dm'}}}))
-    edit(world, message=message('不对', parent='om_card', chat='oc_dm'))
-    assert flow.classify(event, None, target, lookup) == Classification('rework', '7')
-    edit(world, message=message('不对', parent='om_card', chat='oc_wrong_dm'))
-    assert flow.classify(event, None, target, lookup).discard
-    Path(target['ask_kun_state']).write_text('{bad')
-    edit(world, message=message('不对', parent='om_card', chat='oc_dm'))
-    assert flow.classify(event, None, target, lookup).discard
-
-
 def test_preparation_cwd_and_check_timeout_are_evidence(world):
     target = {**world['target'], 'prepare': [{'argv': ['/bin/sh', '-c', 'pwd; echo prepared > prepared'], 'cwd': 'scripts'}]}
     output = world['io'].verify(target, world['sha'], [['/bin/sh', '-c', 'cat scripts/prepared']])
@@ -494,43 +439,6 @@ def test_renamed_files_count_old_and_new_paths(world):
     data = snapshot(world, '执行')
     receipt = Receipt('done', '', evidence=[result(world)])
     assert world['flow'].assess(data, receipt, world['target']).paths == ['deploy/a.yaml', 'src/b.py', 'src/moved.yaml']
-
-
-def test_feishu_rework_shows_in_why_and_rejected_message_in_unfiled(world):
-    """ws#37：群里一句「ws#7 不对」归到 alpha:7，why 里有时刻、来源、动作、原话和谁说的；冒名的进未归件。"""
-    from workshop.reports.report import unfiled, why
-    cfg = configuration()
-    cfg.pop('taskhome')
-    cfg['targets']['alpha'] = {**world['target'], 'plugin': 'issue_delivery', 'sources': []}
-    engine = build(world['root'] / 'why-feishu', cfg)
-    engine.plugins.register('flow', 'issue_delivery', world['flow'])
-    engine.ingest(Event('github', 'start', 'alpha', '7', 'test', {}, action='ready'))
-    edit(world, message=message('@Ash ws#7 不对，测试绑定，内容不用改'))
-    # CLI 正文自报的原话和身份不作数，原话取自上游回查。
-    assert engine.ingest(Event('feishu', 'om_real', 'alpha', 'om_real', 'x', {'from_kun': True, 'text': '别的话'}), ingress='external')
-    assert engine.ingest(Event('feishu', 'om_fake', 'alpha', 'om_fake', 'x', {'from_kun': True, 'text': 'ws#7 不对'}), ingress='external')
-    engine.classify_events()
-    seq = {f['ext_id']: f['seq'] for f in engine.log.facts() if f['kind'] == 'event'}
-    assert item(engine, '7')['pending_rework']
-    filed = [line for line in why(engine.log, 'ws#7', cfg, engine.plugins).splitlines() if ' 归件 ' in line]
-    assert len(filed) == 1 and filed[0].startswith('2026-11-13T08:00:00+00:00 ')
-    assert filed[0].endswith(f'归件 CLI 入口 cli:feishu 返工：飞书 Kun：「ws#7 不对，测试绑定，内容不用改」（原事件 {seq["om_real"]}）')
-    rest = unfiled(engine.log, cfg, engine.plugins).splitlines()
-    assert len(rest) == 2 and '丢弃 alpha CLI 入口 cli:feishu：飞书消息「ws#7 不对」，入口自报来自 Kun' in rest[1]
-    assert rest[1].endswith(f'判定：飞书消息 om_fake 回查不到，或发送者不是 Kun（事件 {seq["om_fake"]}）')
-    engine.log.close()
-
-
-def test_feishu_classify_summaries(world):
-    flow, target = world['flow'], world['target']
-    event = Event('cli:feishu', 'om_real', 'alpha', 'om_real', 'x', {'from_kun': True, 'text': 'x'})
-    lookup = lambda external=None, *, object_key=None: None
-    edit(world, message=message('改一下错误提示'))
-    assert flow.classify(event, None, target, lookup).summary == '飞书 Kun：「改一下错误提示」'
-    edit(world, message=message('ws#999 不对'))
-    assert flow.classify(event, None, target, lookup).summary == '飞书 Kun：「ws#999 不对」；ws#999 找不到活'
-    edit(world, message=message('x' * 100, chat='oc_other'))
-    assert flow.classify(event, None, target, lookup).summary == f'飞书 Kun：「{"x" * 80}…」；不在交付对象的群，也没回复车间的卡片或通知'
 
 
 # #14 的离线回放：关掉的对象仍可返工，但不常驻扫描。

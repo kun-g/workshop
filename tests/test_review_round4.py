@@ -10,11 +10,10 @@ import pytest
 
 from workshop.cli import main
 from workshop.core.engine import Engine
-from workshop.core.models import Answer
 from workshop.reports.report import why
 from workshop.core.view import TABLES
 from conftest import current, event, item
-from test_review_round3 import approval_wait, wait_without_card
+from test_review_round3 import wait_without_card
 
 
 def fail_source(engine, monkeypatch):
@@ -159,25 +158,6 @@ def test_3_7_cli_namespace_does_not_steal_source_key_and_why_labels_it(engine, m
     cli = next(f for f in facts if f["source"] == "cli:input")
     assert cli["body"]["depth"] == (1 if with_token else 0)
     assert "CLI 入口 事件 cli:input" in why(engine.log, "alpha:one")
-
-
-@pytest.mark.parametrize("invalid", ["批准", "", "typo"])
-def test_4_invalid_approval_key_stays_waiting_and_deduplicates_failure(engine, invalid):
-    card = approval_wait(engine)
-    channel = engine.plugins.get("channel", "channel")
-    for _ in range(3):
-        channel.answers = [Answer(card["id"], invalid, True)]
-        engine.tick()
-    assert item(engine)["state"] == "等你"
-    assert not engine.log.get("cards", card["id"])["answered"] and not item(engine)["approved"]
-    # 非选项回答不算投递失败，只记一次事实、发一次通知。
-    assert not [f for f in engine.log.facts() if f["kind"] == "delivery_failed"]
-    assert len([f for f in engine.log.facts() if f["kind"] == "invalid_answer"]) == 1
-    assert len([c for c in engine.log.all("cards") if c["key"].startswith("invalid-answer:")]) == 1
-    channel.answers = [Answer(card["id"], "yes", False)]
-    engine.tick()
-    assert current(engine)["stage"] == "审查"
-    assert not engine.control(f"delivery:answer:{card['id']}").get("failed")
 
 
 def test_5_cli_event_bad_yaml_exits_two_without_traceback(engine, tmp_path):

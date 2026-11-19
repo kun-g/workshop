@@ -6,33 +6,30 @@ from pathlib import Path
 import pytest
 
 from workshop.cli import main, parser
-from workshop.core.cards import question
 from workshop.core.models import After, Evidence, Receipt
 from workshop.reports.report import status, why
-from conftest import build, configuration, current, event, finish, item, reach
+from conftest import build, configuration, current, event, finish, item, pause_for_kun, reach
 from test_issue_delivery import world, snapshot, edit, result  # noqa: F401
 
 
-def test_waiting_requires_live_question_and_hold_does_not_hold_ask(tmp_path):
-    cfg = configuration()
-    cfg['notices'] = 'hold'
-    engine = build(tmp_path, cfg)
+def test_waiting_requires_live_wait_reference(tmp_path):
+    engine = build(tmp_path, configuration())
     reach(engine, '执行')
-    finish(engine, outcome='nothing', notice=[{'key': 'blocked', 'text': '缺工具'}],
-           leave={'kind': '等你', 'about': '缺工具'})
+    finish(engine, outcome='nothing', leave={'kind': '等你', 'about': '缺工具'})
     assert item(engine)['state'] == '卡住'
     assert '缺工具' in status(engine.log) and '卡住' in status(engine.log).splitlines()
     assert not engine.log.all('cards')
     engine.recover('alpha:one', 'rework', '工具已装', '继续')
     engine.tick()
-    finish(engine, ask=[{'key': 'choice', **question('选择范围')}], leave={'kind': '等你', 'about': '选择范围'})
+    port = pause_for_kun(engine)
+    finish(engine, '证据')
     assert item(engine)['state'] == '等你'
-    cards = engine.log.all('cards')
-    assert len(cards) == 1 and cards[0]['mode'] == 'ask'
-    assert cards[0]['id'] in status(engine.log) or cards[0]['external'] in status(engine.log)
-    engine.answer_here(cards[0]['id'], 'yes', '继续', 'test-session')
+    assert '等你' in status(engine.log)
+    port.ready['decision'] = 'answered'
+    engine.tick()
     engine.tick()
     assert current(engine)['stage'] == '执行'
+    assert not engine.log.all('cards')
     engine.log.close()
 
 

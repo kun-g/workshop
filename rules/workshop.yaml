@@ -167,6 +167,8 @@ targets:
     prepare: [{argv: [uv, sync, --locked]}]
     release_prepare:
       - {argv: [uv, run, python, scripts/install_intervention.py, --rules, rules/workshop.yaml]}
+      # 介入点存量转换（#176）：起新核心之前先备份、先 workshop 后 grant-console；已转完就什么都不做。
+      - {argv: [uv, run, python, scripts/convert_intervention.py, --rules, rules/workshop.yaml, cutover]}
     check_timeout: 300
     bot_review: false
     authorization_client: ~/workspace/runtime/repos/grant-console/scripts/request_grant.py

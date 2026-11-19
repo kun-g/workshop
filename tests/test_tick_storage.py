@@ -478,7 +478,8 @@ def test_slow_tick_records_phase_times(engine):
     path = engine.log.path.parent / 'tick-slow.jsonl'
     row = json.loads(path.read_text().splitlines()[-1])
     assert row['tick_ms'] >= 100
-    for name in ('lock', 'reap', 'sources', 'classify', 'channels', 'timers', 'rounds', 'advance', 'release', 'channels_2', 'heartbeat'):
+    assert not any(name.startswith('channels') for name in row['spans'])  # 通道已退役（#176）。
+    for name in ('lock', 'reap', 'sources', 'classify', 'timers', 'waits', 'rounds', 'advance', 'release', 'heartbeat'):
         assert name in row['spans']
         assert isinstance(row['spans'][name], (int, float))
     assert row['slow_items'] == []

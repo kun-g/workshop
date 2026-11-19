@@ -9,7 +9,7 @@
 ## 加东西放哪
 
 - `src/workshop/core/`：只认事件、活、阶段、关口。不许 import `workshop.plugins`；不许出现只属于某一类活的词（PR、issue、merge、视频、周报），检查脚本会拦（核心 R22）。
-- `src/workshop/plugins/`：来源、执行者、通道、工单、流程插件。插件之间不互相引用，只经核心的端口。插件只 import 核心的 `models` 和 `ports`。
+- `src/workshop/plugins/`：来源、执行者、等待服务、工单、流程插件。插件之间不互相引用，只经核心的端口。插件只 import 核心的 `models` 和 `ports`。
 - `github_identity`、`path_policy`、`running` 是共用库：插件可以用，共用库不引用插件。
 - `src/workshop/reports/`：只读给人看的（status、why、usage、metrics、状态网页、观察检查），不进核心。
 - `rules/workshop.yaml`：唯一一份规则（核心 R16）。换执行者、加交付对象只改这里。
@@ -26,7 +26,7 @@
 - S1 交付前用真实身份、真实数据走一遍真实路径，贴出原样输出；只用替身的测试不算。
 - E4 给 Kun 的报告：顶部总数，一句话理由，按实例一行，空的不显示。
 - E8 测试不用 sleep：慢调用用闸门或假时钟，等状态用查条件加总超时的循环。
-- E9 不给 Kun 发通知；只有要他拍板的事才发问卡，一张卡问一件事。
+- E9 不给 Kun 发通知；只在事先定好的介入点经介入点服务找他，要他拍板的一件事登记一个等待。
 - E10 GitHub 上的动作用 App 身份；kun-g 只代表 Kun 亲手做的事，agent 要以他的名义做只能走 gh-human 批准卡。
 - E11 主检出只读；改代码开 worktree，急着上线用 `workshop release-now`。
 

@@ -70,27 +70,20 @@ def test_every_state_transition_matches_projection_after_each_fact(engine):
     a.event()
 
 
-@pytest.mark.parametrize('guard', ['ask', 'wait', 'plugin', 'cancelled', 'rejected', 'answered', 'notice'])
-def test_ready_respects_pending_questions_waits_and_plugin_failures(engine, guard):
+@pytest.mark.parametrize('guard', ['wait', 'plugin'])
+def test_ready_respects_waits_and_plugin_failures(engine, guard):
+    # 问卡已退役（#176）：「等你」只看等待引用，卡片不再挡放行。
     a = Audit(engine)
     a.event()
     a.append('item_changed', {'state': '等你'})
     if guard == 'wait':
         a.append('wait_bound', {'id': 'wait', 'state': 'waiting'})
-    elif guard == 'plugin':
-        a.append('work_blocked', {'state': '卡住', 'plugin_blocked': True})
     else:
-        a.append('card_created', {'id': 'card', 'item': a.key, 'mode': 'notice' if guard == 'notice' else 'ask',
-                                  'answered': False})
-        if guard in ('cancelled', 'rejected', 'answered'):
-            a.append('card_changed', {'id': 'card', guard: True})
+        a.append('work_blocked', {'state': '卡住', 'plugin_blocked': True})
     a.event(action='ready')
-    if guard == 'ask':
-        a.append('card_changed', {'id': 'card', 'answered': True})
-        a.event(action='ready')
-    elif guard == 'wait':
+    if guard == 'wait':
         a.append('wait_resumed', {'id': 'wait'})
-    elif guard == 'plugin':
+    else:
         a.append('item_changed', {'plugin_blocked': False})
         a.event(action='ready')
 
@@ -111,11 +104,3 @@ def test_classified_ready_and_wait_recovery_have_correct_intermediate_durations(
     assert seconds['排队'] == 40
 
 
-def test_ready_consumes_release_wait_without_answering_another_question(engine):
-    a = Audit(engine)
-    a.event()
-    a.append('card_created', {'id': 'active', 'item': a.key, 'mode': 'ask', 'answered': False})
-    a.append('item_changed', {'state': '等你', 'wait_for_ready': True})
-    a.event(action='ready')
-    a.append('card_changed', {'id': 'active', 'answered': True})
-    a.event(action='ready')

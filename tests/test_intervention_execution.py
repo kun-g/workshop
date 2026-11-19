@@ -138,7 +138,6 @@ def test_no_card_wait_releases_slot_and_answer_resumes_exactly_once(world, servi
     assert waiting['state'] == '等你', waiting
     assert engine.occupied() == 0 and not waiting.get('serial_hold')
     assert not engine.log.all('cards')
-    assert engine.plugins.get('channel', 'channel').messages == {}
     record = service.store.all('wait')[0]
     text = status(engine.log, rules=engine.rules.data, plugins=engine.plugins)
     assert all(v in text for v in ('先做哪条路径', '先做 A', '等了多久', '两条路径成本不同', 'P1'))

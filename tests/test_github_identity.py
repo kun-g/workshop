@@ -113,7 +113,7 @@ def test_runner_failure_stops_before_agent_and_submits_once(tmp_path, signing, m
     runner.main(tmp_path)
     assert len(submitted) == 1
     assert submitted[0]['outcome'] == 'nothing' and submitted[0]['leave']['kind'] == '等你'
-    assert len(submitted[0]['notice']) == 1
+    assert 'notice' not in submitted[0] and 'ask' not in submitted[0]  # 回执不再带通知（介入点 R13）。
     assert not (tmp_path / 'child.json').exists()
 
 

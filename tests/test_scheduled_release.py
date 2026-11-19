@@ -10,7 +10,7 @@ import pytest
 
 from conftest import build, configuration, event, current
 from workshop.core.engine import Engine
-from workshop.core.models import Event
+from workshop.core.models import After, Event
 from workshop.core.ports import Retryable
 from workshop.plugins.scheduled_release import ScheduledRelease, CHECKS, STAGES as SCHEDULED_STAGES
 from workshop.plugins.scheduled_release.io import IO, read, write
@@ -127,7 +127,7 @@ def test_fixed_commit_prepare_and_new_daemon_heartbeat_required(world):
     w = world
     marker = w['root'] / 'prepared'
     w['target']['prepare'] = [{'argv': [sys.executable, '-c', f'from pathlib import Path; Path({str(marker)!r}).write_text(str(Path.cwd()))']}]
-    assert after(w, '证据').notice == ''
+    assert after(w, '证据').blocked == ''
     checked = state(w)['check']
     assert checked['argv'] == CHECKS[0] and checked['exit_code'] == 0
     assert checked['stdout'] == 'checked:' + w['b'] + '\n' and checked['stderr'] == 'check-stderr\n'
@@ -151,7 +151,7 @@ def test_fixed_commit_prepare_and_new_daemon_heartbeat_required(world):
     assert not after(w, '验收').pending
     assert read(w['io'].root(w['target']) / 'release.json')['status'] == 'ok'
     assert not after(w, '交付').restart  # 完成钩子重放不能再重启
-    assert '发版完成' in after(w, '收尾').notice
+    assert after(w, '收尾') == After()  # 发版完成不再发通知（介入点 R13）。
     assert len([a for a, k in w['io'].calls if a == w['target']['prepare'][0]['argv']]) == 1
     assert git(w['repo'], 'status', '--porcelain') == ''
 
@@ -172,10 +172,10 @@ def test_unsafe_checkout_untouched(world, problem):
         commit(w['repo'], 'readme', 'fork')
     before = git(w['repo'], 'rev-parse', 'HEAD'), git(w['repo'], 'status', '--porcelain')
     result = after(w, '交付')
-    assert not result.restart and result.notice
+    assert not result.restart and result.blocked and result.next
     assert before == (git(w['repo'], 'rev-parse', 'HEAD'), git(w['repo'], 'status', '--porcelain'))
     assert state(w)['status'] == 'failed'
-    assert not after(w, '验收').notice and not after(w, '收尾').notice
+    assert not after(w, '验收').blocked and not after(w, '收尾').blocked
 
 
 def test_prepare_failure_records_fast_forward_and_no_restart(world):
@@ -183,7 +183,7 @@ def test_prepare_failure_records_fast_forward_and_no_restart(world):
     w['target']['prepare'] = [{'argv': [sys.executable, '-c', 'import sys; print("broken", file=sys.stderr); sys.exit(9)']}]
     after(w, '证据')
     result = after(w, '交付')
-    assert not result.restart and '已快进但未重启' in result.notice
+    assert not result.restart and '已快进但未重启' in result.blocked
     assert git(w['repo'], 'rev-parse', 'HEAD') == w['b']
     assert state(w)['prepare_runs']['0']['stderr'] == 'broken\n'
     assert not (w['io'].root(w['target']) / 'release.json').exists()
@@ -209,7 +209,7 @@ def test_release_prepare_failure_does_not_request_daemon_restart(world):
     w['target']['release_prepare'] = [{'argv': [sys.executable, '-c', 'raise SystemExit(9)']}]
     after(w, '证据')
     result = after(w, '交付')
-    assert not result.restart and '已快进但未重启' in result.notice
+    assert not result.restart and '已快进但未重启' in result.blocked
     assert state(w)['release_prepare_runs']['0']['exit_code'] == 9
     assert not (w['io'].root(w['target']) / 'release.json').exists()
 
@@ -236,13 +236,12 @@ def test_bootstrap_install_failure_leaves_release_unconfirmed(world):
     w['target']['release_prepare'] = [{'argv': [sys.executable, '-c', 'raise SystemExit(9)']}]
     restart(w)
     result = after(w, '验收')
-    assert '已重启但尚未确认成功' in result.notice
+    assert '已重启但尚未确认成功' in result.blocked
     assert state(w)['status'] == 'failed'
     assert read(w['root'] / 'state/release.json')['status'] == 'restarting'
 
-def make_engine(w, notices='send'):
+def make_engine(w):
     config = configuration()
-    config['notices'] = notices
     config['targets']['alpha'] = {**w['target'], 'default_flow': 'scheduled_release',
         'flows': {'scheduled_release': {'triggers': [{'source': 'main_branch', 'when': {'kind': 'ahead'}, 'action': 'ready'}]}}, 'sources': []}
     engine = build(w['root'] / 'engine', config)
@@ -254,8 +253,7 @@ def make_engine(w, notices='send'):
     return engine
 
 
-@pytest.mark.parametrize('notices', ['send', 'hold'])
-def test_failed_check_finishes_once_no_executors_and_new_commit_can_start(world, notices):
+def test_failed_check_blocks_once_no_executors_and_new_commit_can_start(world):
     w = world
     original = w['io'].command
     def failing(argv, **kwargs):
@@ -264,11 +262,13 @@ def test_failed_check_finishes_once_no_executors_and_new_commit_can_start(world,
             return dict(argv=argv, exit_code=1, stdout='original out', stderr='original err')
         return original(argv, **kwargs)
     w['io'].command = failing
-    engine = make_engine(w, notices)
+    engine = make_engine(w)
     try:
         for _ in range(10):
             engine.tick()
-        assert engine.log.get('items', w['data']['id'])['state'] == '完成'
+        # 发版没成记成卡住，交项目经理（介入点 R11），不发通知。
+        blocked = engine.log.get('items', w['data']['id'])
+        assert blocked['state'] == '卡住' and '未上线' in blocked['blocked_by']
         assert state(w)['check']['stdout'] == 'original out' and state(w)['check']['exit_code'] == 1
         assert not engine.log.all('rounds') and not engine.restart_requested
         assert git(w['repo'], 'rev-parse', 'HEAD') == w['a']
@@ -276,10 +276,8 @@ def test_failed_check_finishes_once_no_executors_and_new_commit_can_start(world,
         for _ in range(3):
             engine.tick()
         assert len([a for a, k in w['io'].calls if a == CHECKS[0]]) == 1
-        cards = [c for c in engine.log.all('cards') if c['mode'] == 'notice']
-        held = [f for f in engine.log.facts() if f['kind'] == 'notice_held']
-        assert len(cards) == (1 if notices == 'send' else 0)
-        assert len(held) == (0 if notices == 'send' else 1)
+        assert not engine.log.all('cards')
+        assert not [f for f in engine.log.facts() if f['kind'] == 'notice_held']
         new = 'f' * 40
         engine.ingest(Event('main_branch', 'hour3', 'alpha', new, 'release', {'kind': 'ahead', 'from': w['a'], 'to': new}))
         assert engine.log.get('items', 'alpha:' + new) is not None
@@ -326,7 +324,7 @@ def test_background_jobs_resume_without_rechecking_or_restarting_twice(world, mo
     prepared = w['root'] / 'prepared'
     w['target']['prepare'] = [{'argv': [sys.executable, '-c',
         f'from pathlib import Path; Path({str(prepared)!r}).write_text("ready")']}]
-    engine = make_engine(w, notices='hold')
+    engine = make_engine(w)
     plugins = engine.plugins
     monkeypatch.setattr(job_plugins, 'registry', lambda: plugins)
     locks = {}
@@ -364,9 +362,7 @@ def test_background_jobs_resume_without_rechecking_or_restarting_twice(world, mo
         assert unrelated.after_keys.count('unrelated-key') == 1
         assert prepared.read_text() == 'ready'
         facts = engine.log.facts(w['data']['id'])
-        notices = [f for f in facts if f['kind'] == 'notice_held'
-                   and f['body']['subject'].startswith('定时发版完成')]
-        assert len(notices) == 1
+        assert not [f for f in facts if f['kind'] in ('notice_held', 'card_created')]
         assert not engine.log.all('timers')
         for _ in range(10):
             engine.clock.now += timedelta(seconds=1)
@@ -471,11 +467,11 @@ def test_rollback_cannot_replay_restart_or_finish_successfully(world, status):
             revived.tick()
         assert revived.log.get('items', w['data']['id'])['state'] == '完成'
         assert state(w)['status'] == 'failed'
-        assert not after(w, '收尾').notice
+        assert not after(w, '收尾').blocked
         assert read(w['io'].root(w['target']) / 'release.json')['status'] == status
         assert current(revived, target='beta')['token'] == running['token']
         assert len(revived.log.all('rounds')) == 1 and not revived.restart_requested
-        assert not [c for c in revived.log.all('cards') if c['mode'] == 'notice']
+        assert not revived.log.all('cards')
     finally:
         engine.log.close()
 
@@ -532,7 +528,7 @@ def test_release_from_is_running_version_when_checkout_already_moved(world):
     # 主检出在发版前已被快进到目标提交；退回点仍是在跑的 A，不是 B。
     w = world
     git(w['repo'], 'merge', '--ff-only', w['b'])
-    assert after(w, '证据').notice == ''
+    assert after(w, '证据').blocked == ''
     assert after(w, '交付').restart
     release = read(w['io'].root(w['target']) / 'release.json')
     assert release['from'] == w['a'] and release['to'] == w['b'] and release['status'] == 'restarting'

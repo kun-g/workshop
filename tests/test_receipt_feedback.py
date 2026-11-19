@@ -66,14 +66,13 @@ if scenario.startswith('missing-'):
 elif scenario in ('typed-example', 'two-types-then-fixed'):
     samples = [json.loads(v) for v in re.findall(r'```json\n(.*?)\n```', prompt, re.S)]
     example = next(v for v in samples if 'outcome' in v)
-    notification = next(v for v in samples if 'notice' in v)
     assert isinstance(example['evidence'], list)
-    assert notification['notice'][0]['key']
-    good = {**good, 'evidence': example['evidence'], **notification}
+    assert not any('notice' in v or 'ask' in v for v in samples)
+    good = {**good, 'evidence': example['evidence']}
     if resumed:
-        assert 'evidence 必须是字符串列表' in prompt and 'notice 必须是列表' in prompt
+        assert 'evidence 必须是字符串列表' in prompt and 'later 必须是列表' in prompt
     text = json.dumps(good if resumed or scenario == 'typed-example' else
-                      {**good, 'evidence': '{}', 'notice': '完成'}, ensure_ascii=False)
+                      {**good, 'evidence': '{}', 'later': '明天'}, ensure_ascii=False)
 elif scenario == 'normal':
     text = '审查通过。\n\n```json\n' + json.dumps(good, ensure_ascii=False, indent=2) + '\n```'
 elif scenario == 'rejected-then-fixed':
@@ -272,12 +271,12 @@ def test_readonly_claude_uses_example_and_fixes_both_types(rig, scenario_name, a
     assert read(directory / 'receipt-result.json')['code'] == 0
     assert row['receipt']['outcome'] == 'done'
     assert isinstance(row['receipt']['evidence'], list)
-    assert row['receipt']['notice'][0]['key'] == 'result'
+    assert 'notice' not in row['receipt'] and 'ask' not in row['receipt']
     assert len(calls()) == attempts
     assert not (directory / 'receipt-rejected.json').exists()
     if attempts == 2:
         assert 'evidence 必须是字符串列表' in row['receipt_rejected']
-        assert 'notice 必须是列表' in row['receipt_rejected']
+        assert 'later 必须是列表' in row['receipt_rejected']
         assert '--resume' in calls()[1]['args']
         assert read(directory / 'fallback-receipt.json')['evidence'] == '{}'
         assert read(directory / 'fallback-receipt-2.json') == row['receipt']

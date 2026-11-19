@@ -156,6 +156,69 @@ class FakeSource:
         return Poll(list(self.events), "after-batch")
 
 
+class FakeWait:
+    """最小等待端口：测试把 ref 标成就绪（给稳定 token）才算有结果；确认原样回执。"""
+    def __init__(self):
+        self.ready = {}
+        self.polls = []
+        self.acks = []
+
+    def poll(self, ref, config):
+        self.polls.append(ref)
+        token = self.ready.get(ref)
+        return {"ref": ref, "ready": token is not None, "token": token}
+
+    def acknowledge(self, operation, ref, token, config):
+        self.acks.append((ref, token))
+        return {"ref": ref, "token": token}
+
+
+def use_wait(engine, name="wait"):
+    """登记并装上假等待端口。"""
+    engine.rules.data.setdefault("wait_services", {})[name] = {}
+    port = FakeWait()
+    engine.plugins.register("wait", name, port)
+    return port
+
+
+def hold_for_kun(engine, key="one", target="alpha", ref="decision", provider="wait", reason="等 Kun 取舍"):
+    """用真实等待引用把活停在「等你」（取代已退役的问卡）。返回等待端口和 ref；port.ready[ref] = token 即放行。"""
+    from workshop.core.models import After
+    port = engine.plugins.get("wait", provider) if provider in engine.rules.data.get("wait_services", {}) else use_wait(engine, provider)
+    current = engine.log.get("items", f"{target}:{key}")
+    with engine.log.transaction():
+        changes = engine.pending_changes(current, After(pending=True, reason=reason, next="等 Kun 回答",
+                                                        wait={"provider": provider, "ref": ref, "operation": f"bind:{ref}"}),
+                                         {}, {"key": f"after:wait:{ref}", "receipt": {}, "to": current["stage"], "complete": False})
+        engine.change(current, **changes)
+    return port, ref
+
+
+def pause_for_kun(engine, ref="decision", provider="wait", flow="flow"):
+    """流程下一次核实时登记真实等待（Evidence.pause + after 返回等待引用），就绪后回本阶段重做。
+
+    取代已退役的问卡：返回等待端口，port.ready[ref] = token 即 Kun 已回答。
+    """
+    from workshop.core.models import After, Evidence
+    port = engine.plugins.get("wait", provider) if provider in engine.rules.data.get("wait_services", {}) else use_wait(engine, provider)
+    plugin = engine.plugins.get("flow", flow)
+    assess, after = plugin.assess, plugin.after
+
+    def pausing_assess(item, receipt, target):
+        if ref not in port.ready:
+            return Evidence(plugin.checks, reason="等 Kun 取舍", pause=True)
+        return assess(item, receipt, target)
+
+    def pausing_after(item, stage, key, target, services=None):
+        if ref not in port.ready:
+            return After(pending=True, reason="等 Kun 取舍", next="等 Kun 回答",
+                         wait={"provider": provider, "ref": ref, "operation": f"bind:{ref}"})
+        return after(item, stage, key, target, services)
+
+    plugin.assess, plugin.after = pausing_assess, pausing_after
+    return port
+
+
 def configuration():
     return dict(targets={"alpha": {"plugin": "flow", "sources": ["source"]},
                          "beta": {"plugin": "other", "sources": []}},

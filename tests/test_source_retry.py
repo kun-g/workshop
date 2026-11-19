@@ -63,9 +63,9 @@ def wire_source(engine, tmp_path, monkeypatch, fault='timeout'):
 @pytest.mark.parametrize('fault', ['timeout', 'oserror', 'sign-timeout', 'sign-oserror',
                                    'sign-exit', 'sign-empty', 'sign-invalid', 'http'])
 def test_reads_retry_twice_then_recover_without_changing_wait(engine, tmp_path, monkeypatch, fault):
-    card = approval_wait(engine)
+    approval_wait(engine)
     before_item = deepcopy(item(engine))
-    before_card = engine.log.get('cards', card['id'])
+    before_wait = engine.log.get('waits', 'bind:approval')
     before_cursor = engine.log.get('cursors', 'alpha:source')
     # FakeSource's opaque cursor is not a valid GitHub cursor; start this source afresh.
     engine.fact('cursor', {'id': 'alpha:source', 'cursor': None})
@@ -76,7 +76,7 @@ def test_reads_retry_twice_then_recover_without_changing_wait(engine, tmp_path, 
         assert not engine.control('alpha').get('broken')
         assert not engine.control('alpha').get('action_blocked')
         assert item(engine) == before_item
-        assert engine.log.get('cards', card['id']) == before_card
+        assert engine.log.get('waits', 'bind:approval') == before_wait
         assert engine.log.get('cursors', 'alpha:source')['cursor'] is None
         calls = state.copy()
         engine.sources()
@@ -91,7 +91,7 @@ def test_reads_retry_twice_then_recover_without_changing_wait(engine, tmp_path, 
     assert engine.control(RETRY)['since'] is None and engine.control(RETRY)['at'] is None
     assert engine.log.get('cursors', 'alpha:source') != before_cursor
     assert item(engine) == before_item
-    assert engine.log.get('cards', card['id']) == before_card
+    assert engine.log.get('waits', 'bind:approval') == before_wait
     facts = json.dumps(engine.log.facts(), ensure_ascii=False)
     assert 'fake-app-secret' not in facts and 'private-signing-output' not in facts
     state['fault'] = fault
@@ -103,13 +103,10 @@ def test_reads_retry_twice_then_recover_without_changing_wait(engine, tmp_path, 
 
 
 @pytest.mark.parametrize('recover_at_deadline', [False, True])
-@pytest.mark.parametrize('hold_notices', [False, True])
-def test_deadline_survives_restart_and_isolates_once(engine, tmp_path, monkeypatch, recover_at_deadline, hold_notices):
+def test_deadline_survives_restart_and_isolates_once(engine, tmp_path, monkeypatch, recover_at_deadline):
     approval_wait(engine)
     engine.fact('cursor', {'id': 'alpha:source', 'cursor': None})
     state = wire_source(engine, tmp_path, monkeypatch)
-    if hold_notices:
-        engine.rules.data['notices'] = 'hold'
     t0 = engine.clock()
     before = item(engine)
     other = FakeSource()
@@ -145,9 +142,7 @@ def test_deadline_survives_restart_and_isolates_once(engine, tmp_path, monkeypat
         engine.sources()
     assert state == calls
     assert len([f for f in engine.log.facts() if f['kind'] == 'plugin_failed']) == 1
-    notifications = [c for c in engine.log.all('cards') if c['id'].startswith('@alpha:plugin:source:')]
-    held = [f for f in engine.log.facts() if f['kind'] == 'notice_held' and f['item'] == '@alpha']
-    assert len(notifications) + len(held) == 0
+    assert not engine.log.all('cards')
     engine.resume('alpha', [])
     state['fault'] = None
     engine.sources()

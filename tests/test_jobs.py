@@ -20,7 +20,6 @@ import urllib.request
 import pytest
 
 from conftest import Clock, event
-from workshop.core.cards import notice
 from workshop.core.engine import Engine, finder
 from workshop.core.jobs import Jobs, Pending, execute, read, write
 from workshop.core.log import Log
@@ -86,7 +85,7 @@ def rules():
         executors={"writer": {"use": "writer", "family": "a", "billing": "subscription"},
                    "reviewer": [{"use": "reviewer", "family": "b", "billing": "subscription"}],
                    "acceptor": [{"use": "acceptor", "family": "c", "billing": "subscription"}]},
-        limits={"concurrent": 3, "chain_depth": 8}, selector="ordered", channel="channel",
+        limits={"concurrent": 3, "chain_depth": 8}, selector="ordered",
         ask_first=["对外发消息"], skip_ask=[]))
 
 
@@ -167,7 +166,6 @@ def world(tmp_path, monkeypatch):
     evidence = json.dumps({"schema": "issue-delivery/v1", "head": job_plugins.SHA})
     submit(inline, "7", "审查", evidence=[evidence])
     inline.ingest(event("8", ext_id="2"))
-    inline.card(item(log, "7"), "hello", "notice", notice("作业测试的一条通知"))
     (tmp_path / "calls.log").unlink(missing_ok=True)
 
     locks = {}
@@ -244,11 +242,10 @@ def test_slow_external_calls_do_not_hold_the_tick(world, monkeypatch):
     tick(world, engine, monkeypatch)
     assert shown(log, "7") == "等检查"
     assert not job_plugins.calls("assess-start")
-    assert {("source", "poll"), ("channel", "notify"), ("executor", "launch"),
+    assert {("source", "poll"), ("executor", "launch"),
             ("executor", "poll"), ("executor", "stop")} <= set(observed)
     jobs.finish()
     wait(world, engine, monkeypatch, lambda: item(log, "7")["stage"] == "审查")
-    assert log.get("cards", "alpha:7:hello")["sent"]
     assert len(job_plugins.calls("assess-start")) == 1
     assert len({b["at"] for b in beats}) == len(beats)
     log.close()
@@ -448,63 +445,6 @@ def test_background_process_creation_failure_is_retryable(tmp_path, monkeypatch)
         jobs.call("source", "source", "poll", [])
 
 
-@pytest.mark.parametrize("external", ["external:already-sent", "absent", None])
-def test_finished_reconcile_is_consumed_once_and_delivery_continues(world, monkeypatch, external):
-    """恢复 sending 卡片：后台对账的三种结果都要交给通道处理，不能立即过期。"""
-    configure(world["path"], reconcile_result=external)
-    engine = world["engine"]()
-    key = "alpha:7:hello"
-    engine.fact("card_changed", {"id": key, "sending": True}, "alpha:7")
-    path = engine.jobs.path("channel", "channel", "reconcile", [key])
-
-    def channels():
-        engine.jobs.reap()
-        with no_waiting_or_network(monkeypatch):
-            engine.channels()
-        assert engine.plugins.calls == []
-
-    def completed(path):
-        deadline = time.monotonic() + 10
-        while not (path / "result.json").exists():
-            assert time.monotonic() < deadline, "后台作业未写回结果"
-            engine.jobs.finish()
-
-    try:
-        channels()
-        completed(path)
-        # 模拟下一拍甚至重启后才取结果，完成时间已经过去。
-        engine.jobs.clock = lambda: time.time() + 60
-        channels()
-        assert not path.exists(), "对账结果应消费一次后清除"
-        assert len(job_plugins.calls("reconcile")) == 1
-        card = engine.log.get("cards", key)
-        if external is None:
-            assert not card["sent"]
-            assert engine.control(f"reconcile:{key}")["count"] == 1
-            assert not job_plugins.calls("send-start")
-            # 不确定的结果不能被缓存；下一次要重新对账。
-            channels()
-            completed(path)
-            channels()
-            assert engine.control(f"reconcile:{key}")["count"] == 2
-            assert len(job_plugins.calls("reconcile")) == 2
-        else:
-            if external == "absent":
-                completed(engine.jobs.path("channel", "channel", "notify", [key]))
-                channels()
-                card = engine.log.get("cards", key)
-                assert len(job_plugins.calls("sent")) == 1
-                assert card["external"] == f"external:{key}"
-            else:
-                assert card["external"] == external
-                assert not job_plugins.calls("send-start")
-            assert card["sent"]
-            channels()
-            assert len(job_plugins.calls("reconcile")) == 1
-    finally:
-        engine.log.close()
-
-
 def test_job_that_dies_without_result_is_retryable_and_overdue_job_is_killed(tmp_path, monkeypatch):
     monkeypatch.setenv("JOBTEST_DIR", str(tmp_path))
     dying = Jobs(tmp_path / "jobs", [sys.executable, "-c", "pass"])
@@ -586,8 +526,7 @@ def test_release_jobs_do_not_block_and_survive_restart(world, monkeypatch, resta
     assert row["workdir"] == ("/fake/completed" if reason else None)
     assert row["workdir_released"] == ("留着：" + reason if reason else "已收回")
     tick(world, revived, monkeypatch)
-    cards = [c for c in revived.log.all("cards") if "workdir-kept" in c["id"]]
-    assert len(cards) == bool(reason)
+    assert not revived.log.all("cards")  # 没收回只记在活上，不发通知（介入点 R13）。
     assert len(job_plugins.calls("release-start")) == 1
     revived.log.close()
 
