@@ -61,7 +61,8 @@ class Registry:
             if bind:
                 profile = bind(name, profile, rules.path)
             driver.validate(name, profile)
-            profiles[name] = {**profile, 'family': driver.family}
+            # 驱动的 validate 已保证：没写 family 或写的就是驱动那一家；配了网关的写明模型那一家（核心 R25）。
+            profiles[name] = {**profile, 'family': profile.get('family', driver.family)}
         self.profiles = profiles
         if profiles:
             return Rules({**rules.data, 'executor_profiles': profiles}, rules.path)

@@ -38,7 +38,24 @@ executors:
 
 `skills` 是本地 SKILL.md 文件或含该文件的目录列表；内容连同绝对资源目录进入启动指令，不需要全局安装。插件和 MCP 配置的内部结构使用各家原生格式。路径使用绝对路径或 `~`，相对资源引用以 skill 所在目录为准。
 
-Claude 另支持 `restricted`、`strict_mcp_config`（布尔）和 `allowed_tools`、`disallowed_tools`（列表）。Codex 另支持 `model_provider`，以及 headless 的 `ignore_user_config`、`ignore_rules`。交互 Codex 必须写明 model 和 effort。
+Claude 另支持 `restricted`、`strict_mcp_config`（布尔）和 `allowed_tools`、`disallowed_tools`（列表）。
+
+Claude 另支持 `gateway: {base_url, token}`：让 Claude Code 的壳经本机网关跑别家的模型（核心 R25，ws#287）。启动时变成 `ANTHROPIC_BASE_URL` 和 `ANTHROPIC_AUTH_TOKEN`，不设 `ANTHROPIC_API_KEY`（交互模式带它会停在确认框）。订阅计费的会话照旧清掉进程环境带来的密钥，配置档声明的这两个变量保留。规则：
+
+- 两项都必须写，多写、拼错或 `base_url` 不是 http(s) 地址，加载规则时报出配置档名和字段；不能同时写 `require_subscription_login`（登录用网关的）。
+- 必须写 `family`，值是模型那一家；审查和验收照这一家回避。没写 `gateway` 的配置档照旧由驱动定哪一家。
+- 每次挑选时可用性检查不带认证访问 `base_url`，有 HTTP 回应算连得上；连不上就不可用，挑选跳过它，地址写进执行者状态目录的 `driver.log`。
+- 会话记录里的模型名带来源前缀（`codex/gpt-6.2-astra`），记用量时去掉前缀，花费按车间价格表折算；价格表没有的记未知。
+
+```yaml
+  orca-claude-gpt:
+    driver: claude
+    transport: orca
+    billing: subscription
+    gateway: {base_url: http://127.0.0.1:3425, token: magpie}
+    model: codex/gpt-6.2-astra
+    family: codex
+```Codex 另支持 `model_provider`，以及 headless 的 `ignore_user_config`、`ignore_rules`。交互 Codex 必须写明 model 和 effort。
 
 启动前的完整校验入口是 `workshop.registry.load_rules(path)`；核心的 `Rules` 只做通用结构校验，装配层通过驱动端口做字段校验，`Engine` 初始化也会验证所有配置档，作业未开始即报错。驱动字段不能在阶段候选上重复覆盖。
 

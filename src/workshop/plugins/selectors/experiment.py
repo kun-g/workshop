@@ -4,6 +4,8 @@
 - 本该分给谁 = 规则候选[哈希(活号) 对规则候选数取模]；它可用就分给它，同一件活每一轮都算出同一个。
 - 它这一轮不可用时，分给 可用候选[哈希(活号) 对可用候选数取模]，理由写明本该分给谁、为什么换。
 - 一个可用的都没有时返回 Selection(None, 理由)，核心照 quota 挑法的情形记卡住。
+- 这件活在本阶段已经开过轮（真启动过，不算启动时报不可用的），本该分给谁改为最近一轮的执行者：
+  规则候选增减后在途的活不换人；它不可用时照上面改分并写明理由。
 活号和规则候选名单从核心交来的挑选上下文 target["selection"] 的 item、rule_candidates 读。
 """
 from datetime import datetime, timezone
@@ -56,13 +58,26 @@ class ExperimentSelector:
             reasons = [f"{name}：{why}" for name, why in skipped.items()]
             return Selection(None, "；".join([f"实验分配：{item} 没有可用候选，{counts}"] + reasons) + suffix)
         names = [config["use"] for config in usable]
-        intended = rule[bucket(item, len(rule))]
+        previous = self.previous(history, stage)
+        intended = previous if previous in rule else rule[bucket(item, len(rule))]
         if intended in names:
             chosen = usable[names.index(intended)]
+            if previous == intended:
+                notes.insert(0, f"沿用本阶段已开过轮的 {intended}")
         else:
             chosen = usable[bucket(item, len(usable))]
-            notes.insert(0, f'本该分给 {intended}，{self.why_not(intended, skipped, selection)}，改分给 {chosen["use"]}')
+            kept = "（本阶段已开过轮）" if previous == intended else ""
+            notes.insert(0, f'本该分给 {intended}{kept}，{self.why_not(intended, skipped, selection)}，改分给 {chosen["use"]}')
         return Selection(chosen, "；".join([f'实验分配：{item} 分给 {chosen["use"]}，{counts}'] + notes) + suffix)
+
+    @staticmethod
+    def previous(history, stage):
+        """本阶段最近一轮真启动过的执行者；启动时报不可用的轮不算。没有就是 None。"""
+        for row in reversed(history or []):
+            if (isinstance(row, dict) and row.get("stage") == stage and row.get("executor")
+                    and row.get("outcome") != "unavailable" and not row.get("program")):
+                return row["executor"]
+        return None
 
     @staticmethod
     def why_not(name, skipped, selection):

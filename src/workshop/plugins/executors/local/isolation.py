@@ -3,6 +3,9 @@ import os
 from pathlib import Path
 from workshop.github_identity import environment as identity_environment
 
+# 订阅计费的会话不能被进程环境里的按量密钥改走按量。
+SUBSCRIPTION_SECRETS = ('ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'OPENAI_API_KEY', 'CURSOR_API_KEY')
+
 
 def environment(gh_config: Path, source=None):
     source = os.environ if source is None else source
@@ -22,6 +25,10 @@ def environment(gh_config: Path, source=None):
 def session_environment(spec, base=None):
     """Called in the actual terminal/runner, never serialize the daemon's environment."""
     env = dict(os.environ if base is None else base)
+    if spec.get('billing') == 'subscription':
+        # 只清进程环境里带来的密钥；配置档自己声明的变量（如本机网关的 ANTHROPIC_AUTH_TOKEN）在 spec['env'] 里，随后加回。
+        for key in SUBSCRIPTION_SECRETS:
+            env.pop(key, None)
     env.update(spec['env'])
     if spec['readonly']:
         env = environment(Path(spec['gh_config']), env)
@@ -31,7 +38,4 @@ def session_environment(spec, base=None):
         env['PATH'] = str(Path(config['gh']).expanduser().parent) + os.pathsep + env.get('PATH', '')
     for key in ('CLAUDECODE', 'WORKSHOP_RULES'):
         env.pop(key, None)
-    if spec.get('billing') == 'subscription':
-        for key in ('ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'OPENAI_API_KEY', 'CURSOR_API_KEY'):
-            env.pop(key, None)
     return env

@@ -44,7 +44,7 @@ def test_migration_preserves_exact_default_argv(tmp_path, name, resume):
 
 def test_migration_preserves_candidate_order_accounting_and_quota():
     rules = load_rules(RULE_PATH)
-    assert [c['use'] for c in rules.candidates('执行')] == ['orca-codex', 'orca-claude']
+    assert [c['use'] for c in rules.candidates('执行')] == ['orca-codex', 'orca-claude', 'orca-claude-gpt']
     writer = rules.candidates('执行')[0]
     assert (writer['model'], writer['effort'], writer['billing'], writer['quota']['min_remaining']) == ('gpt-6-astra', 'high', 'subscription', 15)
     assert [c['use'] for c in rules.candidates('审查', writer='codex')] == ['cursor-grok', 'claude']

@@ -296,6 +296,18 @@ executor_profiles:
     permission_mode: bypassPermissions
     # 核心 R25：不读本机个人配置，只读这个目录的 settings.json、rules.md 和活所在仓库的 AGENTS.md；登录沿用本机订阅。
     executor_dir: rules/executors/orca-claude
+  # 核心 R25（ws#287）：壳是 Claude Code，经本机 magpie 网关跑 GPT 模型；按模型算 codex 家，和 orca-codex 共用 Codex 周额度。
+  orca-claude-gpt:
+    driver: claude
+    transport: orca
+    billing: subscription
+    gateway: {base_url: http://127.0.0.1:3425, token: magpie}
+    model: codex/gpt-6.2-astra
+    family: codex
+    effort: high
+    permission_mode: bypassPermissions
+    quota: {provider: codex, window: Weekly, min_remaining: 15, label: Codex 周额度}
+    executor_dir: rules/executors/orca-claude-gpt
   # 只读审查：沿用旧 use 名，以便在途会话照常接回。
   codex:
     driver: codex
@@ -326,7 +338,7 @@ executor_profiles:
     mcp_config: {mcpServers: {}}
     first_when_writer: [codex]
 executors:
-  writer: [{use: orca-codex}, {use: orca-claude}]
+  writer: [{use: orca-codex}, {use: orca-claude}, {use: orca-claude-gpt}]
   reviewer: [{use: codex}, {use: cursor-grok}, {use: claude}]
   acceptor: [{use: codex}, {use: claude}]
 limits: {concurrent: 5, chain_depth: 8, round_timeout_seconds: 7200, brief_max_chars: 524288}

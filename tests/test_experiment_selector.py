@@ -36,7 +36,7 @@ def test_rules_use_experiment_only_for_execution_of_issue_delivery():
     for target in ("workshop", "grant-console"):
         assert RULES.selector("执行", target) == "experiment"
         assert RULES.selector("审查", target) == "quota" and RULES.selector("验收", target) == "quota"
-        assert [c["use"] for c in RULES.candidates("执行", target)] == ["orca-codex", "orca-claude"]
+        assert [c["use"] for c in RULES.candidates("执行", target)] == ["orca-codex", "orca-claude", "orca-claude-gpt"]
     assert RULES.selector("执行", "workshop", "watch_updates") == "quota"
     assert RULES.selector("执行", "switchboard") == "quota"
     assert callable(Registry().get("selector", "experiment").select)
@@ -144,7 +144,7 @@ def test_engine_keeps_profile_across_gate_return_and_rework(tmp_path):
         again = current(engine)
         assert again["stage"] == "执行" and again["executor"] == intended and again["token"] != first["token"]
         # 关口退回的轮核心只交原执行者（重试沿用），规则候选数不变。
-        assert "规则候选 2 个，可用 1 个；阶段 执行，第 4 轮" in again["selection_reason"]
+        assert f"规则候选 2 个，可用 1 个；沿用本阶段已开过轮的 {intended}；阶段 执行，第 4 轮" in again["selection_reason"]
         finish(engine, "证据")
         assert current(engine)["stage"] == "证据"
         for stage in ("审查", "交付", "验收", "收尾"):

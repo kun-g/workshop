@@ -136,11 +136,13 @@ def test_haiku_tier_is_per_message_and_counts_both_caches():
     ('gpt-6.1-sol', (2, .1, 2.5, 5, 10)),
     ('gpt-6.1-terra', (1, .05, 1.25, 2.5, 5)),
     ('gpt-6-luna', (.1, .01, .125, .25, .5)),
+    ('gpt-6.2-astra', (8, .4, 10, 20, 40)),
+    ('gpt-6.2-sol', (2, .1, 2.5, 5, 10)),
 ])
 def test_dated_current_price_rows(model, rates):
     from workshop.plugins.executors.local.pricing import PRICES, cost, ANTHROPIC, OPENAI
     assert cost(model, 11, 13, 17, 19, 23) == pytest.approx(sum(a*b for a,b in zip((11,13,17,19,23), rates))/1e6)
     for row in PRICES.values():
-        assert row.checked == '2026-11-13'
+        assert row.checked in ('2026-11-13', '2026-11-19')
         assert row.source in (ANTHROPIC, OPENAI)
     assert cost('unknown-model', 1, 2, 3, 4, 5) is None

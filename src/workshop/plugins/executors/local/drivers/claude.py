@@ -1,5 +1,6 @@
 """Claude Code command, session and transcript protocol."""
 import copy
+from datetime import datetime, timezone
 import os
 import subprocess
 import json
@@ -7,6 +8,9 @@ from pathlib import Path
 import re
 import shlex
 import sys
+import urllib.error
+import urllib.parse
+import urllib.request
 
 from workshop.core.ports import Unavailable
 from workshop.core.models import RoundUsage, Usage
@@ -38,9 +42,11 @@ class Driver(Base):
         'permission_mode': lambda v: v in ('acceptEdits', 'auto', 'bypassPermissions', 'manual', 'dontAsk', 'plan'),
         'restricted': lambda v: type(v) is bool, 'strict_mcp_config': lambda v: type(v) is bool,
         'mcp_config': options, 'plugins': strings, 'settings': options, 'config_dir': text,
-        'executor_dir': text,
+        'executor_dir': text, 'gateway': lambda v: isinstance(v, dict),
     }
     settings_file = 'settings.json'
+    # 网关探测：不带认证访问根地址，拿到任何 HTTP 回应就算连得上。
+    gateway_timeout = 3
 
     def directory_settings(self, path):
         file = Path(path) / self.settings_file
@@ -53,12 +59,34 @@ class Driver(Base):
 
     def validate(self, name, config):
         super().validate(name, config)
+        if 'gateway' in config:
+            check_gateway(name, config)
         if 'executor_dir' in config and 'config_dir' in config:
             # 执行者目录模式沿用本机订阅登录（默认配置目录），不能同时换一个登录。
             raise ValueError(f'配置档 {name} 的 config_dir：和 executor_dir 不能同时写，执行者沿用本机登录')
 
     def environment(self, config):
-        return {'CLAUDE_CONFIG_DIR': str(Path(config['config_dir']).expanduser())} if 'config_dir' in config else {}
+        env = {'CLAUDE_CONFIG_DIR': str(Path(config['config_dir']).expanduser())} if 'config_dir' in config else {}
+        if 'gateway' in config:
+            # 用 AUTH_TOKEN 而不是 API_KEY：交互模式带 API_KEY 会停在「是否使用这个 key」的确认框。
+            env.update(ANTHROPIC_BASE_URL=config['gateway']['base_url'],
+                       ANTHROPIC_AUTH_TOKEN=config['gateway']['token'])
+        return env
+
+    def available(self, executor, config):
+        """配了网关的，每次挑选时探一次网关；连不上就不可用，并把地址写进驱动日志。不在启动时抛错。"""
+        if 'gateway' not in config:
+            return True
+        url = config['gateway']['base_url']
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        try:
+            with opener.open(url, timeout=self.gateway_timeout):
+                return True
+        except urllib.error.HTTPError:
+            return True  # 网关回了话（哪怕是错误码）就是连得上。
+        except (OSError, ValueError) as exc:
+            log(executor, f'网关连不上：{url}（{exc}）')
+            return False
 
     def preflight(self, executor, config):
         if not config.get('require_subscription_login'):
@@ -137,6 +165,45 @@ class Driver(Base):
                        spec['billing'], spec.get('env', {}).get('CLAUDE_CONFIG_DIR'))
 
     collect = staticmethod(lambda *a, **kw: collect(*a, **kw))
+
+
+GATEWAY_FIELDS = ('base_url', 'token')
+
+
+def check_gateway(name, config):
+    """gateway 只认 base_url、token 两项，都必须写；base_url 是 http(s) 地址。"""
+    def fail(field, reason):
+        raise ValueError(f'配置档 {name} 的 {field}：{reason}')
+    gateway = config['gateway']
+    for key in gateway:
+        if key not in GATEWAY_FIELDS:
+            fail('gateway.' + str(key), '字段拼错；只认 base_url、token')
+    for key in GATEWAY_FIELDS:
+        if not text(gateway.get(key)):
+            fail('gateway.' + key, '必须写明非空字符串')
+    parsed = urllib.parse.urlsplit(gateway['base_url'])
+    if parsed.scheme not in ('http', 'https') or not parsed.hostname:
+        fail('gateway.base_url', '必须是 http:// 或 https:// 地址')
+    if config.get('require_subscription_login'):
+        fail('require_subscription_login', '配了 gateway 登录用网关的，不查本机订阅登录')
+
+
+def log(executor, message):
+    """驱动日志：执行者状态目录下的 driver.log，一行一条。"""
+    try:
+        executor.root.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now(timezone.utc).isoformat(timespec='seconds')
+        with (executor.root / 'driver.log').open('a') as stream:
+            stream.write(f'{stamp} {message}\n')
+    except (OSError, AttributeError):
+        pass
+
+
+def model_name(model):
+    """会话记录里经网关的模型名带来源前缀（codex/gpt-6.2-astra），记用量和查价格用去掉前缀的名字。"""
+    return model.rsplit('/', 1)[-1] if isinstance(model, str) else model
+
+
 def claude_entries(records, since, billing):
     messages = {}
     for row in records:
@@ -166,8 +233,9 @@ def claude_entries(records, since, billing):
             short = long = 0
         if short is not None and long is not None and short + long != write:
             short = long = None
-        entries.append(Usage(msg.get('model'), ordinary, read, write, output,
-                             cost(msg.get('model'), ordinary, read, short, long, output), billing))
+        model = model_name(msg.get('model'))
+        entries.append(Usage(model, ordinary, read, write, output,
+                             cost(model, ordinary, read, short, long, output), billing))
     return entries
 
 
