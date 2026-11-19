@@ -360,6 +360,70 @@ def test_slow_dispatch_does_not_block_ping(service, tmp_path, monkeypatch):
                 server.server_close()
 
 
+def test_cancel_during_reconcile_absent_does_not_send_again(service, monkeypatch):
+    """对账这 20 秒里许可被取消：确认没发出后不再补发，记 cancelled。"""
+    ref, allowed = delivery(service), permit(service)
+    service.delivery_state(service.store.get(ref), 'uncertain')
+    entered, release = threading.Event(), threading.Event()
+    calls = []
+    def transport(config, action, record):
+        calls.append(action)
+        if action == 'reconcile':
+            entered.set()
+            release.wait(10)
+            return {'state': 'absent'}
+        return {'state': 'sent', 'external': 'm:' + record['id']}
+    monkeypatch.setattr(service, 'transport', transport)
+    result = []
+    worker = threading.Thread(target=lambda: result.append(service.dispatch(ref)))
+    try:
+        worker.start()
+        assert entered.wait(5)
+        service.call('cancel', {'operation': 'cancel', 'ref': allowed, 'reason': '发送前事项已解决'})
+        release.set()
+        worker.join(10)
+    finally:
+        release.set()
+        worker.join(10)
+    assert calls == ['reconcile']
+    assert result[0]['state'] == 'cancelled'
+    assert service.store.get(ref)['state'] == 'cancelled'
+    assert service.store.get(allowed)['cancelled'] is True
+
+
+def test_cancel_before_sending_intent_stops_first_send(service, monkeypatch):
+    """第一次发送前许可被取消：写 sending 的事务里重读到取消，一次通道都不调。"""
+    ref, allowed = delivery(service), permit(service)
+    calls = []
+    def transport(config, action, record):
+        calls.append(action)
+        return {'state': 'sent', 'external': 'm:' + record['id']}
+    monkeypatch.setattr(service, 'transport', transport)
+    policy = service.policy
+    entered, release, gated = threading.Event(), threading.Event(), [True]
+    def gated_policy(point):
+        if gated[0]:
+            gated[0] = False
+            entered.set()
+            release.wait(10)
+        return policy(point)
+    monkeypatch.setattr(service, 'policy', gated_policy)
+    result = []
+    worker = threading.Thread(target=lambda: result.append(service.dispatch(ref)))
+    try:
+        worker.start()
+        assert entered.wait(5)
+        service.call('cancel', {'operation': 'cancel', 'ref': allowed, 'reason': '发送前事项已解决'})
+        release.set()
+        worker.join(10)
+    finally:
+        release.set()
+        worker.join(10)
+    assert calls == []
+    assert result[0]['state'] == 'cancelled'
+    assert service.store.get(ref)['state'] == 'cancelled'
+
+
 def test_flush_stops_at_limit_and_time_budget(service, monkeypatch):
     from workshop.plugins.intervention import manager
     for n in range(12):

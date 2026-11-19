@@ -335,15 +335,32 @@ class Service:
         with self.dispatch_lock:
             return self._dispatch(ref)
 
+    def _begin_send(self, ref):
+        """写发送意图的同一事务里重读送达和许可：这期间被取消或规则不再允许，就不发。"""
+        with self.store.transaction():
+            record = self.store.get(ref, 'delivery')
+            if record['state'] in ('sent', 'cancelled'):
+                return record
+            if record['payload'].get('kind') not in ('status_reply', 'visual_receipt'):
+                permit = self.store.get(record['permit'], 'permit')
+                policy, _ = self.policy(permit['point'])
+                if permit['cancelled'] or policy.get('send') is not True:
+                    cancelled = {**record, 'state': 'cancelled', 'external': None, 'error': None}
+                    self.store.put('delivery', ref, cancelled, 'cancelled')
+                    return cancelled
+            sending = {**record, 'state': 'sending', 'external': None, 'error': None}
+            self.store.put('delivery', ref, sending, 'sending')
+            return sending
+
     def _dispatch(self, ref):
         record = self.store.get(ref, 'delivery')
         if record['state'] in ('sent', 'cancelled'):
             return record
         if record['payload'].get('kind') in ('status_reply', 'visual_receipt'):
-            permit, policy, config = {'cancelled': False}, {'send': True}, self.configuration()
+            config = self.configuration()
         else:
             permit = self.store.get(record['permit'], 'permit')
-            policy, config = self.policy(permit['point'])
+            _, config = self.policy(permit['point'])
         try:
             if record['state'] in ('sending', 'uncertain'):
                 # 发送后的崩溃窗口必须先对账；即使许可取消，也保留已送达的真实结果。
@@ -352,9 +369,11 @@ class Service:
                     return self.delivery_state(record, 'sent', result['external'])
                 if result['state'] != 'absent':
                     return self.delivery_state(record, 'uncertain')
-            if permit['cancelled'] or policy.get('send') is not True:
-                return self.delivery_state(record, 'cancelled')
-            self.delivery_state(record, 'sending')  # 提交发送意图，才调用通道。
+            # 对账最多 20 秒，这期间许可可能被取消。写发送意图时在事务里重读，
+            # 确定没发出且许可已取消或规则停用时记 cancelled，不再调 send。
+            record = self._begin_send(ref)
+            if record['state'] != 'sending':
+                return record
             result = self.transport(config, 'send', record)
             if result['state'] == 'sent':
                 return self.delivery_state(record, 'sent', result['external'])
