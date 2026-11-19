@@ -7,8 +7,8 @@ from .jobs import Pending
 from .models import stamp
 from .ports import Retryable, Unavailable
 
-# 换人的原因：一轮连续跑不成、同一关口连续没过、被指定的执行者挑选时没挑上。
-CAUSES = ("failures", "gate", "quota")
+# 换人的原因：一轮连续跑不成、同一关口连续没过、被指定的执行者挑选时没挑上、流程说这个执行者做不下来了。
+CAUSES = ("failures", "gate", "quota", "returns")
 FAILURE_LIMIT = 10
 GATE_LIMIT, TAKEOVER_GATE_LIMIT = 3, 2
 FIELDS = ("members", "takeover")

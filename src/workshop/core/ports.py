@@ -100,6 +100,12 @@ class Flow(Protocol):
         不挑执行者、不启动会话、不记录执行轮；未实现或返回 False 保持原路径。
         """
         ...
+    def unable_decided(self, item: dict, evidence: Evidence, target: dict, takeover: dict | None) -> None:
+        """可选。assess 返回 unable=True 之后，核心先问阶梯有没有可换的，决定好了再调一次，流程在这里发外部消息。
+
+        takeover 是换人记录（from、to 等），None 是没有可换的、按 blocked 记卡住。
+        同一次决定可能因重试再调，流程自己防重复；没有这个方法的流程不受影响。"""
+        ...
     def stage_moves(self, item: dict, target: dict) -> dict[str, str]:
         """可选、只读。活停在规则已去掉的阶段时落到哪一段，例如 {"说清楚": "接单"}；
         没给或给的阶段不在当前流程里，就进去掉阶段之后的第一个。"""

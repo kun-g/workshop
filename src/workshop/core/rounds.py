@@ -224,7 +224,14 @@ def finish(engine, row):
             after_result = engine.after({**item, "result": receipt.json()}, row["stage"], key, target)
         # 这一次会不会到上限，在事务之前判断；会的话先问阶梯上面有没有可用的接手者（可用性检查可能异步）。
         takeover = None
-        if not program and ladder.levels(engine.rules.data) and ladder.writing(row["stage"]):
+        if evidence.unable:
+            # 流程判这个执行者做不下来了：同样先问阶梯；决定好了才让流程发外部消息（换人还是卡住，措辞不同）。
+            if ladder.levels(engine.rules.data) and ladder.writing(evidence.handoff):
+                takeover = ladder.find(engine, item, item.get("executor"))
+            if callable(getattr(engine.plugins.get(port, name), "unable_decided", None)):
+                engine.call(port, name, "unable_decided", item, evidence, target, takeover,
+                            identity=[item["id"], "unable", token, takeover and takeover["to"]], item=item["id"])
+        elif not program and ladder.levels(engine.rules.data) and ladder.writing(row["stage"]):
             gate_reason = "停下必须登记工序、送回或等你" if missing_leave else decision.reason
             if ((receipt.outcome == "failed" and item["failures"] + 1 >= ladder.FAILURE_LIMIT)
                     or gate_count(item, row, gate_reason)[2] >= ladder.gate_limit(item)):
@@ -261,6 +268,11 @@ def finish(engine, row):
                 converge = (item.get("relations") or {}).get("converge")
                 if converge and STAGES.index(item["stage"]) >= STAGES.index(converge):
                     changes["stage"] = converge
+            elif evidence.unable and takeover:
+                # 换人：接手者从流程指的阶段接着做；和通过关口退回执行一样清掉审查记录。
+                changes.update(ladder.handover(engine, item, takeover, "returns", evidence.blocked),
+                               stage=evidence.handoff, approved=[], reviews=[], review_required=1,
+                               after_pending_count=0, pending_episode=item.get("pending_episode", 0) + 1)
             elif evidence.blocked:
                 changes.update(state="卡住", blocked_by=evidence.blocked, next=evidence.next,
                                leave=engine.blocked_leave(evidence.next))
