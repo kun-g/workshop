@@ -267,9 +267,36 @@ def validate_conclusion(conclusion):
         raise ValueError('未知状态栏目')
 
 
+IDLE_WAITING = ('等你', '定时', '等前置', '等子单', '等资料')
+
+
+def classify_idle(log):
+    """空闲时核心的真实状态：none 没有没结束的活；waiting 全都在明确等；other 交给项目经理。
+
+    明确在等 = 等 Kun（等你）、等定时、等前置、等子单、等来源补资料。
+    排队、空闲、卡住、完成/放弃还有后续动作，以及插件坏了的活都不算；
+    目标被暂停、状态认不出、状态库读不到也都不算，一律归 other。
+    """
+    items = log.open_items()
+    if not items:
+        return 'none'
+    for item in items:
+        if item.get('state') not in IDLE_WAITING or item.get('plugin_blocked'):
+            return 'other'
+        control = log.get('controls', item.get('target', '')) or {}
+        if control.get('paused'):
+            return 'other'
+    return 'waiting'
+
+
 def idle_conclusion(row):
-    """空闲不需要判断：程序直接给出与项目经理会话相同的结论，不启动会话（介入点 R12）。"""
+    """两种不用判断的空闲由程序出结论：没有活 → 要新需求；全在明确等 → 静默结束。"""
     fact = row['facts'][-1]['value'] if row.get('facts') else {}
+    situation = fact.get('situation')
+    if situation == 'waiting':
+        return {'schema': 'manager/v1', 'result': 'resolved'}
+    if situation != 'none':
+        raise ValueError('判断不了的空闲不能由程序直接出结论')
     since = fact.get('idle_since') or row.get('created') or '未知'
     value = {'schema': 'manager/v1', 'result': 'blocked', 'action': '车间空了，要新需求',
              'reason': '车间连续五分钟没有在跑的活',
@@ -373,12 +400,17 @@ class Coordinator:
         if not row['active'] or row['state'] == 'resolved':
             return
         if row['id'] == 'idle':
-            # 空闲没有要判断的：程序直接出结论，不启动会话；以前起不来留下的结论也改回来。
-            if row.get('conclusion') is None or row['state'] == 'unavailable':
-                row['conclusion'] = idle_conclusion(row)
-                row['state'] = 'blocked'
-                self.store.save(row, 'concluded')
-            return
+            fact = row['facts'][-1]['value'] if row.get('facts') else {}
+            situation = fact.get('situation')
+            if situation in ('none', 'waiting'):
+                # 不用判断的两种空闲：程序直接出结论，不启动会话。
+                state = 'resolved' if situation == 'waiting' else 'blocked'
+                if row.get('conclusion') is None or row['state'] != state:
+                    row['conclusion'] = idle_conclusion(row)
+                    row['state'] = state
+                    self.store.save(row, 'concluded')
+                return
+            # 判断不了、或者有活不是明确在等：照旧交给项目经理会话。
         if row['state'] in ('blocked', 'unavailable'):
             return
         if row['candidate'] >= len(configs):

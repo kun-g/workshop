@@ -3,13 +3,28 @@ import argparse
 from datetime import datetime, timezone
 import json
 from pathlib import Path
+import sqlite3
 import sys
 
 from .core.jobs import Jobs, execute
 from .core.log import Log
-from .core.managers import Store, Coordinator, observe_items, observe_failures
+from .core.managers import Store, Coordinator, classify_idle, observe_items, observe_failures
 from .core.rules import Rules
 from .registry import Registry
+
+
+def idle_situation(state_dir):
+    """读核心当时的真实状态给空闲分类；读不到就是判断不了，交给项目经理（other）。"""
+    try:
+        log = Log.readonly(Path(state_dir) / 'workshop.db')
+    except (OSError, ValueError, sqlite3.Error):
+        return 'other'
+    try:
+        return classify_idle(log)
+    except (OSError, ValueError, sqlite3.Error):
+        return 'other'
+    finally:
+        log.close()
 
 
 def main(argv=None):
@@ -56,8 +71,13 @@ def main(argv=None):
                     store.resolve(row, now)
             business = message.get('business', {})
             idle = business.get('idle_since')
-            if business.get('total') == 0 and idle and (datetime.fromisoformat(now) - datetime.fromisoformat(idle)).total_seconds() >= 300:
-                store.observe('idle', {'idle_since': idle, 'reason': '业务连续五分钟为零'}, 'watch', now)
+            active_idle = any(row['id'] == 'idle' and row['active'] for row in store.all())
+            due = (business.get('total') == 0 and idle
+                   and (datetime.fromisoformat(now) - datetime.fromisoformat(idle)).total_seconds() >= 300)
+            if business.get('total') == 0 and idle and (due or active_idle):
+                # 每拍按核心的真实状态重新分类；状态变了才记新事实，判断不了归 other。
+                store.observe('idle', {'idle_since': idle, 'reason': '业务连续五分钟为零',
+                                       'situation': idle_situation(args.state_dir)}, 'watch', now)
             elif business.get('total', 0) > 0:
                 for row in store.all():
                     if row['id'] == 'idle':
