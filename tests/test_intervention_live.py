@@ -62,6 +62,13 @@ def test_service_rejects_wrong_rule_digest_and_stale_heartbeat(live, monkeypatch
     with pytest.raises(ValueError, match='现役规则'):
         code['verify'](args)
     result['rules_sha256'] = hashlib.sha256(rule.read_bytes()).hexdigest()
+    # 11-19：发版重装后服务 PATH 只有系统目录，送达命令找不到 lark-cli。
+    result['path'] = '/usr/bin:/bin:/usr/sbin:/sbin'
+    with pytest.raises(ValueError, match='PATH 里找不到 lark-cli'):
+        code['verify'](args)
+    tools = state / 'bin'; tools.mkdir()
+    (tools / 'lark-cli').write_text('#!/bin/sh\n'); (tools / 'lark-cli').chmod(0o755)
+    result['path'] = '/usr/bin:' + str(tools)
     (state / 'heartbeat.json').write_text(json.dumps({'at': '2026-01-01T00:00:00+00:00', 'process': {}}))
     with pytest.raises(ValueError, match='心跳'):
         code['verify'](args)

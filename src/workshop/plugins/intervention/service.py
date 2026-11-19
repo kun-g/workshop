@@ -79,7 +79,7 @@ class Service:
         if action == 'ping':
             self.configuration()
             return {'protocol': 1, 'rules': str(self.rules.resolve()),
-                    'pid': os.getpid(), 'python': sys.executable,
+                    'pid': os.getpid(), 'python': sys.executable, 'path': os.environ.get('PATH', ''),
                     'rules_sha256': hashlib.sha256(self.rules.read_bytes()).hexdigest()}
         if action == 'get':
             return self.store.get(data['ref'])
@@ -265,8 +265,13 @@ class Service:
         argv = config.get('transport')
         if not isinstance(argv, list) or not argv or not all(isinstance(s, str) and s for s in argv):
             raise ValueError('送达通道尚未配置')
-        result = subprocess.run(argv, input=encode({'action': action, 'key': record['id'], 'payload': record['payload']}),
-                                capture_output=True, text=True, timeout=20)
+        try:
+            result = subprocess.run(argv, input=encode({'action': action, 'key': record['id'], 'payload': record['payload']}),
+                                    capture_output=True, text=True, timeout=20)
+        except (FileNotFoundError, PermissionError) as exc:
+            if action != 'send':
+                raise  # 对账起不来不能说明以前没发过。
+            return {'state': 'absent', 'error': '送达命令起不来：' + str(exc)}
         if result.returncode:
             raise ValueError('送达通道未确认完成')
         value = json.loads(result.stdout)
@@ -297,12 +302,17 @@ class Service:
                 return self.delivery_state(record, 'cancelled')
             self.delivery_state(record, 'sending')  # 提交发送意图，才调用通道。
             result = self.transport(config, 'send', record)
-            return self.delivery_state(record, 'sent', result['external']) if result['state'] == 'sent' else self.delivery_state(record, 'uncertain')
-        except (ValueError, OSError, subprocess.SubprocessError):
-            return self.delivery_state(record, 'uncertain')
+            if result['state'] == 'sent':
+                return self.delivery_state(record, 'sent', result['external'])
+            if result['state'] == 'absent':
+                # 送达命令不存在或起不来，确定没发出：记 unsent，下次照原送达号重发。
+                return self.delivery_state(record, 'unsent', error=result.get('error') or '送达命令起不来')
+            return self.delivery_state(record, 'uncertain', error=result.get('error'))
+        except (ValueError, OSError, subprocess.SubprocessError) as exc:
+            return self.delivery_state(record, 'uncertain', error=type(exc).__name__ + ': ' + str(exc))
 
-    def delivery_state(self, record, state, external=None):
-        record = {**record, 'state': state, 'external': external}
+    def delivery_state(self, record, state, external=None, error=None):
+        record = {**record, 'state': state, 'external': external, 'error': error}
         with self.store.transaction():
             self.store.put('delivery', record['id'], record, state)
         return record

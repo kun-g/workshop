@@ -302,9 +302,9 @@ def test_visual_card_shows_issue_and_pr_and_folds_debug_numbers(tmp_path, servic
     assert '通过' in shown and '不通过' in shown and '不通过时写哪里不对' in shown
     blocks = [e.get('text', {}).get('content') for e in card['body']['elements']]
     assert '本单的亲眼看。\n1. 收尾送来的卡。\n2. 上线后的审批卡。' in blocks
-    assert [e['content'] for e in card['body']['elements'] if e['tag'] == 'markdown'][1:] == ['**看什么**', '**在哪看**', '**怎么回**']
-    # issue 的怎么回只写了引用回复，照写；按钮在卡底。
-    assert any('引用那条送达' in (b or '') for b in blocks)
+    # Kun 11-19：正文只留看什么和按钮；在哪看、怎么回不上卡片。
+    assert [e['content'] for e in card['body']['elements'] if e['tag'] == 'markdown'][1:] == ['**看什么**']
+    assert '手机飞书' not in shown and '引用' not in shown and '在哪看' not in shown and '怎么回' not in shown
     panel = card['body']['elements'][-1]
     assert panel['tag'] == 'collapsible_panel' and panel['expanded'] is False
     assert panel['header']['title']['content'] == '详情'
@@ -371,7 +371,7 @@ def test_visual_buttons_answer_this_delivery(tmp_path, service, monkeypatch, cho
     services = lambda name: (Port(service), {})
     wait = after(flow, item, target, services).wait
     card = sent[0]
-    assert any('按钮没反应时' in visible(e) for e in card['body']['elements'])
+    assert '按钮没反应时' not in front(card) and '引用' not in front(card)
     result = service.call('status_click', click_event(card, choice, reason))
     assert result['accepted'] and result['answer'] == answer and result['state'] == 'sent'
     assert len(sent) == 2 and sent[1]['header']['title']['content'] == '已收到：' + ('通过' if passed else '不通过')
@@ -417,3 +417,50 @@ def test_unsupported_reply_channel_still_blocks():
     assert supported({'location': '手机飞书，Ash 私聊', 'response': '引用那条送达回「过」，或「不对：哪里不对」'})
     assert not supported({'location': 'GitHub PR', 'response': BUTTONS})
     assert not supported({'location': '飞书私聊', 'response': '评论确认'})
+
+
+def test_send_command_missing_is_unsent_and_resends_same_key(tmp_path, service, monkeypatch):
+    """11-19：重装后服务 PATH 里没有 lark-cli。起不来记没发出，等待原因带错误，修好后照原号发一次。"""
+    from workshop.plugins.issue_delivery.visual import after
+    flow, item, target, sent = visual_world(tmp_path, service, monkeypatch, [])
+    real = transport.command
+    def missing(args, argv, **kwargs):
+        raise transport.Unstartable('lark-cli 起不来（PATH=/usr/bin:/bin:/usr/sbin:/sbin）：[Errno 2] No such file or directory')
+    monkeypatch.setattr(transport, 'command', missing)
+    services = lambda name: (Port(service), {})
+    result = after(flow, item, target, services)
+    delivery = flow.io.read(item, target)['visual_deliveries'][MERGE]['delivery']
+    record = service.store.get(delivery, 'delivery')
+    assert record['state'] == 'unsent' and 'lark-cli 起不来' in record['error']
+    assert result.pending and result.reason.startswith('亲眼看没发出：lark-cli 起不来') and delivery in result.reason
+    assert result.next == '修好送达命令后照原送达号重发' and not sent
+    monkeypatch.setattr(transport, 'command', real)
+    assert after(flow, item, target, services).wait and len(sent) == 1
+    assert service.store.get(delivery, 'delivery')['state'] == 'sent'
+    assert after(flow, item, target, services).wait and len(sent) == 1
+
+
+def test_transport_unstartable_clears_started_but_reconcile_stays_unknown(tmp_path, monkeypatch):
+    args = SimpleNamespace(state_dir=str(tmp_path), profile='test', lark=str(tmp_path / 'no-such-lark-cli'),
+                           chat_id='chat', recipient='kun', app_id='app')
+    request = {'action': 'send', 'key': 'delivery:k', 'payload': {'kind': 'visual', 'card': {'body': {'elements': []}}}}
+    result = transport.deliver(args, request)
+    assert result['state'] == 'absent' and 'no-such-lark-cli' in result['error']
+    record = json.loads(next(tmp_path.glob('*.json')).read_text())
+    assert 'started' not in record and record['send_calls'] == 0
+    # 起不来的那次没有发送标记，对账确定没发；有发送标记时起不来只能说不明。
+    assert transport.deliver(args, {**request, 'action': 'reconcile'}) == {'state': 'absent'}
+    record['started'] = '2026-11-19T00:00:00+00:00'
+    next(tmp_path.glob('*.json')).write_text(json.dumps(record))
+    with pytest.raises(transport.Unstartable):
+        transport.deliver(args, {**request, 'action': 'reconcile'})
+
+
+def test_service_cannot_start_transport_marks_send_unsent(service, monkeypatch, tmp_path):
+    permit = service.call('permit', {'operation': 'p', 'point': 'visual', 'owner': 'alpha:one',
+        'scope': 'contract:alpha:one:v', 'basis': {'contract': '看', 'location': '飞书私聊', 'response': '点通过或不通过'}})['ref']
+    ref = service.call('enqueue', {'operation': 'e', 'permit': permit, 'payload': {'kind': 'visual', 'version': 'v', 'card': {}}})['ref']
+    original = service.configuration
+    monkeypatch.setattr(service, 'configuration', lambda: {**original(), 'transport': [str(tmp_path / 'missing-python'), '-m', 'x']})
+    record = service.call('dispatch', {'ref': ref})
+    assert record['state'] == 'unsent' and '送达命令起不来' in record['error']

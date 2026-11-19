@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import pwd
+import shutil
 import subprocess
 import sqlite3
 import sys
@@ -94,8 +95,9 @@ def inspect_deliveries(rules, state, endpoint, since):
     with closing(sqlite3.connect(database.resolve().as_uri() + '?mode=ro', uri=True)) as db:
         records = {key: json.loads(body) for key, body in db.execute('SELECT id,body FROM records')}
         attempts = {}
-        for kind, key in db.execute("SELECT kind,id FROM journal WHERE at>=? AND kind='sending'", (since,)):
-            attempts[key] = attempts.get(key, 0) + 1
+        # 送达命令起不来记 unsent：那一次确定没发出，照原号重发不算第二次发送。
+        for kind, key in db.execute("SELECT kind,id FROM journal WHERE at>=? AND kind IN ('sending','unsent')", (since,)):
+            attempts[key] = attempts.get(key, 0) + (1 if kind == 'sending' else -1)
         checked = []
         for record in records.values():
             if record.get('permit') is None or record.get('created_at', '') < since:
@@ -295,6 +297,12 @@ def verify(args):
             digest = hashlib.sha256(Path(rules.path).read_bytes()).hexdigest()
             if result.get('rules_sha256') != digest or Path(result.get('rules', '')).resolve() != Path(rules.path).resolve():
                 raise ValueError('现役介入点服务未用现役规则通过自检')
+            transport = rules.data.get('intervention', {}).get('transport') or []
+            lark = transport[transport.index('--lark') + 1] if '--lark' in transport else 'lark-cli'
+            found = shutil.which(lark, path=result.get('path') or '')
+            if not found:
+                raise ValueError(f'介入点服务进程的 PATH 里找不到 {lark}：{result.get("path")!r}')
+            result = {**result, 'lark': found}
             heartbeat = read(state / 'heartbeat.json')
             if (datetime.now(timezone.utc) - datetime.fromisoformat(heartbeat['at'])).total_seconds() > 300:
                 raise ValueError('守护进程心跳已过期')

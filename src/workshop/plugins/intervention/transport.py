@@ -20,9 +20,16 @@ def save(path, value):
     os.replace(stream.name, path)
 
 
+class Unstartable(Exception):
+    """飞书命令不存在或起不来：这一次确定没有发出。"""
+
+
 def command(args, argv, **kwargs):
-    result = subprocess.run([args.lark, '--profile', args.profile, *argv, '--as', 'bot', '--format', 'json'],
-                            capture_output=True, text=True, timeout=15, **kwargs)
+    try:
+        result = subprocess.run([args.lark, '--profile', args.profile, *argv, '--as', 'bot', '--format', 'json'],
+                                capture_output=True, text=True, timeout=15, **kwargs)
+    except (FileNotFoundError, PermissionError) as exc:
+        raise Unstartable(f'{args.lark} 起不来（PATH={os.environ.get("PATH", "")}）：{exc}') from exc
     value = json.loads(result.stdout) if result.stdout else {}
     if result.returncode or value.get('ok') is not True:
         raise ValueError('飞书命令未确认成功')
@@ -118,13 +125,21 @@ def deliver(args, message):
         save(path, record)
         argv = ['im', '+messages-send', '--user-id', args.recipient,
                 '--idempotency-key', payload.get('idempotency_key', name[:48])]
-        if file:
-            value = command(args, [*argv, '--file', file.name], cwd=file.parent)
-        elif payload.get('card'):
-            value = command(args, [*argv, '--msg-type', 'interactive',
-                                   '--content', json.dumps(with_key(payload['card'], key), ensure_ascii=False)])
-        else:
-            value = command(args, [*argv, '--text', payload['text'] + '\n' + marker])
+        try:
+            if file:
+                value = command(args, [*argv, '--file', file.name], cwd=file.parent)
+            elif payload.get('card'):
+                value = command(args, [*argv, '--msg-type', 'interactive',
+                                       '--content', json.dumps(with_key(payload['card'], key), ensure_ascii=False)])
+            else:
+                value = command(args, [*argv, '--text', payload['text'] + '\n' + marker])
+        except Unstartable as exc:
+            # 没起来就没发出：撤掉发送标记，下次照原送达号重发，不必再对账。
+            record.pop('started')
+            record['send_calls'] = 0
+            record['error'] = str(exc)
+            save(path, record)
+            return {'state': 'absent', 'error': str(exc)}
         external = value.get('data', {}).get('message_id')
         if not external:
             return {'state': 'unknown'}
@@ -144,8 +159,9 @@ def main():
     args = parser.parse_args()
     try:
         result = deliver(args, json.load(sys.stdin))
-    except (OSError, ValueError, subprocess.TimeoutExpired):
-        result = {'state': 'unknown'}
+    except (OSError, ValueError, subprocess.TimeoutExpired, Unstartable) as exc:
+        # 对账或读回复时起不来，说明不了以前发没发过。
+        result = {'state': 'unknown', 'error': type(exc).__name__ + ': ' + str(exc)}
     print(json.dumps(result))
 
 

@@ -1,7 +1,9 @@
 """独立服务部署边界；launchctl 为可控外部边界，真实进程另做隔离演练。"""
 import hashlib
+import os
 from pathlib import Path
 import plistlib
+import pwd
 import runpy
 import subprocess
 
@@ -43,6 +45,12 @@ def test_install_then_repeat_is_idempotent_and_independent(installer):
     path = Path(loaded[0])
     plist = plistlib.loads(path.read_bytes())
     assert plist['KeepAlive'] and plist['RunAtLoad']
+    # 重装后送达命令要找得到 lark-cli：和车间守护进程共用一份 PATH。
+    agents = runpy.run_path(str(ROOT / 'scripts/launch_agents.py'))
+    # 安装器按系统用户的家目录算 PATH（发版和检查副本里 HOME 是临时目录），这里也一样，不读 HOME。
+    home = Path(pwd.getpwuid(os.getuid()).pw_dir)
+    assert plist['EnvironmentVariables']['PATH'] == agents['search_path'](home)
+    assert '/opt/homebrew/bin' in plist['EnvironmentVariables']['PATH'].split(':')
     assert plist['ProgramArguments'][:4] == [str(args[3]), '-I', '-m', 'workshop.plugins.intervention']
     assert module['activate'](*args)['action'] == 'unchanged'
     assert len([a for a in calls if a[1] == 'bootstrap']) == 1
