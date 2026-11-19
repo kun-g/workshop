@@ -24,6 +24,8 @@ targets:
         triggers: *issue_triggers
         # issue交付 R13（ws#215）：接单核对登记（程序）→ 执行一轮做到 PR 去掉 Draft → 交付查两段 DoD、合并、上线（程序）→ 收尾（程序）。
         stages: [接单, 执行, 交付, 收尾]
+        # 核心 R24（ws#280）：执行阶段按活号固定分给写代码候选之一，攒数据比各执行者；审查、验收照旧 quota。
+        stage_selectors: {执行: experiment}
       scheduled_release:
         triggers: [{source: main_branch, when: {kind: ahead}, action: ready}]
         pending_limit: 24
@@ -112,6 +114,8 @@ targets:
         # 写了上线后 DoD 的活要等整点发版：在跑的守护进程版本包含合并提交才算上线；等待次数按整点批次放宽。
         deployment: {kind: running}
         pending_limit: 24
+        # 核心 R24（ws#280）：执行阶段按活号固定分给写代码候选之一，攒数据比各执行者；审查、验收照旧 quota。
+        stage_selectors: {执行: experiment}
       scheduled_release:
         triggers: [{source: main_branch, when: {kind: ahead}, action: ready}]
         scheduled_release_state_dir: ~/.local/state/workshop

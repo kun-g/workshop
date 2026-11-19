@@ -47,8 +47,9 @@ def choose(path, stage, writer=None, candidates=None):
                                                    [{"config": c, "available": True} for c in configs])
 
 
-def test_all_stages_use_quota_and_writer_tries_codex_first():
-    for stage in ("接单", "说清楚", "执行", "证据", "审查", "交付", "验收", "收尾"):
+def test_all_stages_but_execution_use_quota_and_writer_tries_codex_first():
+    # 执行阶段改用 experiment（ws#280），见 test_experiment_selector。
+    for stage in ("接单", "说清楚", "证据", "审查", "交付", "验收", "收尾"):
         assert RULES.selector(stage, "workshop") == "quota"
         assert RULES.selector(stage, "grant-console") == "quota"
     writer = RULES.candidates("执行", "workshop")

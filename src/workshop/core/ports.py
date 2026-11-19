@@ -210,7 +210,10 @@ class Plugins(Protocol):
 class Selector(Protocol):
     def select(self, target: dict, stage: str, round_number: int, history: list[dict],
                candidates: list[dict]) -> Selection | None:
-        """候选含 config 与 available 快照；返回候选配置和理由，None 表示没有可用候选。"""
+        """候选含 config 与 available 快照；返回候选配置和理由，None 表示没有可用候选。
+
+        target["selection"] 是挑选上下文：writer、reviewed、retry_executor、excluded，
+        以及 item（活号）和 rule_candidates（规则里这一阶段的候选名，按规则顺序，未去掉不可用的）。"""
         ...
 
 
