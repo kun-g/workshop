@@ -62,8 +62,6 @@ def one(engine, began=None):
                 engine.cleaned_flows = True
             with Span(spans, "sources"):
                 engine.sources()
-            with Span(spans, "channels"):
-                engine.channels()
             with Span(spans, "timers"):
                 engine.timers()
             with Span(spans, "waits"):
@@ -77,8 +75,6 @@ def one(engine, began=None):
                 managers.tick(engine)
             with Span(spans, "release"):
                 engine.release_workdirs()
-            with Span(spans, "channels_2"):
-                engine.channels()
             with Span(spans, "heartbeat"):
                 engine.heartbeat(began)
             with Span(spans, "restart"):
@@ -96,7 +92,7 @@ def advance(engine, item):
     item = relations.admit(engine, item)
     if item is None:
         return
-    if item["state"] == "等你" and not engine.answerable(item):
+    if item["state"] == "等你" and not engine.waiting(item):
         engine.change(item, state="等你", next=item.get("next"), leave=item.get("leave"),
                       gate_reason=item.get("gate_reason") or item.get("blocked_by"))
         item = engine.log.get("items", item["id"])
@@ -112,7 +108,6 @@ def advance(engine, item):
                 # 正在收回的目录不能同时给新一轮用；本拍末尾先结算收回结果。
                 return
         with engine.log.transaction():
-            engine.cancel_questions(item)
             engine.change(item, stage="执行" if item["checks"] else "说清楚", state="空闲",
                           **({} if item["checks"] else {"serial_hold": False}),
                           pending_rework=False, approved=[], pending_advance=None, reviews=[], review_required=1,

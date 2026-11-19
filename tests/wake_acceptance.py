@@ -19,21 +19,17 @@ from workshop.registry import Registry
 
 
 class Source:
-    def poll(self, target, cursor):
-        time.sleep(0.2)  # 验收规定的假作业延迟，仅用于本手动脚本。
-        return Poll([], "completed")
-
-
-class Channel:
+    """来源也声明一个唤醒文件：文件被原子替换后，缓存的读取作废、立即重查（原先由已退役的通道演示）。"""
     def wake_paths(self, target):
         return [str(Path(os.environ["WAKE_ACCEPTANCE_STATE"]) / "answer")]
 
-    def poll(self, cards):
+    def poll(self, target, cursor):
+        time.sleep(0.2)  # 验收规定的假作业延迟，仅用于本手动脚本。
         root = Path(os.environ["WAKE_ACCEPTANCE_STATE"])
         source = root / "answer"
         (root / "polled").write_text(json.dumps({"value": source.read_text() if source.exists() else "",
                                                 "at": time.monotonic()}))
-        return []
+        return Poll([], "completed")
 
 
 class Flow:
@@ -46,7 +42,6 @@ class Flow:
 def registry(*args):
     result = Registry()
     result.register("source", "fake", Source())
-    result.register("channel", "fake", Channel())
     result.register("flow", "fake", Flow())
     return result
 
@@ -61,7 +56,7 @@ def service():
                 out.write(json.dumps({"at": time.time(), "wait": value, "due": self.jobs.due}) + "\n")
             return value
     cli.Engine = TracedEngine
-    FRESH["source", "poll"] = FRESH["channel", "poll"] = 120
+    FRESH["source", "poll"] = 120
     class ServiceJobs(Jobs):
         def __init__(self, directory, command):
             super().__init__(directory, [sys.executable, __file__, "--service", *command[3:]])
@@ -90,7 +85,7 @@ def main():
     with tempfile.TemporaryDirectory(prefix="ws-accept-", dir="/tmp") as directory:
         root = Path(directory)
         config = {"targets": {"alpha": {"plugin": "fake", "sources": ["fake"]}},
-                  "channel": "fake", "executors": {r: {"use": "fake", "billing": "subscription"} for r in ("writer", "reviewer", "acceptor")},
+                  "executors": {r: {"use": "fake", "billing": "subscription"} for r in ("writer", "reviewer", "acceptor")},
                   "limits": {"concurrent": 1, "chain_depth": 8}, "ask_first": [], "skip_ask": []}
         rules = root / "rules.json"
         rules.write_text(json.dumps(config))
@@ -127,7 +122,7 @@ def main():
             value = wait_for(lambda: (v if (v := read(root / "polled")).get("value") == "clicked" else None))
             file_ms = (value["at"] - changed) * 1000
             assert file_ms <= 1000
-            print(f'通道文件原子替换后重查：{file_ms:.3f} ms（未等 20 秒新鲜期）', flush=True)
+            print(f'唤醒文件原子替换后重查：{file_ms:.3f} ms（未等 20 秒新鲜期）', flush=True)
             # 已结束的启动/结果信都消费后，观察无新信时的下一次心跳。
             time.sleep(0.3)
             baseline = read(root / "heartbeat.json")

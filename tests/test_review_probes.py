@@ -12,17 +12,13 @@ import threading
 import pytest
 
 from workshop.cli import main
-from workshop.core.cards import question, notice, validate_question
 from workshop.core.engine import Engine
 from workshop.core.log import Log
-from workshop.core.models import Answer, Event, Evidence, stamp
+from workshop.core.models import Event, Evidence, stamp
+from workshop.core import waits
 from workshop.core.ports import Retryable
 from workshop.core.rules import Rules
-from conftest import build, current, event, finish, item, reach
-
-
-def ask(key="d", text="选哪个"):
-    return {"key": key, **question(text)}
+from conftest import build, current, event, finish, item, pause_for_kun, reach
 
 
 def test_0_taskhome_optional_and_default_unconfigured(engine):
@@ -55,7 +51,8 @@ def crash_and_repair(engine):
 
 def test_B_resume_restores_waiting_not_running(engine):
     reach(engine, "执行")
-    finish(engine, ask=[ask()])
+    pause_for_kun(engine)
+    finish(engine, "证据")
     crash_and_repair(engine)
     assert item(engine)["state"] == "等你"
     assert not any(r["item"] == "alpha:one" for r in engine.active())
@@ -63,16 +60,18 @@ def test_B_resume_restores_waiting_not_running(engine):
 
 def test_C_answer_keeps_concurrent_event_and_monotonic_cause(engine):
     reach(engine, "执行")
-    finish(engine, ask=[ask()])
-    card = engine.log.all("cards")[0]
-    channel = engine.plugins.get("channel", "channel")
-    def poll(cards):
+    port = pause_for_kun(engine)
+    finish(engine, "证据")
+    original = port.poll
+    def poll(ref, config):
         other = Engine(Log(engine.log.path), engine.rules, engine.plugins, engine.clock)
         other.ingest(event(ext_id="late"))
         other.log.close()
-        return [Answer(card["id"], "继续")]
-    channel.poll = poll
-    engine.channels()
+        port.ready[ref] = "answered"
+        return original(ref, config)
+    port.poll = poll
+    waits.reconcile(engine)
+    assert item(engine)["state"] == "空闲"
     seq = next(f["seq"] for f in engine.log.facts() if f["kind"] == "event" and f["ext_id"] == "late")
     assert seq in [m.get("seq") for m in item(engine)["materials"]]
     engine.change(item(engine), cause=1)
@@ -146,19 +145,6 @@ def test_I_failed_acceptance_returns_to_execution(engine):
     engine.tick()
     assert current(engine)["stage"] == "执行"
     assert item(engine)["failures"] == 0
-
-
-def test_J_answers_have_questions_and_are_separate_from_external_text(engine):
-    reach(engine, "执行")
-    finish(engine, ask=[ask("a", "用哪个库"), ask("b", "要不要迁移")])
-    cards = engine.log.all("cards")
-    engine.plugins.get("channel", "channel").answers = [Answer(cards[0]["id"], "乙"), Answer(cards[1]["id"], "甲")]
-    engine.tick()
-    brief = current(engine)["brief"]
-    assert [a["title"] for a in brief["answers"]] == ["用哪个库", "要不要迁移"]
-    assert [a["key"] for a in brief["answers"]] == ["a", "b"]
-    assert all(a["role"] == "Kun 的回答" and a["card"] for a in brief["answers"])
-    assert not any(m.get("source") == "回答" for m in brief["materials"])
 
 
 def test_K_missing_authorization_blocks_without_repeating_review(engine):
@@ -251,15 +237,6 @@ def test_9_executor_receives_target_and_absolute_runtime_cli(engine, tmp_path):
     assert engine.log.get("rounds", row["token"])["status"] == "finishing"
 
 
-def test_10_core_and_receipt_cards_have_strict_format(engine):
-    reach(engine, "执行")
-    finish(engine, ask=[ask()])
-    for card in engine.log.all("cards"):
-        validate_question(card["payload"])
-    with pytest.raises(ValueError):
-        engine.submit("missing", {"outcome": "done", "summary": "x", "ask": [dict(key="k", title="old", options=["A"])]})
-
-
 def test_11_next_round_sees_previous_conclusions(engine):
     reach(engine, "审查")
     flow = engine.plugins.get("flow", "flow")
@@ -340,42 +317,6 @@ def test_18_cli_event_infers_chain_depth(engine, tmp_path):
     assert item(engine, "child")["depth"] == 9 and item(engine, "child")["state"] == "卡住"
 
 
-def test_19_send_crash_reconciles_instead_of_sending_twice(engine, monkeypatch):
-    reach(engine, "执行")
-    channel = engine.plugins.get("channel", "channel")
-    original = channel.ask
-    calls = []
-    def ask_then_crash(key, card):
-        calls.append(key)
-        original(key, card)
-        raise KeyboardInterrupt()
-    monkeypatch.setattr(channel, "ask", ask_then_crash)
-    with pytest.raises(KeyboardInterrupt):
-        finish(engine, ask=[ask()])
-    assert engine.log.all("cards")[0]["sending"]
-    monkeypatch.setattr(channel, "ask", original)
-    engine.tick()
-    assert len(calls) == 1 and engine.log.all("cards")[0]["sent"]
-
-
-def test_20_delivery_failure_dedup_and_new_incident(engine):
-    reach(engine, "执行")
-    channel = engine.plugins.get("channel", "channel")
-    channel.down = True
-    finish(engine, ask=[ask()])
-    engine.tick()
-    engine.tick()
-    card = engine.log.all("cards")[0]
-    assert len([f for f in engine.log.facts() if f["kind"] == "delivery_failed" and f["body"]["key"] == card["id"]]) == 1
-    channel.down = False
-    engine.tick()
-    engine.cancel_questions(item(engine))
-    channel.down = True
-    engine.tick()
-    engine.tick()
-    assert len([f for f in engine.log.facts() if f["kind"] == "delivery_failed" and f["body"]["key"] == card["id"]]) == 2
-
-
 def test_21_pause_resume_do_not_take_tick_lock(engine, monkeypatch):
     monkeypatch.setattr(engine, "exclusive", lambda: (_ for _ in ()).throw(AssertionError("不得拿 tick 锁")))
     engine.pause("alpha")
@@ -391,19 +332,6 @@ def test_22_usage_receives_round_start_time(engine):
     assert engine.plugins.get("executor", "writer").since == row["at"]
 
 
-def test_23_rework_cancels_old_questions_and_ignores_late_answer(engine):
-    reach(engine, "执行")
-    finish(engine, ask=[ask()])
-    card = engine.log.all("cards")[0]
-    engine.ingest(event(ext_id="back", action="rework"))
-    engine.tick()
-    assert engine.log.get("cards", card["id"])["cancel_done"]
-    engine.plugins.get("channel", "channel").answers = [Answer(card["id"], "过期答案", True)]
-    engine.tick()
-    assert not any(m.get("body") == "过期答案" for m in item(engine)["materials"])
-    assert current(engine)["stage"] == "执行"
-
-
 def test_24_tick_exception_is_recorded_and_next_tick_runs(engine, monkeypatch):
     original = engine._tick
     monkeypatch.setattr(engine, "_tick", lambda: (_ for _ in ()).throw(RuntimeError("意外错误")))
@@ -417,8 +345,7 @@ def test_24_tick_exception_is_recorded_and_next_tick_runs(engine, monkeypatch):
 
 def test_26_no_card_wait_only_explicit_ready_event_releases(engine):
     reach(engine, "说清楚")
-    finish(engine, leave={"kind": "等你", "about": "需要聊清楚验收标准"},
-           notice=[{"key": "clarify", **notice("验收标准没说清，先等放行，不用回卡")}])
+    finish(engine, leave={"kind": "等你", "about": "需要聊清楚验收标准"})
     assert item(engine)["state"] == "卡住" and not engine.active()
     assert not engine.log.all("cards")
     engine.ingest(event(ext_id="comment", action="update"))
@@ -443,26 +370,15 @@ def test_4_timer_due_during_fault_runs_after_repair(engine):
 
 def test_4_answer_during_fault_is_used_after_repair(engine):
     reach(engine, "执行")
-    finish(engine, ask=[ask()])
-    card = engine.log.all("cards")[0]
+    port = pause_for_kun(engine)
+    finish(engine, "证据")
     engine.broken("alpha", "source", "source", RuntimeError("坏了"))
-    engine.plugins.get("channel", "channel").answers = [Answer(card["id"], "继续")]
+    port.ready["decision"] = "answered"
     engine.tick()
     engine.resume("alpha", [])
     engine.tick()
-    assert current(engine)["stage"] == "执行"
-
-
-def test_19_uncertain_reconciliation_never_resends(engine, monkeypatch):
-    reach(engine, "执行")
-    channel = engine.plugins.get("channel", "channel")
-    channel.down = True
-    finish(engine, ask=[ask()])
-    channel.down = False
-    monkeypatch.setattr(channel, "reconcile", lambda *args: None)
-    monkeypatch.setattr(channel, "ask", lambda *args: (_ for _ in ()).throw(AssertionError("不得盲目重发")))
     engine.tick()
-    assert engine.log.all("cards")[0]["sending"] and not engine.log.all("cards")[0]["sent"]
+    assert current(engine)["stage"] == "执行"
 
 
 @pytest.mark.parametrize("term", ["issues", "Issue", "PRs", "merged", "pull_request", "worktree", "my_issue_id", "NewIssue"])
@@ -479,7 +395,7 @@ def test_25_core_term_check_rejects_variants(tmp_path, term):
 
 def test_26_ready_during_fault_retains_original_stage(engine):
     reach(engine, "说清楚")
-    finish(engine, leave={"kind": "等你", "about": "先聊清楚"}, notice=[{"key": "wait", **notice("等待放行")}])
+    finish(engine, leave={"kind": "等你", "about": "先聊清楚"})
     engine.broken("alpha", "source", "source", RuntimeError("坏了"))
     engine.ingest(event(ext_id="ready", action="ready"))
     engine.resume("alpha", [])
@@ -504,9 +420,11 @@ def test_14_first_review_with_question_is_not_counted_as_passed(engine):
     engine.rules = Rules.validate(config)
     reach(engine, "审查")
     original_session = current(engine)["started"]["session"]
-    finish(engine, "交付", ask=[ask()])
-    card = engine.log.all("cards")[0]
-    engine.plugins.get("channel", "channel").answers = [Answer(card["id"], "继续")]
+    port = pause_for_kun(engine)
+    finish(engine, "交付")
+    assert item(engine)["state"] == "等你"
+    port.ready["decision"] = "answered"
+    engine.tick()
     engine.tick()
     assert not item(engine)["reviews"]
     assert current(engine)["started"]["session"] == original_session

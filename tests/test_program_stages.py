@@ -133,10 +133,8 @@ def test_program_gate_failure_never_calls_after(engine, monkeypatch):
 
 
 @pytest.mark.parametrize('rerun', [False, True])
-@pytest.mark.parametrize('notices', ['send', 'hold'])
-def test_program_pending_limit_without_notice(engine, monkeypatch, rerun, notices):
+def test_program_pending_limit_without_notice(engine, monkeypatch, rerun):
     flow = automatic(engine, monkeypatch)
-    engine.rules.data['notices'] = notices
     keys = []
     def after(i, s, k, t):
         keys.append(k)

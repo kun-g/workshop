@@ -136,7 +136,6 @@ def test_batch_failure_preserves_reason_and_does_not_repeat(cluster, monkeypatch
     result = flow.after(data, '交付', 'deploy', target)
     assert bool(result.blocked) == (status == 'blocked')
     assert 'req-one' in (result.blocked or read(io.root(target) / 'batches' / (hashlib.sha256(data['id'].encode()).hexdigest() + '.json'))['reason'])
-    assert not result.notice
     assert read(io.root(target) / 'cluster-release.json')['status'] == status
     assert flow.after(data, '交付', 'deploy', target) == result
     assert not (io.root(target) / 'release.json').exists()
@@ -312,7 +311,7 @@ def test_timed_out_pending_grant_only_polls_existing_request(cluster, monkeypatc
     assert ScheduledRelease(io).after(data, '交付', 'deploy', target).pending
     status = 'expired'
     result = ScheduledRelease(io).after(data, '交付', 'deploy', target)
-    assert not result.pending and not result.blocked and not result.notice
+    assert not result.pending and not result.blocked
     assert read(io.root(target) / 'cluster-release.json')['status'] == 'rejected'
     assert calls == ['req-one', 'req-one']
 

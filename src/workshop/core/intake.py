@@ -3,7 +3,7 @@ from dataclasses import asdict, replace
 from datetime import datetime, timedelta
 import json
 from .gates import advance_problem, validate_stages, initial_stage
-from .models import Event, Receipt, ReceiptError, stamp
+from .models import Event, Receipt, stamp
 from .ports import Retryable
 from .models import Classification
 from .jobs import Pending
@@ -164,9 +164,6 @@ def after_abandon(engine, item_id, seq, action):
 
 def submit(engine, token: str, data: dict) -> bool:
     row = engine.log.get("rounds", token) if isinstance(token, str) else None
-    if row and row.get("question_blocked") and row.get("receipt") is not None:
-        if data == row["question_rejections"][-1]["receipt"]:
-            return False  # 第二次坏卡已结算；调用方重发原文也不能再结算。
     try:
         try:
             receipt = Receipt.parse(data, engine.clock())
@@ -192,25 +189,7 @@ def submit(engine, token: str, data: dict) -> bool:
             if validate:
                 validate(item, receipt, target)
     except (ValueError, TypeError, KeyError) as exc:
-        ask_only = isinstance(exc, ReceiptError) and exc.ask_only
-        if ask_only:
-            # 先核对其余协议和动态约束，不能把阶段错误或未知目标藏在坏卡后面。
-            clean = {**data, "ask": [], "leave": None}
-            try:
-                candidate = Receipt.parse(clean, engine.clock())
-                for event in candidate.events:
-                    engine.rules.target(event["target"])
-                if engine.advance_error(token, candidate.advance):
-                    ask_only = False
-            except (ValueError, TypeError, KeyError):
-                ask_only = False
-        with engine.log.transaction():
-            count = engine.receipt_rejected(token, exc, data=data, ask_only=ask_only)
-            if ask_only and count >= 2:
-                # 保存原证据，但不执行这份回执要求的任何动作；由项目经理修复后恢复。
-                engine.fact("round_changed", {"token": token, "question_blocked": True}, row["item"])
-                return engine.submit(token, {"outcome": "nothing", "summary": "问卡格式不对，修正后恢复",
-                                           "evidence": candidate.evidence})
+        engine.receipt_rejected(token, exc)
         raise
     with engine.log.transaction():
         row = engine.log.get("rounds", token)
@@ -253,15 +232,11 @@ def failure_reason(row, receipt):
     return receipt.summary
 
 
-def receipt_rejected(engine, token, exc, *, data=None, ask_only=False):
+def receipt_rejected(engine, token, exc):
     row = engine.log.get("rounds", token) if isinstance(token, str) else None
     if not row or row.get("receipt") is not None or row["status"] not in ("starting", "running"):
-        return 0
-    with engine.log.transaction():
-        rejected = [*row.get("question_rejections", []), {"receipt": data, "reason": str(exc)}] if ask_only else []
-        engine.fact("round_changed", {"token": token, "receipt_rejected": str(exc),
-                  "question_rejections": rejected}, row["item"])
-        return len(rejected)
+        return
+    engine.fact("round_changed", {"token": token, "receipt_rejected": str(exc)}, row["item"])
 
 
 def sources(engine):

@@ -11,18 +11,17 @@ import yaml
 from workshop.cli import main
 from workshop.core.engine import Engine
 from workshop.core.log import Log
-from workshop.core.models import Answer, stamp
+from workshop.core.models import After, stamp
 from workshop.core.ports import Retryable
 from workshop.reports.report import model_metrics, status, usage
 from workshop.core.rules import Rules
 from workshop.core.view import TABLES
-from conftest import current, event, finish, item, reach
+from conftest import current, event, finish, item, reach, use_wait
 
 
 def wait_without_card(engine):
     reach(engine, "说清楚")
-    finish(engine, leave={"kind": "等你", "about": "等放行"},
-           notice=[{"key": "wait", "text": "先说清楚，不用回卡"}])
+    finish(engine, leave={"kind": "等你", "about": "等放行"})
     assert item(engine)["state"] == "卡住"
     return engine.log.all("rounds")[-1]["token"]
 
@@ -206,51 +205,6 @@ def test_5_receipt_reads_snapshot_even_with_broken_rule_file(engine, tmp_path):
     assert loaded.log.get("rounds", token)["status"] == "finishing"
 
 
-def test_6_uncertain_delivery_records_failure_and_is_visible(engine, monkeypatch):
-    reach(engine, "执行")
-    channel = engine.plugins.get("channel", "channel")
-    sends = []
-    def lost(key, card):
-        sends.append(key)
-        raise ConnectionError("回包丢失")
-    monkeypatch.setattr(channel, "ask", lost)
-    monkeypatch.setattr(channel, "reconcile", lambda *args: None)
-    finish(engine, ask=[{"key": "design", "title": "选方案", "options": ["A", "B"]}])
-    for _ in range(5):
-        engine.channels()
-    card = engine.log.all("cards")[0]
-    assert len(sends) == 1
-    assert len([f for f in engine.log.facts() if f["kind"] == "reconcile_failed"]) == 1
-    assert len([c for c in engine.log.all("cards") if c.get("reconciliation_alert")]) == 0
-    assert "通道待对账" in status(engine.log) and card["id"] in status(engine.log)
-    reconciled = []
-    def found(key, card):
-        reconciled.append(key)
-        return f"found:{key}"
-    monkeypatch.setattr(channel, "reconcile", found)
-    # 告警之后不每拍对账（每拍起作业会把主循环一直叫醒）；到间隔才再对一次。
-    engine.channels()
-    assert reconciled == [] and not engine.log.get("cards", card["id"])["sent"]
-    engine.clock.now += timedelta(seconds=60)
-    engine.channels()
-    assert reconciled == [card["id"]]
-    assert engine.log.get("cards", card["id"])["sent"]
-    assert "通道待对账" not in status(engine.log)
-
-
-def test_6_uncertain_alert_does_not_recursively_create_alerts(engine, monkeypatch):
-    reach(engine, "执行")
-    channel = engine.plugins.get("channel", "channel")
-    monkeypatch.setattr(channel, "ask", lambda *args: (_ for _ in ()).throw(ConnectionError("不确定")))
-    monkeypatch.setattr(channel, "notify", lambda *args: (_ for _ in ()).throw(ConnectionError("也不确定")))
-    monkeypatch.setattr(channel, "reconcile", lambda *args: None)
-    finish(engine, ask=[{"key": "q", "title": "选择", "options": ["A", "B"]}])
-    for _ in range(12):
-        engine.channels()
-    assert len(engine.log.all("cards")) == 1
-    assert len([f for f in engine.log.facts() if f["kind"] == "reconcile_failed"]) == 1
-
-
 def test_7_finish_retryable_backs_off_and_faults_at_three(engine, monkeypatch):
     reach(engine, "执行")
     executor = engine.plugins.get("executor", "writer")
@@ -279,39 +233,15 @@ def test_7_finish_retryable_backs_off_and_faults_at_three(engine, monkeypatch):
 
 
 def approval_wait(engine):
-    from workshop.core.cards import question
+    """审查阶段停在「等你」：用真实等待引用（问卡已退役）。返回等待端口和 ref。"""
     reach(engine, "审查")
-    finish(engine, ask=[{"key": "question", **question("选择下一步", approval=True)}])
-    return next(c for c in engine.log.all("cards") if c["key"].endswith("question"))
-
-
-def test_8_question_feedback_preserves_choice_without_authorizing(engine):
-    card = approval_wait(engine)
-    engine.plugins.get("channel", "channel").answers = [Answer(card["id"], "no", False)]
-    engine.tick()
-    assert current(engine)["stage"] == "审查"
-    assert any(m.get("body") == "no" and m["choice_label"] == "不批准" for m in item(engine)["materials"])
-    assert not item(engine)["approved"]
-
-
-@pytest.mark.parametrize("choice,claimed", [("yes", False), ("no", True)])
-def test_9_question_cannot_authorize_actions(engine, choice, claimed):
-    card = approval_wait(engine)
-    engine.plugins.get("channel", "channel").answers = [Answer(card["id"], choice, claimed)]
-    engine.tick()
-    assert current(engine)["stage"] == "审查"
-    assert not item(engine)["approved"]
-
-
-def test_9_plugin_own_question_retains_its_approval_field(engine):
-    reach(engine, "执行")
-    finish(engine, ask=[{"key": "q", "title": "自己的问题", "options": ["A", "B"]}])
-    card = engine.log.all("cards")[0]
-    assert not card.get("core_approval")
-    engine.plugins.get("channel", "channel").answers = [Answer(card["id"], "custom", True)]
-    engine.tick()
-    assert next(f for f in engine.log.facts() if f["kind"] == "answer")["body"]["approved"] is True
-    assert not item(engine)["approved"]  # 插件问题没有核心动作授权范围。
+    port = use_wait(engine)
+    engine.plugins.get("flow", "flow").after = lambda *args: After(
+        pending=True, reason="等 Kun 批准", next="等 Kun 回答",
+        wait={"provider": "wait", "ref": "approval", "operation": "bind:approval"})
+    finish(engine, "交付")
+    assert item(engine)["state"] == "等你" and item(engine)["stage"] == "审查"
+    return port, "approval"
 
 
 def test_10_only_ended_rounds_enter_usage_and_model_groups(engine):

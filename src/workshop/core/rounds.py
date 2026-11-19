@@ -2,7 +2,7 @@
 from dataclasses import asdict, replace
 from datetime import datetime, timedelta
 from .gates import decide
-from .models import Event, Receipt, STAGES, Started, due, stamp
+from .models import Event, Receipt, RETIRED_FIELDS, STAGES, Started, due, stamp
 from .ports import Unavailable, Retryable
 from .models import After, Evidence, RoundUsage
 from .jobs import Pending
@@ -167,11 +167,11 @@ def finish(engine, row):
     port, name = "flow", engine.item_target(item)["plugin"]
     try:
         received_at = datetime.fromisoformat(row["received"])
-        receipt = Receipt.parse(row["receipt"], received_at)
+        # 已收下的回执：旧版本存下的 ask、notice 没有去处，去掉再核对。
+        receipt = Receipt.parse({k: v for k, v in row["receipt"].items() if k not in RETIRED_FIELDS}, received_at)
         target = engine.item_target(item)
         port, name = "flow", target["plugin"]
-        evidence = (Evidence(blocked="问卡格式不对", next="项目经理修正问卡格式后恢复当前阶段") if row.get("question_blocked") else
-                    Evidence(**row["assessment"]) if row.get("assessment") else
+        evidence = (Evidence(**row["assessment"]) if row.get("assessment") else
                     Evidence() if row.get("automatic_failure") else
                     engine.call(port, name, "assess", item, receipt, target,
                               identity=[item["id"], item["stage"], token, row["receipt"]], item=item["id"]))
@@ -179,7 +179,7 @@ def finish(engine, row):
         if evidence.superseded:
             receipt = Receipt("nothing", receipt.summary)
         elif (evidence.handoff and not evidence.blocked and receipt.outcome != "failed"
-              and (program or not (receipt.ask or receipt.later or receipt.leave))):
+              and (program or not (receipt.later or receipt.leave))):
             # 流程按外部状态判交接：不看回执自报的推进，没交接到就按本阶段没做完重来。
             # 程序步在最后一段自带「已收尾」登记，交接走了就不算收尾，去掉它。
             receipt = replace(receipt, outcome="done", advance=evidence.handoff,
@@ -193,19 +193,20 @@ def finish(engine, row):
             engine.fact("round_changed", {"token": token, "assessment": asdict(evidence)}, item["id"])
         required = engine.required_reviews(item, evidence, target)
         reviews = list(item.get("reviews", []))
-        reviewing = not program and item["stage"] == "审查" and evidence.passed and receipt.outcome == "done" and not receipt.ask
+        reviewing = not program and item["stage"] == "审查" and evidence.passed and receipt.outcome == "done"
         if reviewing and row["config"]["family"] not in reviews:
             reviews.append(row["config"]["family"])
         another_review = reviewing and len(reviews) < required
         rejected = item["stage"] == "验收" and not evidence.passed and not evidence.blocked and not evidence.superseded and not row.get("automatic_failure")
-        wait_ready = receipt.leave and receipt.leave["kind"] == "等你" and not receipt.ask and not engine.answerable(item)
-        missing_leave = decision.complete and not (receipt.leave or receipt.ask or receipt.later)
+        # 「等你」只看有效等待引用：流程没登记等待的等你不成立，交项目经理。
+        wait_ready = receipt.leave and receipt.leave["kind"] == "等你" and not engine.waiting(item)
+        missing_leave = decision.complete and not (receipt.leave or receipt.later)
         advancing = (receipt.outcome == "done" and decision.allowed and not missing_leave
-                     and not receipt.ask and not engine.waiting(item) and not wait_ready and not another_review and not rejected and not evidence.blocked
+                     and not engine.waiting(item) and not wait_ready and not another_review and not rejected and not evidence.blocked
                      and not evidence.awaits_update)
         after_result = After()
         rechecking = (bool(evidence.recheck_after) and receipt.outcome == "nothing" and not receipt.advance
-                      and not receipt.ask and not receipt.later and not receipt.leave and not engine.waiting(item))
+                      and not receipt.later and not receipt.leave and not engine.waiting(item))
         if advancing or evidence.pause:
             key = f"after:{token}"
             after_result = engine.after({**item, "result": receipt.json()}, row["stage"], key, target)
@@ -216,12 +217,6 @@ def finish(engine, row):
             engine.fact("program_result" if program else "round_result", {"token": token, "stage": row["stage"], "outcome": receipt.outcome,
                       "summary": summary, "evidence": receipt.evidence, "reason": evidence.reason},
                       item["id"], source="result", ext_id=token)
-            for ask in ([] if evidence.pause else receipt.ask):
-                engine.card(item, f'{token}:{ask["key"]}', "ask", ask)
-            completed = advancing and (decision.complete or (
-                bool(evidence.done_key) and STAGES.index(decision.stage) > STAGES.index(row["stage"])))
-            if not evidence.pause:
-                engine.receipt_notices(item, row["stage"], token, receipt, evidence, completed)
             for later in receipt.later:
                 engine.timer(item, f'{token}:{later["key"]}', later["at"], later["about"], base=received_at)
             # 最后一个程序阶段的 leave 是自动补的收尾登记，不是后续工序。
@@ -229,7 +224,8 @@ def finish(engine, row):
             if (receipt.leave and receipt.leave["kind"] in ("工序", "送回")
                     and not (program and decision.complete)):
                 leave = receipt.leave
-                engine.timer(item, f"leave:{token}", leave["at"], leave["about"], leave["kind"], leave.get("owner", "Kun"), base=received_at)
+                # 到点车间接着做（介入点 R10）：送回不再默认找 Kun。
+                engine.timer(item, f"leave:{token}", leave["at"], leave["about"], leave["kind"], leave.get("owner", "车间"), base=received_at)
             changes = dict(failures=0, round=None, retry_at=None, cause=max(item["cause"], row["receipt_seq"]),
                            retry_executor=None, review_required=required, reviews=reviews,
                            # 没跑成的原因交给流程写进下一轮说明；跑成了就清掉。
@@ -240,7 +236,6 @@ def finish(engine, row):
                 # 说清楚时登记的预计路径和之后实际改动的并集，串行路径排队按它判。
                 changes["paths"] = sorted(set(item.get("paths", [])) | set(evidence.paths))
             if evidence.superseded:
-                engine.cancel_questions(item)
                 changes.update(state="空闲", next=evidence.reason, approved=[], pending_advance=None,
                                pending_episode=item.get("pending_episode", 0) + 1,
                                after_wait=None, gate_count=0, blocked_by="", serial_hold=False)
@@ -279,7 +274,7 @@ def finish(engine, row):
             elif receipt.outcome == "failed":
                 changes.update(engine.failure_changes(item, row))
             elif wait_ready:
-                changes.update(state="卡住", wait_for_ready=True, next="项目经理处理阻塞；需要判断时提交问卡",
+                changes.update(state="卡住", wait_for_ready=True, next="项目经理处理阻塞；要 Kun 取舍时按流程登记等待",
                                blocked_by=receipt.leave["about"], leave=engine.blocked_leave(receipt.leave["about"]))
             elif another_review:
                 changes.update(stage="审查", state="空闲", next="另一家审查", gate_count=0,
@@ -293,11 +288,11 @@ def finish(engine, row):
                     changes.update(approved=[], reviews=[], review_required=1)
                 engine.fact("gate_passed", {"gate_reason": decision.reason, "gate_stage": decision.stage, "actions": evidence.actions,
                             "action_targets": evidence.action_targets, "authorized_actions": evidence.authorized_actions}, item["id"])
-            elif decision.needs_approval and receipt.outcome == "done" and not receipt.ask:
+            elif decision.needs_approval and receipt.outcome == "done":
                 changes.update(state="卡住", next="流程按原申请号核实授权中心的结果后恢复",
                                blocked_by=decision.reason, leave=engine.blocked_leave(decision.reason))
                 engine.fact("gate_blocked", {"gate_reason": decision.reason}, item["id"])
-            elif not program and (receipt.ask or receipt.later or receipt.leave):
+            elif not program and (receipt.later or receipt.leave):
                 leave = receipt.leave
                 if not leave and receipt.later:
                     first = receipt.later[0]

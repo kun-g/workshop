@@ -9,14 +9,15 @@ from workshop.core.models import After, Classification, FlowBrief
 from workshop.core.view import TABLES
 
 
-def test_external_creation_waits_for_classification_and_routes_by_card(engine, monkeypatch):
+def test_external_creation_waits_for_classification_and_routes_by_object_key(engine, monkeypatch):
+    # 按卡片外部编号找活已随问卡退役（#176）；查找只认对象键。
     engine.ingest(event())
     original = item(engine)
-    card = engine.card(original, 'test', 'notice', {'subject': 'test', 'text': 'test', 'fyi': True})
-    engine.fact('card_changed', {'id': card, 'external': 'Q99'})
     flow = engine.plugins.get('flow', 'flow')
     def classify(ev, existing, target, lookup):
-        found = lookup('Q99')
+        with pytest.raises(TypeError):
+            lookup('Q99')
+        found = lookup(object_key='one')
         assert found['item']['id'] == original['id']
         assert existing is None
         return Classification('update', found['item']['object_key'])

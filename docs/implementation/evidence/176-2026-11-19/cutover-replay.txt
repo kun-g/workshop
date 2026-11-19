@@ -1,0 +1,1358 @@
+
+===== 现役副本：准备 =====
+副本 <回放目录>/live
+现役来源 /Users/kun/.local/state/workshop/workshop.db、/Users/kun/.local/state/workshop-intervention/intervention.db（sqlite 在线备份，只读）
+大小 {'workshop.db': 2335731712, 'intervention.db': 137687040}
+复制耗时 2.59 秒
+
+===== 现役副本：转换前清单 =====
+$ <worktree>/.venv/bin/python <worktree>/scripts/convert_intervention.py --state-dir <回放目录>/live/state --intervention-db <回放目录>/live/intervention/intervention.db --rules <回放目录>/live/rules.yaml --backup-dir <回放目录>/live/backups inventory
+exit=0（0.35 秒）
+inventory：状态目录 <回放目录>/live/state，交付对象 workshop、grant-console，共 190 条
+交付对象	类别	去向	条数
+workshop	介入点送达	保留	2
+workshop	审批卡	历史：已答	9
+workshop	送回定时	取消：活已结束	41
+workshop	通知	历史：已发	48
+workshop	问卡	历史：已答	10
+workshop	非车间工序定时	取消：活已结束	1
+grant-console	frozen_approved	历史：冻结批准	3
+grant-console	审批卡	历史：已作废	1
+grant-console	审批卡	历史：已答	19
+grant-console	送回定时	取消：活已结束	21
+grant-console	通知	历史：已发	33
+grant-console	通道对账记录	历史：通道已退役	1
+grant-console	问卡	历史：已答	1
+
+===== 现役副本：预览 =====
+$ <worktree>/.venv/bin/python <worktree>/scripts/convert_intervention.py --state-dir <回放目录>/live/state --intervention-db <回放目录>/live/intervention/intervention.db --rules <回放目录>/live/rules.yaml --backup-dir <回放目录>/live/backups preview --rows
+exit=0（0.38 秒）
+preview：状态目录 <回放目录>/live/state，交付对象 workshop、grant-console，共 190 条
+交付对象	类别	去向	条数
+workshop	介入点送达	保留	2
+workshop	审批卡	历史：已答	9
+workshop	送回定时	取消：活已结束	41
+workshop	通知	历史：已发	48
+workshop	问卡	历史：已答	10
+workshop	非车间工序定时	取消：活已结束	1
+grant-console	frozen_approved	历史：冻结批准	3
+grant-console	审批卡	历史：已作废	1
+grant-console	审批卡	历史：已答	19
+grant-console	送回定时	取消：活已结束	21
+grant-console	通知	历史：已发	33
+grant-console	通道对账记录	历史：通道已退役	1
+grant-console	问卡	历史：已答	1
+交付对象	类别	原编号	活	去向	理由
+workshop	审批卡	workshop:102:5527fe8f-933e-434b-a117-84215cf62e7a:visual-acceptance	workshop:102	历史：已答（未转）	已答的问卡只留作历史；回答不当授权中心的授权
+workshop	审批卡	workshop:102:c483cf65-9778-45ae-84ca-a5611903dc7b:visual-acceptance	workshop:102	历史：已答（未转）	已答的问卡只留作历史；回答不当授权中心的授权
+workshop	审批卡	workshop:122:4a879cc5-0ef5-4f0a-ba9e-8a6404c0c596:visual-acceptance	workshop:122	历史：已答（未转）	已答的问卡只留作历史；回答不当授权中心的授权
+workshop	审批卡	workshop:14:1b443ef7-a5e2-4ec5-a72e-4d48a531cbd6:incremental-feeds	workshop:14	历史：已答（未转）	已答的问卡只留作历史；回答不当授权中心的授权
+workshop	审批卡	workshop:151:87bd3169-e55a-4fc1-bb33-9e432b82b512:requirement-change	workshop:151	历史：已答（未转）	已答的问卡只留作历史；回答不当授权中心的授权
+workshop	审批卡	workshop:177:f06dd4dc-7a13-4f0a-9aef-c72436c6ab33:requirement-change	workshop:177	历史：已答（未转）	已答的问卡只留作历史；回答不当授权中心的授权
+workshop	审批卡	workshop:184:0567b9f6-e6ed-41c2-bd43-3003b9013666:fixture-state	workshop:184	历史：已答（未转）	已答的问卡只留作历史；回答不当授权中心的授权
+workshop	审批卡	workshop:184:09271153-f9e2-4369-8015-9ef46446c99a:requirement-wording	workshop:184	历史：已答（未转）	已答的问卡只留作历史；回答不当授权中心的授权
+workshop	审批卡	workshop:184:3c576108-414a-486e-be79-3715979eb6e3:visual-acceptance	workshop:184	历史：已答（未转）	已答的问卡只留作历史；回答不当授权中心的授权
+workshop	送回定时	workshop:101:leave:c6c88826-86c4-470d-9f86-737150a6fe3e	workshop:101	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:102:leave:b623bbd5-bfad-4e3b-9151-6b6897520449	workshop:102	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:104:leave:9ee30d88-e9a7-4766-9966-c32a0c090da4	workshop:104	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:107:leave:77fcbbbd-9499-439a-9e00-41ee9dbb3069	workshop:107	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:112:leave:be9f8d55-9930-4f2a-9f13-1da089339b67	workshop:112	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:113:leave:ae336399-bf9f-4525-ac69-f11c0ae98fd9	workshop:113	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:121:leave:c6a0549e-77e7-4de9-a751-c3fa8dc51649	workshop:121	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:122:leave:2180b5bf-b0ba-4d49-a054-8a623a365667	workshop:122	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:122:leave:687db474-b57a-48e4-9a24-ed5385be8192	workshop:122	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:143:leave:ac10a81c-e9a8-49de-a0c2-2e3af95485de	workshop:143	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:144:leave:060e3efd-fd09-445c-8649-24dc87e3811a	workshop:144	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:14:leave:9353b469-3374-4a12-afab-c4c5edb8237c	workshop:14	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:151:leave:1ad584b7-87db-49ed-9f32-8001217fd0b5	workshop:151	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:157:leave:c07f03be-45c8-41cd-89d8-f5c85fb3e32f	workshop:157	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:15:leave:4bbed9f5-bb0d-40e3-ab60-ba79421b1746	workshop:15	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:164:leave:20a83950-0226-468d-9495-c09025d2666e	workshop:164	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:167:leave:ba1ef873-15f2-4081-b2d5-dfdcde2a66cf	workshop:167	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:172:leave:bbc2b169-e5be-44f7-b939-ab514536e946	workshop:172	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:177:leave:490b0dee-2c12-4355-92fc-e7dd6febd816	workshop:177	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:18:leave:1f71e619-1909-4d3b-96c8-d4ff0cd75c73	workshop:18	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:211:leave:90aa8a27-519d-44dd-9253-ac809ffb9bc0	workshop:211	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:220:leave:f6489925-df16-4acd-9762-a43b860c85c7	workshop:220	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:29:leave:fe51a057-2d62-40f5-8b7a-c3794e8cfc33	workshop:29	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:30:leave:a8bf4c32-0db9-49b2-b568-6eb301e8e8da	workshop:30	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:31:leave:8d788d9c-b297-4280-acd1-21b5615564f9	workshop:31	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:32:leave:e4514d44-e466-41af-bf55-26c00f44376c	workshop:32	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:37:leave:a361d3e2-7f7f-4d50-9653-fc2c50049a26	workshop:37	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:44:leave:52688d7e-7e52-4949-be08-864755ab6680	workshop:44	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:46:leave:17e2dd33-c0d6-4ab5-bfc5-6968c5f81a80	workshop:46	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:48:leave:b33c0778-1142-4e3d-a090-b1637a9f60d6	workshop:48	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:52:leave:55b30d83-3d3b-4d5e-9cc5-216310027528	workshop:52	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:5:leave:0e16fa5c-7c18-4a5d-9f2d-a6be230cd75d	workshop:5	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:71:leave:435909e1-25da-405c-8206-739511fdb4c4	workshop:71	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:74:leave:aa658754-294e-474a-8dc0-eb697ce3d87c	workshop:74	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:76:leave:f49b57d0-b296-4fdb-880c-7928e2a451ec	workshop:76	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:78:leave:ca2042ed-0570-4d0c-8651-ef6882a920a2	workshop:78	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:81:leave:9523fa0f-5f4a-46b4-98d6-533aab1dadad	workshop:81	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:84:leave:a97e3cd3-be80-4a94-aae7-b210da3fe420	workshop:84	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:93:leave:f3d8be91-110d-4eb9-b4f3-e569e2bf18b7	workshop:93	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:97:leave:a16130d0-317f-422c-8e0d-e6c624486dd7	workshop:97	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:99:leave:6130446e-10d0-462a-b27e-e630bbe7f8d1	workshop:99	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	通知	@workshop:plugin:flow:issue_delivery:4987	@workshop	历史：已发（未转）	已发的通知只留作历史
+workshop	通知	@workshop:plugin:flow:issue_delivery:5147	@workshop	历史：已发（未转）	已发的通知只留作历史
+workshop	通知	@workshop:plugin:flow:issue_delivery:520	@workshop	历史：已发（未转）	已发的通知只留作历史
+workshop	通知	workshop:14:notice:ci-read-permission	workshop:14	历史：已发（未转）	已发的通知只留作历史
+workshop	通知	workshop:18:notice:acceptance-passed	workshop:18	历史：已发（未转）	已发的通知只留作历史
+workshop	通知	workshop:18:notice:accepted	workshop:18	历史：已发（未转）	已发的通知只留作历史
+workshop	通知	workshop:26:notice:acceptance-passed	workshop:26	历史：已发（未转）	已发的通知只留作历史
+workshop	通知	workshop:26:notice:accepted	workshop:26	历史：已发（未转）	已发的通知只留作历史
+workshop	通知	workshop:26:notice:clarified	workshop:26	历史：已发（未转）	已发的通知只留作历史
+workshop	通知	workshop:29:notice:accepted	workshop:29	历史：已发（未转）	已发的通知只留作历史
+workshop	通知	workshop:30:notice:accepted	workshop:30	历史：已发（未转）	已发的通知只留作历史
+workshop	通知	workshop:32:notice:accepted	workshop:32	历史：已发（未转）	已发的通知只留作历史
+workshop	通知	workshop:32:notice:ws32-clear	workshop:32	历史：已发（未转）	已发的通知只留作历史
+workshop	通知	workshop:32:notice:ws32-intake	workshop:32	历史：已发（未转）	已发的通知只留作历史
+workshop	通知	workshop:37:notice:acceptance-ws37	workshop:37	历史：已发（未转）	已发的通知只留作历史
+workshop	通知	workshop:37:notice:accepted	workshop:37	历史：已发（未转）	已发的通知只留作历史
+workshop	通知	workshop:41:notice:acceptance-passed	workshop:41	历史：已发（未转）	已发的通知只留作历史
+workshop	通知	workshop:41:notice:accepted	workshop:41	历史：已发（未转）	已发的通知只留作历史
+workshop	通知	workshop:41:notice:ask-41	workshop:41	历史：已发（未转）	已发的通知只留作历史
+workshop	通知	workshop:41:notice:clarified-41	workshop:41	历史：已发（未转）	已发的通知只留作历史
+workshop	通知	workshop:41:notice:conflict-41	workshop:41	历史：已发（未转）	已发的通知只留作历史
+workshop	通知	workshop:41:notice:conflict-41b	workshop:41	历史：已发（未转）	已发的通知只留作历史
+workshop	通知	workshop:41:notice:deliver-41	workshop:41	历史：已发（未转）	已发的通知只留作历史
+workshop	通知	workshop:41:notice:evidence-41	workshop:41	历史：已发（未转）	已发的通知只留作历史
+workshop	通知	workshop:41:notice:evidence-41b	workshop:41	历史：已发（未转）	已发的通知只留作历史
+workshop	通知	workshop:41:notice:evidence-41c	workshop:41	历史：已发（未转）	已发的通知只留作历史
+workshop	通知	workshop:41:notice:intake-41	workshop:41	历史：已发（未转）	已发的通知只留作历史
+workshop	通知	workshop:41:notice:keep-41	workshop:41	历史：已发（未转）	已发的通知只留作历史
+workshop	通知	workshop:41:notice:port-41	workshop:41	历史：已发（未转）	已发的通知只留作历史
+workshop	通知	workshop:41:notice:pr-41	workshop:41	历史：已发（未转）	已发的通知只留作历史
+workshop	通知	workshop:41:notice:rebase-41	workshop:41	历史：已发（未转）	已发的通知只留作历史
+workshop	通知	workshop:44:notice:acceptance-failed	workshop:44	历史：已发（未转）	已发的通知只留作历史
+workshop	通知	workshop:44:notice:acceptance-notice-format-blocked	workshop:44	历史：已发（未转）	已发的通知只留作历史
+workshop	通知	workshop:44:notice:ws44-app-identity-blocked	workshop:44	历史：已发（未转）	已发的通知只留作历史
+workshop	通知	workshop:46:notice:ws46-check-environment-aa86e082	workshop:46	历史：已发（未转）	已发的通知只留作历史
+workshop	通知	workshop:46:notice:完成:f76c3231cf4a2fc272f07a8803715ed0291889cb	workshop:46	历史：已发（未转）	已发的通知只留作历史
+workshop	通知	workshop:48:notice:acceptance-return-9b10b7c	workshop:48	历史：已发（未转）	已发的通知只留作历史
+workshop	通知	workshop:48:notice:clarified-48	workshop:48	历史：已发（未转）	已发的通知只留作历史
+workshop	通知	workshop:48:notice:pr-56-opened	workshop:48	历史：已发（未转）	已发的通知只留作历史
+workshop	通知	workshop:48:notice:ws48-a1-environment-blocked	workshop:48	历史：已发（未转）	已发的通知只留作历史
+workshop	通知	workshop:48:notice:ws48-blocked-by-71-independent-check	workshop:48	历史：已发（未转）	已发的通知只留作历史
+workshop	通知	workshop:52:notice:ws52-unlabeled	workshop:52	历史：已发（未转）	已发的通知只留作历史
+workshop	通知	workshop:5:notice:acceptance-passed	workshop:5	历史：已发（未转）	已发的通知只留作历史
+workshop	通知	workshop:5:notice:accepted	workshop:5	历史：已发（未转）	已发的通知只留作历史
+workshop	通知	workshop:5:notice:rerun-acceptance	workshop:5	历史：已发（未转）	已发的通知只留作历史
+workshop	通知	workshop:5:notice:runtime-update	workshop:5	历史：已发（未转）	已发的通知只留作历史
+workshop	通知	workshop:62:notice:ws62-receipt-format-cfe4c682	workshop:62	历史：已发（未转）	已发的通知只留作历史
+workshop	通知	workshop:74:notice:完成:8e599a9caf0ee002279739603e85141cf4b1f557	workshop:74	历史：已发（未转）	已发的通知只留作历史
+workshop	问卡	workshop:14:workshop:14:leave:885ec452-f821-47b6-8b03-4fe8255ee59b	workshop:14	历史：已答（未转）	已答的问卡只留作历史；回答不当授权中心的授权
+workshop	问卡	workshop:32:8b9d481d-4bb2-4374-a1dd-35628151698d:serial-detect	workshop:32	历史：已答（未转）	已答的问卡只留作历史；回答不当授权中心的授权
+workshop	问卡	workshop:41:3cf80832-c968-4fd3-b73d-b2528f144e74:codex-user-config	workshop:41	历史：已答（未转）	已答的问卡只留作历史；回答不当授权中心的授权
+workshop	问卡	workshop:46:fa2ee12b-efd4-484e-a157-3159dcab61fb:title-mode	workshop:46	历史：已答（未转）	已答的问卡只留作历史；回答不当授权中心的授权
+workshop	问卡	workshop:62:c6ee45f4-01cc-47d4-9880-22cfa1b4e17c:cursor-mode	workshop:62	历史：已答（未转）	已答的问卡只留作历史；回答不当授权中心的授权
+workshop	问卡	workshop:74:workshop:74:leave:0129309a-0304-48ce-a7c6-af52b4ad5f99	workshop:74	历史：已答（未转）	已答的问卡只留作历史；回答不当授权中心的授权
+workshop	问卡	workshop:75:d99905a2-7671-4f3e-93ba-c95a417c08eb:wake-file-probe	workshop:75	历史：已答（未转）	已答的问卡只留作历史；回答不当授权中心的授权
+workshop	问卡	workshop:75:workshop:75:leave:0dedcea9-58dc-4cf4-b314-9aa52b3e3e82	workshop:75	历史：已答（未转）	已答的问卡只留作历史；回答不当授权中心的授权
+workshop	问卡	workshop:75:workshop:75:leave:581f60dd-964d-4099-bbb2-8683584b3c22	workshop:75	历史：已答（未转）	已答的问卡只留作历史；回答不当授权中心的授权
+workshop	问卡	workshop:75:workshop:75:leave:9c3c0cd6-5200-4939-a8ed-373291e4f07e	workshop:75	历史：已答（未转）	已答的问卡只留作历史；回答不当授权中心的授权
+workshop	非车间工序定时	workshop:75:leave:d53f7da4-a251-4cab-8a46-77c8ae8058f8	workshop:75	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+grant-console	frozen_approved	grant-console:136	grant-console:136	历史：冻结批准（未转）	冻结路径关口已取消（介入点 R8）；批准作废，其它仍有效的关口重查
+grant-console	frozen_approved	grant-console:154	grant-console:154	历史：冻结批准（未转）	冻结路径关口已取消（介入点 R8）；批准作废，其它仍有效的关口重查
+grant-console	frozen_approved	grant-console:93	grant-console:93	历史：冻结批准（未转）	冻结路径关口已取消（介入点 R8）；批准作废，其它仍有效的关口重查
+grant-console	审批卡	grant-console:104:15701534-9447-4a39-94ce-e2da1d522fe1:visual-acceptance	grant-console:104	历史：已答（未转）	已答的问卡只留作历史；回答不当授权中心的授权
+grant-console	审批卡	grant-console:104:4f216ca2-f42c-473d-b3cd-51e16fff0b7a:requirement-change	grant-console:104	历史：已答（未转）	已答的问卡只留作历史；回答不当授权中心的授权
+grant-console	审批卡	grant-console:136:approval:c7ee5b94-015a-4663-afac-169344c01094	grant-console:136	历史：已答（未转）	已答的问卡只留作历史；回答不当授权中心的授权
+grant-console	审批卡	grant-console:143:f1b68ab0-a36a-4ae7-94e8-bff019554156:gc143-release-2201	grant-console:143	历史：已答（未转）	已答的问卡只留作历史；回答不当授权中心的授权
+grant-console	审批卡	grant-console:144:9e626025-56a1-4588-91e0-877188c6789d:gc144-release-approval	grant-console:144	历史：已答（未转）	已答的问卡只留作历史；回答不当授权中心的授权
+grant-console	审批卡	grant-console:152:2b9a0338-df54-448b-8f6f-eaa83fe32611:requirement-change	grant-console:152	历史：已答（未转）	已答的问卡只留作历史；回答不当授权中心的授权
+grant-console	审批卡	grant-console:154:28c9701e-76ef-4fec-b829-6eb038aae0e1:cluster-scope-exception	grant-console:154	历史：已答（未转）	已答的问卡只留作历史；回答不当授权中心的授权
+grant-console	审批卡	grant-console:154:approval:7bd16e10-6d52-4a91-840b-564ccc338113	grant-console:154	历史：已答（未转）	已答的问卡只留作历史；回答不当授权中心的授权
+grant-console	审批卡	grant-console:154:d21a6523-38ed-4353-8563-f6387f272f9e:release-card-rule	grant-console:154	历史：已答（未转）	已答的问卡只留作历史；回答不当授权中心的授权
+grant-console	审批卡	grant-console:160:710b21bb-63aa-4415-a8c6-27db339b38f3:requirement-change	grant-console:160	历史：已答（未转）	已答的问卡只留作历史；回答不当授权中心的授权
+grant-console	审批卡	grant-console:170:eb2b6f0f-2bcf-4d81-86d6-478f359c0d03:requirement-change	grant-console:170	历史：已答（未转）	已答的问卡只留作历史；回答不当授权中心的授权
+grant-console	审批卡	grant-console:171:cee3b3ac-048e-472b-8aff-887779625b6d:requirement-change	grant-console:171	历史：已作废（未转）	已作废或拒收的问卡只留作历史
+grant-console	审批卡	grant-console:175:552d3331-ef24-4aaf-8d4d-fc3e551235c0:visual-acceptance	grant-console:175	历史：已答（未转）	已答的问卡只留作历史；回答不当授权中心的授权
+grant-console	审批卡	grant-console:175:6389f67d-2685-4c41-94a1-eabe8364f177:requirement-change	grant-console:175	历史：已答（未转）	已答的问卡只留作历史；回答不当授权中心的授权
+grant-console	审批卡	grant-console:175:79902995-9d98-47e4-9949-7896c6b6bff7:visual-acceptance	grant-console:175	历史：已答（未转）	已答的问卡只留作历史；回答不当授权中心的授权
+grant-console	审批卡	grant-console:191:8c456084-2e59-4dc8-9bf3-6e4ba4d2c731:visual-acceptance	grant-console:191	历史：已答（未转）	已答的问卡只留作历史；回答不当授权中心的授权
+grant-console	审批卡	grant-console:5:913e89ea-f874-45a8-9c08-fcdf1382af18:requirement-change	grant-console:5	历史：已答（未转）	已答的问卡只留作历史；回答不当授权中心的授权
+grant-console	审批卡	grant-console:5:approval:a743af8e-57bf-4864-9c4f-8e0016ac2ffc	grant-console:5	历史：已答（未转）	已答的问卡只留作历史；回答不当授权中心的授权
+grant-console	审批卡	grant-console:80:6c5af82b-0c6a-4a93-81e8-6fae1ca00d1c:requirement-change	grant-console:80	历史：已答（未转）	已答的问卡只留作历史；回答不当授权中心的授权
+grant-console	审批卡	grant-console:93:approval:256f5721-1a61-4a17-a553-bed3656d5486	grant-console:93	历史：已答（未转）	已答的问卡只留作历史；回答不当授权中心的授权
+grant-console	送回定时	grant-console:104:leave:6d7a0207-94ab-4ada-803b-5cf3527aa6ff	grant-console:104	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+grant-console	送回定时	grant-console:104:leave:97ae382a-a29a-4841-abb9-eec0826e3ead	grant-console:104	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+grant-console	送回定时	grant-console:104:leave:cca9136b-9b5e-430c-8998-4080dc888dc6	grant-console:104	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+grant-console	送回定时	grant-console:143:leave:5f972bda-6fcb-4c34-82e8-1b74e4f71497	grant-console:143	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+grant-console	送回定时	grant-console:144:leave:431a070c-b435-4b41-91b9-ace5ce1cf673	grant-console:144	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+grant-console	送回定时	grant-console:150:leave:82cd651b-4d83-41a1-bdd8-d44e0a8dab03	grant-console:150	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+grant-console	送回定时	grant-console:152:leave:2655bfd2-df8f-4763-ae4b-a9fb20403ced	grant-console:152	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+grant-console	送回定时	grant-console:152:leave:47ec517c-c2d0-4bc5-8fe3-181b331a58cd	grant-console:152	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+grant-console	送回定时	grant-console:154:leave:75e2dd58-7276-48b7-b325-8b8e85832ec7	grant-console:154	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+grant-console	送回定时	grant-console:160:leave:362881ab-e262-42b1-986c-52de8f9d3203	grant-console:160	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+grant-console	送回定时	grant-console:170:leave:43976d9f-c11e-45bd-9279-ecfc7753d255	grant-console:170	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+grant-console	送回定时	grant-console:170:leave:54d94a6b-df96-4e2b-9133-0e744b17a426	grant-console:170	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+grant-console	送回定时	grant-console:171:leave:97d75d3f-fc6a-4ab3-af5a-5e334d0610b5	grant-console:171	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+grant-console	送回定时	grant-console:174:leave:ef2a1f52-1983-4b3f-ad53-112b1616c8b3	grant-console:174	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+grant-console	送回定时	grant-console:175:leave:a63219b1-da98-451a-a1ef-7d7b6b76abd4	grant-console:175	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+grant-console	送回定时	grant-console:191:leave:ac40b8c1-59f6-44a8-8d92-ceded252ca24	grant-console:191	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+grant-console	送回定时	grant-console:5:leave:1a984500-9214-498d-8262-f87e067a836c	grant-console:5	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+grant-console	送回定时	grant-console:5:leave:341b1862-1ddc-47dc-a3e5-a193a34b1920	grant-console:5	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+grant-console	送回定时	grant-console:81:leave:a61bd6d0-5e94-40ac-8206-d4546b93d54e	grant-console:81	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+grant-console	送回定时	grant-console:81:leave:b7450ce9-e19b-47ea-a72c-cfcc88d1767f	grant-console:81	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+grant-console	送回定时	grant-console:93:leave:9c19dc4e-8126-40bb-9879-398c4afec727	grant-console:93	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+grant-console	通知	@grant-console:plugin:flow:issue_delivery:4977	@grant-console	历史：已发（未转）	已发的通知只留作历史
+grant-console	通知	@grant-console:plugin:flow:issue_delivery:5137	@grant-console	历史：已发（未转）	已发的通知只留作历史
+grant-console	通知	@grant-console:plugin:flow:issue_delivery:517	@grant-console	历史：已发（未转）	已发的通知只留作历史
+grant-console	通知	grant-console:109:failing:c2cb5b7c-c8ea-4d64-a5a4-da80f3e370c4	grant-console:109	历史：已发（未转）	已发的通知只留作历史
+grant-console	通知	grant-console:109:notice:gc109-clarify	grant-console:109	历史：已发（未转）	已发的通知只留作历史
+grant-console	通知	grant-console:109:notice:gc109-deliver	grant-console:109	历史：已发（未转）	已发的通知只留作历史
+grant-console	通知	grant-console:109:notice:gc109-evidence	grant-console:109	历史：已发（未转）	已发的通知只留作历史
+grant-console	通知	grant-console:109:notice:gc109-exec	grant-console:109	历史：已发（未转）	已发的通知只留作历史
+grant-console	通知	grant-console:109:notice:gc109-intake	grant-console:109	历史：已发（未转）	已发的通知只留作历史
+grant-console	通知	grant-console:109:notice:gc109-rework-test	grant-console:109	历史：已发（未转）	已发的通知只留作历史
+grant-console	通知	grant-console:143:failing:bfe506a6-28b2-4879-b9a2-3b008e2dab6a	grant-console:143	历史：已发（未转）	已发的通知只留作历史
+grant-console	通知	grant-console:143:notice:gc143-acceptance-bb6b03e	grant-console:143	历史：已发（未转）	已发的通知只留作历史
+grant-console	通知	grant-console:143:notice:gc143-release-verified	grant-console:143	历史：已发（未转）	已发的通知只留作历史
+grant-console	通知	grant-console:143:notice:gc143-review-5cbb60a	grant-console:143	历史：已发（未转）	已发的通知只留作历史
+grant-console	通知	grant-console:143:notice:完成:bb6b03e1aa1f4371b98478b9e5ae35365c44f5dd	grant-console:143	历史：已发（未转）	已发的通知只留作历史
+grant-console	通知	grant-console:144:failing:8e0a4800-36ed-4405-a1d3-00ea385c8542	grant-console:144	历史：已发（未转）	已发的通知只留作历史
+grant-console	通知	grant-console:144:notice:accepted	grant-console:144	历史：已发（未转）	已发的通知只留作历史
+grant-console	通知	grant-console:144:notice:gc144-acceptance-passed	grant-console:144	历史：已发（未转）	已发的通知只留作历史
+grant-console	通知	grant-console:144:notice:gc144-clarify	grant-console:144	历史：已发（未转）	已发的通知只留作历史
+grant-console	通知	grant-console:144:notice:gc144-deliver	grant-console:144	历史：已发（未转）	已发的通知只留作历史
+grant-console	通知	grant-console:144:notice:gc144-evidence	grant-console:144	历史：已发（未转）	已发的通知只留作历史
+grant-console	通知	grant-console:144:notice:gc144-exec	grant-console:144	历史：已发（未转）	已发的通知只留作历史
+grant-console	通知	grant-console:144:notice:gc144-grant-reminder	grant-console:144	历史：已发（未转）	已发的通知只留作历史
+grant-console	通知	grant-console:144:notice:gc144-intake	grant-console:144	历史：已发（未转）	已发的通知只留作历史
+grant-console	通知	grant-console:144:notice:gc144-released	grant-console:144	历史：已发（未转）	已发的通知只留作历史
+grant-console	通知	grant-console:145:notice:gc145-existing-merged-pr-route	grant-console:145	历史：已发（未转）	已发的通知只留作历史
+grant-console	通知	grant-console:150:failing:39d95518-c51d-4b59-8269-d87107345f88	grant-console:150	历史：已发（未转）	已发的通知只留作历史
+grant-console	通知	grant-console:150:notice:acceptance-receipt-format-blocked-a4d368c	grant-console:150	历史：已发（未转）	已发的通知只留作历史
+grant-console	通知	grant-console:150:notice:gc150-cleanup-must-fix	grant-console:150	历史：已发（未转）	已发的通知只留作历史
+grant-console	通知	grant-console:150:notice:gc150-review-34180d2	grant-console:150	历史：已发（未转）	已发的通知只留作历史
+grant-console	通知	grant-console:150:notice:gc150-review-937f2d4	grant-console:150	历史：已发（未转）	已发的通知只留作历史
+grant-console	通知	grant-console:93:notice:gc93-promtool-missing	grant-console:93	历史：已发（未转）	已发的通知只留作历史
+grant-console	通知	grant-console:om_x100b605b531ebca0c01f55c807a3fcc:notice:binding-test-109	grant-console:om_x100b605b531ebca0c01f55c807a3fcc	历史：已发（未转）	已发的通知只留作历史
+grant-console	通道对账记录	reconcile:grant-console:170:eb2b6f0f-2bcf-4d81-86d6-478f359c0d03:requirement-change	grant-console:170:eb2b6f0f-2bcf-4d81-86d6-478f359c0d03	历史：通道已退役（未转）	旧通道的对账计数清掉；卡片去向见同号的卡片行
+grant-console	问卡	grant-console:191:grant-console:191:leave:1da14091-7611-405c-ae44-577a925ef822	grant-console:191	历史：已答（未转）	已答的问卡只留作历史；回答不当授权中心的授权
+workshop	介入点送达	delivery:74e3494627d4cc647e320fe40ab3cd88d65f43697bc379ecf35e4fcccc96d370		保留	约定的送达按原送达号由介入点服务对账，不补发、不重发
+workshop	介入点送达	delivery:1493734f7fd3f0d0d15a06a62e31972d2a289b677d7515f60c97a7504f6c77f1		保留	约定的送达按原送达号由介入点服务对账，不补发、不重发
+
+===== 现役副本：上线时切换（计时，先 workshop 后 grant-console） =====
+$ <worktree>/.venv/bin/python <worktree>/scripts/convert_intervention.py --state-dir <回放目录>/live/state --intervention-db <回放目录>/live/intervention/intervention.db --rules <回放目录>/live/rules.yaml --backup-dir <回放目录>/live/backups cutover
+exit=0（3.88 秒）
+备份：<回放目录>/live/backups/workshop.db.before-cutover-all-20261119T063814846564Z（2.59 秒）
+workshop：旧记录 109 条，本次写 109 条，跳过已转 0 条
+grant-console：旧记录 79 条，本次写 79 条，跳过已转 0 条
+整段转换耗时 3.81 秒
+
+===== 现役副本：同一批再跑：run --target workshop =====
+$ <worktree>/.venv/bin/python <worktree>/scripts/convert_intervention.py --state-dir <回放目录>/live/state --intervention-db <回放目录>/live/intervention/intervention.db --rules <回放目录>/live/rules.yaml --backup-dir <回放目录>/live/backups run --target workshop
+exit=0（3.00 秒）
+备份：<回放目录>/live/backups/workshop.db.before-cutover-workshop-20261119T063818725677Z
+workshop：旧记录 67 条，本次写 0 条，跳过已转 67 条
+耗时 2.93 秒
+
+===== 现役副本：同一批再跑：run --target grant-console =====
+$ <worktree>/.venv/bin/python <worktree>/scripts/convert_intervention.py --state-dir <回放目录>/live/state --intervention-db <回放目录>/live/intervention/intervention.db --rules <回放目录>/live/rules.yaml --backup-dir <回放目录>/live/backups run --target grant-console
+exit=0（3.22 秒）
+备份：<回放目录>/live/backups/workshop.db.before-cutover-grant-console-20261119T063821717925Z
+grant-console：旧记录 57 条，本次写 0 条，跳过已转 57 条
+耗时 3.16 秒
+
+===== 现役副本：再跑一次 cutover：已转完不再备份 =====
+$ <worktree>/.venv/bin/python <worktree>/scripts/convert_intervention.py --state-dir <回放目录>/live/state --intervention-db <回放目录>/live/intervention/intervention.db --rules <回放目录>/live/rules.yaml --backup-dir <回放目录>/live/backups cutover
+exit=0（0.36 秒）
+已转完：workshop、grant-console 没有剩下的旧记录（0.29 秒）
+
+===== 现役副本：对账表 =====
+$ <worktree>/.venv/bin/python <worktree>/scripts/convert_intervention.py --state-dir <回放目录>/live/state --intervention-db <回放目录>/live/intervention/intervention.db --rules <回放目录>/live/rules.yaml --backup-dir <回放目录>/live/backups reconcile
+exit=0（0.36 秒）
+reconcile：状态目录 <回放目录>/live/state，交付对象 workshop、grant-console，共 190 条
+交付对象	类别	去向	条数
+workshop	介入点送达	保留	2
+workshop	审批卡	历史：已答	9
+workshop	送回定时	取消：活已结束	41
+workshop	通知	历史：已发	48
+workshop	问卡	历史：已答	10
+workshop	非车间工序定时	取消：活已结束	1
+grant-console	frozen_approved	历史：冻结批准	3
+grant-console	审批卡	历史：已作废	1
+grant-console	审批卡	历史：已答	19
+grant-console	送回定时	取消：活已结束	21
+grant-console	通知	历史：已发	33
+grant-console	通道对账记录	历史：通道已退役	1
+grant-console	问卡	历史：已答	1
+交付对象	类别	原编号	活	去向	理由
+workshop	介入点送达	delivery:1493734f7fd3f0d0d15a06a62e31972d2a289b677d7515f60c97a7504f6c77f1		保留	约定的送达按原送达号由介入点服务对账，不补发、不重发
+workshop	介入点送达	delivery:74e3494627d4cc647e320fe40ab3cd88d65f43697bc379ecf35e4fcccc96d370		保留	约定的送达按原送达号由介入点服务对账，不补发、不重发
+workshop	审批卡	workshop:102:5527fe8f-933e-434b-a117-84215cf62e7a:visual-acceptance	workshop:102	历史：已答	已答的问卡只留作历史；回答不当授权中心的授权
+workshop	审批卡	workshop:102:c483cf65-9778-45ae-84ca-a5611903dc7b:visual-acceptance	workshop:102	历史：已答	已答的问卡只留作历史；回答不当授权中心的授权
+workshop	审批卡	workshop:122:4a879cc5-0ef5-4f0a-ba9e-8a6404c0c596:visual-acceptance	workshop:122	历史：已答	已答的问卡只留作历史；回答不当授权中心的授权
+workshop	审批卡	workshop:14:1b443ef7-a5e2-4ec5-a72e-4d48a531cbd6:incremental-feeds	workshop:14	历史：已答	已答的问卡只留作历史；回答不当授权中心的授权
+workshop	审批卡	workshop:151:87bd3169-e55a-4fc1-bb33-9e432b82b512:requirement-change	workshop:151	历史：已答	已答的问卡只留作历史；回答不当授权中心的授权
+workshop	审批卡	workshop:177:f06dd4dc-7a13-4f0a-9aef-c72436c6ab33:requirement-change	workshop:177	历史：已答	已答的问卡只留作历史；回答不当授权中心的授权
+workshop	审批卡	workshop:184:0567b9f6-e6ed-41c2-bd43-3003b9013666:fixture-state	workshop:184	历史：已答	已答的问卡只留作历史；回答不当授权中心的授权
+workshop	审批卡	workshop:184:09271153-f9e2-4369-8015-9ef46446c99a:requirement-wording	workshop:184	历史：已答	已答的问卡只留作历史；回答不当授权中心的授权
+workshop	审批卡	workshop:184:3c576108-414a-486e-be79-3715979eb6e3:visual-acceptance	workshop:184	历史：已答	已答的问卡只留作历史；回答不当授权中心的授权
+workshop	送回定时	workshop:101:leave:c6c88826-86c4-470d-9f86-737150a6fe3e	workshop:101	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:102:leave:b623bbd5-bfad-4e3b-9151-6b6897520449	workshop:102	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:104:leave:9ee30d88-e9a7-4766-9966-c32a0c090da4	workshop:104	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:107:leave:77fcbbbd-9499-439a-9e00-41ee9dbb3069	workshop:107	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:112:leave:be9f8d55-9930-4f2a-9f13-1da089339b67	workshop:112	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:113:leave:ae336399-bf9f-4525-ac69-f11c0ae98fd9	workshop:113	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:121:leave:c6a0549e-77e7-4de9-a751-c3fa8dc51649	workshop:121	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:122:leave:2180b5bf-b0ba-4d49-a054-8a623a365667	workshop:122	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:122:leave:687db474-b57a-48e4-9a24-ed5385be8192	workshop:122	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:143:leave:ac10a81c-e9a8-49de-a0c2-2e3af95485de	workshop:143	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:144:leave:060e3efd-fd09-445c-8649-24dc87e3811a	workshop:144	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:14:leave:9353b469-3374-4a12-afab-c4c5edb8237c	workshop:14	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:151:leave:1ad584b7-87db-49ed-9f32-8001217fd0b5	workshop:151	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:157:leave:c07f03be-45c8-41cd-89d8-f5c85fb3e32f	workshop:157	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:15:leave:4bbed9f5-bb0d-40e3-ab60-ba79421b1746	workshop:15	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:164:leave:20a83950-0226-468d-9495-c09025d2666e	workshop:164	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:167:leave:ba1ef873-15f2-4081-b2d5-dfdcde2a66cf	workshop:167	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:172:leave:bbc2b169-e5be-44f7-b939-ab514536e946	workshop:172	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:177:leave:490b0dee-2c12-4355-92fc-e7dd6febd816	workshop:177	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:18:leave:1f71e619-1909-4d3b-96c8-d4ff0cd75c73	workshop:18	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:211:leave:90aa8a27-519d-44dd-9253-ac809ffb9bc0	workshop:211	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:220:leave:f6489925-df16-4acd-9762-a43b860c85c7	workshop:220	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:29:leave:fe51a057-2d62-40f5-8b7a-c3794e8cfc33	workshop:29	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:30:leave:a8bf4c32-0db9-49b2-b568-6eb301e8e8da	workshop:30	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:31:leave:8d788d9c-b297-4280-acd1-21b5615564f9	workshop:31	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:32:leave:e4514d44-e466-41af-bf55-26c00f44376c	workshop:32	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:37:leave:a361d3e2-7f7f-4d50-9653-fc2c50049a26	workshop:37	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:44:leave:52688d7e-7e52-4949-be08-864755ab6680	workshop:44	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:46:leave:17e2dd33-c0d6-4ab5-bfc5-6968c5f81a80	workshop:46	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:48:leave:b33c0778-1142-4e3d-a090-b1637a9f60d6	workshop:48	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:52:leave:55b30d83-3d3b-4d5e-9cc5-216310027528	workshop:52	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:5:leave:0e16fa5c-7c18-4a5d-9f2d-a6be230cd75d	workshop:5	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:71:leave:435909e1-25da-405c-8206-739511fdb4c4	workshop:71	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:74:leave:aa658754-294e-474a-8dc0-eb697ce3d87c	workshop:74	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:76:leave:f49b57d0-b296-4fdb-880c-7928e2a451ec	workshop:76	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:78:leave:ca2042ed-0570-4d0c-8651-ef6882a920a2	workshop:78	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:81:leave:9523fa0f-5f4a-46b4-98d6-533aab1dadad	workshop:81	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:84:leave:a97e3cd3-be80-4a94-aae7-b210da3fe420	workshop:84	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:93:leave:f3d8be91-110d-4eb9-b4f3-e569e2bf18b7	workshop:93	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:97:leave:a16130d0-317f-422c-8e0d-e6c624486dd7	workshop:97	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:99:leave:6130446e-10d0-462a-b27e-e630bbe7f8d1	workshop:99	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	通知	@workshop:plugin:flow:issue_delivery:4987	@workshop	历史：已发	已发的通知只留作历史
+workshop	通知	@workshop:plugin:flow:issue_delivery:5147	@workshop	历史：已发	已发的通知只留作历史
+workshop	通知	@workshop:plugin:flow:issue_delivery:520	@workshop	历史：已发	已发的通知只留作历史
+workshop	通知	workshop:14:notice:ci-read-permission	workshop:14	历史：已发	已发的通知只留作历史
+workshop	通知	workshop:18:notice:acceptance-passed	workshop:18	历史：已发	已发的通知只留作历史
+workshop	通知	workshop:18:notice:accepted	workshop:18	历史：已发	已发的通知只留作历史
+workshop	通知	workshop:26:notice:acceptance-passed	workshop:26	历史：已发	已发的通知只留作历史
+workshop	通知	workshop:26:notice:accepted	workshop:26	历史：已发	已发的通知只留作历史
+workshop	通知	workshop:26:notice:clarified	workshop:26	历史：已发	已发的通知只留作历史
+workshop	通知	workshop:29:notice:accepted	workshop:29	历史：已发	已发的通知只留作历史
+workshop	通知	workshop:30:notice:accepted	workshop:30	历史：已发	已发的通知只留作历史
+workshop	通知	workshop:32:notice:accepted	workshop:32	历史：已发	已发的通知只留作历史
+workshop	通知	workshop:32:notice:ws32-clear	workshop:32	历史：已发	已发的通知只留作历史
+workshop	通知	workshop:32:notice:ws32-intake	workshop:32	历史：已发	已发的通知只留作历史
+workshop	通知	workshop:37:notice:acceptance-ws37	workshop:37	历史：已发	已发的通知只留作历史
+workshop	通知	workshop:37:notice:accepted	workshop:37	历史：已发	已发的通知只留作历史
+workshop	通知	workshop:41:notice:acceptance-passed	workshop:41	历史：已发	已发的通知只留作历史
+workshop	通知	workshop:41:notice:accepted	workshop:41	历史：已发	已发的通知只留作历史
+workshop	通知	workshop:41:notice:ask-41	workshop:41	历史：已发	已发的通知只留作历史
+workshop	通知	workshop:41:notice:clarified-41	workshop:41	历史：已发	已发的通知只留作历史
+workshop	通知	workshop:41:notice:conflict-41	workshop:41	历史：已发	已发的通知只留作历史
+workshop	通知	workshop:41:notice:conflict-41b	workshop:41	历史：已发	已发的通知只留作历史
+workshop	通知	workshop:41:notice:deliver-41	workshop:41	历史：已发	已发的通知只留作历史
+workshop	通知	workshop:41:notice:evidence-41	workshop:41	历史：已发	已发的通知只留作历史
+workshop	通知	workshop:41:notice:evidence-41b	workshop:41	历史：已发	已发的通知只留作历史
+workshop	通知	workshop:41:notice:evidence-41c	workshop:41	历史：已发	已发的通知只留作历史
+workshop	通知	workshop:41:notice:intake-41	workshop:41	历史：已发	已发的通知只留作历史
+workshop	通知	workshop:41:notice:keep-41	workshop:41	历史：已发	已发的通知只留作历史
+workshop	通知	workshop:41:notice:port-41	workshop:41	历史：已发	已发的通知只留作历史
+workshop	通知	workshop:41:notice:pr-41	workshop:41	历史：已发	已发的通知只留作历史
+workshop	通知	workshop:41:notice:rebase-41	workshop:41	历史：已发	已发的通知只留作历史
+workshop	通知	workshop:44:notice:acceptance-failed	workshop:44	历史：已发	已发的通知只留作历史
+workshop	通知	workshop:44:notice:acceptance-notice-format-blocked	workshop:44	历史：已发	已发的通知只留作历史
+workshop	通知	workshop:44:notice:ws44-app-identity-blocked	workshop:44	历史：已发	已发的通知只留作历史
+workshop	通知	workshop:46:notice:ws46-check-environment-aa86e082	workshop:46	历史：已发	已发的通知只留作历史
+workshop	通知	workshop:46:notice:完成:f76c3231cf4a2fc272f07a8803715ed0291889cb	workshop:46	历史：已发	已发的通知只留作历史
+workshop	通知	workshop:48:notice:acceptance-return-9b10b7c	workshop:48	历史：已发	已发的通知只留作历史
+workshop	通知	workshop:48:notice:clarified-48	workshop:48	历史：已发	已发的通知只留作历史
+workshop	通知	workshop:48:notice:pr-56-opened	workshop:48	历史：已发	已发的通知只留作历史
+workshop	通知	workshop:48:notice:ws48-a1-environment-blocked	workshop:48	历史：已发	已发的通知只留作历史
+workshop	通知	workshop:48:notice:ws48-blocked-by-71-independent-check	workshop:48	历史：已发	已发的通知只留作历史
+workshop	通知	workshop:52:notice:ws52-unlabeled	workshop:52	历史：已发	已发的通知只留作历史
+workshop	通知	workshop:5:notice:acceptance-passed	workshop:5	历史：已发	已发的通知只留作历史
+workshop	通知	workshop:5:notice:accepted	workshop:5	历史：已发	已发的通知只留作历史
+workshop	通知	workshop:5:notice:rerun-acceptance	workshop:5	历史：已发	已发的通知只留作历史
+workshop	通知	workshop:5:notice:runtime-update	workshop:5	历史：已发	已发的通知只留作历史
+workshop	通知	workshop:62:notice:ws62-receipt-format-cfe4c682	workshop:62	历史：已发	已发的通知只留作历史
+workshop	通知	workshop:74:notice:完成:8e599a9caf0ee002279739603e85141cf4b1f557	workshop:74	历史：已发	已发的通知只留作历史
+workshop	问卡	workshop:14:workshop:14:leave:885ec452-f821-47b6-8b03-4fe8255ee59b	workshop:14	历史：已答	已答的问卡只留作历史；回答不当授权中心的授权
+workshop	问卡	workshop:32:8b9d481d-4bb2-4374-a1dd-35628151698d:serial-detect	workshop:32	历史：已答	已答的问卡只留作历史；回答不当授权中心的授权
+workshop	问卡	workshop:41:3cf80832-c968-4fd3-b73d-b2528f144e74:codex-user-config	workshop:41	历史：已答	已答的问卡只留作历史；回答不当授权中心的授权
+workshop	问卡	workshop:46:fa2ee12b-efd4-484e-a157-3159dcab61fb:title-mode	workshop:46	历史：已答	已答的问卡只留作历史；回答不当授权中心的授权
+workshop	问卡	workshop:62:c6ee45f4-01cc-47d4-9880-22cfa1b4e17c:cursor-mode	workshop:62	历史：已答	已答的问卡只留作历史；回答不当授权中心的授权
+workshop	问卡	workshop:74:workshop:74:leave:0129309a-0304-48ce-a7c6-af52b4ad5f99	workshop:74	历史：已答	已答的问卡只留作历史；回答不当授权中心的授权
+workshop	问卡	workshop:75:d99905a2-7671-4f3e-93ba-c95a417c08eb:wake-file-probe	workshop:75	历史：已答	已答的问卡只留作历史；回答不当授权中心的授权
+workshop	问卡	workshop:75:workshop:75:leave:0dedcea9-58dc-4cf4-b314-9aa52b3e3e82	workshop:75	历史：已答	已答的问卡只留作历史；回答不当授权中心的授权
+workshop	问卡	workshop:75:workshop:75:leave:581f60dd-964d-4099-bbb2-8683584b3c22	workshop:75	历史：已答	已答的问卡只留作历史；回答不当授权中心的授权
+workshop	问卡	workshop:75:workshop:75:leave:9c3c0cd6-5200-4939-a8ed-373291e4f07e	workshop:75	历史：已答	已答的问卡只留作历史；回答不当授权中心的授权
+workshop	非车间工序定时	workshop:75:leave:d53f7da4-a251-4cab-8a46-77c8ae8058f8	workshop:75	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+grant-console	frozen_approved	grant-console:136	grant-console:136	历史：冻结批准	冻结路径关口已取消（介入点 R8）；批准作废，其它仍有效的关口重查
+grant-console	frozen_approved	grant-console:154	grant-console:154	历史：冻结批准	冻结路径关口已取消（介入点 R8）；批准作废，其它仍有效的关口重查
+grant-console	frozen_approved	grant-console:93	grant-console:93	历史：冻结批准	冻结路径关口已取消（介入点 R8）；批准作废，其它仍有效的关口重查
+grant-console	审批卡	grant-console:104:15701534-9447-4a39-94ce-e2da1d522fe1:visual-acceptance	grant-console:104	历史：已答	已答的问卡只留作历史；回答不当授权中心的授权
+grant-console	审批卡	grant-console:104:4f216ca2-f42c-473d-b3cd-51e16fff0b7a:requirement-change	grant-console:104	历史：已答	已答的问卡只留作历史；回答不当授权中心的授权
+grant-console	审批卡	grant-console:136:approval:c7ee5b94-015a-4663-afac-169344c01094	grant-console:136	历史：已答	已答的问卡只留作历史；回答不当授权中心的授权
+grant-console	审批卡	grant-console:143:f1b68ab0-a36a-4ae7-94e8-bff019554156:gc143-release-2201	grant-console:143	历史：已答	已答的问卡只留作历史；回答不当授权中心的授权
+grant-console	审批卡	grant-console:144:9e626025-56a1-4588-91e0-877188c6789d:gc144-release-approval	grant-console:144	历史：已答	已答的问卡只留作历史；回答不当授权中心的授权
+grant-console	审批卡	grant-console:152:2b9a0338-df54-448b-8f6f-eaa83fe32611:requirement-change	grant-console:152	历史：已答	已答的问卡只留作历史；回答不当授权中心的授权
+grant-console	审批卡	grant-console:154:28c9701e-76ef-4fec-b829-6eb038aae0e1:cluster-scope-exception	grant-console:154	历史：已答	已答的问卡只留作历史；回答不当授权中心的授权
+grant-console	审批卡	grant-console:154:approval:7bd16e10-6d52-4a91-840b-564ccc338113	grant-console:154	历史：已答	已答的问卡只留作历史；回答不当授权中心的授权
+grant-console	审批卡	grant-console:154:d21a6523-38ed-4353-8563-f6387f272f9e:release-card-rule	grant-console:154	历史：已答	已答的问卡只留作历史；回答不当授权中心的授权
+grant-console	审批卡	grant-console:160:710b21bb-63aa-4415-a8c6-27db339b38f3:requirement-change	grant-console:160	历史：已答	已答的问卡只留作历史；回答不当授权中心的授权
+grant-console	审批卡	grant-console:170:eb2b6f0f-2bcf-4d81-86d6-478f359c0d03:requirement-change	grant-console:170	历史：已答	已答的问卡只留作历史；回答不当授权中心的授权
+grant-console	审批卡	grant-console:171:cee3b3ac-048e-472b-8aff-887779625b6d:requirement-change	grant-console:171	历史：已作废	已作废或拒收的问卡只留作历史
+grant-console	审批卡	grant-console:175:552d3331-ef24-4aaf-8d4d-fc3e551235c0:visual-acceptance	grant-console:175	历史：已答	已答的问卡只留作历史；回答不当授权中心的授权
+grant-console	审批卡	grant-console:175:6389f67d-2685-4c41-94a1-eabe8364f177:requirement-change	grant-console:175	历史：已答	已答的问卡只留作历史；回答不当授权中心的授权
+grant-console	审批卡	grant-console:175:79902995-9d98-47e4-9949-7896c6b6bff7:visual-acceptance	grant-console:175	历史：已答	已答的问卡只留作历史；回答不当授权中心的授权
+grant-console	审批卡	grant-console:191:8c456084-2e59-4dc8-9bf3-6e4ba4d2c731:visual-acceptance	grant-console:191	历史：已答	已答的问卡只留作历史；回答不当授权中心的授权
+grant-console	审批卡	grant-console:5:913e89ea-f874-45a8-9c08-fcdf1382af18:requirement-change	grant-console:5	历史：已答	已答的问卡只留作历史；回答不当授权中心的授权
+grant-console	审批卡	grant-console:5:approval:a743af8e-57bf-4864-9c4f-8e0016ac2ffc	grant-console:5	历史：已答	已答的问卡只留作历史；回答不当授权中心的授权
+grant-console	审批卡	grant-console:80:6c5af82b-0c6a-4a93-81e8-6fae1ca00d1c:requirement-change	grant-console:80	历史：已答	已答的问卡只留作历史；回答不当授权中心的授权
+grant-console	审批卡	grant-console:93:approval:256f5721-1a61-4a17-a553-bed3656d5486	grant-console:93	历史：已答	已答的问卡只留作历史；回答不当授权中心的授权
+grant-console	送回定时	grant-console:104:leave:6d7a0207-94ab-4ada-803b-5cf3527aa6ff	grant-console:104	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+grant-console	送回定时	grant-console:104:leave:97ae382a-a29a-4841-abb9-eec0826e3ead	grant-console:104	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+grant-console	送回定时	grant-console:104:leave:cca9136b-9b5e-430c-8998-4080dc888dc6	grant-console:104	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+grant-console	送回定时	grant-console:143:leave:5f972bda-6fcb-4c34-82e8-1b74e4f71497	grant-console:143	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+grant-console	送回定时	grant-console:144:leave:431a070c-b435-4b41-91b9-ace5ce1cf673	grant-console:144	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+grant-console	送回定时	grant-console:150:leave:82cd651b-4d83-41a1-bdd8-d44e0a8dab03	grant-console:150	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+grant-console	送回定时	grant-console:152:leave:2655bfd2-df8f-4763-ae4b-a9fb20403ced	grant-console:152	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+grant-console	送回定时	grant-console:152:leave:47ec517c-c2d0-4bc5-8fe3-181b331a58cd	grant-console:152	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+grant-console	送回定时	grant-console:154:leave:75e2dd58-7276-48b7-b325-8b8e85832ec7	grant-console:154	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+grant-console	送回定时	grant-console:160:leave:362881ab-e262-42b1-986c-52de8f9d3203	grant-console:160	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+grant-console	送回定时	grant-console:170:leave:43976d9f-c11e-45bd-9279-ecfc7753d255	grant-console:170	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+grant-console	送回定时	grant-console:170:leave:54d94a6b-df96-4e2b-9133-0e744b17a426	grant-console:170	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+grant-console	送回定时	grant-console:171:leave:97d75d3f-fc6a-4ab3-af5a-5e334d0610b5	grant-console:171	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+grant-console	送回定时	grant-console:174:leave:ef2a1f52-1983-4b3f-ad53-112b1616c8b3	grant-console:174	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+grant-console	送回定时	grant-console:175:leave:a63219b1-da98-451a-a1ef-7d7b6b76abd4	grant-console:175	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+grant-console	送回定时	grant-console:191:leave:ac40b8c1-59f6-44a8-8d92-ceded252ca24	grant-console:191	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+grant-console	送回定时	grant-console:5:leave:1a984500-9214-498d-8262-f87e067a836c	grant-console:5	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+grant-console	送回定时	grant-console:5:leave:341b1862-1ddc-47dc-a3e5-a193a34b1920	grant-console:5	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+grant-console	送回定时	grant-console:81:leave:a61bd6d0-5e94-40ac-8206-d4546b93d54e	grant-console:81	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+grant-console	送回定时	grant-console:81:leave:b7450ce9-e19b-47ea-a72c-cfcc88d1767f	grant-console:81	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+grant-console	送回定时	grant-console:93:leave:9c19dc4e-8126-40bb-9879-398c4afec727	grant-console:93	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+grant-console	通知	@grant-console:plugin:flow:issue_delivery:4977	@grant-console	历史：已发	已发的通知只留作历史
+grant-console	通知	@grant-console:plugin:flow:issue_delivery:5137	@grant-console	历史：已发	已发的通知只留作历史
+grant-console	通知	@grant-console:plugin:flow:issue_delivery:517	@grant-console	历史：已发	已发的通知只留作历史
+grant-console	通知	grant-console:109:failing:c2cb5b7c-c8ea-4d64-a5a4-da80f3e370c4	grant-console:109	历史：已发	已发的通知只留作历史
+grant-console	通知	grant-console:109:notice:gc109-clarify	grant-console:109	历史：已发	已发的通知只留作历史
+grant-console	通知	grant-console:109:notice:gc109-deliver	grant-console:109	历史：已发	已发的通知只留作历史
+grant-console	通知	grant-console:109:notice:gc109-evidence	grant-console:109	历史：已发	已发的通知只留作历史
+grant-console	通知	grant-console:109:notice:gc109-exec	grant-console:109	历史：已发	已发的通知只留作历史
+grant-console	通知	grant-console:109:notice:gc109-intake	grant-console:109	历史：已发	已发的通知只留作历史
+grant-console	通知	grant-console:109:notice:gc109-rework-test	grant-console:109	历史：已发	已发的通知只留作历史
+grant-console	通知	grant-console:143:failing:bfe506a6-28b2-4879-b9a2-3b008e2dab6a	grant-console:143	历史：已发	已发的通知只留作历史
+grant-console	通知	grant-console:143:notice:gc143-acceptance-bb6b03e	grant-console:143	历史：已发	已发的通知只留作历史
+grant-console	通知	grant-console:143:notice:gc143-release-verified	grant-console:143	历史：已发	已发的通知只留作历史
+grant-console	通知	grant-console:143:notice:gc143-review-5cbb60a	grant-console:143	历史：已发	已发的通知只留作历史
+grant-console	通知	grant-console:143:notice:完成:bb6b03e1aa1f4371b98478b9e5ae35365c44f5dd	grant-console:143	历史：已发	已发的通知只留作历史
+grant-console	通知	grant-console:144:failing:8e0a4800-36ed-4405-a1d3-00ea385c8542	grant-console:144	历史：已发	已发的通知只留作历史
+grant-console	通知	grant-console:144:notice:accepted	grant-console:144	历史：已发	已发的通知只留作历史
+grant-console	通知	grant-console:144:notice:gc144-acceptance-passed	grant-console:144	历史：已发	已发的通知只留作历史
+grant-console	通知	grant-console:144:notice:gc144-clarify	grant-console:144	历史：已发	已发的通知只留作历史
+grant-console	通知	grant-console:144:notice:gc144-deliver	grant-console:144	历史：已发	已发的通知只留作历史
+grant-console	通知	grant-console:144:notice:gc144-evidence	grant-console:144	历史：已发	已发的通知只留作历史
+grant-console	通知	grant-console:144:notice:gc144-exec	grant-console:144	历史：已发	已发的通知只留作历史
+grant-console	通知	grant-console:144:notice:gc144-grant-reminder	grant-console:144	历史：已发	已发的通知只留作历史
+grant-console	通知	grant-console:144:notice:gc144-intake	grant-console:144	历史：已发	已发的通知只留作历史
+grant-console	通知	grant-console:144:notice:gc144-released	grant-console:144	历史：已发	已发的通知只留作历史
+grant-console	通知	grant-console:145:notice:gc145-existing-merged-pr-route	grant-console:145	历史：已发	已发的通知只留作历史
+grant-console	通知	grant-console:150:failing:39d95518-c51d-4b59-8269-d87107345f88	grant-console:150	历史：已发	已发的通知只留作历史
+grant-console	通知	grant-console:150:notice:acceptance-receipt-format-blocked-a4d368c	grant-console:150	历史：已发	已发的通知只留作历史
+grant-console	通知	grant-console:150:notice:gc150-cleanup-must-fix	grant-console:150	历史：已发	已发的通知只留作历史
+grant-console	通知	grant-console:150:notice:gc150-review-34180d2	grant-console:150	历史：已发	已发的通知只留作历史
+grant-console	通知	grant-console:150:notice:gc150-review-937f2d4	grant-console:150	历史：已发	已发的通知只留作历史
+grant-console	通知	grant-console:93:notice:gc93-promtool-missing	grant-console:93	历史：已发	已发的通知只留作历史
+grant-console	通知	grant-console:om_x100b605b531ebca0c01f55c807a3fcc:notice:binding-test-109	grant-console:om_x100b605b531ebca0c01f55c807a3fcc	历史：已发	已发的通知只留作历史
+grant-console	通道对账记录	reconcile:grant-console:170:eb2b6f0f-2bcf-4d81-86d6-478f359c0d03:requirement-change	grant-console:170:eb2b6f0f-2bcf-4d81-86d6-478f359c0d03	历史：通道已退役	旧通道的对账计数清掉；卡片去向见同号的卡片行
+grant-console	问卡	grant-console:191:grant-console:191:leave:1da14091-7611-405c-ae44-577a925ef822	grant-console:191	历史：已答	已答的问卡只留作历史；回答不当授权中心的授权
+workshop 转换状态：done
+grant-console 转换状态：done
+未转 0 条
+
+===== 现役副本：发送记录 =====
+送达命令收件箱：[]
+外部命令替身调用：[]
+
+===== 现役副本：上一版本（origin/main）跑一拍 =====
+$ <回放目录>/live/old-checkout/.venv/bin/python -m workshop.cli --state-dir <回放目录>/live/state --rules <回放目录>/live/old-rules.yaml pause grant-console
+exit=0（0.33 秒）
+已暂停 grant-console；当前一轮继续收尾
+
+$ <回放目录>/live/old-checkout/.venv/bin/python -m workshop.cli --state-dir <回放目录>/live/state --rules <回放目录>/live/old-rules.yaml pause workshop
+exit=0（0.11 秒）
+已暂停 workshop；当前一轮继续收尾
+
+$ <回放目录>/live/old-checkout/.venv/bin/python -m workshop.cli --state-dir <回放目录>/live/state --rules <回放目录>/live/old-rules.yaml run --once
+exit=0（0.16 秒）
+
+===== 现役副本：上一版本跑一拍后的发送记录（应为空） =====
+送达命令收件箱：[]
+外部命令替身调用：[]
+
+===== 合成副本：准备 =====
+副本 <回放目录>/synthetic
+现役来源 /Users/kun/.local/state/workshop/workshop.db、/Users/kun/.local/state/workshop-intervention/intervention.db（sqlite 在线备份，只读）
+大小 {'workshop.db': 2335817728, 'intervention.db': 137687040}
+复制耗时 2.75 秒
+
+===== 合成副本：加每类一条旧记录 =====
+合成旧记录：workshop:cutover-seed:ask、workshop:cutover-seed:approval、workshop:cutover-seed:notice、workshop:cutover-seed:uncertain、workshop:cutover-seed:leave:送回、workshop:cutover-seed:leave:工序、grant-console:cutover-seed:ask、grant-console:cutover-seed:approval、grant-console:cutover-seed:notice、grant-console:cutover-seed:uncertain、grant-console:cutover-seed:leave:送回、grant-console:cutover-seed:leave:工序（2026-11-19T06:38:29.941661+00:00）
+
+===== 合成副本：转换前清单 =====
+$ <worktree>/.venv/bin/python <worktree>/scripts/convert_intervention.py --state-dir <回放目录>/synthetic/state --intervention-db <回放目录>/synthetic/intervention/intervention.db --rules <回放目录>/synthetic/rules.yaml --backup-dir <回放目录>/synthetic/backups inventory --rows
+exit=0（0.37 秒）
+inventory：状态目录 <回放目录>/synthetic/state，交付对象 workshop、grant-console，共 210 条
+交付对象	类别	去向	条数
+workshop	billing_approved	历史：清掉，关口重查	1
+workshop	frozen_approved	作废：冻结批准	1
+workshop	pending_advance	历史：清掉，关口重查	1
+workshop	介入点送达	保留	2
+workshop	审批卡	历史：已答	9
+workshop	审批卡	取消：审批卡作废	1
+workshop	核心批准	历史：清掉，关口重查	1
+workshop	送回定时	取消：活已结束	41
+workshop	送回定时	改成到点自动续跑	1
+workshop	通知	历史：已发	48
+workshop	通知	取消：过时通知	1
+workshop	通知	对账：取消	1
+workshop	问卡	历史：已答	10
+workshop	问卡	转等待	1
+workshop	非车间工序定时	取消：活已结束	1
+workshop	非车间工序定时	改成到点自动续跑	1
+grant-console	billing_approved	历史：清掉，关口重查	1
+grant-console	frozen_approved	作废：冻结批准	1
+grant-console	frozen_approved	历史：冻结批准	3
+grant-console	pending_advance	历史：清掉，关口重查	1
+grant-console	审批卡	历史：已作废	1
+grant-console	审批卡	历史：已答	19
+grant-console	审批卡	取消：审批卡作废	1
+grant-console	核心批准	历史：清掉，关口重查	1
+grant-console	送回定时	取消：活已结束	21
+grant-console	送回定时	改成到点自动续跑	1
+grant-console	通知	历史：已发	33
+grant-console	通知	取消：过时通知	1
+grant-console	通知	对账：取消	1
+grant-console	通道对账记录	历史：通道已退役	1
+grant-console	问卡	历史：已答	1
+grant-console	问卡	转等待	1
+grant-console	非车间工序定时	改成到点自动续跑	1
+交付对象	类别	原编号	活	去向	理由
+workshop	billing_approved	workshop:cutover-seed	workshop:cutover-seed	历史：清掉，关口重查（未转）	旧核心批准只留作历史，不当授权中心的授权（介入点 R8）
+workshop	frozen_approved	workshop:cutover-seed	workshop:cutover-seed	作废：冻结批准（未转）	冻结路径关口已取消（介入点 R8）；批准作废，其它仍有效的关口重查
+workshop	pending_advance	workshop:cutover-seed	workshop:cutover-seed	历史：清掉，关口重查（未转）	旧的待批推进不当授权；关口按授权中心原申请重查
+workshop	审批卡	workshop:102:5527fe8f-933e-434b-a117-84215cf62e7a:visual-acceptance	workshop:102	历史：已答（未转）	已答的问卡只留作历史；回答不当授权中心的授权
+workshop	审批卡	workshop:102:c483cf65-9778-45ae-84ca-a5611903dc7b:visual-acceptance	workshop:102	历史：已答（未转）	已答的问卡只留作历史；回答不当授权中心的授权
+workshop	审批卡	workshop:122:4a879cc5-0ef5-4f0a-ba9e-8a6404c0c596:visual-acceptance	workshop:122	历史：已答（未转）	已答的问卡只留作历史；回答不当授权中心的授权
+workshop	审批卡	workshop:14:1b443ef7-a5e2-4ec5-a72e-4d48a531cbd6:incremental-feeds	workshop:14	历史：已答（未转）	已答的问卡只留作历史；回答不当授权中心的授权
+workshop	审批卡	workshop:151:87bd3169-e55a-4fc1-bb33-9e432b82b512:requirement-change	workshop:151	历史：已答（未转）	已答的问卡只留作历史；回答不当授权中心的授权
+workshop	审批卡	workshop:177:f06dd4dc-7a13-4f0a-9aef-c72436c6ab33:requirement-change	workshop:177	历史：已答（未转）	已答的问卡只留作历史；回答不当授权中心的授权
+workshop	审批卡	workshop:184:0567b9f6-e6ed-41c2-bd43-3003b9013666:fixture-state	workshop:184	历史：已答（未转）	已答的问卡只留作历史；回答不当授权中心的授权
+workshop	审批卡	workshop:184:09271153-f9e2-4369-8015-9ef46446c99a:requirement-wording	workshop:184	历史：已答（未转）	已答的问卡只留作历史；回答不当授权中心的授权
+workshop	审批卡	workshop:184:3c576108-414a-486e-be79-3715979eb6e3:visual-acceptance	workshop:184	历史：已答（未转）	已答的问卡只留作历史；回答不当授权中心的授权
+workshop	审批卡	workshop:cutover-seed:approval	workshop:cutover-seed	取消：审批卡作废（未转）	旧审批卡不当授权；要授权的动作走授权中心原申请，关口重查
+workshop	核心批准	workshop:cutover-seed	workshop:cutover-seed	历史：清掉，关口重查（未转）	旧核心批准只留作历史，不当授权中心的授权（介入点 R8）
+workshop	送回定时	workshop:101:leave:c6c88826-86c4-470d-9f86-737150a6fe3e	workshop:101	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:102:leave:b623bbd5-bfad-4e3b-9151-6b6897520449	workshop:102	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:104:leave:9ee30d88-e9a7-4766-9966-c32a0c090da4	workshop:104	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:107:leave:77fcbbbd-9499-439a-9e00-41ee9dbb3069	workshop:107	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:112:leave:be9f8d55-9930-4f2a-9f13-1da089339b67	workshop:112	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:113:leave:ae336399-bf9f-4525-ac69-f11c0ae98fd9	workshop:113	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:121:leave:c6a0549e-77e7-4de9-a751-c3fa8dc51649	workshop:121	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:122:leave:2180b5bf-b0ba-4d49-a054-8a623a365667	workshop:122	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:122:leave:687db474-b57a-48e4-9a24-ed5385be8192	workshop:122	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:143:leave:ac10a81c-e9a8-49de-a0c2-2e3af95485de	workshop:143	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:144:leave:060e3efd-fd09-445c-8649-24dc87e3811a	workshop:144	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:14:leave:9353b469-3374-4a12-afab-c4c5edb8237c	workshop:14	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:151:leave:1ad584b7-87db-49ed-9f32-8001217fd0b5	workshop:151	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:157:leave:c07f03be-45c8-41cd-89d8-f5c85fb3e32f	workshop:157	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:15:leave:4bbed9f5-bb0d-40e3-ab60-ba79421b1746	workshop:15	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:164:leave:20a83950-0226-468d-9495-c09025d2666e	workshop:164	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:167:leave:ba1ef873-15f2-4081-b2d5-dfdcde2a66cf	workshop:167	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:172:leave:bbc2b169-e5be-44f7-b939-ab514536e946	workshop:172	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:177:leave:490b0dee-2c12-4355-92fc-e7dd6febd816	workshop:177	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:18:leave:1f71e619-1909-4d3b-96c8-d4ff0cd75c73	workshop:18	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:211:leave:90aa8a27-519d-44dd-9253-ac809ffb9bc0	workshop:211	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:220:leave:f6489925-df16-4acd-9762-a43b860c85c7	workshop:220	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:29:leave:fe51a057-2d62-40f5-8b7a-c3794e8cfc33	workshop:29	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:30:leave:a8bf4c32-0db9-49b2-b568-6eb301e8e8da	workshop:30	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:31:leave:8d788d9c-b297-4280-acd1-21b5615564f9	workshop:31	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:32:leave:e4514d44-e466-41af-bf55-26c00f44376c	workshop:32	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:37:leave:a361d3e2-7f7f-4d50-9653-fc2c50049a26	workshop:37	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:44:leave:52688d7e-7e52-4949-be08-864755ab6680	workshop:44	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:46:leave:17e2dd33-c0d6-4ab5-bfc5-6968c5f81a80	workshop:46	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:48:leave:b33c0778-1142-4e3d-a090-b1637a9f60d6	workshop:48	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:52:leave:55b30d83-3d3b-4d5e-9cc5-216310027528	workshop:52	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:5:leave:0e16fa5c-7c18-4a5d-9f2d-a6be230cd75d	workshop:5	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:71:leave:435909e1-25da-405c-8206-739511fdb4c4	workshop:71	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:74:leave:aa658754-294e-474a-8dc0-eb697ce3d87c	workshop:74	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:76:leave:f49b57d0-b296-4fdb-880c-7928e2a451ec	workshop:76	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:78:leave:ca2042ed-0570-4d0c-8651-ef6882a920a2	workshop:78	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:81:leave:9523fa0f-5f4a-46b4-98d6-533aab1dadad	workshop:81	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:84:leave:a97e3cd3-be80-4a94-aae7-b210da3fe420	workshop:84	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:93:leave:f3d8be91-110d-4eb9-b4f3-e569e2bf18b7	workshop:93	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:97:leave:a16130d0-317f-422c-8e0d-e6c624486dd7	workshop:97	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:99:leave:6130446e-10d0-462a-b27e-e630bbe7f8d1	workshop:99	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:cutover-seed:leave:送回	workshop:cutover-seed	改成到点自动续跑（未转）	到点由车间接着做，不找 Kun（介入点 R10）
+workshop	通知	@workshop:plugin:flow:issue_delivery:4987	@workshop	历史：已发（未转）	已发的通知只留作历史
+workshop	通知	@workshop:plugin:flow:issue_delivery:5147	@workshop	历史：已发（未转）	已发的通知只留作历史
+workshop	通知	@workshop:plugin:flow:issue_delivery:520	@workshop	历史：已发（未转）	已发的通知只留作历史
+workshop	通知	workshop:14:notice:ci-read-permission	workshop:14	历史：已发（未转）	已发的通知只留作历史
+workshop	通知	workshop:18:notice:acceptance-passed	workshop:18	历史：已发（未转）	已发的通知只留作历史
+workshop	通知	workshop:18:notice:accepted	workshop:18	历史：已发（未转）	已发的通知只留作历史
+workshop	通知	workshop:26:notice:acceptance-passed	workshop:26	历史：已发（未转）	已发的通知只留作历史
+workshop	通知	workshop:26:notice:accepted	workshop:26	历史：已发（未转）	已发的通知只留作历史
+workshop	通知	workshop:26:notice:clarified	workshop:26	历史：已发（未转）	已发的通知只留作历史
+workshop	通知	workshop:29:notice:accepted	workshop:29	历史：已发（未转）	已发的通知只留作历史
+workshop	通知	workshop:30:notice:accepted	workshop:30	历史：已发（未转）	已发的通知只留作历史
+workshop	通知	workshop:32:notice:accepted	workshop:32	历史：已发（未转）	已发的通知只留作历史
+workshop	通知	workshop:32:notice:ws32-clear	workshop:32	历史：已发（未转）	已发的通知只留作历史
+workshop	通知	workshop:32:notice:ws32-intake	workshop:32	历史：已发（未转）	已发的通知只留作历史
+workshop	通知	workshop:37:notice:acceptance-ws37	workshop:37	历史：已发（未转）	已发的通知只留作历史
+workshop	通知	workshop:37:notice:accepted	workshop:37	历史：已发（未转）	已发的通知只留作历史
+workshop	通知	workshop:41:notice:acceptance-passed	workshop:41	历史：已发（未转）	已发的通知只留作历史
+workshop	通知	workshop:41:notice:accepted	workshop:41	历史：已发（未转）	已发的通知只留作历史
+workshop	通知	workshop:41:notice:ask-41	workshop:41	历史：已发（未转）	已发的通知只留作历史
+workshop	通知	workshop:41:notice:clarified-41	workshop:41	历史：已发（未转）	已发的通知只留作历史
+workshop	通知	workshop:41:notice:conflict-41	workshop:41	历史：已发（未转）	已发的通知只留作历史
+workshop	通知	workshop:41:notice:conflict-41b	workshop:41	历史：已发（未转）	已发的通知只留作历史
+workshop	通知	workshop:41:notice:deliver-41	workshop:41	历史：已发（未转）	已发的通知只留作历史
+workshop	通知	workshop:41:notice:evidence-41	workshop:41	历史：已发（未转）	已发的通知只留作历史
+workshop	通知	workshop:41:notice:evidence-41b	workshop:41	历史：已发（未转）	已发的通知只留作历史
+workshop	通知	workshop:41:notice:evidence-41c	workshop:41	历史：已发（未转）	已发的通知只留作历史
+workshop	通知	workshop:41:notice:intake-41	workshop:41	历史：已发（未转）	已发的通知只留作历史
+workshop	通知	workshop:41:notice:keep-41	workshop:41	历史：已发（未转）	已发的通知只留作历史
+workshop	通知	workshop:41:notice:port-41	workshop:41	历史：已发（未转）	已发的通知只留作历史
+workshop	通知	workshop:41:notice:pr-41	workshop:41	历史：已发（未转）	已发的通知只留作历史
+workshop	通知	workshop:41:notice:rebase-41	workshop:41	历史：已发（未转）	已发的通知只留作历史
+workshop	通知	workshop:44:notice:acceptance-failed	workshop:44	历史：已发（未转）	已发的通知只留作历史
+workshop	通知	workshop:44:notice:acceptance-notice-format-blocked	workshop:44	历史：已发（未转）	已发的通知只留作历史
+workshop	通知	workshop:44:notice:ws44-app-identity-blocked	workshop:44	历史：已发（未转）	已发的通知只留作历史
+workshop	通知	workshop:46:notice:ws46-check-environment-aa86e082	workshop:46	历史：已发（未转）	已发的通知只留作历史
+workshop	通知	workshop:46:notice:完成:f76c3231cf4a2fc272f07a8803715ed0291889cb	workshop:46	历史：已发（未转）	已发的通知只留作历史
+workshop	通知	workshop:48:notice:acceptance-return-9b10b7c	workshop:48	历史：已发（未转）	已发的通知只留作历史
+workshop	通知	workshop:48:notice:clarified-48	workshop:48	历史：已发（未转）	已发的通知只留作历史
+workshop	通知	workshop:48:notice:pr-56-opened	workshop:48	历史：已发（未转）	已发的通知只留作历史
+workshop	通知	workshop:48:notice:ws48-a1-environment-blocked	workshop:48	历史：已发（未转）	已发的通知只留作历史
+workshop	通知	workshop:48:notice:ws48-blocked-by-71-independent-check	workshop:48	历史：已发（未转）	已发的通知只留作历史
+workshop	通知	workshop:52:notice:ws52-unlabeled	workshop:52	历史：已发（未转）	已发的通知只留作历史
+workshop	通知	workshop:5:notice:acceptance-passed	workshop:5	历史：已发（未转）	已发的通知只留作历史
+workshop	通知	workshop:5:notice:accepted	workshop:5	历史：已发（未转）	已发的通知只留作历史
+workshop	通知	workshop:5:notice:rerun-acceptance	workshop:5	历史：已发（未转）	已发的通知只留作历史
+workshop	通知	workshop:5:notice:runtime-update	workshop:5	历史：已发（未转）	已发的通知只留作历史
+workshop	通知	workshop:62:notice:ws62-receipt-format-cfe4c682	workshop:62	历史：已发（未转）	已发的通知只留作历史
+workshop	通知	workshop:74:notice:完成:8e599a9caf0ee002279739603e85141cf4b1f557	workshop:74	历史：已发（未转）	已发的通知只留作历史
+workshop	通知	workshop:cutover-seed:notice	workshop:cutover-seed	取消：过时通知（未转）	没发的通用通知取消；进度和结果只在 workshop status 里看（介入点 R13）
+workshop	通知	workshop:cutover-seed:uncertain	workshop:cutover-seed	对账：取消（未转）	按原标识对账查不到外部编号，结果不明，不重发，取消（介入点 R13 不再发通知）
+workshop	问卡	workshop:14:workshop:14:leave:885ec452-f821-47b6-8b03-4fe8255ee59b	workshop:14	历史：已答（未转）	已答的问卡只留作历史；回答不当授权中心的授权
+workshop	问卡	workshop:32:8b9d481d-4bb2-4374-a1dd-35628151698d:serial-detect	workshop:32	历史：已答（未转）	已答的问卡只留作历史；回答不当授权中心的授权
+workshop	问卡	workshop:41:3cf80832-c968-4fd3-b73d-b2528f144e74:codex-user-config	workshop:41	历史：已答（未转）	已答的问卡只留作历史；回答不当授权中心的授权
+workshop	问卡	workshop:46:fa2ee12b-efd4-484e-a157-3159dcab61fb:title-mode	workshop:46	历史：已答（未转）	已答的问卡只留作历史；回答不当授权中心的授权
+workshop	问卡	workshop:62:c6ee45f4-01cc-47d4-9880-22cfa1b4e17c:cursor-mode	workshop:62	历史：已答（未转）	已答的问卡只留作历史；回答不当授权中心的授权
+workshop	问卡	workshop:74:workshop:74:leave:0129309a-0304-48ce-a7c6-af52b4ad5f99	workshop:74	历史：已答（未转）	已答的问卡只留作历史；回答不当授权中心的授权
+workshop	问卡	workshop:75:d99905a2-7671-4f3e-93ba-c95a417c08eb:wake-file-probe	workshop:75	历史：已答（未转）	已答的问卡只留作历史；回答不当授权中心的授权
+workshop	问卡	workshop:75:workshop:75:leave:0dedcea9-58dc-4cf4-b314-9aa52b3e3e82	workshop:75	历史：已答（未转）	已答的问卡只留作历史；回答不当授权中心的授权
+workshop	问卡	workshop:75:workshop:75:leave:581f60dd-964d-4099-bbb2-8683584b3c22	workshop:75	历史：已答（未转）	已答的问卡只留作历史；回答不当授权中心的授权
+workshop	问卡	workshop:75:workshop:75:leave:9c3c0cd6-5200-4939-a8ed-373291e4f07e	workshop:75	历史：已答（未转）	已答的问卡只留作历史；回答不当授权中心的授权
+workshop	问卡	workshop:cutover-seed:ask	workshop:cutover-seed	转等待（未转）	没答的普通问卡转成介入点服务里的等待，不补发、不替 Kun 填答案
+workshop	非车间工序定时	workshop:75:leave:d53f7da4-a251-4cab-8a46-77c8ae8058f8	workshop:75	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	非车间工序定时	workshop:cutover-seed:leave:工序	workshop:cutover-seed	改成到点自动续跑（未转）	到点由车间接着做，不找 Kun（介入点 R10）
+grant-console	billing_approved	grant-console:cutover-seed	grant-console:cutover-seed	历史：清掉，关口重查（未转）	旧核心批准只留作历史，不当授权中心的授权（介入点 R8）
+grant-console	frozen_approved	grant-console:136	grant-console:136	历史：冻结批准（未转）	冻结路径关口已取消（介入点 R8）；批准作废，其它仍有效的关口重查
+grant-console	frozen_approved	grant-console:154	grant-console:154	历史：冻结批准（未转）	冻结路径关口已取消（介入点 R8）；批准作废，其它仍有效的关口重查
+grant-console	frozen_approved	grant-console:93	grant-console:93	历史：冻结批准（未转）	冻结路径关口已取消（介入点 R8）；批准作废，其它仍有效的关口重查
+grant-console	frozen_approved	grant-console:cutover-seed	grant-console:cutover-seed	作废：冻结批准（未转）	冻结路径关口已取消（介入点 R8）；批准作废，其它仍有效的关口重查
+grant-console	pending_advance	grant-console:cutover-seed	grant-console:cutover-seed	历史：清掉，关口重查（未转）	旧的待批推进不当授权；关口按授权中心原申请重查
+grant-console	审批卡	grant-console:104:15701534-9447-4a39-94ce-e2da1d522fe1:visual-acceptance	grant-console:104	历史：已答（未转）	已答的问卡只留作历史；回答不当授权中心的授权
+grant-console	审批卡	grant-console:104:4f216ca2-f42c-473d-b3cd-51e16fff0b7a:requirement-change	grant-console:104	历史：已答（未转）	已答的问卡只留作历史；回答不当授权中心的授权
+grant-console	审批卡	grant-console:136:approval:c7ee5b94-015a-4663-afac-169344c01094	grant-console:136	历史：已答（未转）	已答的问卡只留作历史；回答不当授权中心的授权
+grant-console	审批卡	grant-console:143:f1b68ab0-a36a-4ae7-94e8-bff019554156:gc143-release-2201	grant-console:143	历史：已答（未转）	已答的问卡只留作历史；回答不当授权中心的授权
+grant-console	审批卡	grant-console:144:9e626025-56a1-4588-91e0-877188c6789d:gc144-release-approval	grant-console:144	历史：已答（未转）	已答的问卡只留作历史；回答不当授权中心的授权
+grant-console	审批卡	grant-console:152:2b9a0338-df54-448b-8f6f-eaa83fe32611:requirement-change	grant-console:152	历史：已答（未转）	已答的问卡只留作历史；回答不当授权中心的授权
+grant-console	审批卡	grant-console:154:28c9701e-76ef-4fec-b829-6eb038aae0e1:cluster-scope-exception	grant-console:154	历史：已答（未转）	已答的问卡只留作历史；回答不当授权中心的授权
+grant-console	审批卡	grant-console:154:approval:7bd16e10-6d52-4a91-840b-564ccc338113	grant-console:154	历史：已答（未转）	已答的问卡只留作历史；回答不当授权中心的授权
+grant-console	审批卡	grant-console:154:d21a6523-38ed-4353-8563-f6387f272f9e:release-card-rule	grant-console:154	历史：已答（未转）	已答的问卡只留作历史；回答不当授权中心的授权
+grant-console	审批卡	grant-console:160:710b21bb-63aa-4415-a8c6-27db339b38f3:requirement-change	grant-console:160	历史：已答（未转）	已答的问卡只留作历史；回答不当授权中心的授权
+grant-console	审批卡	grant-console:170:eb2b6f0f-2bcf-4d81-86d6-478f359c0d03:requirement-change	grant-console:170	历史：已答（未转）	已答的问卡只留作历史；回答不当授权中心的授权
+grant-console	审批卡	grant-console:171:cee3b3ac-048e-472b-8aff-887779625b6d:requirement-change	grant-console:171	历史：已作废（未转）	已作废或拒收的问卡只留作历史
+grant-console	审批卡	grant-console:175:552d3331-ef24-4aaf-8d4d-fc3e551235c0:visual-acceptance	grant-console:175	历史：已答（未转）	已答的问卡只留作历史；回答不当授权中心的授权
+grant-console	审批卡	grant-console:175:6389f67d-2685-4c41-94a1-eabe8364f177:requirement-change	grant-console:175	历史：已答（未转）	已答的问卡只留作历史；回答不当授权中心的授权
+grant-console	审批卡	grant-console:175:79902995-9d98-47e4-9949-7896c6b6bff7:visual-acceptance	grant-console:175	历史：已答（未转）	已答的问卡只留作历史；回答不当授权中心的授权
+grant-console	审批卡	grant-console:191:8c456084-2e59-4dc8-9bf3-6e4ba4d2c731:visual-acceptance	grant-console:191	历史：已答（未转）	已答的问卡只留作历史；回答不当授权中心的授权
+grant-console	审批卡	grant-console:5:913e89ea-f874-45a8-9c08-fcdf1382af18:requirement-change	grant-console:5	历史：已答（未转）	已答的问卡只留作历史；回答不当授权中心的授权
+grant-console	审批卡	grant-console:5:approval:a743af8e-57bf-4864-9c4f-8e0016ac2ffc	grant-console:5	历史：已答（未转）	已答的问卡只留作历史；回答不当授权中心的授权
+grant-console	审批卡	grant-console:80:6c5af82b-0c6a-4a93-81e8-6fae1ca00d1c:requirement-change	grant-console:80	历史：已答（未转）	已答的问卡只留作历史；回答不当授权中心的授权
+grant-console	审批卡	grant-console:93:approval:256f5721-1a61-4a17-a553-bed3656d5486	grant-console:93	历史：已答（未转）	已答的问卡只留作历史；回答不当授权中心的授权
+grant-console	审批卡	grant-console:cutover-seed:approval	grant-console:cutover-seed	取消：审批卡作废（未转）	旧审批卡不当授权；要授权的动作走授权中心原申请，关口重查
+grant-console	核心批准	grant-console:cutover-seed	grant-console:cutover-seed	历史：清掉，关口重查（未转）	旧核心批准只留作历史，不当授权中心的授权（介入点 R8）
+grant-console	送回定时	grant-console:104:leave:6d7a0207-94ab-4ada-803b-5cf3527aa6ff	grant-console:104	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+grant-console	送回定时	grant-console:104:leave:97ae382a-a29a-4841-abb9-eec0826e3ead	grant-console:104	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+grant-console	送回定时	grant-console:104:leave:cca9136b-9b5e-430c-8998-4080dc888dc6	grant-console:104	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+grant-console	送回定时	grant-console:143:leave:5f972bda-6fcb-4c34-82e8-1b74e4f71497	grant-console:143	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+grant-console	送回定时	grant-console:144:leave:431a070c-b435-4b41-91b9-ace5ce1cf673	grant-console:144	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+grant-console	送回定时	grant-console:150:leave:82cd651b-4d83-41a1-bdd8-d44e0a8dab03	grant-console:150	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+grant-console	送回定时	grant-console:152:leave:2655bfd2-df8f-4763-ae4b-a9fb20403ced	grant-console:152	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+grant-console	送回定时	grant-console:152:leave:47ec517c-c2d0-4bc5-8fe3-181b331a58cd	grant-console:152	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+grant-console	送回定时	grant-console:154:leave:75e2dd58-7276-48b7-b325-8b8e85832ec7	grant-console:154	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+grant-console	送回定时	grant-console:160:leave:362881ab-e262-42b1-986c-52de8f9d3203	grant-console:160	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+grant-console	送回定时	grant-console:170:leave:43976d9f-c11e-45bd-9279-ecfc7753d255	grant-console:170	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+grant-console	送回定时	grant-console:170:leave:54d94a6b-df96-4e2b-9133-0e744b17a426	grant-console:170	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+grant-console	送回定时	grant-console:171:leave:97d75d3f-fc6a-4ab3-af5a-5e334d0610b5	grant-console:171	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+grant-console	送回定时	grant-console:174:leave:ef2a1f52-1983-4b3f-ad53-112b1616c8b3	grant-console:174	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+grant-console	送回定时	grant-console:175:leave:a63219b1-da98-451a-a1ef-7d7b6b76abd4	grant-console:175	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+grant-console	送回定时	grant-console:191:leave:ac40b8c1-59f6-44a8-8d92-ceded252ca24	grant-console:191	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+grant-console	送回定时	grant-console:5:leave:1a984500-9214-498d-8262-f87e067a836c	grant-console:5	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+grant-console	送回定时	grant-console:5:leave:341b1862-1ddc-47dc-a3e5-a193a34b1920	grant-console:5	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+grant-console	送回定时	grant-console:81:leave:a61bd6d0-5e94-40ac-8206-d4546b93d54e	grant-console:81	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+grant-console	送回定时	grant-console:81:leave:b7450ce9-e19b-47ea-a72c-cfcc88d1767f	grant-console:81	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+grant-console	送回定时	grant-console:93:leave:9c19dc4e-8126-40bb-9879-398c4afec727	grant-console:93	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+grant-console	送回定时	grant-console:cutover-seed:leave:送回	grant-console:cutover-seed	改成到点自动续跑（未转）	到点由车间接着做，不找 Kun（介入点 R10）
+grant-console	通知	@grant-console:plugin:flow:issue_delivery:4977	@grant-console	历史：已发（未转）	已发的通知只留作历史
+grant-console	通知	@grant-console:plugin:flow:issue_delivery:5137	@grant-console	历史：已发（未转）	已发的通知只留作历史
+grant-console	通知	@grant-console:plugin:flow:issue_delivery:517	@grant-console	历史：已发（未转）	已发的通知只留作历史
+grant-console	通知	grant-console:109:failing:c2cb5b7c-c8ea-4d64-a5a4-da80f3e370c4	grant-console:109	历史：已发（未转）	已发的通知只留作历史
+grant-console	通知	grant-console:109:notice:gc109-clarify	grant-console:109	历史：已发（未转）	已发的通知只留作历史
+grant-console	通知	grant-console:109:notice:gc109-deliver	grant-console:109	历史：已发（未转）	已发的通知只留作历史
+grant-console	通知	grant-console:109:notice:gc109-evidence	grant-console:109	历史：已发（未转）	已发的通知只留作历史
+grant-console	通知	grant-console:109:notice:gc109-exec	grant-console:109	历史：已发（未转）	已发的通知只留作历史
+grant-console	通知	grant-console:109:notice:gc109-intake	grant-console:109	历史：已发（未转）	已发的通知只留作历史
+grant-console	通知	grant-console:109:notice:gc109-rework-test	grant-console:109	历史：已发（未转）	已发的通知只留作历史
+grant-console	通知	grant-console:143:failing:bfe506a6-28b2-4879-b9a2-3b008e2dab6a	grant-console:143	历史：已发（未转）	已发的通知只留作历史
+grant-console	通知	grant-console:143:notice:gc143-acceptance-bb6b03e	grant-console:143	历史：已发（未转）	已发的通知只留作历史
+grant-console	通知	grant-console:143:notice:gc143-release-verified	grant-console:143	历史：已发（未转）	已发的通知只留作历史
+grant-console	通知	grant-console:143:notice:gc143-review-5cbb60a	grant-console:143	历史：已发（未转）	已发的通知只留作历史
+grant-console	通知	grant-console:143:notice:完成:bb6b03e1aa1f4371b98478b9e5ae35365c44f5dd	grant-console:143	历史：已发（未转）	已发的通知只留作历史
+grant-console	通知	grant-console:144:failing:8e0a4800-36ed-4405-a1d3-00ea385c8542	grant-console:144	历史：已发（未转）	已发的通知只留作历史
+grant-console	通知	grant-console:144:notice:accepted	grant-console:144	历史：已发（未转）	已发的通知只留作历史
+grant-console	通知	grant-console:144:notice:gc144-acceptance-passed	grant-console:144	历史：已发（未转）	已发的通知只留作历史
+grant-console	通知	grant-console:144:notice:gc144-clarify	grant-console:144	历史：已发（未转）	已发的通知只留作历史
+grant-console	通知	grant-console:144:notice:gc144-deliver	grant-console:144	历史：已发（未转）	已发的通知只留作历史
+grant-console	通知	grant-console:144:notice:gc144-evidence	grant-console:144	历史：已发（未转）	已发的通知只留作历史
+grant-console	通知	grant-console:144:notice:gc144-exec	grant-console:144	历史：已发（未转）	已发的通知只留作历史
+grant-console	通知	grant-console:144:notice:gc144-grant-reminder	grant-console:144	历史：已发（未转）	已发的通知只留作历史
+grant-console	通知	grant-console:144:notice:gc144-intake	grant-console:144	历史：已发（未转）	已发的通知只留作历史
+grant-console	通知	grant-console:144:notice:gc144-released	grant-console:144	历史：已发（未转）	已发的通知只留作历史
+grant-console	通知	grant-console:145:notice:gc145-existing-merged-pr-route	grant-console:145	历史：已发（未转）	已发的通知只留作历史
+grant-console	通知	grant-console:150:failing:39d95518-c51d-4b59-8269-d87107345f88	grant-console:150	历史：已发（未转）	已发的通知只留作历史
+grant-console	通知	grant-console:150:notice:acceptance-receipt-format-blocked-a4d368c	grant-console:150	历史：已发（未转）	已发的通知只留作历史
+grant-console	通知	grant-console:150:notice:gc150-cleanup-must-fix	grant-console:150	历史：已发（未转）	已发的通知只留作历史
+grant-console	通知	grant-console:150:notice:gc150-review-34180d2	grant-console:150	历史：已发（未转）	已发的通知只留作历史
+grant-console	通知	grant-console:150:notice:gc150-review-937f2d4	grant-console:150	历史：已发（未转）	已发的通知只留作历史
+grant-console	通知	grant-console:93:notice:gc93-promtool-missing	grant-console:93	历史：已发（未转）	已发的通知只留作历史
+grant-console	通知	grant-console:cutover-seed:notice	grant-console:cutover-seed	取消：过时通知（未转）	没发的通用通知取消；进度和结果只在 workshop status 里看（介入点 R13）
+grant-console	通知	grant-console:cutover-seed:uncertain	grant-console:cutover-seed	对账：取消（未转）	按原标识对账查不到外部编号，结果不明，不重发，取消（介入点 R13 不再发通知）
+grant-console	通知	grant-console:om_x100b605b531ebca0c01f55c807a3fcc:notice:binding-test-109	grant-console:om_x100b605b531ebca0c01f55c807a3fcc	历史：已发（未转）	已发的通知只留作历史
+grant-console	通道对账记录	reconcile:grant-console:170:eb2b6f0f-2bcf-4d81-86d6-478f359c0d03:requirement-change	grant-console:170:eb2b6f0f-2bcf-4d81-86d6-478f359c0d03	历史：通道已退役（未转）	旧通道的对账计数清掉；卡片去向见同号的卡片行
+grant-console	问卡	grant-console:191:grant-console:191:leave:1da14091-7611-405c-ae44-577a925ef822	grant-console:191	历史：已答（未转）	已答的问卡只留作历史；回答不当授权中心的授权
+grant-console	问卡	grant-console:cutover-seed:ask	grant-console:cutover-seed	转等待（未转）	没答的普通问卡转成介入点服务里的等待，不补发、不替 Kun 填答案
+grant-console	非车间工序定时	grant-console:cutover-seed:leave:工序	grant-console:cutover-seed	改成到点自动续跑（未转）	到点由车间接着做，不找 Kun（介入点 R10）
+workshop	介入点送达	delivery:74e3494627d4cc647e320fe40ab3cd88d65f43697bc379ecf35e4fcccc96d370		保留	约定的送达按原送达号由介入点服务对账，不补发、不重发
+workshop	介入点送达	delivery:1493734f7fd3f0d0d15a06a62e31972d2a289b677d7515f60c97a7504f6c77f1		保留	约定的送达按原送达号由介入点服务对账，不补发、不重发
+
+===== 合成副本：预览 =====
+$ <worktree>/.venv/bin/python <worktree>/scripts/convert_intervention.py --state-dir <回放目录>/synthetic/state --intervention-db <回放目录>/synthetic/intervention/intervention.db --rules <回放目录>/synthetic/rules.yaml --backup-dir <回放目录>/synthetic/backups preview --rows
+exit=0（0.35 秒）
+preview：状态目录 <回放目录>/synthetic/state，交付对象 workshop、grant-console，共 210 条
+交付对象	类别	去向	条数
+workshop	billing_approved	历史：清掉，关口重查	1
+workshop	frozen_approved	作废：冻结批准	1
+workshop	pending_advance	历史：清掉，关口重查	1
+workshop	介入点送达	保留	2
+workshop	审批卡	历史：已答	9
+workshop	审批卡	取消：审批卡作废	1
+workshop	核心批准	历史：清掉，关口重查	1
+workshop	送回定时	取消：活已结束	41
+workshop	送回定时	改成到点自动续跑	1
+workshop	通知	历史：已发	48
+workshop	通知	取消：过时通知	1
+workshop	通知	对账：取消	1
+workshop	问卡	历史：已答	10
+workshop	问卡	转等待	1
+workshop	非车间工序定时	取消：活已结束	1
+workshop	非车间工序定时	改成到点自动续跑	1
+grant-console	billing_approved	历史：清掉，关口重查	1
+grant-console	frozen_approved	作废：冻结批准	1
+grant-console	frozen_approved	历史：冻结批准	3
+grant-console	pending_advance	历史：清掉，关口重查	1
+grant-console	审批卡	历史：已作废	1
+grant-console	审批卡	历史：已答	19
+grant-console	审批卡	取消：审批卡作废	1
+grant-console	核心批准	历史：清掉，关口重查	1
+grant-console	送回定时	取消：活已结束	21
+grant-console	送回定时	改成到点自动续跑	1
+grant-console	通知	历史：已发	33
+grant-console	通知	取消：过时通知	1
+grant-console	通知	对账：取消	1
+grant-console	通道对账记录	历史：通道已退役	1
+grant-console	问卡	历史：已答	1
+grant-console	问卡	转等待	1
+grant-console	非车间工序定时	改成到点自动续跑	1
+交付对象	类别	原编号	活	去向	理由
+workshop	billing_approved	workshop:cutover-seed	workshop:cutover-seed	历史：清掉，关口重查（未转）	旧核心批准只留作历史，不当授权中心的授权（介入点 R8）
+workshop	frozen_approved	workshop:cutover-seed	workshop:cutover-seed	作废：冻结批准（未转）	冻结路径关口已取消（介入点 R8）；批准作废，其它仍有效的关口重查
+workshop	pending_advance	workshop:cutover-seed	workshop:cutover-seed	历史：清掉，关口重查（未转）	旧的待批推进不当授权；关口按授权中心原申请重查
+workshop	审批卡	workshop:102:5527fe8f-933e-434b-a117-84215cf62e7a:visual-acceptance	workshop:102	历史：已答（未转）	已答的问卡只留作历史；回答不当授权中心的授权
+workshop	审批卡	workshop:102:c483cf65-9778-45ae-84ca-a5611903dc7b:visual-acceptance	workshop:102	历史：已答（未转）	已答的问卡只留作历史；回答不当授权中心的授权
+workshop	审批卡	workshop:122:4a879cc5-0ef5-4f0a-ba9e-8a6404c0c596:visual-acceptance	workshop:122	历史：已答（未转）	已答的问卡只留作历史；回答不当授权中心的授权
+workshop	审批卡	workshop:14:1b443ef7-a5e2-4ec5-a72e-4d48a531cbd6:incremental-feeds	workshop:14	历史：已答（未转）	已答的问卡只留作历史；回答不当授权中心的授权
+workshop	审批卡	workshop:151:87bd3169-e55a-4fc1-bb33-9e432b82b512:requirement-change	workshop:151	历史：已答（未转）	已答的问卡只留作历史；回答不当授权中心的授权
+workshop	审批卡	workshop:177:f06dd4dc-7a13-4f0a-9aef-c72436c6ab33:requirement-change	workshop:177	历史：已答（未转）	已答的问卡只留作历史；回答不当授权中心的授权
+workshop	审批卡	workshop:184:0567b9f6-e6ed-41c2-bd43-3003b9013666:fixture-state	workshop:184	历史：已答（未转）	已答的问卡只留作历史；回答不当授权中心的授权
+workshop	审批卡	workshop:184:09271153-f9e2-4369-8015-9ef46446c99a:requirement-wording	workshop:184	历史：已答（未转）	已答的问卡只留作历史；回答不当授权中心的授权
+workshop	审批卡	workshop:184:3c576108-414a-486e-be79-3715979eb6e3:visual-acceptance	workshop:184	历史：已答（未转）	已答的问卡只留作历史；回答不当授权中心的授权
+workshop	审批卡	workshop:cutover-seed:approval	workshop:cutover-seed	取消：审批卡作废（未转）	旧审批卡不当授权；要授权的动作走授权中心原申请，关口重查
+workshop	核心批准	workshop:cutover-seed	workshop:cutover-seed	历史：清掉，关口重查（未转）	旧核心批准只留作历史，不当授权中心的授权（介入点 R8）
+workshop	送回定时	workshop:101:leave:c6c88826-86c4-470d-9f86-737150a6fe3e	workshop:101	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:102:leave:b623bbd5-bfad-4e3b-9151-6b6897520449	workshop:102	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:104:leave:9ee30d88-e9a7-4766-9966-c32a0c090da4	workshop:104	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:107:leave:77fcbbbd-9499-439a-9e00-41ee9dbb3069	workshop:107	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:112:leave:be9f8d55-9930-4f2a-9f13-1da089339b67	workshop:112	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:113:leave:ae336399-bf9f-4525-ac69-f11c0ae98fd9	workshop:113	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:121:leave:c6a0549e-77e7-4de9-a751-c3fa8dc51649	workshop:121	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:122:leave:2180b5bf-b0ba-4d49-a054-8a623a365667	workshop:122	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:122:leave:687db474-b57a-48e4-9a24-ed5385be8192	workshop:122	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:143:leave:ac10a81c-e9a8-49de-a0c2-2e3af95485de	workshop:143	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:144:leave:060e3efd-fd09-445c-8649-24dc87e3811a	workshop:144	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:14:leave:9353b469-3374-4a12-afab-c4c5edb8237c	workshop:14	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:151:leave:1ad584b7-87db-49ed-9f32-8001217fd0b5	workshop:151	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:157:leave:c07f03be-45c8-41cd-89d8-f5c85fb3e32f	workshop:157	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:15:leave:4bbed9f5-bb0d-40e3-ab60-ba79421b1746	workshop:15	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:164:leave:20a83950-0226-468d-9495-c09025d2666e	workshop:164	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:167:leave:ba1ef873-15f2-4081-b2d5-dfdcde2a66cf	workshop:167	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:172:leave:bbc2b169-e5be-44f7-b939-ab514536e946	workshop:172	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:177:leave:490b0dee-2c12-4355-92fc-e7dd6febd816	workshop:177	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:18:leave:1f71e619-1909-4d3b-96c8-d4ff0cd75c73	workshop:18	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:211:leave:90aa8a27-519d-44dd-9253-ac809ffb9bc0	workshop:211	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:220:leave:f6489925-df16-4acd-9762-a43b860c85c7	workshop:220	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:29:leave:fe51a057-2d62-40f5-8b7a-c3794e8cfc33	workshop:29	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:30:leave:a8bf4c32-0db9-49b2-b568-6eb301e8e8da	workshop:30	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:31:leave:8d788d9c-b297-4280-acd1-21b5615564f9	workshop:31	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:32:leave:e4514d44-e466-41af-bf55-26c00f44376c	workshop:32	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:37:leave:a361d3e2-7f7f-4d50-9653-fc2c50049a26	workshop:37	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:44:leave:52688d7e-7e52-4949-be08-864755ab6680	workshop:44	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:46:leave:17e2dd33-c0d6-4ab5-bfc5-6968c5f81a80	workshop:46	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:48:leave:b33c0778-1142-4e3d-a090-b1637a9f60d6	workshop:48	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:52:leave:55b30d83-3d3b-4d5e-9cc5-216310027528	workshop:52	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:5:leave:0e16fa5c-7c18-4a5d-9f2d-a6be230cd75d	workshop:5	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:71:leave:435909e1-25da-405c-8206-739511fdb4c4	workshop:71	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:74:leave:aa658754-294e-474a-8dc0-eb697ce3d87c	workshop:74	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:76:leave:f49b57d0-b296-4fdb-880c-7928e2a451ec	workshop:76	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:78:leave:ca2042ed-0570-4d0c-8651-ef6882a920a2	workshop:78	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:81:leave:9523fa0f-5f4a-46b4-98d6-533aab1dadad	workshop:81	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:84:leave:a97e3cd3-be80-4a94-aae7-b210da3fe420	workshop:84	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:93:leave:f3d8be91-110d-4eb9-b4f3-e569e2bf18b7	workshop:93	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:97:leave:a16130d0-317f-422c-8e0d-e6c624486dd7	workshop:97	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:99:leave:6130446e-10d0-462a-b27e-e630bbe7f8d1	workshop:99	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:cutover-seed:leave:送回	workshop:cutover-seed	改成到点自动续跑（未转）	到点由车间接着做，不找 Kun（介入点 R10）
+workshop	通知	@workshop:plugin:flow:issue_delivery:4987	@workshop	历史：已发（未转）	已发的通知只留作历史
+workshop	通知	@workshop:plugin:flow:issue_delivery:5147	@workshop	历史：已发（未转）	已发的通知只留作历史
+workshop	通知	@workshop:plugin:flow:issue_delivery:520	@workshop	历史：已发（未转）	已发的通知只留作历史
+workshop	通知	workshop:14:notice:ci-read-permission	workshop:14	历史：已发（未转）	已发的通知只留作历史
+workshop	通知	workshop:18:notice:acceptance-passed	workshop:18	历史：已发（未转）	已发的通知只留作历史
+workshop	通知	workshop:18:notice:accepted	workshop:18	历史：已发（未转）	已发的通知只留作历史
+workshop	通知	workshop:26:notice:acceptance-passed	workshop:26	历史：已发（未转）	已发的通知只留作历史
+workshop	通知	workshop:26:notice:accepted	workshop:26	历史：已发（未转）	已发的通知只留作历史
+workshop	通知	workshop:26:notice:clarified	workshop:26	历史：已发（未转）	已发的通知只留作历史
+workshop	通知	workshop:29:notice:accepted	workshop:29	历史：已发（未转）	已发的通知只留作历史
+workshop	通知	workshop:30:notice:accepted	workshop:30	历史：已发（未转）	已发的通知只留作历史
+workshop	通知	workshop:32:notice:accepted	workshop:32	历史：已发（未转）	已发的通知只留作历史
+workshop	通知	workshop:32:notice:ws32-clear	workshop:32	历史：已发（未转）	已发的通知只留作历史
+workshop	通知	workshop:32:notice:ws32-intake	workshop:32	历史：已发（未转）	已发的通知只留作历史
+workshop	通知	workshop:37:notice:acceptance-ws37	workshop:37	历史：已发（未转）	已发的通知只留作历史
+workshop	通知	workshop:37:notice:accepted	workshop:37	历史：已发（未转）	已发的通知只留作历史
+workshop	通知	workshop:41:notice:acceptance-passed	workshop:41	历史：已发（未转）	已发的通知只留作历史
+workshop	通知	workshop:41:notice:accepted	workshop:41	历史：已发（未转）	已发的通知只留作历史
+workshop	通知	workshop:41:notice:ask-41	workshop:41	历史：已发（未转）	已发的通知只留作历史
+workshop	通知	workshop:41:notice:clarified-41	workshop:41	历史：已发（未转）	已发的通知只留作历史
+workshop	通知	workshop:41:notice:conflict-41	workshop:41	历史：已发（未转）	已发的通知只留作历史
+workshop	通知	workshop:41:notice:conflict-41b	workshop:41	历史：已发（未转）	已发的通知只留作历史
+workshop	通知	workshop:41:notice:deliver-41	workshop:41	历史：已发（未转）	已发的通知只留作历史
+workshop	通知	workshop:41:notice:evidence-41	workshop:41	历史：已发（未转）	已发的通知只留作历史
+workshop	通知	workshop:41:notice:evidence-41b	workshop:41	历史：已发（未转）	已发的通知只留作历史
+workshop	通知	workshop:41:notice:evidence-41c	workshop:41	历史：已发（未转）	已发的通知只留作历史
+workshop	通知	workshop:41:notice:intake-41	workshop:41	历史：已发（未转）	已发的通知只留作历史
+workshop	通知	workshop:41:notice:keep-41	workshop:41	历史：已发（未转）	已发的通知只留作历史
+workshop	通知	workshop:41:notice:port-41	workshop:41	历史：已发（未转）	已发的通知只留作历史
+workshop	通知	workshop:41:notice:pr-41	workshop:41	历史：已发（未转）	已发的通知只留作历史
+workshop	通知	workshop:41:notice:rebase-41	workshop:41	历史：已发（未转）	已发的通知只留作历史
+workshop	通知	workshop:44:notice:acceptance-failed	workshop:44	历史：已发（未转）	已发的通知只留作历史
+workshop	通知	workshop:44:notice:acceptance-notice-format-blocked	workshop:44	历史：已发（未转）	已发的通知只留作历史
+workshop	通知	workshop:44:notice:ws44-app-identity-blocked	workshop:44	历史：已发（未转）	已发的通知只留作历史
+workshop	通知	workshop:46:notice:ws46-check-environment-aa86e082	workshop:46	历史：已发（未转）	已发的通知只留作历史
+workshop	通知	workshop:46:notice:完成:f76c3231cf4a2fc272f07a8803715ed0291889cb	workshop:46	历史：已发（未转）	已发的通知只留作历史
+workshop	通知	workshop:48:notice:acceptance-return-9b10b7c	workshop:48	历史：已发（未转）	已发的通知只留作历史
+workshop	通知	workshop:48:notice:clarified-48	workshop:48	历史：已发（未转）	已发的通知只留作历史
+workshop	通知	workshop:48:notice:pr-56-opened	workshop:48	历史：已发（未转）	已发的通知只留作历史
+workshop	通知	workshop:48:notice:ws48-a1-environment-blocked	workshop:48	历史：已发（未转）	已发的通知只留作历史
+workshop	通知	workshop:48:notice:ws48-blocked-by-71-independent-check	workshop:48	历史：已发（未转）	已发的通知只留作历史
+workshop	通知	workshop:52:notice:ws52-unlabeled	workshop:52	历史：已发（未转）	已发的通知只留作历史
+workshop	通知	workshop:5:notice:acceptance-passed	workshop:5	历史：已发（未转）	已发的通知只留作历史
+workshop	通知	workshop:5:notice:accepted	workshop:5	历史：已发（未转）	已发的通知只留作历史
+workshop	通知	workshop:5:notice:rerun-acceptance	workshop:5	历史：已发（未转）	已发的通知只留作历史
+workshop	通知	workshop:5:notice:runtime-update	workshop:5	历史：已发（未转）	已发的通知只留作历史
+workshop	通知	workshop:62:notice:ws62-receipt-format-cfe4c682	workshop:62	历史：已发（未转）	已发的通知只留作历史
+workshop	通知	workshop:74:notice:完成:8e599a9caf0ee002279739603e85141cf4b1f557	workshop:74	历史：已发（未转）	已发的通知只留作历史
+workshop	通知	workshop:cutover-seed:notice	workshop:cutover-seed	取消：过时通知（未转）	没发的通用通知取消；进度和结果只在 workshop status 里看（介入点 R13）
+workshop	通知	workshop:cutover-seed:uncertain	workshop:cutover-seed	对账：取消（未转）	按原标识对账查不到外部编号，结果不明，不重发，取消（介入点 R13 不再发通知）
+workshop	问卡	workshop:14:workshop:14:leave:885ec452-f821-47b6-8b03-4fe8255ee59b	workshop:14	历史：已答（未转）	已答的问卡只留作历史；回答不当授权中心的授权
+workshop	问卡	workshop:32:8b9d481d-4bb2-4374-a1dd-35628151698d:serial-detect	workshop:32	历史：已答（未转）	已答的问卡只留作历史；回答不当授权中心的授权
+workshop	问卡	workshop:41:3cf80832-c968-4fd3-b73d-b2528f144e74:codex-user-config	workshop:41	历史：已答（未转）	已答的问卡只留作历史；回答不当授权中心的授权
+workshop	问卡	workshop:46:fa2ee12b-efd4-484e-a157-3159dcab61fb:title-mode	workshop:46	历史：已答（未转）	已答的问卡只留作历史；回答不当授权中心的授权
+workshop	问卡	workshop:62:c6ee45f4-01cc-47d4-9880-22cfa1b4e17c:cursor-mode	workshop:62	历史：已答（未转）	已答的问卡只留作历史；回答不当授权中心的授权
+workshop	问卡	workshop:74:workshop:74:leave:0129309a-0304-48ce-a7c6-af52b4ad5f99	workshop:74	历史：已答（未转）	已答的问卡只留作历史；回答不当授权中心的授权
+workshop	问卡	workshop:75:d99905a2-7671-4f3e-93ba-c95a417c08eb:wake-file-probe	workshop:75	历史：已答（未转）	已答的问卡只留作历史；回答不当授权中心的授权
+workshop	问卡	workshop:75:workshop:75:leave:0dedcea9-58dc-4cf4-b314-9aa52b3e3e82	workshop:75	历史：已答（未转）	已答的问卡只留作历史；回答不当授权中心的授权
+workshop	问卡	workshop:75:workshop:75:leave:581f60dd-964d-4099-bbb2-8683584b3c22	workshop:75	历史：已答（未转）	已答的问卡只留作历史；回答不当授权中心的授权
+workshop	问卡	workshop:75:workshop:75:leave:9c3c0cd6-5200-4939-a8ed-373291e4f07e	workshop:75	历史：已答（未转）	已答的问卡只留作历史；回答不当授权中心的授权
+workshop	问卡	workshop:cutover-seed:ask	workshop:cutover-seed	转等待（未转）	没答的普通问卡转成介入点服务里的等待，不补发、不替 Kun 填答案
+workshop	非车间工序定时	workshop:75:leave:d53f7da4-a251-4cab-8a46-77c8ae8058f8	workshop:75	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	非车间工序定时	workshop:cutover-seed:leave:工序	workshop:cutover-seed	改成到点自动续跑（未转）	到点由车间接着做，不找 Kun（介入点 R10）
+grant-console	billing_approved	grant-console:cutover-seed	grant-console:cutover-seed	历史：清掉，关口重查（未转）	旧核心批准只留作历史，不当授权中心的授权（介入点 R8）
+grant-console	frozen_approved	grant-console:136	grant-console:136	历史：冻结批准（未转）	冻结路径关口已取消（介入点 R8）；批准作废，其它仍有效的关口重查
+grant-console	frozen_approved	grant-console:154	grant-console:154	历史：冻结批准（未转）	冻结路径关口已取消（介入点 R8）；批准作废，其它仍有效的关口重查
+grant-console	frozen_approved	grant-console:93	grant-console:93	历史：冻结批准（未转）	冻结路径关口已取消（介入点 R8）；批准作废，其它仍有效的关口重查
+grant-console	frozen_approved	grant-console:cutover-seed	grant-console:cutover-seed	作废：冻结批准（未转）	冻结路径关口已取消（介入点 R8）；批准作废，其它仍有效的关口重查
+grant-console	pending_advance	grant-console:cutover-seed	grant-console:cutover-seed	历史：清掉，关口重查（未转）	旧的待批推进不当授权；关口按授权中心原申请重查
+grant-console	审批卡	grant-console:104:15701534-9447-4a39-94ce-e2da1d522fe1:visual-acceptance	grant-console:104	历史：已答（未转）	已答的问卡只留作历史；回答不当授权中心的授权
+grant-console	审批卡	grant-console:104:4f216ca2-f42c-473d-b3cd-51e16fff0b7a:requirement-change	grant-console:104	历史：已答（未转）	已答的问卡只留作历史；回答不当授权中心的授权
+grant-console	审批卡	grant-console:136:approval:c7ee5b94-015a-4663-afac-169344c01094	grant-console:136	历史：已答（未转）	已答的问卡只留作历史；回答不当授权中心的授权
+grant-console	审批卡	grant-console:143:f1b68ab0-a36a-4ae7-94e8-bff019554156:gc143-release-2201	grant-console:143	历史：已答（未转）	已答的问卡只留作历史；回答不当授权中心的授权
+grant-console	审批卡	grant-console:144:9e626025-56a1-4588-91e0-877188c6789d:gc144-release-approval	grant-console:144	历史：已答（未转）	已答的问卡只留作历史；回答不当授权中心的授权
+grant-console	审批卡	grant-console:152:2b9a0338-df54-448b-8f6f-eaa83fe32611:requirement-change	grant-console:152	历史：已答（未转）	已答的问卡只留作历史；回答不当授权中心的授权
+grant-console	审批卡	grant-console:154:28c9701e-76ef-4fec-b829-6eb038aae0e1:cluster-scope-exception	grant-console:154	历史：已答（未转）	已答的问卡只留作历史；回答不当授权中心的授权
+grant-console	审批卡	grant-console:154:approval:7bd16e10-6d52-4a91-840b-564ccc338113	grant-console:154	历史：已答（未转）	已答的问卡只留作历史；回答不当授权中心的授权
+grant-console	审批卡	grant-console:154:d21a6523-38ed-4353-8563-f6387f272f9e:release-card-rule	grant-console:154	历史：已答（未转）	已答的问卡只留作历史；回答不当授权中心的授权
+grant-console	审批卡	grant-console:160:710b21bb-63aa-4415-a8c6-27db339b38f3:requirement-change	grant-console:160	历史：已答（未转）	已答的问卡只留作历史；回答不当授权中心的授权
+grant-console	审批卡	grant-console:170:eb2b6f0f-2bcf-4d81-86d6-478f359c0d03:requirement-change	grant-console:170	历史：已答（未转）	已答的问卡只留作历史；回答不当授权中心的授权
+grant-console	审批卡	grant-console:171:cee3b3ac-048e-472b-8aff-887779625b6d:requirement-change	grant-console:171	历史：已作废（未转）	已作废或拒收的问卡只留作历史
+grant-console	审批卡	grant-console:175:552d3331-ef24-4aaf-8d4d-fc3e551235c0:visual-acceptance	grant-console:175	历史：已答（未转）	已答的问卡只留作历史；回答不当授权中心的授权
+grant-console	审批卡	grant-console:175:6389f67d-2685-4c41-94a1-eabe8364f177:requirement-change	grant-console:175	历史：已答（未转）	已答的问卡只留作历史；回答不当授权中心的授权
+grant-console	审批卡	grant-console:175:79902995-9d98-47e4-9949-7896c6b6bff7:visual-acceptance	grant-console:175	历史：已答（未转）	已答的问卡只留作历史；回答不当授权中心的授权
+grant-console	审批卡	grant-console:191:8c456084-2e59-4dc8-9bf3-6e4ba4d2c731:visual-acceptance	grant-console:191	历史：已答（未转）	已答的问卡只留作历史；回答不当授权中心的授权
+grant-console	审批卡	grant-console:5:913e89ea-f874-45a8-9c08-fcdf1382af18:requirement-change	grant-console:5	历史：已答（未转）	已答的问卡只留作历史；回答不当授权中心的授权
+grant-console	审批卡	grant-console:5:approval:a743af8e-57bf-4864-9c4f-8e0016ac2ffc	grant-console:5	历史：已答（未转）	已答的问卡只留作历史；回答不当授权中心的授权
+grant-console	审批卡	grant-console:80:6c5af82b-0c6a-4a93-81e8-6fae1ca00d1c:requirement-change	grant-console:80	历史：已答（未转）	已答的问卡只留作历史；回答不当授权中心的授权
+grant-console	审批卡	grant-console:93:approval:256f5721-1a61-4a17-a553-bed3656d5486	grant-console:93	历史：已答（未转）	已答的问卡只留作历史；回答不当授权中心的授权
+grant-console	审批卡	grant-console:cutover-seed:approval	grant-console:cutover-seed	取消：审批卡作废（未转）	旧审批卡不当授权；要授权的动作走授权中心原申请，关口重查
+grant-console	核心批准	grant-console:cutover-seed	grant-console:cutover-seed	历史：清掉，关口重查（未转）	旧核心批准只留作历史，不当授权中心的授权（介入点 R8）
+grant-console	送回定时	grant-console:104:leave:6d7a0207-94ab-4ada-803b-5cf3527aa6ff	grant-console:104	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+grant-console	送回定时	grant-console:104:leave:97ae382a-a29a-4841-abb9-eec0826e3ead	grant-console:104	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+grant-console	送回定时	grant-console:104:leave:cca9136b-9b5e-430c-8998-4080dc888dc6	grant-console:104	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+grant-console	送回定时	grant-console:143:leave:5f972bda-6fcb-4c34-82e8-1b74e4f71497	grant-console:143	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+grant-console	送回定时	grant-console:144:leave:431a070c-b435-4b41-91b9-ace5ce1cf673	grant-console:144	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+grant-console	送回定时	grant-console:150:leave:82cd651b-4d83-41a1-bdd8-d44e0a8dab03	grant-console:150	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+grant-console	送回定时	grant-console:152:leave:2655bfd2-df8f-4763-ae4b-a9fb20403ced	grant-console:152	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+grant-console	送回定时	grant-console:152:leave:47ec517c-c2d0-4bc5-8fe3-181b331a58cd	grant-console:152	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+grant-console	送回定时	grant-console:154:leave:75e2dd58-7276-48b7-b325-8b8e85832ec7	grant-console:154	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+grant-console	送回定时	grant-console:160:leave:362881ab-e262-42b1-986c-52de8f9d3203	grant-console:160	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+grant-console	送回定时	grant-console:170:leave:43976d9f-c11e-45bd-9279-ecfc7753d255	grant-console:170	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+grant-console	送回定时	grant-console:170:leave:54d94a6b-df96-4e2b-9133-0e744b17a426	grant-console:170	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+grant-console	送回定时	grant-console:171:leave:97d75d3f-fc6a-4ab3-af5a-5e334d0610b5	grant-console:171	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+grant-console	送回定时	grant-console:174:leave:ef2a1f52-1983-4b3f-ad53-112b1616c8b3	grant-console:174	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+grant-console	送回定时	grant-console:175:leave:a63219b1-da98-451a-a1ef-7d7b6b76abd4	grant-console:175	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+grant-console	送回定时	grant-console:191:leave:ac40b8c1-59f6-44a8-8d92-ceded252ca24	grant-console:191	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+grant-console	送回定时	grant-console:5:leave:1a984500-9214-498d-8262-f87e067a836c	grant-console:5	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+grant-console	送回定时	grant-console:5:leave:341b1862-1ddc-47dc-a3e5-a193a34b1920	grant-console:5	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+grant-console	送回定时	grant-console:81:leave:a61bd6d0-5e94-40ac-8206-d4546b93d54e	grant-console:81	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+grant-console	送回定时	grant-console:81:leave:b7450ce9-e19b-47ea-a72c-cfcc88d1767f	grant-console:81	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+grant-console	送回定时	grant-console:93:leave:9c19dc4e-8126-40bb-9879-398c4afec727	grant-console:93	取消：活已结束（未转）	活已结束，到点不再找 Kun（介入点 R10、R13）
+grant-console	送回定时	grant-console:cutover-seed:leave:送回	grant-console:cutover-seed	改成到点自动续跑（未转）	到点由车间接着做，不找 Kun（介入点 R10）
+grant-console	通知	@grant-console:plugin:flow:issue_delivery:4977	@grant-console	历史：已发（未转）	已发的通知只留作历史
+grant-console	通知	@grant-console:plugin:flow:issue_delivery:5137	@grant-console	历史：已发（未转）	已发的通知只留作历史
+grant-console	通知	@grant-console:plugin:flow:issue_delivery:517	@grant-console	历史：已发（未转）	已发的通知只留作历史
+grant-console	通知	grant-console:109:failing:c2cb5b7c-c8ea-4d64-a5a4-da80f3e370c4	grant-console:109	历史：已发（未转）	已发的通知只留作历史
+grant-console	通知	grant-console:109:notice:gc109-clarify	grant-console:109	历史：已发（未转）	已发的通知只留作历史
+grant-console	通知	grant-console:109:notice:gc109-deliver	grant-console:109	历史：已发（未转）	已发的通知只留作历史
+grant-console	通知	grant-console:109:notice:gc109-evidence	grant-console:109	历史：已发（未转）	已发的通知只留作历史
+grant-console	通知	grant-console:109:notice:gc109-exec	grant-console:109	历史：已发（未转）	已发的通知只留作历史
+grant-console	通知	grant-console:109:notice:gc109-intake	grant-console:109	历史：已发（未转）	已发的通知只留作历史
+grant-console	通知	grant-console:109:notice:gc109-rework-test	grant-console:109	历史：已发（未转）	已发的通知只留作历史
+grant-console	通知	grant-console:143:failing:bfe506a6-28b2-4879-b9a2-3b008e2dab6a	grant-console:143	历史：已发（未转）	已发的通知只留作历史
+grant-console	通知	grant-console:143:notice:gc143-acceptance-bb6b03e	grant-console:143	历史：已发（未转）	已发的通知只留作历史
+grant-console	通知	grant-console:143:notice:gc143-release-verified	grant-console:143	历史：已发（未转）	已发的通知只留作历史
+grant-console	通知	grant-console:143:notice:gc143-review-5cbb60a	grant-console:143	历史：已发（未转）	已发的通知只留作历史
+grant-console	通知	grant-console:143:notice:完成:bb6b03e1aa1f4371b98478b9e5ae35365c44f5dd	grant-console:143	历史：已发（未转）	已发的通知只留作历史
+grant-console	通知	grant-console:144:failing:8e0a4800-36ed-4405-a1d3-00ea385c8542	grant-console:144	历史：已发（未转）	已发的通知只留作历史
+grant-console	通知	grant-console:144:notice:accepted	grant-console:144	历史：已发（未转）	已发的通知只留作历史
+grant-console	通知	grant-console:144:notice:gc144-acceptance-passed	grant-console:144	历史：已发（未转）	已发的通知只留作历史
+grant-console	通知	grant-console:144:notice:gc144-clarify	grant-console:144	历史：已发（未转）	已发的通知只留作历史
+grant-console	通知	grant-console:144:notice:gc144-deliver	grant-console:144	历史：已发（未转）	已发的通知只留作历史
+grant-console	通知	grant-console:144:notice:gc144-evidence	grant-console:144	历史：已发（未转）	已发的通知只留作历史
+grant-console	通知	grant-console:144:notice:gc144-exec	grant-console:144	历史：已发（未转）	已发的通知只留作历史
+grant-console	通知	grant-console:144:notice:gc144-grant-reminder	grant-console:144	历史：已发（未转）	已发的通知只留作历史
+grant-console	通知	grant-console:144:notice:gc144-intake	grant-console:144	历史：已发（未转）	已发的通知只留作历史
+grant-console	通知	grant-console:144:notice:gc144-released	grant-console:144	历史：已发（未转）	已发的通知只留作历史
+grant-console	通知	grant-console:145:notice:gc145-existing-merged-pr-route	grant-console:145	历史：已发（未转）	已发的通知只留作历史
+grant-console	通知	grant-console:150:failing:39d95518-c51d-4b59-8269-d87107345f88	grant-console:150	历史：已发（未转）	已发的通知只留作历史
+grant-console	通知	grant-console:150:notice:acceptance-receipt-format-blocked-a4d368c	grant-console:150	历史：已发（未转）	已发的通知只留作历史
+grant-console	通知	grant-console:150:notice:gc150-cleanup-must-fix	grant-console:150	历史：已发（未转）	已发的通知只留作历史
+grant-console	通知	grant-console:150:notice:gc150-review-34180d2	grant-console:150	历史：已发（未转）	已发的通知只留作历史
+grant-console	通知	grant-console:150:notice:gc150-review-937f2d4	grant-console:150	历史：已发（未转）	已发的通知只留作历史
+grant-console	通知	grant-console:93:notice:gc93-promtool-missing	grant-console:93	历史：已发（未转）	已发的通知只留作历史
+grant-console	通知	grant-console:cutover-seed:notice	grant-console:cutover-seed	取消：过时通知（未转）	没发的通用通知取消；进度和结果只在 workshop status 里看（介入点 R13）
+grant-console	通知	grant-console:cutover-seed:uncertain	grant-console:cutover-seed	对账：取消（未转）	按原标识对账查不到外部编号，结果不明，不重发，取消（介入点 R13 不再发通知）
+grant-console	通知	grant-console:om_x100b605b531ebca0c01f55c807a3fcc:notice:binding-test-109	grant-console:om_x100b605b531ebca0c01f55c807a3fcc	历史：已发（未转）	已发的通知只留作历史
+grant-console	通道对账记录	reconcile:grant-console:170:eb2b6f0f-2bcf-4d81-86d6-478f359c0d03:requirement-change	grant-console:170:eb2b6f0f-2bcf-4d81-86d6-478f359c0d03	历史：通道已退役（未转）	旧通道的对账计数清掉；卡片去向见同号的卡片行
+grant-console	问卡	grant-console:191:grant-console:191:leave:1da14091-7611-405c-ae44-577a925ef822	grant-console:191	历史：已答（未转）	已答的问卡只留作历史；回答不当授权中心的授权
+grant-console	问卡	grant-console:cutover-seed:ask	grant-console:cutover-seed	转等待（未转）	没答的普通问卡转成介入点服务里的等待，不补发、不替 Kun 填答案
+grant-console	非车间工序定时	grant-console:cutover-seed:leave:工序	grant-console:cutover-seed	改成到点自动续跑（未转）	到点由车间接着做，不找 Kun（介入点 R10）
+workshop	介入点送达	delivery:74e3494627d4cc647e320fe40ab3cd88d65f43697bc379ecf35e4fcccc96d370		保留	约定的送达按原送达号由介入点服务对账，不补发、不重发
+workshop	介入点送达	delivery:1493734f7fd3f0d0d15a06a62e31972d2a289b677d7515f60c97a7504f6c77f1		保留	约定的送达按原送达号由介入点服务对账，不补发、不重发
+
+===== 合成副本：上线时切换，grant-console 写 3 条后失败 =====
+$ <worktree>/.venv/bin/python <worktree>/scripts/convert_intervention.py --state-dir <回放目录>/synthetic/state --intervention-db <回放目录>/synthetic/intervention/intervention.db --rules <回放目录>/synthetic/rules.yaml --backup-dir <回放目录>/synthetic/backups --inject-failure grant-console:3 cutover
+exit=0（3.50 秒）
+备份：<回放目录>/synthetic/backups/workshop.db.before-cutover-all-20261119T063830772814Z（2.48 秒）
+workshop：旧记录 119 条，本次写 119 条，跳过已转 0 条
+存量转换没成：隔离回放人为失败（--inject-failure grant-console:3）；修好后重跑 scripts/convert_intervention.py run --target grant-console
+整段转换耗时 3.43 秒
+
+===== 合成副本：失败后 workshop status =====
+$ <worktree>/.venv/bin/python -m workshop.cli --state-dir <回放目录>/synthetic/state --rules <回放目录>/synthetic/rules.yaml status
+exit=0（0.13 秒）
+活 5 件 · 跑着 2 · 等你 1 · 卡住 0 · 定时 1
+另有 218 件没列出（已结束；workshop status --all 看全部）
+grant-console 停了新派发：存量转换没成：隔离回放人为失败（--inject-failure grant-console:3）；修好后重跑 scripts/convert_intervention.py run --target grant-console
+活	阶段	状态	谁在推	下一步	卡在谁手里	优先级
+workshop:watch_updates:check	验收	定时	车间	等反馈：92 个版本、6 条需要、7 项新功能	—	P1
+workshop:176	执行	跑着	orca-claude	等回执	—	P1
+workshop:258	执行	跑着	orca-claude	等回执	—	P1
+workshop:cutover-seed	执行	等你	车间	等回答	—	P1
+grant-console:cutover-seed	执行	暂停	车间	旧批准不当授权，关口重查	—	P1
+卡住
+活	阶段	原因	建议动作
+等你
+合成：存量转换回放：合成：要不要继续；推荐：yes
+详情（等待号、版本、原因、推荐、等了多久）
+详情
+{"attempt": 0, "content": {"key": "ask", "question": "合成：要不要继续", "reason": "隔离回放合成的普通问卡；旧卡选项：yes=继续、no=调整", "recommend": "yes", "stage": "执行", "version": "007fb030135c763d4b24df7eb358299e312eb3cfbeccf4dcb36c9ae2d3458698"}, "id": "decision:workshop:cutover-seed:after:cutover:workshop:cutover-seed:ask", "item": "workshop:cutover-seed", "next_at": "2026-11-19T06:38:33.559891+00:00", "operation": "decision:workshop:cutover-seed:after:cutover:workshop:cutover-seed:ask", "provider": "intervention", "question": "合成：要不要继续", "reason": "隔离回放合成的普通问卡；旧卡选项：yes=继续、no=调整", "recommend": "yes", "record": {"acknowledged": false, "answer": null, "content": {"key": "ask", "question": "合成：要不要继续", "reason": "隔离回放合成的普通问卡；旧卡选项：yes=继续、no=调整", "recommend": "yes", "stage": "执行", "version": "007fb030135c763d4b24df7eb358299e312eb3cfbeccf4dcb36c9ae2d3458698"}, "id": "wait:e1bc210bd6f149d21f6bbd457b9d2dd7fcacb42602d2abeb97a8b0b145a3a324", "owner": "workshop:cutover-seed", "point": "decision", "started_at": "2026-11-19T06:38:33.570103+00:00", "superseded": false, "token": null}, "ref": "wait:e1bc210bd6f149d21f6bbd457b9d2dd7fcacb42602d2abeb97a8b0b145a3a324", "seconds": 0, "stage": "执行", "state": "waiting", "token": null}
+项目经理处理中
+没有
+处理不了
+没有
+
+===== 合成副本：失败后的发送记录（应为空） =====
+送达命令收件箱：[]
+外部命令替身调用：[]
+
+===== 合成副本：修好后续跑，进程在写 2 条后被杀 =====
+$ <worktree>/.venv/bin/python <worktree>/scripts/convert_intervention.py --state-dir <回放目录>/synthetic/state --intervention-db <回放目录>/synthetic/intervention/intervention.db --rules <回放目录>/synthetic/rules.yaml --backup-dir <回放目录>/synthetic/backups --inject-failure grant-console:2:kill run --target grant-console
+exit=-9（2.91 秒）
+备份：<回放目录>/synthetic/backups/workshop.db.before-cutover-grant-console-20261119T063834395941Z
+隔离回放：写了 2 条后进程被杀（--inject-failure grant-console:2:kill）
+
+===== 合成副本：被杀后续跑 =====
+$ <worktree>/.venv/bin/python <worktree>/scripts/convert_intervention.py --state-dir <回放目录>/synthetic/state --intervention-db <回放目录>/synthetic/intervention/intervention.db --rules <回放目录>/synthetic/rules.yaml --backup-dir <回放目录>/synthetic/backups run --target grant-console
+exit=0（3.32 秒）
+备份：<回放目录>/synthetic/backups/workshop.db.before-cutover-grant-console-20261119T063837317653Z
+grant-console：旧记录 87 条，本次写 84 条，跳过已转 3 条
+耗时 3.24 秒
+
+===== 合成副本：同一批再跑 =====
+$ <worktree>/.venv/bin/python <worktree>/scripts/convert_intervention.py --state-dir <回放目录>/synthetic/state --intervention-db <回放目录>/synthetic/intervention/intervention.db --rules <回放目录>/synthetic/rules.yaml --backup-dir <回放目录>/synthetic/backups run --target grant-console
+exit=0（3.37 秒）
+备份：<回放目录>/synthetic/backups/workshop.db.before-cutover-grant-console-20261119T063840632382Z
+grant-console：旧记录 61 条，本次写 0 条，跳过已转 61 条
+耗时 3.30 秒
+
+===== 合成副本：续跑后 workshop status =====
+$ <worktree>/.venv/bin/python -m workshop.cli --state-dir <回放目录>/synthetic/state --rules <回放目录>/synthetic/rules.yaml status
+exit=0（0.10 秒）
+活 5 件 · 跑着 2 · 等你 2 · 卡住 0 · 定时 1
+另有 218 件没列出（已结束；workshop status --all 看全部）
+活	阶段	状态	谁在推	下一步	卡在谁手里	优先级
+workshop:watch_updates:check	验收	定时	车间	等反馈：92 个版本、6 条需要、7 项新功能	—	P1
+workshop:176	执行	跑着	orca-claude	等回执	—	P1
+workshop:258	执行	跑着	orca-claude	等回执	—	P1
+workshop:cutover-seed	执行	等你	车间	等回答	—	P1
+grant-console:cutover-seed	执行	等你	车间	等回答	—	P1
+卡住
+活	阶段	原因	建议动作
+等你
+合成：存量转换回放：合成：要不要继续；推荐：yes
+合成：存量转换回放：合成：要不要继续；推荐：yes
+详情（等待号、版本、原因、推荐、等了多久）
+详情
+{"attempt": 0, "content": {"key": "ask", "question": "合成：要不要继续", "reason": "隔离回放合成的普通问卡；旧卡选项：yes=继续、no=调整", "recommend": "yes", "stage": "执行", "version": "007fb030135c763d4b24df7eb358299e312eb3cfbeccf4dcb36c9ae2d3458698"}, "id": "decision:workshop:cutover-seed:after:cutover:workshop:cutover-seed:ask", "item": "workshop:cutover-seed", "next_at": "2026-11-19T06:38:33.559891+00:00", "operation": "decision:workshop:cutover-seed:after:cutover:workshop:cutover-seed:ask", "provider": "intervention", "question": "合成：要不要继续", "reason": "隔离回放合成的普通问卡；旧卡选项：yes=继续、no=调整", "recommend": "yes", "record": {"acknowledged": false, "answer": null, "content": {"key": "ask", "question": "合成：要不要继续", "reason": "隔离回放合成的普通问卡；旧卡选项：yes=继续、no=调整", "recommend": "yes", "stage": "执行", "version": "007fb030135c763d4b24df7eb358299e312eb3cfbeccf4dcb36c9ae2d3458698"}, "id": "wait:e1bc210bd6f149d21f6bbd457b9d2dd7fcacb42602d2abeb97a8b0b145a3a324", "owner": "workshop:cutover-seed", "point": "decision", "started_at": "2026-11-19T06:38:33.570103+00:00", "superseded": false, "token": null}, "ref": "wait:e1bc210bd6f149d21f6bbd457b9d2dd7fcacb42602d2abeb97a8b0b145a3a324", "seconds": 10, "stage": "执行", "state": "waiting", "token": null}
+{"attempt": 0, "content": {"key": "ask", "question": "合成：要不要继续", "reason": "隔离回放合成的普通问卡；旧卡选项：yes=继续、no=调整", "recommend": "yes", "stage": "执行", "version": "007fb030135c763d4b24df7eb358299e312eb3cfbeccf4dcb36c9ae2d3458698"}, "id": "decision:grant-console:cutover-seed:after:cutover:grant-console:cutover-seed:ask", "item": "grant-console:cutover-seed", "next_at": "2026-11-19T06:38:40.172055+00:00", "operation": "decision:grant-console:cutover-seed:after:cutover:grant-console:cutover-seed:ask", "provider": "intervention", "question": "合成：要不要继续", "reason": "隔离回放合成的普通问卡；旧卡选项：yes=继续、no=调整", "recommend": "yes", "record": {"acknowledged": false, "answer": null, "content": {"key": "ask", "question": "合成：要不要继续", "reason": "隔离回放合成的普通问卡；旧卡选项：yes=继续、no=调整", "recommend": "yes", "stage": "执行", "version": "007fb030135c763d4b24df7eb358299e312eb3cfbeccf4dcb36c9ae2d3458698"}, "id": "wait:1c01f9a8046a59840f3f8f2e9a863aa41826b91d52148580ec36dc769a489c46", "owner": "grant-console:cutover-seed", "point": "decision", "started_at": "2026-11-19T06:38:40.181880+00:00", "superseded": false, "token": null}, "ref": "wait:1c01f9a8046a59840f3f8f2e9a863aa41826b91d52148580ec36dc769a489c46", "seconds": 3, "stage": "执行", "state": "waiting", "token": null}
+项目经理处理中
+没有
+处理不了
+没有
+
+===== 合成副本：对账表 =====
+$ <worktree>/.venv/bin/python <worktree>/scripts/convert_intervention.py --state-dir <回放目录>/synthetic/state --intervention-db <回放目录>/synthetic/intervention/intervention.db --rules <回放目录>/synthetic/rules.yaml --backup-dir <回放目录>/synthetic/backups reconcile
+exit=0（0.43 秒）
+reconcile：状态目录 <回放目录>/synthetic/state，交付对象 workshop、grant-console，共 210 条
+交付对象	类别	去向	条数
+workshop	billing_approved	历史：清掉，关口重查	1
+workshop	frozen_approved	作废：冻结批准	1
+workshop	pending_advance	历史：清掉，关口重查	1
+workshop	介入点送达	保留	2
+workshop	审批卡	历史：已答	9
+workshop	审批卡	取消：审批卡作废	1
+workshop	核心批准	历史：清掉，关口重查	1
+workshop	送回定时	取消：活已结束	41
+workshop	送回定时	改成到点自动续跑	1
+workshop	通知	历史：已发	48
+workshop	通知	取消：过时通知	1
+workshop	通知	对账：取消	1
+workshop	问卡	历史：已答	10
+workshop	问卡	转等待	1
+workshop	非车间工序定时	取消：活已结束	1
+workshop	非车间工序定时	改成到点自动续跑	1
+grant-console	billing_approved	历史：清掉，关口重查	1
+grant-console	frozen_approved	作废：冻结批准	1
+grant-console	frozen_approved	历史：冻结批准	3
+grant-console	pending_advance	历史：清掉，关口重查	1
+grant-console	审批卡	历史：已作废	1
+grant-console	审批卡	历史：已答	19
+grant-console	审批卡	取消：审批卡作废	1
+grant-console	核心批准	历史：清掉，关口重查	1
+grant-console	送回定时	取消：活已结束	21
+grant-console	送回定时	改成到点自动续跑	1
+grant-console	通知	历史：已发	33
+grant-console	通知	取消：过时通知	1
+grant-console	通知	对账：取消	1
+grant-console	通道对账记录	历史：通道已退役	1
+grant-console	问卡	历史：已答	1
+grant-console	问卡	转等待	1
+grant-console	非车间工序定时	改成到点自动续跑	1
+交付对象	类别	原编号	活	去向	理由
+workshop	billing_approved	workshop:cutover-seed	workshop:cutover-seed	历史：清掉，关口重查	旧核心批准只留作历史，不当授权中心的授权（介入点 R8）
+workshop	frozen_approved	workshop:cutover-seed	workshop:cutover-seed	作废：冻结批准	冻结路径关口已取消（介入点 R8）；批准作废，其它仍有效的关口重查
+workshop	pending_advance	workshop:cutover-seed	workshop:cutover-seed	历史：清掉，关口重查	旧的待批推进不当授权；关口按授权中心原申请重查
+workshop	介入点送达	delivery:1493734f7fd3f0d0d15a06a62e31972d2a289b677d7515f60c97a7504f6c77f1		保留	约定的送达按原送达号由介入点服务对账，不补发、不重发
+workshop	介入点送达	delivery:74e3494627d4cc647e320fe40ab3cd88d65f43697bc379ecf35e4fcccc96d370		保留	约定的送达按原送达号由介入点服务对账，不补发、不重发
+workshop	审批卡	workshop:102:5527fe8f-933e-434b-a117-84215cf62e7a:visual-acceptance	workshop:102	历史：已答	已答的问卡只留作历史；回答不当授权中心的授权
+workshop	审批卡	workshop:102:c483cf65-9778-45ae-84ca-a5611903dc7b:visual-acceptance	workshop:102	历史：已答	已答的问卡只留作历史；回答不当授权中心的授权
+workshop	审批卡	workshop:122:4a879cc5-0ef5-4f0a-ba9e-8a6404c0c596:visual-acceptance	workshop:122	历史：已答	已答的问卡只留作历史；回答不当授权中心的授权
+workshop	审批卡	workshop:14:1b443ef7-a5e2-4ec5-a72e-4d48a531cbd6:incremental-feeds	workshop:14	历史：已答	已答的问卡只留作历史；回答不当授权中心的授权
+workshop	审批卡	workshop:151:87bd3169-e55a-4fc1-bb33-9e432b82b512:requirement-change	workshop:151	历史：已答	已答的问卡只留作历史；回答不当授权中心的授权
+workshop	审批卡	workshop:177:f06dd4dc-7a13-4f0a-9aef-c72436c6ab33:requirement-change	workshop:177	历史：已答	已答的问卡只留作历史；回答不当授权中心的授权
+workshop	审批卡	workshop:184:0567b9f6-e6ed-41c2-bd43-3003b9013666:fixture-state	workshop:184	历史：已答	已答的问卡只留作历史；回答不当授权中心的授权
+workshop	审批卡	workshop:184:09271153-f9e2-4369-8015-9ef46446c99a:requirement-wording	workshop:184	历史：已答	已答的问卡只留作历史；回答不当授权中心的授权
+workshop	审批卡	workshop:184:3c576108-414a-486e-be79-3715979eb6e3:visual-acceptance	workshop:184	历史：已答	已答的问卡只留作历史；回答不当授权中心的授权
+workshop	审批卡	workshop:cutover-seed:approval	workshop:cutover-seed	取消：审批卡作废	旧审批卡不当授权；要授权的动作走授权中心原申请，关口重查
+workshop	核心批准	workshop:cutover-seed	workshop:cutover-seed	历史：清掉，关口重查	旧核心批准只留作历史，不当授权中心的授权（介入点 R8）
+workshop	送回定时	workshop:101:leave:c6c88826-86c4-470d-9f86-737150a6fe3e	workshop:101	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:102:leave:b623bbd5-bfad-4e3b-9151-6b6897520449	workshop:102	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:104:leave:9ee30d88-e9a7-4766-9966-c32a0c090da4	workshop:104	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:107:leave:77fcbbbd-9499-439a-9e00-41ee9dbb3069	workshop:107	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:112:leave:be9f8d55-9930-4f2a-9f13-1da089339b67	workshop:112	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:113:leave:ae336399-bf9f-4525-ac69-f11c0ae98fd9	workshop:113	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:121:leave:c6a0549e-77e7-4de9-a751-c3fa8dc51649	workshop:121	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:122:leave:2180b5bf-b0ba-4d49-a054-8a623a365667	workshop:122	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:122:leave:687db474-b57a-48e4-9a24-ed5385be8192	workshop:122	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:143:leave:ac10a81c-e9a8-49de-a0c2-2e3af95485de	workshop:143	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:144:leave:060e3efd-fd09-445c-8649-24dc87e3811a	workshop:144	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:14:leave:9353b469-3374-4a12-afab-c4c5edb8237c	workshop:14	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:151:leave:1ad584b7-87db-49ed-9f32-8001217fd0b5	workshop:151	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:157:leave:c07f03be-45c8-41cd-89d8-f5c85fb3e32f	workshop:157	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:15:leave:4bbed9f5-bb0d-40e3-ab60-ba79421b1746	workshop:15	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:164:leave:20a83950-0226-468d-9495-c09025d2666e	workshop:164	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:167:leave:ba1ef873-15f2-4081-b2d5-dfdcde2a66cf	workshop:167	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:172:leave:bbc2b169-e5be-44f7-b939-ab514536e946	workshop:172	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:177:leave:490b0dee-2c12-4355-92fc-e7dd6febd816	workshop:177	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:18:leave:1f71e619-1909-4d3b-96c8-d4ff0cd75c73	workshop:18	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:211:leave:90aa8a27-519d-44dd-9253-ac809ffb9bc0	workshop:211	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:220:leave:f6489925-df16-4acd-9762-a43b860c85c7	workshop:220	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:29:leave:fe51a057-2d62-40f5-8b7a-c3794e8cfc33	workshop:29	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:30:leave:a8bf4c32-0db9-49b2-b568-6eb301e8e8da	workshop:30	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:31:leave:8d788d9c-b297-4280-acd1-21b5615564f9	workshop:31	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:32:leave:e4514d44-e466-41af-bf55-26c00f44376c	workshop:32	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:37:leave:a361d3e2-7f7f-4d50-9653-fc2c50049a26	workshop:37	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:44:leave:52688d7e-7e52-4949-be08-864755ab6680	workshop:44	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:46:leave:17e2dd33-c0d6-4ab5-bfc5-6968c5f81a80	workshop:46	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:48:leave:b33c0778-1142-4e3d-a090-b1637a9f60d6	workshop:48	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:52:leave:55b30d83-3d3b-4d5e-9cc5-216310027528	workshop:52	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:5:leave:0e16fa5c-7c18-4a5d-9f2d-a6be230cd75d	workshop:5	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:71:leave:435909e1-25da-405c-8206-739511fdb4c4	workshop:71	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:74:leave:aa658754-294e-474a-8dc0-eb697ce3d87c	workshop:74	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:76:leave:f49b57d0-b296-4fdb-880c-7928e2a451ec	workshop:76	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:78:leave:ca2042ed-0570-4d0c-8651-ef6882a920a2	workshop:78	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:81:leave:9523fa0f-5f4a-46b4-98d6-533aab1dadad	workshop:81	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:84:leave:a97e3cd3-be80-4a94-aae7-b210da3fe420	workshop:84	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:93:leave:f3d8be91-110d-4eb9-b4f3-e569e2bf18b7	workshop:93	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:97:leave:a16130d0-317f-422c-8e0d-e6c624486dd7	workshop:97	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:99:leave:6130446e-10d0-462a-b27e-e630bbe7f8d1	workshop:99	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:cutover-seed:leave:送回	workshop:cutover-seed	改成到点自动续跑	到点由车间接着做，不找 Kun（介入点 R10）
+workshop	通知	@workshop:plugin:flow:issue_delivery:4987	@workshop	历史：已发	已发的通知只留作历史
+workshop	通知	@workshop:plugin:flow:issue_delivery:5147	@workshop	历史：已发	已发的通知只留作历史
+workshop	通知	@workshop:plugin:flow:issue_delivery:520	@workshop	历史：已发	已发的通知只留作历史
+workshop	通知	workshop:14:notice:ci-read-permission	workshop:14	历史：已发	已发的通知只留作历史
+workshop	通知	workshop:18:notice:acceptance-passed	workshop:18	历史：已发	已发的通知只留作历史
+workshop	通知	workshop:18:notice:accepted	workshop:18	历史：已发	已发的通知只留作历史
+workshop	通知	workshop:26:notice:acceptance-passed	workshop:26	历史：已发	已发的通知只留作历史
+workshop	通知	workshop:26:notice:accepted	workshop:26	历史：已发	已发的通知只留作历史
+workshop	通知	workshop:26:notice:clarified	workshop:26	历史：已发	已发的通知只留作历史
+workshop	通知	workshop:29:notice:accepted	workshop:29	历史：已发	已发的通知只留作历史
+workshop	通知	workshop:30:notice:accepted	workshop:30	历史：已发	已发的通知只留作历史
+workshop	通知	workshop:32:notice:accepted	workshop:32	历史：已发	已发的通知只留作历史
+workshop	通知	workshop:32:notice:ws32-clear	workshop:32	历史：已发	已发的通知只留作历史
+workshop	通知	workshop:32:notice:ws32-intake	workshop:32	历史：已发	已发的通知只留作历史
+workshop	通知	workshop:37:notice:acceptance-ws37	workshop:37	历史：已发	已发的通知只留作历史
+workshop	通知	workshop:37:notice:accepted	workshop:37	历史：已发	已发的通知只留作历史
+workshop	通知	workshop:41:notice:acceptance-passed	workshop:41	历史：已发	已发的通知只留作历史
+workshop	通知	workshop:41:notice:accepted	workshop:41	历史：已发	已发的通知只留作历史
+workshop	通知	workshop:41:notice:ask-41	workshop:41	历史：已发	已发的通知只留作历史
+workshop	通知	workshop:41:notice:clarified-41	workshop:41	历史：已发	已发的通知只留作历史
+workshop	通知	workshop:41:notice:conflict-41	workshop:41	历史：已发	已发的通知只留作历史
+workshop	通知	workshop:41:notice:conflict-41b	workshop:41	历史：已发	已发的通知只留作历史
+workshop	通知	workshop:41:notice:deliver-41	workshop:41	历史：已发	已发的通知只留作历史
+workshop	通知	workshop:41:notice:evidence-41	workshop:41	历史：已发	已发的通知只留作历史
+workshop	通知	workshop:41:notice:evidence-41b	workshop:41	历史：已发	已发的通知只留作历史
+workshop	通知	workshop:41:notice:evidence-41c	workshop:41	历史：已发	已发的通知只留作历史
+workshop	通知	workshop:41:notice:intake-41	workshop:41	历史：已发	已发的通知只留作历史
+workshop	通知	workshop:41:notice:keep-41	workshop:41	历史：已发	已发的通知只留作历史
+workshop	通知	workshop:41:notice:port-41	workshop:41	历史：已发	已发的通知只留作历史
+workshop	通知	workshop:41:notice:pr-41	workshop:41	历史：已发	已发的通知只留作历史
+workshop	通知	workshop:41:notice:rebase-41	workshop:41	历史：已发	已发的通知只留作历史
+workshop	通知	workshop:44:notice:acceptance-failed	workshop:44	历史：已发	已发的通知只留作历史
+workshop	通知	workshop:44:notice:acceptance-notice-format-blocked	workshop:44	历史：已发	已发的通知只留作历史
+workshop	通知	workshop:44:notice:ws44-app-identity-blocked	workshop:44	历史：已发	已发的通知只留作历史
+workshop	通知	workshop:46:notice:ws46-check-environment-aa86e082	workshop:46	历史：已发	已发的通知只留作历史
+workshop	通知	workshop:46:notice:完成:f76c3231cf4a2fc272f07a8803715ed0291889cb	workshop:46	历史：已发	已发的通知只留作历史
+workshop	通知	workshop:48:notice:acceptance-return-9b10b7c	workshop:48	历史：已发	已发的通知只留作历史
+workshop	通知	workshop:48:notice:clarified-48	workshop:48	历史：已发	已发的通知只留作历史
+workshop	通知	workshop:48:notice:pr-56-opened	workshop:48	历史：已发	已发的通知只留作历史
+workshop	通知	workshop:48:notice:ws48-a1-environment-blocked	workshop:48	历史：已发	已发的通知只留作历史
+workshop	通知	workshop:48:notice:ws48-blocked-by-71-independent-check	workshop:48	历史：已发	已发的通知只留作历史
+workshop	通知	workshop:52:notice:ws52-unlabeled	workshop:52	历史：已发	已发的通知只留作历史
+workshop	通知	workshop:5:notice:acceptance-passed	workshop:5	历史：已发	已发的通知只留作历史
+workshop	通知	workshop:5:notice:accepted	workshop:5	历史：已发	已发的通知只留作历史
+workshop	通知	workshop:5:notice:rerun-acceptance	workshop:5	历史：已发	已发的通知只留作历史
+workshop	通知	workshop:5:notice:runtime-update	workshop:5	历史：已发	已发的通知只留作历史
+workshop	通知	workshop:62:notice:ws62-receipt-format-cfe4c682	workshop:62	历史：已发	已发的通知只留作历史
+workshop	通知	workshop:74:notice:完成:8e599a9caf0ee002279739603e85141cf4b1f557	workshop:74	历史：已发	已发的通知只留作历史
+workshop	通知	workshop:cutover-seed:notice	workshop:cutover-seed	取消：过时通知	没发的通用通知取消；进度和结果只在 workshop status 里看（介入点 R13）
+workshop	通知	workshop:cutover-seed:uncertain	workshop:cutover-seed	对账：取消	按原标识对账查不到外部编号，结果不明，不重发，取消（介入点 R13 不再发通知）
+workshop	问卡	workshop:14:workshop:14:leave:885ec452-f821-47b6-8b03-4fe8255ee59b	workshop:14	历史：已答	已答的问卡只留作历史；回答不当授权中心的授权
+workshop	问卡	workshop:32:8b9d481d-4bb2-4374-a1dd-35628151698d:serial-detect	workshop:32	历史：已答	已答的问卡只留作历史；回答不当授权中心的授权
+workshop	问卡	workshop:41:3cf80832-c968-4fd3-b73d-b2528f144e74:codex-user-config	workshop:41	历史：已答	已答的问卡只留作历史；回答不当授权中心的授权
+workshop	问卡	workshop:46:fa2ee12b-efd4-484e-a157-3159dcab61fb:title-mode	workshop:46	历史：已答	已答的问卡只留作历史；回答不当授权中心的授权
+workshop	问卡	workshop:62:c6ee45f4-01cc-47d4-9880-22cfa1b4e17c:cursor-mode	workshop:62	历史：已答	已答的问卡只留作历史；回答不当授权中心的授权
+workshop	问卡	workshop:74:workshop:74:leave:0129309a-0304-48ce-a7c6-af52b4ad5f99	workshop:74	历史：已答	已答的问卡只留作历史；回答不当授权中心的授权
+workshop	问卡	workshop:75:d99905a2-7671-4f3e-93ba-c95a417c08eb:wake-file-probe	workshop:75	历史：已答	已答的问卡只留作历史；回答不当授权中心的授权
+workshop	问卡	workshop:75:workshop:75:leave:0dedcea9-58dc-4cf4-b314-9aa52b3e3e82	workshop:75	历史：已答	已答的问卡只留作历史；回答不当授权中心的授权
+workshop	问卡	workshop:75:workshop:75:leave:581f60dd-964d-4099-bbb2-8683584b3c22	workshop:75	历史：已答	已答的问卡只留作历史；回答不当授权中心的授权
+workshop	问卡	workshop:75:workshop:75:leave:9c3c0cd6-5200-4939-a8ed-373291e4f07e	workshop:75	历史：已答	已答的问卡只留作历史；回答不当授权中心的授权
+workshop	问卡	workshop:cutover-seed:ask	workshop:cutover-seed	转等待	没答的普通问卡转成介入点服务里的等待，不补发、不替 Kun 填答案
+workshop	非车间工序定时	workshop:75:leave:d53f7da4-a251-4cab-8a46-77c8ae8058f8	workshop:75	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	非车间工序定时	workshop:cutover-seed:leave:工序	workshop:cutover-seed	改成到点自动续跑	到点由车间接着做，不找 Kun（介入点 R10）
+grant-console	billing_approved	grant-console:cutover-seed	grant-console:cutover-seed	历史：清掉，关口重查	旧核心批准只留作历史，不当授权中心的授权（介入点 R8）
+grant-console	frozen_approved	grant-console:136	grant-console:136	历史：冻结批准	冻结路径关口已取消（介入点 R8）；批准作废，其它仍有效的关口重查
+grant-console	frozen_approved	grant-console:154	grant-console:154	历史：冻结批准	冻结路径关口已取消（介入点 R8）；批准作废，其它仍有效的关口重查
+grant-console	frozen_approved	grant-console:93	grant-console:93	历史：冻结批准	冻结路径关口已取消（介入点 R8）；批准作废，其它仍有效的关口重查
+grant-console	frozen_approved	grant-console:cutover-seed	grant-console:cutover-seed	作废：冻结批准	冻结路径关口已取消（介入点 R8）；批准作废，其它仍有效的关口重查
+grant-console	pending_advance	grant-console:cutover-seed	grant-console:cutover-seed	历史：清掉，关口重查	旧的待批推进不当授权；关口按授权中心原申请重查
+grant-console	审批卡	grant-console:104:15701534-9447-4a39-94ce-e2da1d522fe1:visual-acceptance	grant-console:104	历史：已答	已答的问卡只留作历史；回答不当授权中心的授权
+grant-console	审批卡	grant-console:104:4f216ca2-f42c-473d-b3cd-51e16fff0b7a:requirement-change	grant-console:104	历史：已答	已答的问卡只留作历史；回答不当授权中心的授权
+grant-console	审批卡	grant-console:136:approval:c7ee5b94-015a-4663-afac-169344c01094	grant-console:136	历史：已答	已答的问卡只留作历史；回答不当授权中心的授权
+grant-console	审批卡	grant-console:143:f1b68ab0-a36a-4ae7-94e8-bff019554156:gc143-release-2201	grant-console:143	历史：已答	已答的问卡只留作历史；回答不当授权中心的授权
+grant-console	审批卡	grant-console:144:9e626025-56a1-4588-91e0-877188c6789d:gc144-release-approval	grant-console:144	历史：已答	已答的问卡只留作历史；回答不当授权中心的授权
+grant-console	审批卡	grant-console:152:2b9a0338-df54-448b-8f6f-eaa83fe32611:requirement-change	grant-console:152	历史：已答	已答的问卡只留作历史；回答不当授权中心的授权
+grant-console	审批卡	grant-console:154:28c9701e-76ef-4fec-b829-6eb038aae0e1:cluster-scope-exception	grant-console:154	历史：已答	已答的问卡只留作历史；回答不当授权中心的授权
+grant-console	审批卡	grant-console:154:approval:7bd16e10-6d52-4a91-840b-564ccc338113	grant-console:154	历史：已答	已答的问卡只留作历史；回答不当授权中心的授权
+grant-console	审批卡	grant-console:154:d21a6523-38ed-4353-8563-f6387f272f9e:release-card-rule	grant-console:154	历史：已答	已答的问卡只留作历史；回答不当授权中心的授权
+grant-console	审批卡	grant-console:160:710b21bb-63aa-4415-a8c6-27db339b38f3:requirement-change	grant-console:160	历史：已答	已答的问卡只留作历史；回答不当授权中心的授权
+grant-console	审批卡	grant-console:170:eb2b6f0f-2bcf-4d81-86d6-478f359c0d03:requirement-change	grant-console:170	历史：已答	已答的问卡只留作历史；回答不当授权中心的授权
+grant-console	审批卡	grant-console:171:cee3b3ac-048e-472b-8aff-887779625b6d:requirement-change	grant-console:171	历史：已作废	已作废或拒收的问卡只留作历史
+grant-console	审批卡	grant-console:175:552d3331-ef24-4aaf-8d4d-fc3e551235c0:visual-acceptance	grant-console:175	历史：已答	已答的问卡只留作历史；回答不当授权中心的授权
+grant-console	审批卡	grant-console:175:6389f67d-2685-4c41-94a1-eabe8364f177:requirement-change	grant-console:175	历史：已答	已答的问卡只留作历史；回答不当授权中心的授权
+grant-console	审批卡	grant-console:175:79902995-9d98-47e4-9949-7896c6b6bff7:visual-acceptance	grant-console:175	历史：已答	已答的问卡只留作历史；回答不当授权中心的授权
+grant-console	审批卡	grant-console:191:8c456084-2e59-4dc8-9bf3-6e4ba4d2c731:visual-acceptance	grant-console:191	历史：已答	已答的问卡只留作历史；回答不当授权中心的授权
+grant-console	审批卡	grant-console:5:913e89ea-f874-45a8-9c08-fcdf1382af18:requirement-change	grant-console:5	历史：已答	已答的问卡只留作历史；回答不当授权中心的授权
+grant-console	审批卡	grant-console:5:approval:a743af8e-57bf-4864-9c4f-8e0016ac2ffc	grant-console:5	历史：已答	已答的问卡只留作历史；回答不当授权中心的授权
+grant-console	审批卡	grant-console:80:6c5af82b-0c6a-4a93-81e8-6fae1ca00d1c:requirement-change	grant-console:80	历史：已答	已答的问卡只留作历史；回答不当授权中心的授权
+grant-console	审批卡	grant-console:93:approval:256f5721-1a61-4a17-a553-bed3656d5486	grant-console:93	历史：已答	已答的问卡只留作历史；回答不当授权中心的授权
+grant-console	审批卡	grant-console:cutover-seed:approval	grant-console:cutover-seed	取消：审批卡作废	旧审批卡不当授权；要授权的动作走授权中心原申请，关口重查
+grant-console	核心批准	grant-console:cutover-seed	grant-console:cutover-seed	历史：清掉，关口重查	旧核心批准只留作历史，不当授权中心的授权（介入点 R8）
+grant-console	送回定时	grant-console:104:leave:6d7a0207-94ab-4ada-803b-5cf3527aa6ff	grant-console:104	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+grant-console	送回定时	grant-console:104:leave:97ae382a-a29a-4841-abb9-eec0826e3ead	grant-console:104	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+grant-console	送回定时	grant-console:104:leave:cca9136b-9b5e-430c-8998-4080dc888dc6	grant-console:104	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+grant-console	送回定时	grant-console:143:leave:5f972bda-6fcb-4c34-82e8-1b74e4f71497	grant-console:143	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+grant-console	送回定时	grant-console:144:leave:431a070c-b435-4b41-91b9-ace5ce1cf673	grant-console:144	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+grant-console	送回定时	grant-console:150:leave:82cd651b-4d83-41a1-bdd8-d44e0a8dab03	grant-console:150	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+grant-console	送回定时	grant-console:152:leave:2655bfd2-df8f-4763-ae4b-a9fb20403ced	grant-console:152	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+grant-console	送回定时	grant-console:152:leave:47ec517c-c2d0-4bc5-8fe3-181b331a58cd	grant-console:152	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+grant-console	送回定时	grant-console:154:leave:75e2dd58-7276-48b7-b325-8b8e85832ec7	grant-console:154	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+grant-console	送回定时	grant-console:160:leave:362881ab-e262-42b1-986c-52de8f9d3203	grant-console:160	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+grant-console	送回定时	grant-console:170:leave:43976d9f-c11e-45bd-9279-ecfc7753d255	grant-console:170	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+grant-console	送回定时	grant-console:170:leave:54d94a6b-df96-4e2b-9133-0e744b17a426	grant-console:170	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+grant-console	送回定时	grant-console:171:leave:97d75d3f-fc6a-4ab3-af5a-5e334d0610b5	grant-console:171	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+grant-console	送回定时	grant-console:174:leave:ef2a1f52-1983-4b3f-ad53-112b1616c8b3	grant-console:174	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+grant-console	送回定时	grant-console:175:leave:a63219b1-da98-451a-a1ef-7d7b6b76abd4	grant-console:175	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+grant-console	送回定时	grant-console:191:leave:ac40b8c1-59f6-44a8-8d92-ceded252ca24	grant-console:191	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+grant-console	送回定时	grant-console:5:leave:1a984500-9214-498d-8262-f87e067a836c	grant-console:5	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+grant-console	送回定时	grant-console:5:leave:341b1862-1ddc-47dc-a3e5-a193a34b1920	grant-console:5	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+grant-console	送回定时	grant-console:81:leave:a61bd6d0-5e94-40ac-8206-d4546b93d54e	grant-console:81	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+grant-console	送回定时	grant-console:81:leave:b7450ce9-e19b-47ea-a72c-cfcc88d1767f	grant-console:81	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+grant-console	送回定时	grant-console:93:leave:9c19dc4e-8126-40bb-9879-398c4afec727	grant-console:93	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+grant-console	送回定时	grant-console:cutover-seed:leave:送回	grant-console:cutover-seed	改成到点自动续跑	到点由车间接着做，不找 Kun（介入点 R10）
+grant-console	通知	@grant-console:plugin:flow:issue_delivery:4977	@grant-console	历史：已发	已发的通知只留作历史
+grant-console	通知	@grant-console:plugin:flow:issue_delivery:5137	@grant-console	历史：已发	已发的通知只留作历史
+grant-console	通知	@grant-console:plugin:flow:issue_delivery:517	@grant-console	历史：已发	已发的通知只留作历史
+grant-console	通知	grant-console:109:failing:c2cb5b7c-c8ea-4d64-a5a4-da80f3e370c4	grant-console:109	历史：已发	已发的通知只留作历史
+grant-console	通知	grant-console:109:notice:gc109-clarify	grant-console:109	历史：已发	已发的通知只留作历史
+grant-console	通知	grant-console:109:notice:gc109-deliver	grant-console:109	历史：已发	已发的通知只留作历史
+grant-console	通知	grant-console:109:notice:gc109-evidence	grant-console:109	历史：已发	已发的通知只留作历史
+grant-console	通知	grant-console:109:notice:gc109-exec	grant-console:109	历史：已发	已发的通知只留作历史
+grant-console	通知	grant-console:109:notice:gc109-intake	grant-console:109	历史：已发	已发的通知只留作历史
+grant-console	通知	grant-console:109:notice:gc109-rework-test	grant-console:109	历史：已发	已发的通知只留作历史
+grant-console	通知	grant-console:143:failing:bfe506a6-28b2-4879-b9a2-3b008e2dab6a	grant-console:143	历史：已发	已发的通知只留作历史
+grant-console	通知	grant-console:143:notice:gc143-acceptance-bb6b03e	grant-console:143	历史：已发	已发的通知只留作历史
+grant-console	通知	grant-console:143:notice:gc143-release-verified	grant-console:143	历史：已发	已发的通知只留作历史
+grant-console	通知	grant-console:143:notice:gc143-review-5cbb60a	grant-console:143	历史：已发	已发的通知只留作历史
+grant-console	通知	grant-console:143:notice:完成:bb6b03e1aa1f4371b98478b9e5ae35365c44f5dd	grant-console:143	历史：已发	已发的通知只留作历史
+grant-console	通知	grant-console:144:failing:8e0a4800-36ed-4405-a1d3-00ea385c8542	grant-console:144	历史：已发	已发的通知只留作历史
+grant-console	通知	grant-console:144:notice:accepted	grant-console:144	历史：已发	已发的通知只留作历史
+grant-console	通知	grant-console:144:notice:gc144-acceptance-passed	grant-console:144	历史：已发	已发的通知只留作历史
+grant-console	通知	grant-console:144:notice:gc144-clarify	grant-console:144	历史：已发	已发的通知只留作历史
+grant-console	通知	grant-console:144:notice:gc144-deliver	grant-console:144	历史：已发	已发的通知只留作历史
+grant-console	通知	grant-console:144:notice:gc144-evidence	grant-console:144	历史：已发	已发的通知只留作历史
+grant-console	通知	grant-console:144:notice:gc144-exec	grant-console:144	历史：已发	已发的通知只留作历史
+grant-console	通知	grant-console:144:notice:gc144-grant-reminder	grant-console:144	历史：已发	已发的通知只留作历史
+grant-console	通知	grant-console:144:notice:gc144-intake	grant-console:144	历史：已发	已发的通知只留作历史
+grant-console	通知	grant-console:144:notice:gc144-released	grant-console:144	历史：已发	已发的通知只留作历史
+grant-console	通知	grant-console:145:notice:gc145-existing-merged-pr-route	grant-console:145	历史：已发	已发的通知只留作历史
+grant-console	通知	grant-console:150:failing:39d95518-c51d-4b59-8269-d87107345f88	grant-console:150	历史：已发	已发的通知只留作历史
+grant-console	通知	grant-console:150:notice:acceptance-receipt-format-blocked-a4d368c	grant-console:150	历史：已发	已发的通知只留作历史
+grant-console	通知	grant-console:150:notice:gc150-cleanup-must-fix	grant-console:150	历史：已发	已发的通知只留作历史
+grant-console	通知	grant-console:150:notice:gc150-review-34180d2	grant-console:150	历史：已发	已发的通知只留作历史
+grant-console	通知	grant-console:150:notice:gc150-review-937f2d4	grant-console:150	历史：已发	已发的通知只留作历史
+grant-console	通知	grant-console:93:notice:gc93-promtool-missing	grant-console:93	历史：已发	已发的通知只留作历史
+grant-console	通知	grant-console:cutover-seed:notice	grant-console:cutover-seed	取消：过时通知	没发的通用通知取消；进度和结果只在 workshop status 里看（介入点 R13）
+grant-console	通知	grant-console:cutover-seed:uncertain	grant-console:cutover-seed	对账：取消	按原标识对账查不到外部编号，结果不明，不重发，取消（介入点 R13 不再发通知）
+grant-console	通知	grant-console:om_x100b605b531ebca0c01f55c807a3fcc:notice:binding-test-109	grant-console:om_x100b605b531ebca0c01f55c807a3fcc	历史：已发	已发的通知只留作历史
+grant-console	通道对账记录	reconcile:grant-console:170:eb2b6f0f-2bcf-4d81-86d6-478f359c0d03:requirement-change	grant-console:170:eb2b6f0f-2bcf-4d81-86d6-478f359c0d03	历史：通道已退役	旧通道的对账计数清掉；卡片去向见同号的卡片行
+grant-console	问卡	grant-console:191:grant-console:191:leave:1da14091-7611-405c-ae44-577a925ef822	grant-console:191	历史：已答	已答的问卡只留作历史；回答不当授权中心的授权
+grant-console	问卡	grant-console:cutover-seed:ask	grant-console:cutover-seed	转等待	没答的普通问卡转成介入点服务里的等待，不补发、不替 Kun 填答案
+grant-console	非车间工序定时	grant-console:cutover-seed:leave:工序	grant-console:cutover-seed	改成到点自动续跑	到点由车间接着做，不找 Kun（介入点 R10）
+workshop 转换状态：done
+grant-console 转换状态：done
+未转 0 条
+
+===== 合成副本：转成的等待（服务里的记录） =====
+$ <worktree>/.venv/bin/python -m workshop.plugins.intervention --state-dir <回放目录>/synthetic/intervention --rules <回放目录>/synthetic/rules.yaml --endpoint /tmp/w176-tmujtmwg/s.sock call get
+exit=0（0.04 秒）
+{"acknowledged": false, "answer": null, "content": {"key": "ask", "question": "合成：要不要继续", "reason": "隔离回放合成的普通问卡；旧卡选项：yes=继续、no=调整", "recommend": "yes", "stage": "执行", "version": "007fb030135c763d4b24df7eb358299e312eb3cfbeccf4dcb36c9ae2d3458698"}, "id": "wait:e1bc210bd6f149d21f6bbd457b9d2dd7fcacb42602d2abeb97a8b0b145a3a324", "owner": "workshop:cutover-seed", "point": "decision", "started_at": "2026-11-19T06:38:33.570103+00:00", "superseded": false, "token": null}
+
+===== 合成副本：旧卡号登记会话回答（answer-wait 认旧飞书 Q 号） =====
+$ <worktree>/.venv/bin/python -m workshop.cli --state-dir <回放目录>/synthetic/state --rules <回放目录>/synthetic/rules.yaml answer-wait Q-seed-workshop yes --version 007fb030135c763d4b24df7eb358299e312eb3cfbeccf4dcb36c9ae2d3458698 --quote 合成回放：继续 --session replay
+exit=0（0.12 秒）
+{"ref": "wait:e1bc210bd6f149d21f6bbd457b9d2dd7fcacb42602d2abeb97a8b0b145a3a324", "token": "result:e998865937ce818a46eaa7201eb2a5f1996e8257bdc46d66e4d38d9e8cbb10bb"}
+
+===== 合成副本：同一回答再登记一次（不重复记） =====
+$ <worktree>/.venv/bin/python -m workshop.cli --state-dir <回放目录>/synthetic/state --rules <回放目录>/synthetic/rules.yaml answer-wait Q-seed-workshop yes --version 007fb030135c763d4b24df7eb358299e312eb3cfbeccf4dcb36c9ae2d3458698 --quote 合成回放：继续 --session replay
+exit=0（0.12 秒）
+{"ref": "wait:e1bc210bd6f149d21f6bbd457b9d2dd7fcacb42602d2abeb97a8b0b145a3a324", "token": "result:e998865937ce818a46eaa7201eb2a5f1996e8257bdc46d66e4d38d9e8cbb10bb"}
+
+===== 合成副本：发送记录（应为空） =====
+送达命令收件箱：[]
+外部命令替身调用：[]
+exit=0

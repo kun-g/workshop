@@ -11,11 +11,11 @@ from .ports import Plugins
 from .models import stamp, utcnow
 from .records import defer_items, materialize
 from .stages import serial_stage
-from . import asking, beat, faults, holding, homes, hooks, intake, picking, rounds, timing, waking, workdirs, waits
+from . import beat, faults, holding, homes, hooks, intake, picking, rounds, timing, waking, workdirs, waits
 
 
 def finder(log, target):
-    """给流程判定用的只读查找：按外部编号找卡，或按对象键（先解析别名）找同目标的活。"""
+    """给流程判定用的只读查找：按对象键（先解析别名）找同目标的活。"""
     scope = target if isinstance(target, dict) else {"target": target}
     target = scope["target"]
     prefix = target if scope.get("flow_default", True) else f'{target}:{scope["flow"]}'
@@ -24,20 +24,14 @@ def finder(log, target):
         alias = log.get("aliases", f"{prefix}:{object_key}")
         return alias["object_key"] if alias else object_key
 
-    def find(external=None, *, object_key=None, flow=None):
+    def find(*, object_key, flow=None):
         if flow is not None:
             selected = scope.get("flows", {}).get(flow)
             if selected is None:
                 raise ValueError(f"查找未配置的流程：{flow}")
-            return finder(log, selected)(external, object_key=object_key)
-        if object_key is not None:
-            found = log.get("items", f"{prefix}:{resolve(object_key)}")
-            return {"item": log.full_item(found)} if found else None
-        matches = [c for c in log.all("cards") if c.get("external") == external]
-        if len(matches) != 1:
-            return None
-        item = log.get("items", matches[0]["item"])
-        return {"card": matches[0], "item": log.full_item(item)} if item and item["target"] == target and item["id"] == f'{prefix}:{item["object_key"]}' else None
+            return finder(log, selected)(object_key=object_key)
+        found = log.get("items", f"{prefix}:{resolve(object_key)}")
+        return {"item": log.full_item(found)} if found else None
     return find
 
 
@@ -53,7 +47,6 @@ class Engine:
         self.process = daemon or {"pid": os.getpid(), "start": None}
         self.first_ok_at = None
         self.restart_completed = False
-        self.channel_read_tokens = {}
         self.tick_failures = self.control("@tick").get("failures", 0)
         saved = self.log.get("controls", "@rules") or {}
         pinned = dict(self.control("@flow-defaults").get("values", {}))
@@ -91,11 +84,11 @@ class Engine:
         # 离开占位区间立即让出；从区间外返工也不能继承旧版本残留的占位。
         if "stage" in changes and (not serial_stage(item["stage"]) or not serial_stage(changes["stage"])):
             changes["serial_hold"] = False
-        # 等回答必须有本活仍有效的问题。通知、已作废的卡不能充当问题。
-        if changes.get("state") == "等你" and not self.answerable({**item, **changes}):
-            reason = changes.get("gate_reason") or (changes.get("leave") or {}).get("about") or changes.get("next") or "缺少有效问卡"
+        # 「等你」只看有效等待引用（介入点 R7）；没有等待引用的等你不成立，交项目经理。
+        if changes.get("state") == "等你" and not self.waiting({**item, **changes}):
+            reason = changes.get("gate_reason") or (changes.get("leave") or {}).get("about") or changes.get("next") or "缺少有效等待"
             changes.update(state="卡住", blocked_by=reason,
-                           next="项目经理处理阻塞；需要 Kun 判断时提交带推荐的问卡")
+                           next="项目经理处理阻塞；要 Kun 取舍时按流程登记等待")
         if changes.get("state") == "卡住" and (changes.get("leave") or {}).get("kind") == "等你":
             changes["leave"] = self.blocked_leave(changes.get("next") or "项目经理处理阻塞")
         self.fact(kind, changes, item["id"])
@@ -208,12 +201,6 @@ class Engine:
     def receipt_rejected(self, *args, **kwargs):
         return intake.receipt_rejected(self, *args, **kwargs)
 
-    def card(self, *args, **kwargs):
-        return asking.card(self, *args, **kwargs)
-
-    def receipt_notices(self, *args, **kwargs):
-        return asking.receipt_notices(self, *args, **kwargs)
-
     def timer(self, *args, **kwargs):
         return timing.timer(self, *args, **kwargs)
 
@@ -224,14 +211,8 @@ class Engine:
         return faults.broken(self, *args, **kwargs)
 
     def waiting(self, item):
-        # 拒收/作废后的待放行也阻止自动执行，但它不属于「等你」。
-        return self.answerable(item) or any(c["item"] == item["id"] and c.get("awaiting_release")
-                                          for c in self.log.all("cards"))
-
-    def answerable(self, item):
-        return waits.active(self, item) or any(c["item"] == item["id"] and c["mode"] == "ask" and not c["answered"]
-                   and not c.get("cancelled") and not c.get("rejected")
-                   for c in self.log.all("cards"))
+        """「等你」成不成立只看本活有没有有效的等待引用。"""
+        return waits.active(self, item)
 
     def sources(self, *args, **kwargs):
         return intake.sources(self, *args, **kwargs)
@@ -245,32 +226,8 @@ class Engine:
     def delivery_ok(self, *args, **kwargs):
         return faults.delivery_ok(self, *args, **kwargs)
 
-    def invalid_answer(self, *args, **kwargs):
-        return asking.invalid_answer(self, *args, **kwargs)
-
-    def reconcile_uncertain(self, *args, **kwargs):
-        return asking.reconcile_uncertain(self, *args, **kwargs)
-
-    def reconcile_clear(self, *args, **kwargs):
-        return asking.reconcile_clear(self, *args, **kwargs)
-
-    def undeliverable(self, *args, **kwargs):
-        return asking.undeliverable(self, *args, **kwargs)
-
-    def channels(self, *args, **kwargs):
-        return asking.channels(self, *args, **kwargs)
-
-    def channel_reads(self, *args, **kwargs):
-        return asking.channel_reads(self, *args, **kwargs)
-
-    def cancel_questions(self, *args, **kwargs):
-        return asking.cancel_questions(self, *args, **kwargs)
-
     def timers(self, *args, **kwargs):
         return timing.timers(self, *args, **kwargs)
-
-    def record_answer(self, *args, **kwargs):
-        return asking.record_answer(self, *args, **kwargs)
 
     def apply_timer(self, *args, **kwargs):
         return timing.apply_timer(self, *args, **kwargs)
@@ -322,9 +279,6 @@ class Engine:
 
     def start_retry(self, *args, **kwargs):
         return faults.start_retry(self, *args, **kwargs)
-
-    def answer_here(self, *args, **kwargs):
-        return asking.answer_here(self, *args, **kwargs)
 
     def release_here(self, *args, **kwargs):
         return holding.release_here(self, *args, **kwargs)

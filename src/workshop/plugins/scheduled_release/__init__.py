@@ -57,7 +57,8 @@ class ScheduledRelease:
     def fail(self, state, reason):
         state['status'] = 'failed'
         state['failure'] = reason
-        return After(notice=f"定时发版 {state['to']} 未上线：{reason}")
+        # 不发通知（介入点 R13）：发版没成记成卡住，交项目经理（介入点 R11）。
+        return After(blocked=f"定时发版 {state['to']} 未上线：{reason}", next="项目经理查明发版没成的原因后处理")
 
     def check(self, item, target, state, save):
         if state['status'] == 'checking':
@@ -217,7 +218,7 @@ class ScheduledRelease:
                 save()
                 return result
             if key in state['effects']:
-                result = After(**state['effects'][key])
+                result = After.stored(state['effects'][key])
                 if result.restart and self.io.daemon() != read(release_path(self.io.root(target))).get('daemon'):
                     return After()
                 return result
@@ -229,8 +230,6 @@ class ScheduledRelease:
                     result = self.deploy(item, target, state, save)
                 elif completed_stage == '验收':
                     result = self.confirm(item, target, state, save)
-                elif completed_stage == '收尾':
-                    result = After(notice=f"定时发版完成：{state['to']}，新进程心跳已恢复。")
             if not result.pending:
                 state['effects'][key] = asdict(result)
             save()

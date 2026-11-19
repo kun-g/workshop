@@ -10,7 +10,6 @@ from .gates import overlaps, validate_stages, allowed_advances
 from .models import STAGES as ALL_STAGES
 from .models import Brief, Receipt, stamp, DEFAULT_BRIEF_MAX_CHARS
 from .ports import Unavailable, Retryable, InputBlocked
-from .cards import question
 from .models import FlowBrief, Usage, RoundUsage
 from .jobs import Pending
 from .records import StoredBrief

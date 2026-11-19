@@ -114,7 +114,7 @@ class Store:
                 raise ValueError('首屏包含内部标识；编号和路径放 evidence')
             if conclusion['status_location'] not in ('等你', '项目经理处理中', '处理不了'):
                 raise ValueError('未知状态栏目')
-        if value.get('ask') or value.get('notice') or value.get('advance') or value.get('events'):
+        if value.get('advance') or value.get('events'):
             raise ValueError('项目经理只交结论，不直接推送或推进阶段')
         text = encoded(conclusion)
         old = self.db.execute('SELECT body FROM receipts WHERE token=?', (token,)).fetchone()
@@ -324,12 +324,7 @@ def observe_failures(store, log, owner, now):
         if control.get('broken') or control['id'].startswith('delivery:') and control.get('failed'):
             key = 'fault:' + control['id']
             active.add(key)
-            store.observe(key, {'reason': '插件或通道需要恢复', 'control': control}, owner, now)
-    for card in log.all('cards'):
-        if not card.get('cancel_done') and (card.get('reconcile_failed') and not card.get('sent') or card.get('rejected') and card.get('awaiting_release')):
-            key = 'fault:delivery:' + card['id']
-            active.add(key)
-            store.observe(key, {'reason': '通道送达未确认', 'delivery': card['id']}, owner, now)
+            store.observe(key, {'reason': '插件需要恢复', 'control': control}, owner, now)
     for row in store.all():
         if row['id'].startswith('fault:') and row['id'] not in active:
             store.resolve(row, now)

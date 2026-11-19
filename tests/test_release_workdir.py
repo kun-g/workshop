@@ -255,15 +255,15 @@ def test_engine_flow_retry_does_not_isolate_target(engine):
     assert releaser.calls == [] and not engine.control('alpha').get('broken')
 
 
-def test_engine_kept_workdir_notifies_kun_once(engine):
-    # E3：执行者说不能收，通知 Kun 一次，不再重试，工作目录留着。
+def test_engine_kept_workdir_records_reason_once(engine):
+    # E3：执行者说不能收，原因记在活上（status、why 里看），不发通知（介入点 R13），不再重试，工作目录留着。
     releaser = wire(engine, Flow(), Release(False, '/w/ws-1 有 2 处未提交改动，没删'))
     complete(engine)
     engine.tick()
     engine.tick()
     assert releaser.calls == ['alpha:one']
-    cards = [c for c in engine.log.all('cards') if 'workdir-kept' in c['id']]
-    assert len(cards) == 1 and '2 处未提交改动' in cards[0]['payload']['text']
+    assert not engine.log.all('cards')
+    assert '2 处未提交改动' in item(engine)['workdir_released']
     assert item(engine)['workdir'] == '/fake/workdir'
 
 

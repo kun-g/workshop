@@ -172,8 +172,7 @@ def test_reason_kept_when_every_candidate_is_skipped(tmp_path):
         assert not engine.active()
         text = "Codex 周额度剩 10%，低于门槛 15%，跳过 writer"
         assert "挑选逻辑没选出执行者 " + text in why(engine.log, "alpha:one")
-        cards = [m for kind, m in engine.plugins.get("channel", "channel").messages.values() if kind == "ask"]
-        assert cards == []
+        assert engine.log.all("cards") == []
         assert text in engine.log.get("items", "alpha:one")["blocked_by"]
         assert engine.log.get("items", "alpha:one")["state"] == "卡住"
     finally:

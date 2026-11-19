@@ -2,7 +2,6 @@
 from datetime import timedelta
 from .models import stamp
 from .ports import Retryable
-from .cards import notice
 from .models import Release
 from .jobs import Pending
 from .flows import entries
@@ -86,10 +85,8 @@ def release_workdirs(engine):
                 engine.change(item, workdir=None, workdir_released=outcome, release_hold="", release_at=None)
             else:
                 outcome = "留着：" + result.reason
-                with engine.log.transaction():
-                    engine.card(item, f'workdir-kept:{item.get("pending_episode", 0)}', "notice",
-                              notice(f'{item["id"]}（{item.get("title", "")}）已收尾，工作目录没收回：{result.reason}'))
-                    engine.change(item, workdir_released=outcome, release_hold="", release_at=None)
+                # 没收回的原因记在活上，status 和 why 里看；不发通知（介入点 R13）。
+                engine.change(item, workdir_released=outcome, release_hold="", release_at=None)
             break
         if outcome == "无执行者认领":
             engine.change(item, workdir_released=outcome, release_hold="", release_at=None)

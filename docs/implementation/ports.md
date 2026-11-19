@@ -1,6 +1,6 @@
 # 核心与插件接入契约（W1、W2-A）
 
-类型以 `core/ports.py`、`models.py`、`cards.py` 为准。Kun 11-13 决定：第一版不接工单系统，issue 就是活的登记；`TaskHome` 保留为可选端口。挑选逻辑有 `ordered` 和 `quota` 两段，业务流程、来源、执行者、通道和独立看门程序由下一波实现。
+类型以 `core/ports.py`、`models.py` 为准。Kun 11-13 决定：第一版不接工单系统，issue 就是活的登记；`TaskHome` 保留为可选端口。挑选逻辑有 `ordered` 和 `quota` 两段，业务流程、来源、执行者和独立看门程序由下一波实现；消息出口后来归介入点服务（#172–#176）。
 
 ## 注册、规则和运行入口
 
@@ -79,7 +79,7 @@ targets:
 
 `poll(target, cursor) -> Poll(events, cursor)`，短时只读。整批事件与 cursor 同事务，失败整批不确认；cursor 仅变化时写事实；来源不得返回另一交付对象的事件。暂停期间继续记遗漏，不派新轮。
 
-`Retryable` 表示暂时读取故障。按交付对象与来源分别记录首次失败时间，间隔依次为 1、2、5、10 分钟，之后保持 10 分钟，下一次尝试不晚于首次失败后 30 分钟；达到 30 分钟的尝试仍失败才隔离，原因保留最后错误与持续时长。重启保留退避窗口，成功清掉次数、首次失败时间和下一次时间。重试期间不因来源错误改变活、问卡及等待状态；普通异常仍立即记故障、隔离受影响交付对象，其他交付对象继续。
+`Retryable` 表示暂时读取故障。按交付对象与来源分别记录首次失败时间，间隔依次为 1、2、5、10 分钟，之后保持 10 分钟，下一次尝试不晚于首次失败后 30 分钟；达到 30 分钟的尝试仍失败才隔离，原因保留最后错误与持续时长。重启保留退避窗口，成功清掉次数、首次失败时间和下一次时间。重试期间不因来源错误改变活和等待状态；普通异常仍立即记故障、隔离受影响交付对象，其他交付对象继续。
 
 GitHub 来源只在 GET 入口把签发失败和命令未确认完成转为 `Retryable`，不回退个人身份；配置与数据错误不转换。写操作的未确认完成仍按原 `TargetBlocked` 路径阻塞，不自动重放。其他端口的重试策略不受来源窗口影响。
 
@@ -95,9 +95,9 @@ GitHub 来源只在 GET 入口把签发失败和命令未确认完成转为 `Ret
 
 `assess(item, receipt, target) -> Evidence` 必须短时只读，不靠回执 done 自证完成。
 
-Evidence 字段：checks（检查 argv 列表）、passed（布尔）、actions（拟交付动作类别）、reason（判定解释）、paths（本次改动路径列表）、reviewers（1 或 2）、done_key（这件活这次完成的标识；供通用通知兼容路径使用，issue 交付不要求通知）。actions 中任何类别不在 `ask_first ∪ skip_ask`，都是插件错误，记事实、卡住这一类并通知，不放行。所有往前推进（含收尾完成）都要求 passed；不通过留在当前阶段走 gate_retry，同一关口连续三次才问 Kun。显式退回执行不受此前进条件阻拦。到过验收（history 里有验收轮）又回到执行的活，执行可以提议直接回验收（advance=验收），表示已交付的结果不用改、重走验收；核心只认「到过验收」这一个阶段事实，流程证据过了才放行，结果没变、能走几次由流程判。没到过验收的活照旧不能越过阶段；执行紧接验收的流程不走这条，照常处理交付授权。执行前必须有能跑的检查；交付前处理授权；验收证据不过无论 done/nothing/failed 都退回执行。
+Evidence 字段：checks（检查 argv 列表）、passed（布尔）、actions（拟交付动作类别）、reason（判定解释）、paths（本次改动路径列表）、reviewers（1 或 2）、done_key（旧字段，只为读回已存的结果保留；#176 起不再发完成通知）。actions 中任何类别不在 `ask_first ∪ skip_ask`，都是插件错误，记事实、卡住这一类，不放行。所有往前推进（含收尾完成）都要求 passed；不通过留在当前阶段走 gate_retry，同一关口连续三次才问 Kun。显式退回执行不受此前进条件阻拦。到过验收（history 里有验收轮）又回到执行的活，执行可以提议直接回验收（advance=验收），表示已交付的结果不用改、重走验收；核心只认「到过验收」这一个阶段事实，流程证据过了才放行，结果没变、能走几次由流程判。没到过验收的活照旧不能越过阶段；执行紧接验收的流程不走这条，照常处理交付授权。执行前必须有能跑的检查；交付前处理授权；验收证据不过无论 done/nothing/failed 都退回执行。
 
-交付对象的 `two_reviewers` 路径前缀命中 paths，或 Evidence.reviewers=2 时，核心在审查阶段依次找两家不同家族，两家都过才能交付。已通过家族记入活的 reviews；写代码那家仍排除。第一次审查带 ask 时不计作通过，答完接回同一审查会话。返工清空本次审查记录。
+交付对象的 `two_reviewers` 路径前缀命中 paths，或 Evidence.reviewers=2 时，核心在审查阶段依次找两家不同家族，两家都过才能交付。已通过家族记入活的 reviews；写代码那家仍排除。返工清空本次审查记录。
 
 
 交付对象的 `serial_paths`（前缀；登记的路径可以是目录，和规则前缀互为前缀就算碰到）：核心把每轮 Evidence.paths 并进活的 paths——说清楚时流程交预计会改的路径，之后交实际改动。阶段在执行至交付之间（含两端及启用的审查）、paths 碰到串行前缀的活，同一交付对象同一时间只有一件占着（serial_hold）：别的活占着时停在当前阶段前，状态「排队」，下一步和工序写在等哪件，卡在谁手里写那件的 id。占位者交付完成进入验收、退回说清楚或被放弃后，按活的登记顺序自动放下一件；验收、收尾和观察不占位，也不因其他活占位而排队。执行至交付区间内退回执行仍占位；从验收及以后返工则重新判断，有人占就排队，无人占才重新占位，旧状态残留的占位不能沿用。说清楚漏登记的，在执行交回实际改动后、证据轮开始前同样排队。issue 交付所说的“合并后让出”以阶段为准：车间自己合并即交付，进入验收就让出；其他交付对象若仍在交付阶段等待上线，继续占位，交付条件不变。提前让出不等于完成，活仍以收尾为完成；全局并发上限照旧。
@@ -108,7 +108,7 @@ Evidence 字段：checks（检查 argv 列表）、passed（布尔）、actions�
 
 `restart=True` 表示完成钩子需要重启：核心持久登记原活、阶段、key、回执和请求进程实例，暂停该钩子的结算；这一拍结束后 `workshop run` 正常退出，由外部守护拉起新进程。新进程第一拍成功写出心跳后，同拍发起原 `after` 的重调，不经过 `pending` 的退避。只有这次重调的 `target.runtime` 带 `daemon`（和心跳 `process` 同一形状，含 pid、操作系统启动时间 start、version、first_at、previous）与 `first_ok_at`（新进程第一拍成功时间）；其他钩子调用不带这两个字段。首次一拍失败时不重调，直到成功心跳；多个请求逐件重调，异步作业完成后再结算原阶段。进程再重启仍能从事实库恢复请求，作业身份按新进程实例区分。重调不能再次返回 `restart=True`，须重新核验状态；异常沿用流程故障隔离或 Retryable 重试，不误记确认完成。
 
-`notice` 非空时按现有通道规则处理，卡片 key 为 `after-notice:<after key>`，同一个完成钩子只记一次。`restart` 与 `notice` 类型分别须为布尔值和字符串。
+After 没有 `notice`：完成钩子不发通知（介入点 R13）；旧版本存下的结果带空 `notice` 时，`After.stored` 读回时去掉。`restart` 须为布尔值。
 
 pending=true 表示尚未完成这个阶段，须带非空 reason 和 next，不算执行失败。rerun=true 才在同一阶段接回执行者；rerun=false 登记工序，到 recheck_after（相对时间或 ISO 时间）只重调 after，沿用同一 key 与 item.result，不再 assess 或启动执行者。核心按插件给的间隔回查，指数退避只用于故障重试。pending_limit 达上限仍卡住。wake_on_completed=true 表示同目标其它活完成时提前回查原 after；只唤醒，不能代替部署或授权核实。授权中心的原申请、动作、目标和检查点由流程持久保存，等待期间不占执行者；批准且核实生效才继续，已执行的动作不重做。
 
@@ -157,7 +157,7 @@ rounds 同时保存规则要求的 executor/model/effort、挑选理由、开始
 
 ## 挑选逻辑 Selector
 
-`select(target, stage, round_number, history, candidates) -> Selection(config, reason) | None`。`Selection(None, reason)` 表示一个都没选并说明原因：核心记 `selection_none` 事实（why 显示「挑选逻辑没选出执行者 …」），把原因写进卡住的 blocked_by 和建议动作；返回 None 时使用通用的执行者不可用原因，不发问卡。history 是这件活之前所有轮的快照，包括执行者、规则模型、实际主/子用量和结果；candidates 依唯一规则的阶段候选顺序排列，每项含 config、available=true。核心已调用 available，并筛掉写代码家族（审查/验收）、无额度候选、尚未批准的按量候选，也落实两家审和关口重试的家族/执行者限制。target.selection 仍提供 writer、reviewed、retry_executor、excluded 背景供解释；硬规矩不委托插件。
+`select(target, stage, round_number, history, candidates) -> Selection(config, reason) | None`。`Selection(None, reason)` 表示一个都没选并说明原因：核心记 `selection_none` 事实（why 显示「挑选逻辑没选出执行者 …」），把原因写进卡住的 blocked_by 和建议动作；返回 None 时使用通用的执行者不可用原因。history 是这件活之前所有轮的快照，包括执行者、规则模型、实际主/子用量和结果；candidates 依唯一规则的阶段候选顺序排列，每项含 config、available=true。核心已调用 available，并筛掉写代码家族（审查/验收）、无额度候选、尚未批准的按量候选，也落实两家审和关口重试的家族/执行者限制。target.selection 仍提供 writer、reviewed、retry_executor、excluded 背景供解释；硬规矩不委托插件。
 
 `workshop.plugins.selectors.ordered` 只返回获准候选的第一项和理由。
 
@@ -169,59 +169,17 @@ rounds 同时保存规则要求的 executor/model/effort、挑选理由、开始
 
 outcome=done 表示本轮拿到了供流程核验的结果，核心仍判证据和关口；nothing 表示没有新结果，不自行推进，没有安排则登记五分钟后复看；failed 表示这一轮没跑成，按 5/10/20/40/60 分钟退避、之后封顶 60 分钟。连续失败第 3 次通知一次，第 10 次卡住。验收实际证据不过回执行；操作阻塞的 Evidence.blocked 则保留阶段，转为卡住。
 
-`receipt <token> --file <JSON>`、`--json` 或 stdin；提交成功后下一拍停进程并结算。相同 token 相同 JSON 幂等，不同回执拒绝。字段 outcome、summary 必填，其余可省略：advance、evidence（字符串列表）、ask、notice、later、events、leave。
+`receipt <token> --file <JSON>`、`--json` 或 stdin；提交成功后下一拍停进程并结算。相同 token 相同 JSON 幂等，不同回执拒绝。字段 outcome、summary 必填，其余可省略：advance、evidence（字符串列表）、later、events、leave。`ask`、`notice` 已取消（#176）：非空时拒收并说明要 Kun 取舍按流程登记等待；旧回执里的空列表读回时去掉（`Receipt.stored`）。
 
-等你只用于关联有效问卡的等待；ask 必须有选项、推荐和理由。旧版 notice+等你 回执兼容读入，但落成卡住，通知不代替问卡。普通 update 事件只追加资料，历史上登记过 wait_for_ready 的活仍可由可信 ready 继续；它不伪造问卡答案。缺工具、权限、次数用完等操作阻塞使用 Evidence.blocked 和 Evidence.next，详见 [恢复与重验](恢复与重验.md)。
+「等你」只看有效等待引用：活的 `wait_id` 指向 waits 里状态为 waiting 的记录才算等你；没有等待引用的等你落成卡住，交项目经理。等待由流程经介入点服务登记（issue 交付在 evidence 里放 decision），核心只存引用。普通 update 事件只追加资料，历史上登记过 wait_for_ready 的活仍可由可信 ready 继续；它不伪造回答。缺工具、权限、次数用完等操作阻塞使用 Evidence.blocked 和 Evidence.next，详见 [恢复与重验](恢复与重验.md)。
 
-leave 工序须有 owner、at、about；送回须有 at、about；等你须有 about 和有效问卡。ask/later 的 key 在一轮内去重。时间支持 +Ns/+Nm/+Nh/+Nd 或带时区 ISO 8601，相对时间按提交时刻算。
+leave 工序须有 owner、at、about；送回须有 at、about，不写 owner 时归车间，到点车间接着做，不找 Kun（介入点 R10）；等你须有 about 和流程登记的有效等待。later 的 key 在一轮内去重。时间支持 +Ns/+Nm/+Nh/+Nd 或带时区 ISO 8601，相对时间按提交时刻算。
 
-回执里的 notice 只在 Kun 需要知道时发卡（ws#46，11-13 Kun 嫌卡太多）：这一轮 leave 是等你且存在有效问卡时照发，卡片 key 为 `notice:<回执 key>`，在一件活内去重；这一轮让活完成（最后一个阶段判过并推进），或流程给出非空 Evidence.done_key 且这一轮判过并向前推进时，只发第一条，卡片 key 为 `notice:完成:<Evidence.done_key>`（done_key 空时为 `notice:完成`），所以同一完成标识不论执行者用什么 key、交几次，只出一张卡。其余的不发卡，记 `notice_held` 事实（阶段、key、subject、正文、原因），`workshop why` 显示为「通知没发」。进度在 `workshop status` / `why` 里看，不推送。核心自己发的告警（连续失败、卡住、插件故障、卡发不出去、对账不确定、工序到点、完成钩子的 notice）不受影响。正常推进自动登记下一工序。回执里有 ask 时不推进，问题解决后接回原阶段。
+## 消息出口：介入点服务的送达命令（#176）
 
-## 卡片、通道与对账
-
-`Question`、`Choice`、`Notice` 的 TypedDict 和运行时校验在 `core/cards.py`，由端口模块导入。回执 ask 元素是 Question 加 key：
-
-```json
-{
-  "key": "design",
-  "subject": "方案选择",
-  "decision": "采用当前方案还是调整",
-  "context": "完整上下文与证据",
-  "choices": [
-    {"key": "yes", "label": "继续", "effect": "按当前方案继续"},
-    {"key": "no", "label": "调整", "effect": "保留阶段并调整方案"}
-  ],
-  "recommend": "yes",
-  "reason": "依据已登记证据",
-  "kind": "reversible"
-}
-```
-
-subject ≤30、decision ≤42、reason ≤60；choices 必须 2–3 个，key/label ≤18、effect ≤60，recommend 指向一个 key，kind 为 approval 或 reversible。context 非空。通知使用另一格式 `{subject, text, fyi:true}`，回执再加 key；subject ≤30，text 非空。核心自己的问题也遵守同一校验。
-
-`ask(key, Question)`、`notify(key, Notice)` 短时返回外部编号。**发之前核心先记 sending 意图**；异常/重启后先调用 `reconcile(key, card_record)`：返回已发外部编号表示已发；`"absent"` 表示确定未发才可重试；null 表示不确定，保持待对账，禁止盲目重发。连续 3 次不确定记一次 reconcile_failed、发一次通知并在 status 显示卡号；仍继续对账，确定结果后清掉计数和待对账故障。告警本身也无法对账时只保留状态，不递归发告警。这里按调用次数计，tick 前后各有一次通道处理。
-
-ask-kun ask 没有 request-id，适配器不能声称直接幂等。可先持久保存 key 到唯一 from 标记（如 `车间:<key哈希>`）和 subject 的映射，调用 ask 时使用该 from；重启后用 `ask-kun list` 按 from+subject 对账。列表不完整或请求可能仍在处理中时返回 null，不能返回 absent。相同 subject 的不同轮必须用不同稳定 from 区分。notify 若支持上游幂等标识也照样要实现对账。
-
-`poll(cards) -> ChannelPoll(answers, checked, errors, token)`，其中 answers 是 `list[Answer(card_id, value, approved=False)]`，checked 是本次已读的核心卡号，errors 按卡号记录错误；兼容旧通道直接返回回答列表。token 标识一次完成的读取，后台缓存重复返回时不重复计数。card_id 是核心卡号，value 必须是用户所选的 key。核心动作/计费审批只认 value="yes"，不信 approved；其他插件问题的明确批准才给 approved=True。kind=approval 的卡收到不在 choices.key 中的 value，记一次投递故障并继续等原卡，不当作批准或拒绝；有效回答到达后清故障。`cancel(key, external)` 按核心 key 幂等作废，外部编号不明时先对账。返工时核心先把旧问题标 cancelled，再通知通道作废；晚到答案忽略，取消失败会保留待处理记录。每张卡每次故障只记一条 delivery_failed，恢复后再坏会再记；通道整体查询失败也按事件段去重。通道故障不阻塞其他活。
-
-### 通道拒收与上游作废（W2-C 修改轮 3）
-
-`ChannelRejected` 表示适配器的内容预检无法改写成合规卡片，或发送命令明确拒收卡片。ask-kun 适配器仅在 ask/notify 退出码为 2 且 stderr 含「尚未发送」或 `usage: ask-kun` 时抛出，保留 stderr。启动失败（命令缺失、无执行权限、可识别的 uv 启动错误）记 not_started，对账返回 absent 可重试；内容预检失败（例如选项 key 不合法）记本地拒收，不重试；运行环境未启动仍与拒收分开。超时、断线和丢回包继续按 sending 对账。list/wait/cancel 错误一律不抛拒收。
-
-核心记录 `card_rejected`（why 可见），停止对该卡投递/对账。同一张卡只创建一条固定通知「车间有一张卡发不出去，原因已记录，请看 workshop why <活>」，通知自身拒收不递归，但记 delivery_failed，心跳带给看门；固定通知成功则清除原拒收卡的投递失败信号。
-
-通知拒收只记事实/告警，不动活。问题拒收保留 awaiting_release，waiting() 仍算待答：跑着时不改状态，轮结束自然等你；卡住时不覆盖状态，只更新可恢复的等你快照；完成的活不重开。明确 ready 事件消费 awaiting_release 和 wait_for_ready（跑着/卡住时也消费），不伪造其他待答卡的答案，返工也解除旧拒收卡等待。
-
-`Answer.cancelled` 默认 false，明确作废或确认已清理的卡返回 `Answer(card_id, "", cancelled=True)`。核心记 `card_cancelled_external`、标 cancelled/cancel_done，按上述问题终态规则保留等待；如果该卡承载授权，清除旧续接记录，修复放行后重走原阶段，不把没有回答说成 Kun 拒绝。
-
-poll 每批先调用一次 `list --all`，列表中 waiting/sending/queued 的卡不再调用 wait。现代列表的已答卡直接取 choice，核对本通道发送记录的核心卡号、外部编号、原始 payload、from、subject 和 answer_format=key，并要求 choice 是原卡的合法选项；缺失、无效或不匹配只记读取错误。取消不当批准，defaulted 不当人工回答。旧列表不含 answer_format/choice 时才沿用 wait 的鉴权读法。读现代列表不认领答案、不写上游状态，避免 wait 写回被监听文件后使自身作业结果失效。
-
-ask 成功时记录 sent_at，丢回包后找回原卡时保留上游发送时间。list 可能按调用者会话过滤，缺号只有本地发送时间早于 29 天才按已清理作废；未满 29 天、恰好 29 天、发送时间缺失或无效都记逐卡查询失败，不作废。旧读法 wait 返回 4 且 stderr 含 HTTP 403 时，仍须重查完整列表及发送时间，不能把权限故障当作废。列表格式不完整或分页/截断时保留所有卡并逐卡记错。
-
-读取错误与其他卡的答案一起经作业结果传给核心。每卡连续 10 次已完成读取失败，在 status 的卡住清单显示活、卡号、最近错误和建议动作，why 记下达到阈值的那次；正常 waiting 读取会清零，作业尚未完成和缓存重放都不计失败。读取故障保存在卡上，status 把等回答的活显示为卡住，不覆盖活原有状态或无关阻塞；恢复后自动收取原卡、继续原活。沿用投递故障事实与看门通知，不另发问卡或反复通知。
-
-通知的 external 保存实际传给 ask-kun `--request-id` 的稳定键（含状态目录及数据库文件身份哈希），不再只存核心 key；通知回复归件在后续工作接入，本轮不处理。
+核心没有通道端口，也不建卡：`Channel`、`ChannelRejected`、`Answer`、`ChannelPoll`、`core/cards.py`、`core/asking.py` 和规则里的 `channel`、`notices` 都已删掉（端口.md D8、协作方式.md H6），规则写了 `channel` 或 `notices` 会被拒绝。
+要 Kun 取舍、授权结果、亲眼看、盯更新报告和求助都经介入点服务：等待和回答在服务里，送达经服务的送达命令（规则 `intervention.transport`）发到 Kun 的飞书私聊，只送介入点 R12、R13 许可的几种。出口表、许可和对账见 [介入点契约](介入点契约.md)。
+迁移前的卡片事实（`card_created`、`card_changed`、`answer` 等）照旧投影进 `cards` 视图，只供 why 和指标回看历史；转换脚本 `scripts/convert_intervention.py` 已给每张旧卡写了去向。
 
 ## 可选工单 TaskHome
 

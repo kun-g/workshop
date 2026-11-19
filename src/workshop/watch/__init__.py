@@ -48,9 +48,6 @@ class ReleaseRollback:
         data = json.loads(row[0])["data"] if row else {}
         if not isinstance(data, dict) or not isinstance(data.get("targets"), dict):
             raise ValueError("规则快照缺少交付对象")
-        notices = data.get("notices", "send")
-        if notices not in ("hold", "send"):
-            raise ValueError("规则 notices 无效")
         candidates = []
         for name, target in data.get("targets", {}).items():
             if not isinstance(target, dict) or not isinstance(target.get("flows", {}), dict):
@@ -68,7 +65,7 @@ class ReleaseRollback:
                     candidates.append((name, config))
         if len(candidates) != 1:
             raise ValueError("规则快照未唯一指定本状态目录的定时发版对象")
-        return *candidates[0], notices
+        return candidates[0]
 
     def command(self, argv, *, cwd=None, timeout=30, isolated=False):
         # prepare 不继承部署凭据，也不依赖损坏的项目虚拟环境启动看门。
@@ -161,9 +158,9 @@ class ReleaseRollback:
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError:
                 return None  # 此次没有观测，不能把上次的通知去重记录当作已恢复。
-            policy, record, anchor = "hold", None, "unreadable"
+            record, anchor = None, "unreadable"
             try:
-                name, target, policy = self.configuration()
+                name, target = self.configuration()
                 raw = path.read_text()
                 anchor = hashlib.sha256(raw.encode()).hexdigest()
                 record = json.loads(raw)
@@ -196,7 +193,7 @@ class ReleaseRollback:
                     save_json(path, record)
                 text = "车间发版无法安全退回，需要你处理：" + str(exc)
             key = "release:" + hashlib.sha256(anchor.encode()).hexdigest()[:24]
-            return {key: {"anchor": anchor, "text": text, "immediate": True, "notices": policy}}
+            return {key: {"anchor": anchor, "text": text, "immediate": True}}
 
 
 class Watch:

@@ -90,5 +90,7 @@ def test_real_rules_keep_install_outside_check_prepare():
     target = Rules.load(ROOT / 'rules/workshop.yaml').target('workshop')
     assert target['prepare'] == [{'argv': ['uv', 'sync', '--locked']}]
     assert target['release_prepare'] == [{'argv': ['uv', 'run', 'python', 'scripts/install_intervention.py',
-                                                  '--rules', 'rules/workshop.yaml']}]
+                                                  '--rules', 'rules/workshop.yaml']},
+                                         {'argv': ['uv', 'run', 'python', 'scripts/convert_intervention.py',
+                                                   '--rules', 'rules/workshop.yaml', 'cutover']}]
     assert Rules.load(ROOT / 'rules/workshop.yaml').target('workshop', 'scheduled_release')['release_prepare'] == target['release_prepare']

@@ -91,7 +91,7 @@ class ClusterRelease:
                     and active['status'] not in ('ok', 'rejected', 'failed')):
                 return After(pending=True, reason='上一批发版尚未结束', next='等上一批结束后再处理', recheck_after='+1m')
             if key in state['effects']:
-                return After(**state['effects'][key])
+                return After.stored(state['effects'][key])
             if 'initial' not in state:
                 state['initial'] = not active
             write(path, state)

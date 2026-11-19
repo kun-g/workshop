@@ -190,7 +190,7 @@ class Entries:
 
     def apply_inventory(self, item, target, state):
         from workshop.core.models import Receipt
-        proposal = result(Receipt(**item['result']))['inventory']
+        proposal = result(Receipt.stored(item['result']))['inventory']
         watchlist, changes = self.inventory(proposal, target)
         needs = {n['id']: n for n in self.io.needs(target)}
         for row in proposal.get('needs', []):
@@ -397,7 +397,7 @@ class Entries:
                         current = state['versions'][object_key]
                         from workshop.core.models import Receipt
                         try:
-                            supplied = result(Receipt(**item.get('result', {})))
+                            supplied = result(Receipt.stored(item.get('result', {})))
                         except (ValueError, TypeError):
                             supplied = {}
                         if supplied.get('judgment'):

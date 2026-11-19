@@ -1,11 +1,9 @@
 """端口共享的值类型。所有时间为带时区的 ISO 8601，金额为 USD。"""
 from dataclasses import asdict, dataclass, field, fields
-from uuid import uuid4
 from datetime import datetime, timedelta, timezone
 import json
 import re
 from typing import Any
-from .cards import validate_question, validate_notice, question_rules, question_example
 
 STAGES = ("接单", "说清楚", "执行", "证据", "审查", "交付", "验收", "收尾", "观察")
 OUTCOMES = ("done", "failed", "nothing")
@@ -131,8 +129,6 @@ class After:
     recheck_after: str = "+5m"
     # 交付改了车间自己正在跑的代码：这一拍结束后守护进程正常退出，由外部守护拉起。
     restart: bool = False
-    # 给 Kun 一条不用回的通知；同一个完成钩子 key 只发一次。
-    notice: str = ""
     # 流程已幂等消费的恢复计划，核心追加事实供查询。
     recovery_id: str = ""
     # 回查已经确定不能继续时，留下原因，不再自动等待或推进。
@@ -141,6 +137,11 @@ class After:
     wait: dict | None = None
     # 同目标的其它活完成时提前回查；只唤醒，仍由流程重新核验。
     wake_on_completed: bool = False
+
+    @classmethod
+    def stored(cls, data: dict) -> "After":
+        """读回已存的结果：旧版本存下的 notice 已取消（介入点 R13），去掉。"""
+        return cls(**{k: v for k, v in data.items() if k != "notice"})
 
 
 @dataclass(frozen=True)
@@ -288,30 +289,14 @@ class RoundUsage:
             {"scope": "children", **asdict(child)} for child in self.children]
 
 
-@dataclass(frozen=True)
-class Answer:
-    card_id: str
-    value: str
-    approved: bool = False
-    cancelled: bool = False  # 上游作废或已清理，不是 Kun 的回答。
-
-
-@dataclass(frozen=True)
-class ChannelPoll:
-    """一次已完成读取；逐卡错误与成功共存，token 防止缓存结果重复计数。"""
-    answers: list[Answer] = field(default_factory=list)
-    checked: list[str] = field(default_factory=list)
-    errors: dict[str, str] = field(default_factory=dict)
-    token: str = field(default_factory=lambda: uuid4().hex)
+# 介入点迁移（#176）前的回执有 ask、notice 两个字段；已存的旧回执里它们是空列表，读回时去掉。
+RETIRED_FIELDS = ("ask", "notice")
+RETIRED_HINT = "ask、notice 已取消：要 Kun 取舍按流程说明登记等待，进度和结果不发通知"
 
 
 class ReceiptError(ValueError):
     def __init__(self, problems):
-        self.ask_only = all(p.startswith(("ask:", "ask[", "ask ")) for p in problems)
-        message = "；".join(problems)
-        if any(p.startswith(("ask:", "ask[", "ask ")) for p in problems) and "完整问卡要求" not in message:
-            message += "；完整问卡要求：" + question_rules()
-        super().__init__(message)
+        super().__init__("；".join(problems))
 
 
 @dataclass(frozen=True)
@@ -320,11 +305,14 @@ class Receipt:
     summary: str
     advance: str | None = None
     evidence: list[str] = field(default_factory=list)
-    ask: list[dict] = field(default_factory=list)
-    notice: list[dict] = field(default_factory=list)
     later: list[dict] = field(default_factory=list)
     events: list[dict] = field(default_factory=list)
     leave: dict | None = None
+
+    @classmethod
+    def stored(cls, data: dict) -> "Receipt":
+        """读回已经收下的回执：旧版本存下的 ask、notice 不再有去处，去掉。"""
+        return cls(**{k: v for k, v in data.items() if k not in RETIRED_FIELDS})
 
     @classmethod
     def parse(cls, data: dict, now: datetime) -> "Receipt":
@@ -333,6 +321,10 @@ class Receipt:
         # 原因要具体到字段和合法取值，并一次报全：执行者看到后要能在同一轮一次改对重交。
         names = [f.name for f in fields(cls)]
         problems = []
+        retired = [key for key in RETIRED_FIELDS if data.get(key)]
+        if retired:
+            problems.append(RETIRED_HINT)
+        data = {k: v for k, v in data.items() if k not in RETIRED_FIELDS}
         unknown = [key for key in data if key not in names]
         if unknown:
             problems.append(f"回执顶层有不认识的字段 {'、'.join(map(str, unknown))}；顶层只认 {'、'.join(names)}，其他内容放进 evidence")
@@ -359,7 +351,7 @@ class Receipt:
             for i, value in enumerate(evidence):
                 if not isinstance(value, str):
                     problems.append(f"evidence[{i}] 必须是字符串")
-        for name in ("ask", "notice", "later"):
+        for name in ("later",):
             entries = data.get(name, [])
             if not isinstance(entries, list):
                 problems.append(f"{name} 必须是列表")
@@ -375,14 +367,9 @@ class Receipt:
                     problems.append(f"{path}: {name} key 无效或重复")
                 else:
                     keys.add(key)
-                if name == "ask":
-                    check(path, lambda: validate_question(entry))
-                elif name == "notice":
-                    check(path, lambda: validate_notice(entry))
-                else:
-                    if not isinstance(entry.get("about"), str) or not entry["about"]:
-                        problems.append(f"{path}.about: 定时缺 about")
-                    check(f"{path}.at", lambda: due(entry.get("at"), now))
+                if not isinstance(entry.get("about"), str) or not entry["about"]:
+                    problems.append(f"{path}.about: 定时缺 about")
+                check(f"{path}.at", lambda: due(entry.get("at"), now))
         events = data.get("events", [])
         if not isinstance(events, list):
             problems.append("events 必须是列表")
@@ -412,20 +399,16 @@ class Receipt:
     def format_help(evidence: str = "证据字符串") -> str:
         """通用回执协议；流程可提供一条自己的证据示例。"""
         minimal = {"outcome": "done", "summary": "本轮结果", "evidence": [evidence]}
-        notification = {"notice": [{"key": "result", "subject": "结果", "text": "结果说明", "fyi": True}]}
         return (
             "回执字段类型：outcome、summary 必填且为字符串；outcome 只能是 done、failed、nothing。"
             "其余可省略：advance 为阶段字符串或 null（取值按本轮说明）；evidence 为字符串列表；"
-            "ask、notice、later、events 为对象列表；leave 为对象或 null。"
-            "ask、notice、later 每项须有非空字符串 key，同一列表内不重复；"
-            "later 每项还须有字符串 at、about；events 每项须有 source/ext_id/target/object_key/title 字符串及 body。"
-            "leave 须有 kind（工序/送回/等你）、about；工序/送回还须有 at，工序还须有 owner。\n"
+            "later、events 为对象列表；leave 为对象或 null。"
+            "later 每项须有非空字符串 key，同一列表内不重复，还须有字符串 at、about；"
+            "events 每项须有 source/ext_id/target/object_key/title 字符串及 body。"
+            "leave 须有 kind（工序/送回/等你）、about；工序/送回还须有 at，工序还须有 owner；到点车间接着做，不找 Kun。"
+            "回执不发卡、不发通知：要 Kun 取舍按流程说明登记等待，进度和结果 Kun 在 workshop status 里看。\n"
             "示例只展示格式；summary、evidence 须替换为本轮实际结果，证据内容按流程说明填写。\n"
             "最小回执 JSON 示例：\n```json\n" + json.dumps(minimal, ensure_ascii=False) + "\n```\n"
-            "仅在本轮允许通知时添加 notice，示例（合入回执顶层，subject/text 为字符串，fyi 为 true）：\n```json\n"
-            + json.dumps(notification, ensure_ascii=False) + "\n```\n"
-            + "仅在本轮允许提问时添加 ask；示例不授予提问或批准权限。\n" + question_rules() + "\n"
-            + question_example()
         )
 
     def json(self) -> dict:

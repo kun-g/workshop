@@ -2,11 +2,10 @@ import json
 
 import pytest
 
-from conftest import build, configuration, event, item, reach, finish
+from conftest import build, configuration, event, hold_for_kun, item, reach, finish
 from workshop.cli import main, parser
 from workshop.core.models import Event
 from workshop.reports.report import why
-from workshop.core.cards import question
 
 
 def configured(tmp_path):
@@ -64,7 +63,7 @@ def test_release_blocked_item_respects_stage(tmp_path, stage):
     engine = configured(tmp_path)
     reach(engine, stage)
     # Finish the active round, then model a blocked work item.
-    finish(engine, leave={'kind': '等你', 'about': '等放行'}, notice=[{'key': 'wait', 'text': '等放行'}])
+    finish(engine, leave={'kind': '等你', 'about': '等放行'})
     engine.change(item(engine), state='卡住', wait_for_ready=False)
     engine.release_here('alpha:one', '放', 's')
     result = item(engine)
@@ -74,15 +73,13 @@ def test_release_blocked_item_respects_stage(tmp_path, stage):
     engine.log.close()
 
 
-def test_release_does_not_approve_unanswered_card(tmp_path):
+def test_release_does_not_bypass_bound_wait(tmp_path):
     engine = configured(tmp_path)
     engine.ingest(event())
-    work = item(engine)
-    engine.card(work, 'approval', 'ask', question('审批', approval=True))
-    engine.change(work, state='等你', wait_for_ready=True)
+    hold_for_kun(engine)
     engine.release_here('alpha:one', '放', 's')
     assert item(engine)['state'] == '等你'
-    assert not engine.log.all('cards')[0]['answered']
+    assert engine.log.get('waits', 'bind:decision')['state'] == 'waiting'
     engine.log.close()
 
 

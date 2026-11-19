@@ -7,10 +7,8 @@ from inspect import signature
 def wake_paths(engine):
     """可选端口只返回本地路径；路径变动只使声明者的查询结果过期。"""
     paths = {}
-    channel = engine.rules.data["channel"]
     for target, rule in engine.rules.data["targets"].items():
         entries = [("source", name, (target,)) for name in rule.get("sources", [])]
-        entries.append(("channel", channel, ("poll",)))
         for port, name, identity in entries:
             method = getattr(engine.plugins.get(port, name), "wake_paths", None)
             if method:

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""#173 上线后只读检查。只读现役库、服务和本地版本；不访问 GitHub。"""
+"""#173–#176 上线后只读检查。只读现役库、服务和本地版本；不访问 GitHub、不发消息、不改规则。"""
 import argparse
 from contextlib import closing
 from datetime import datetime, timezone
@@ -221,6 +221,136 @@ def inspect_button(log, state, rules, plugins):
     return {'terminal_headings': list(HEADINGS), 'html_headings': list(HEADINGS), 'dry_run_cards': cards}
 
 
+CUTOVER_TARGETS = ('workshop', 'grant-console')
+# 介入点 R12、R13 许可的出口：求助、约定的亲眼看、盯更新报告；visual_receipt、status_reply 是对 Kun 点按钮的回执。
+ALLOWED_POINTS = ('manager_help', 'visual', 'update_report')
+REPLY_KINDS = ('visual_receipt', 'status_reply')
+
+
+def converter():
+    """#176 的转换脚本只读调用：清单和去向与上线时同一份代码。"""
+    import importlib.util
+    path = Path(__file__).resolve().with_name('convert_intervention.py')
+    spec = importlib.util.spec_from_file_location('convert_intervention', path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def inspect_cutover(log, state):
+    convert = converter()
+    done = convert.converted(log)
+    left = [r for r in convert.plan(log, state, CUTOVER_TARGETS) if r.key not in done]
+    batches = {t: log.get('controls', '@cutover:' + t) or {} for t in CUTOVER_TARGETS}
+    backups = sorted(str(p) for p in (state / 'cutover-backups').glob('workshop.db.before-cutover-*'))
+    counts = {}
+    for body in done.values():
+        key = f"{body['target']}\t{body['category']}\t{body['destination']}"
+        counts[key] = counts.get(key, 0) + 1
+    result = {'batches': {t: {k: v for k, v in b.items() if k != 'id'} for t, b in batches.items()},
+              'converted': len(done), 'by_destination': counts, 'left': [r.key for r in left], 'backups': backups}
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    if any(b.get('state') != 'done' for b in batches.values()):
+        raise ValueError('有交付对象没转完：' + '、'.join(t for t, b in batches.items() if b.get('state') != 'done'))
+    if left:
+        raise ValueError(f'还有 {len(left)} 条旧记录没转')
+    if not backups:
+        raise ValueError('找不到转换前的备份')
+    first = min(b.get('at', '') for b in batches.values())
+    if not any(datetime.fromtimestamp(Path(p).stat().st_mtime, timezone.utc).isoformat() <= first for p in backups):
+        raise ValueError('备份不早于转换')
+
+
+def inspect_waits(log):
+    holds = [t for t in CUTOVER_TARGETS if (log.get('controls', t) or {}).get('hold') == 'cutover']
+    rows = []
+    for item in log.open_items():
+        if item['state'] != '等你':
+            continue
+        row = log.get('waits', item.get('wait_id') or '')
+        rows.append({'item': item['id'], 'wait': item.get('wait_id'), 'state': (row or {}).get('state')})
+    legacy = [c['id'] for c in log.all('cards') if c.get('mode') == 'ask' and not c.get('answered')
+              and not c.get('cancelled') and not c.get('rejected')]
+    print(json.dumps({'cutover_holds': holds, 'waiting': rows, 'open_legacy_asks': legacy}, ensure_ascii=False, indent=2))
+    if holds:
+        raise ValueError('交付对象停在等转换：' + '、'.join(holds))
+    bad = [r['item'] for r in rows if r['state'] != 'waiting']
+    if bad:
+        raise ValueError('等你的活没有有效等待引用：' + '、'.join(bad))
+    if legacy:
+        raise ValueError('还有挂在旧问卡上的等待：' + '、'.join(legacy))
+
+
+def inspect_old_exits(log, rules, since):
+    data = rules.data
+    retired = [k for k in ('channel', 'notices') if k in data]
+    retired += [f'{name}.ask_kun_state' for name, t in data['targets'].items() if 'ask_kun_state' in t]
+    if retired:
+        raise ValueError('现役规则仍有：' + '、'.join(retired))
+    if not data.get('intervention', {}).get('transport'):
+        raise ValueError('intervention.transport 没接上')
+    group = []
+    for name, target in data['targets'].items():
+        for flow, config in (target.get('flows') or {}).items():
+            if flow == 'watch_updates':
+                continue  # 盯更新报告的私聊反馈保留（盯更新 R14、R15）。
+            if any(t.get('source') == 'cli:feishu' for t in config.get('triggers', [])):
+                group.append(f'{name}.{flow}')
+        if target.get('feishu_chat_id'):
+            group.append(f'{name}.feishu_chat_id')
+    if group:
+        raise ValueError('车间仍接飞书群消息：' + '、'.join(group))
+    accepted = []
+    discarded = {f['body'].get('event_seq') for f in log.selected_facts(('event_discarded',), ('event_seq',))}
+    for seq, at, item, raw in log.db.execute("SELECT seq, at, item, body FROM facts WHERE kind='event' AND source='cli:feishu' AND at>=?", (since,)):
+        body = json.loads(raw)
+        if body.get('flow') == 'watch_updates':
+            continue
+        if not body.get('unmatched') and seq not in discarded:
+            accepted.append({'seq': seq, 'at': at, 'item': item})
+    print(json.dumps({'since_release': since, 'transport': data['intervention']['transport'][:3],
+                      'group_events_accepted': accepted}, ensure_ascii=False))
+    if accepted:
+        raise ValueError('发版后仍有群消息进了活')
+
+
+def inspect_exits(log, state, rules, since):
+    """全部消息出口：核心不再建卡；介入点服务里只发许可的几种，同一事项、同一送达号只发一次。"""
+    cards = [{'at': f['at'], 'id': f['body'].get('id'), 'mode': f['body'].get('mode')}
+             for f in log.selected_facts(('card_created',), ('id', 'mode')) if f['kind'] == 'card_created' and f['at'] >= since]
+    endpoint = resident_path(rules.data['wait_services']['intervention']['endpoint'], state)
+    path = endpoint.parent.parent / 'intervention.db'
+    with closing(sqlite3.connect(path.as_uri() + '?mode=ro', uri=True)) as db:
+        records = {k: json.loads(b) for k, b in db.execute('SELECT id, body FROM records')}
+        attempts = {}
+        for kind, key in db.execute("SELECT kind, id FROM journal WHERE at>=? AND kind IN ('sending','unsent')", (since,)):
+            attempts[key] = attempts.get(key, 0) + (1 if kind == 'sending' else -1)
+    sends, forbidden, repeated, scopes = [], [], [], {}
+    for key, calls in attempts.items():
+        record = records.get(key) or {}
+        permit = records.get(record.get('permit') or '') or {}
+        kind = (record.get('payload') or {}).get('kind')
+        point = permit.get('point') or (kind if kind in REPLY_KINDS else None)
+        row = {'delivery': key, 'point': point, 'scope': permit.get('scope'), 'state': record.get('state'), 'send_calls': calls}
+        sends.append(row)
+        if point not in ALLOWED_POINTS + REPLY_KINDS:
+            forbidden.append(row)
+        if calls > 1:
+            repeated.append(row)
+        if permit.get('scope') and calls > 0:
+            scopes.setdefault(permit['scope'], []).append(key)
+    repeated += [{'scope': s, 'deliveries': ks} for s, ks in scopes.items() if len(ks) > 1]
+    watch = read(state / 'watch.json') if (state / 'watch.json').exists() else {}
+    direct = [k for k, r in watch.get('active', {}).items() if r.get('via') in ('ask-kun', 'attention') and r.get('since', '') >= since]
+    channel = sorted(str(p) for p in (state / 'ask-kun-channel').glob('*.json')
+                     if datetime.fromtimestamp(p.stat().st_mtime, timezone.utc).isoformat() >= since)
+    print(json.dumps({'since_release': since, 'core_cards': cards, 'intervention_sends': sends,
+                      'forbidden': forbidden, 'repeated': repeated, 'watch_direct': direct,
+                      'old_channel_writes': channel}, ensure_ascii=False, indent=2))
+    if cards or forbidden or repeated or direct or channel:
+        raise ValueError('发版后有不许的出口或重复发送')
+
+
 def verify(args):
     state = args.state_dir.resolve()
     since, version = release_start(state)
@@ -231,7 +361,15 @@ def verify(args):
             if isinstance(config.get('endpoint'), str):
                 config['endpoint'] = str(resident_path(config['endpoint'], state))
         plugins = Registry()
-        if args.check in ('busy-count', 'managers', 'pushes', 'button'):
+        if args.check == 'cutover':
+            inspect_cutover(log, state)
+        elif args.check == 'waits':
+            inspect_waits(log)
+        elif args.check == 'old-exits':
+            inspect_old_exits(log, rules, since)
+        elif args.check == 'exits':
+            inspect_exits(log, state, rules, since)
+        elif args.check in ('busy-count', 'managers', 'pushes', 'button'):
             if args.check == 'busy-count':
                 value = inspect_busy(log, state)
             elif args.check == 'managers':
@@ -321,7 +459,8 @@ def verify(args):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('check', choices=['no-cards', 'no-approval-cards', 'authorization', 'deliveries', 'status', 'intake', 'service', 'busy-count', 'managers', 'pushes', 'button'])
+    parser.add_argument('check', choices=['no-cards', 'no-approval-cards', 'authorization', 'deliveries', 'status', 'intake', 'service', 'busy-count', 'managers', 'pushes', 'button',
+                                          'cutover', 'waits', 'old-exits', 'exits'])
     parser.add_argument('--since-release', action='store_true', help='从本次成功发版起查；四项检查均采用此窗口')
     parser.add_argument('--state-dir', type=Path, default=Path(pwd.getpwuid(os.getuid()).pw_dir) / '.local/state/workshop')
     args = parser.parse_args()

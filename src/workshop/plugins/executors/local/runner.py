@@ -56,7 +56,7 @@ def result_receipt(output: Path, kind: str, start: int = 0):
 RETRIES = 1  # 同一轮里把拒绝原因发回会话重交的次数
 VENDOR_SESSION = '<vendor-session>'  # retry_argv 里待换成厂商会话号的占位
 RECEIPT_REJECTED = 'receipt-rejected.json'  # 这一轮改过仍没交出合格回执；下一轮不接回这个会话
-FIELDS = 'outcome、summary、advance、evidence、ask、notice、later、events、leave'
+FIELDS = 'outcome、summary、advance、evidence、later、events、leave'
 FINAL_ROUND = ('该轮已交', '该轮不能再交', '未知轮次')  # 核心说这一轮已经收过或结束了，重交无用
 
 
@@ -140,9 +140,7 @@ def main(directory: Path):
         except IdentityError as exc:
             # Stop before creating the agent. Receipt transport needs no GitHub token.
             failed = {'outcome': 'nothing', 'summary': str(exc),
-                      'leave': {'kind': '等你', 'about': '修复 App 签发后重新放行'},
-                      'notice': [{'key': 'identity-signing', 'subject': 'App 签发失败',
-                                  'text': str(exc), 'fyi': True}]}
+                      'leave': {'kind': '等你', 'about': '修复 App 签发后重新放行'}}
             result = submit(directory, spec, dict(os.environ), 'identity-receipt.json', failed)
             write(directory / 'receipt-result.json', result)
             write(directory / 'exited.json', {'code': 1})

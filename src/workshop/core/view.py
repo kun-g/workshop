@@ -24,29 +24,16 @@ def evolve(db, fact: dict) -> None:
         if action == "rework":
             item["pending_rework"] = True
         if action == 'ready' and item['state'] in ('卡住', '等你') and not item.get('plugin_blocked'):
-            pending = any((card := json.loads(raw))['item'] == item['id'] and card['mode'] == 'ask'
-                          and not card.get('answered') and not card.get('cancelled') and not card.get('rejected')
-                          for (raw,) in db.execute('SELECT body FROM cards').fetchall())
-            if not pending and not reference_pending:
+            if not reference_pending:
                 if item['stage'] not in ('接单', '说清楚') and not item.get('wait_for_ready'):
                     item['pending_rework'] = True
                 item.update(state='空闲', next='按放行事件继续', blocked_by='')
         if action == "ready" and item.get("wait_for_ready"):
-            # 放行解除拒收/作废问题的等待，但不伪造其他问题的答案。
-            pending = reference_pending
-            for (raw,) in db.execute("SELECT body FROM cards").fetchall():
-                card = json.loads(raw)
-                if card["item"] != item["id"] or card["mode"] != "ask":
-                    continue
-                if card.get("awaiting_release"):
-                    card["awaiting_release"] = False
-                    put("cards", card["id"], card)
-                if not card["answered"] and not card.get("cancelled") and not card.get("rejected"):
-                    pending = True
+            # 放行解除没有等待引用的阻塞，但不伪造仍在等的回答。
             item["wait_for_ready"] = False  # 跑着/卡住时也消费放行，不能留下残标记。
-            if item["state"] in ("等你", "卡住") and not pending and not item.get("plugin_blocked"):
+            if item["state"] in ("等你", "卡住") and not reference_pending and not item.get("plugin_blocked"):
                 item.update(state="空闲", next="按放行事件继续", blocked_by="")
-            elif item.get("plugin_blocked") and (item.get("before_plugin_failure") or {}).get("state") in ("等你", "卡住") and not pending:
+            elif item.get("plugin_blocked") and (item.get("before_plugin_failure") or {}).get("state") in ("等你", "卡住") and not reference_pending:
                 item["before_plugin_failure"].update(state="空闲", next="按放行事件继续", blocked_by="")
 
     def held(item_id, before):
@@ -176,6 +163,7 @@ def evolve(db, fact: dict) -> None:
         row = get("rounds", body["token"])
         row.update(receipt=body["receipt"], status="finishing", received=fact["at"], receipt_seq=fact["seq"])
         put("rounds", body["token"], row)
+    # 介入点迁移（#176）前的卡片只留作历史；迁移后核心不再建卡。
     elif kind == "card_created":
         put("cards", body["id"], body)
     elif kind == "card_changed":

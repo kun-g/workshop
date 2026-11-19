@@ -10,7 +10,7 @@ import sys
 
 import pytest
 
-from test_ask_kun_watch import fake, setup_watch, calls, configure, NOW, manager_command, delegated
+from watch_helpers import fake, setup_watch, calls, configure, NOW, manager_command, delegated  # noqa: F401  fake 是夹具
 from test_scheduled_release import git, commit
 from workshop.watch import Watch, ReleaseRollback, save_json
 
@@ -26,7 +26,7 @@ def rollback(tmp_path, fake, monkeypatch):
     watch = setup_watch(fake, tmp_path)
     root = watch.directory
     target = {'checkout': str(repo), 'flows': {'scheduled_release': {'scheduled_release_state_dir': str(root)}}}
-    rules = {'targets': {'workshop': target}, 'notices': 'send'}
+    rules = {'targets': {'workshop': target}}
     with sqlite3.connect(root / 'workshop.db') as db:
         db.execute('CREATE TABLE controls(id TEXT, body TEXT)')
         db.execute('INSERT INTO controls VALUES (?,?)', ('@rules', json.dumps({'data': rules})))
@@ -209,17 +209,6 @@ def test_two_watchers_and_flow_lock_do_not_repeat_or_overwrite_ok(rollback):
     assert len(delegated(w['fake'])) == 1
 
 
-def test_hold_records_without_sending(rollback):
-    w = rollback
-    w['rules']['notices'] = 'hold'
-    with sqlite3.connect(w['root'] / 'workshop.db') as db:
-        db.execute('UPDATE controls SET body=? WHERE id=?', (json.dumps({'data': w['rules']}), '@rules'))
-    state = w['watch'].run(NOW)
-    assert read(w)['status'] == 'rolled_back'
-    assert not calls(w['fake'])
-    assert next(v for k, v in state['active'].items() if k.startswith('release:'))['notices'] == 'hold'
-
-
 def test_corrupt_interrupted_journal_does_not_crash_watch(rollback):
     w = rollback
     write(w, status='rolling_back', rollback='damaged')
@@ -274,5 +263,5 @@ def test_cluster_flow_never_selects_self_rollback_target(rollback):
         'scheduled_release': {'scheduled_release_state_dir': str(w['root']), 'scheduled_release_mode': 'cluster'}}}
     with sqlite3.connect(w['root'] / 'workshop.db') as db:
         db.execute("UPDATE controls SET body=? WHERE id='@rules'", (json.dumps({'data': w['rules']}),))
-    name, target, _ = ReleaseRollback(w['root']).configuration()
+    name, target = ReleaseRollback(w['root']).configuration()
     assert name == 'workshop' and target['checkout'] == str(w['repo'])

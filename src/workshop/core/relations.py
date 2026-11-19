@@ -59,7 +59,6 @@ def admit(engine, item):
         return item  # 先结算已有授权或返工，不能用等待清掉人的回答。
     if item.get("aggregate") and not data.get("error"):
         # 旧版跳过执行的活回到原阶段；旧验收问卡不能批准新的执行结果。
-        engine.cancel_questions(item)
         origin = item.get("aggregate_origin") or "说清楚"
         engine.change(item, aggregate=False, aggregate_origin=None, stage=origin, state="空闲",
                       next="总单恢复自身流程：" + origin, blocked_by="", relation_hold=None,

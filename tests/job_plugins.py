@@ -82,29 +82,6 @@ class SlowSource:
         return Poll([], "after-batch")
 
 
-class SlowChannel:
-    def ask(self, key, card):
-        return self.notify(key, card)
-
-    def notify(self, key, card):
-        note("send-start", key)
-        delay("channel")
-        note("sent", key)
-        return f"external:{key}"
-
-    def reconcile(self, key, card):
-        note("reconcile", key)
-        if "reconcile_result" in config():
-            return config()["reconcile_result"]
-        return f"external:{key}" if any(r[1] == key for r in calls("sent")) else "absent"
-
-    def cancel(self, key, external):
-        pass
-
-    def poll(self, cards):
-        return []
-
-
 class FakeExecutor:
     def __init__(self, name):
         self.name = name
@@ -172,6 +149,5 @@ def registry():
     plugins.register("flow", "flow", IssueDelivery(LocalIO()) if os.environ.get("JOBTEST_REAL_FLOW") else SlowFlow())
     for name in ("writer", "reviewer", "acceptor"):
         plugins.register("executor", name, FakeExecutor(name))
-    plugins.register("channel", "channel", SlowChannel())
     plugins.register("source", "source", SlowSource())
     return plugins
