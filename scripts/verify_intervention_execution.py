@@ -17,7 +17,7 @@ import uuid
 from workshop.core.engine import Engine
 from workshop.core.log import Log
 from workshop.core.models import Event, FlowBrief
-from workshop.core.rules import Rules
+from workshop.deployment import assemble
 from workshop.core.wake import Mailbox
 from workshop.plugins.intervention.client import Client
 from workshop.plugins.issue_delivery import IssueDelivery
@@ -149,7 +149,7 @@ class ReplayFlow(IssueDelivery):
 def replay(args):
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=False)
-    rules = Rules.load(args.rules)
+    rules = assemble(args.rules).rules
     original = next(Event(**e) for e in json.loads(args.source.read_text())['events']
                     if e['body'].get('kind') == 'issue' and str(e['body'].get('number')) == '173')
     original_issue = original.body['data']
@@ -166,7 +166,7 @@ def replay(args):
     import yaml
     rule_path = output / 'rules.yaml'
     rule_path.write_text(yaml.safe_dump(config, allow_unicode=True))
-    actual_rules = Rules.load(rule_path)
+    actual_rules = assemble(rule_path).rules
     os.environ['WORKSHOP_EXECUTOR_STATE_DIR'] = str(output / 'executors')
     registry = Registry()
     flow = ReplayFlow(io, ROOT)

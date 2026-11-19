@@ -71,3 +71,20 @@ def test_new_core_module_is_automatically_forbidden(tmp_path):
     assert result.returncode != 0
     assert 'workshop.core.new_mechanism' in result.stdout
     assert 'BROKEN' in result.stdout
+
+
+@pytest.mark.parametrize('source', [
+    "from workshop.core.rules import Rules\nRules.load('rules/workshop.yaml')\n",
+    "from workshop.core.rules import Rules as R\nR.load('rules/workshop.yaml')\n",
+])
+def test_rule_loading_outside_the_assembly_function_is_rejected(tmp_path, source):
+    # #293：src 里读规则都经 workshop.deployment.assemble，否则会漏掉部署目录。
+    result = check(tmp_path, '', 'harmless')
+    assert result.returncode == 0, result.stdout + result.stderr
+    (tmp_path / 'src/workshop/sneaky.py').write_text(source)
+    env = {**os.environ, 'PYTHONPATH': str(tmp_path / 'src'), 'VIRTUAL_ENV': sys.prefix,
+           'PATH': str(Path(sys.executable).parent) + os.pathsep + os.environ['PATH']}
+    result = subprocess.run([sys.executable, str(tmp_path / 'scripts/check_boundaries.py')],
+                            cwd=tmp_path, env=env, text=True, capture_output=True, timeout=30)
+    assert result.returncode != 0
+    assert 'sneaky.py:2' in result.stderr and 'assemble' in result.stderr

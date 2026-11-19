@@ -36,6 +36,20 @@ for area in ("core", "plugins"):
                 if not own_driver:
                     raise SystemExit(f"插件只能动态加载自己的入口点组：{path}:{node.lineno}")
 
+# 读规则的入口都经装配函数（#293）：src 里除它以外不许直接调核心的规则加载，否则会漏掉部署目录。
+assembly = root / "src/workshop/deployment.py"
+for path in (root / "src/workshop").rglob("*.py"):
+    if path == assembly:
+        continue
+    tree = ast.parse(path.read_text())
+    names = {"Rules"} | {alias.asname for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)
+                         for alias in node.names if alias.name == "Rules" and alias.asname}
+    for node in ast.walk(tree):
+        if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "load"
+                and isinstance(node.func.value, ast.Name) and node.func.value.id in names):
+            raise SystemExit(f"读规则要经装配函数 workshop.deployment.assemble，不许直接调 Rules.load："
+                             f"{path}:{node.lineno}")
+
 plugins = root / "src/workshop/plugins"
 modules = []
 categories = {"sources", "executors", "taskhome", "selectors"}

@@ -325,7 +325,7 @@ def compare(before, after):
 def engine_for(replay, data, registry, target, *, paused=()):
     from workshop.core.engine import Engine
     from workshop.core.log import Log
-    from workshop.core.rules import Rules
+    from workshop.deployment import assemble
     config = deepcopy(data)
     config['executors'] = {role: [{'use': 'codex'}] for role in ('writer', 'reviewer', 'acceptor')}
     config['stage_executors'] = {}
@@ -337,7 +337,7 @@ def engine_for(replay, data, registry, target, *, paused=()):
     log = Log(replay.state / 'workshop.db')
     for name in config['targets']:
         log.append('control', {'id': name, 'paused': name in paused})
-    return Engine(log, Rules.load(path), registry), log, path
+    return Engine(log, assemble(path).rules, registry), log, path
 
 
 def converted_flow(execution, replay, data, target_name):

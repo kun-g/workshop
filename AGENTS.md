@@ -12,7 +12,7 @@
 - `src/workshop/plugins/`：来源、执行者、等待服务、工单、流程插件；给 Kun 的消息只经介入点服务的送达命令。插件之间不互相引用，只经核心的端口。插件只 import 核心的 `models` 和 `ports`。
 - `github_identity`、`path_policy`、`running`、`quota_gate` 是共用库：插件可以用，共用库不引用插件。
 - `src/workshop/reports/`：只读给人看的（status、why、usage、metrics、状态网页、观察检查），不进核心。
-- `rules/workshop.yaml`：唯一一份规则（核心 R16）。换执行者、加交付对象只改这里。
+- `rules/workshop.yaml`：唯一一份规则（核心 R16）。加交付对象只改这里；换执行者改这里，或改部署目录 `~/.config/workshop/`（加减执行者、改谁当哪个角色，校验后重启生效，见 [docs/executor-profiles.md](docs/executor-profiles.md)）。
 - 纳入新项目时，按 [docs/纳入新项目.md](docs/纳入新项目.md) 配交付对象、需求、issue 模板、App 身份和发版，并逐步确认。
 - `scripts/pm/`：项目经理手工干预用的工具。每个都对应车间缺的一个机制，做成命令后删掉。
 - 规矩正文写在下面「规矩」和两个角色文件里，一条一行带编号；每条的细节和来历放 `docs/knowledge/`，见那里的 README。不写进 agent 记忆。

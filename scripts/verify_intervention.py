@@ -15,7 +15,7 @@ import tempfile
 from workshop.core.engine import Engine
 from workshop.core.log import Log
 from workshop.core.models import After, Event
-from workshop.core.rules import Rules
+from workshop.deployment import assemble
 from workshop.core.wake import Mailbox, Wake
 from workshop.core import waits
 from workshop.registry import Registry
@@ -38,7 +38,7 @@ serve(sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4]))
 
 
 def core(args):
-    config = Rules.load(args.rules)
+    config = assemble(args.rules).rules
     config.data['wait_services']['intervention']['endpoint'] = str(args.runtime / 'run/service.sock')
     log = Log(args.runtime / 'core/workshop.db')
     engine = Engine(log, config, Registry())

@@ -36,7 +36,7 @@ import time
 
 from workshop.core.log import Log
 from workshop.core.models import stamp
-from workshop.core.rules import Rules
+from workshop.deployment import assemble
 from workshop.wait_client import make_wait
 
 ORDER = ("workshop", "grant-console")
@@ -451,7 +451,7 @@ def main(argv=None):
     args = parser.parse_args(argv)
     state_dir = resident(args.state_dir).resolve()
     os.environ["WORKSHOP_CUTOVER_RULES"] = str(Path(args.rules).expanduser().resolve())
-    rules = Rules.load(Path(os.environ["WORKSHOP_CUTOVER_RULES"]))
+    rules = assemble(Path(os.environ["WORKSHOP_CUTOVER_RULES"])).rules
     targets = tuple(args.target or [t for t in ORDER if t in rules.data["targets"]])
     service_db = resident(args.intervention_db)
     if args.command == "groups":

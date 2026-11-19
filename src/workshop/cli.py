@@ -91,9 +91,17 @@ def parser():
     run = commands.add_parser("run", help="守护进程：每拍只读写状态库和本地文件，插件调用放到后台作业；--once 只跑一拍，插件调用就地进行")
     run.add_argument("--once", action="store_true")
     run.add_argument("--interval", type=float, default=None, help="兼容旧调用；已改为事件唤醒，不再使用固定间隔")
+    executors = commands.add_parser("executors", help="部署目录里的执行者：check 只读校验，reload 校验后重启车间")
+    executor_commands = executors.add_subparsers(dest="executors_command", required=True)
+    executor_commands.add_parser("check", help="只读地把仓库规则和部署目录完整加载、校验一遍；每个执行者一行").add_argument(
+        "directory", nargs="?", type=Path, help="部署目录；默认 WORKSHOP_DEPLOYMENT 或 ~/.config/workshop")
+    executor_commands.add_parser("reload", help="先校验，过了才用 launchctl kickstart -k 重启守护进程，等新进程跑通一拍")
     job = commands.add_parser("job", help="（守护进程内部用）在独立进程里跑一个作业，结果写回作业目录")
     job.add_argument("directory", type=Path)
     return result
+
+
+REPOSITORY_RULES = Path(__file__).resolve().parents[2] / "rules/workshop.yaml"
 
 
 def current_rules(args, saved):
@@ -103,7 +111,7 @@ def current_rules(args, saved):
         return load_rules(Path(saved["path"]))
     if saved:
         return Rules(Rules.validate(saved["data"]).data, saved.get("path"))
-    return load_rules(Path(__file__).resolve().parents[2] / "rules/workshop.yaml")
+    return load_rules(REPOSITORY_RULES)
 
 
 def read_command(args):
@@ -179,6 +187,15 @@ def main(argv=None):
             return 2
     if args.command in ("status", "why", "usage"):
         return read_command(args)
+    if args.command == "executors":
+        from . import executors_command
+        rules = args.rules or REPOSITORY_RULES
+        if args.executors_command == "reload":
+            return executors_command.reload(rules, None, args.state_dir)
+        if args.directory is not None and not args.directory.expanduser().is_dir():
+            print(f"车间：部署目录 {args.directory} 不存在", file=sys.stderr)
+            return 2
+        return executors_command.check(rules, args.directory, args.state_dir)
     if args.command == "prune":
         from .prune import prune
         try:

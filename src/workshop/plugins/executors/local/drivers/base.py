@@ -4,7 +4,8 @@ from pathlib import Path
 
 from workshop.core.models import RoundUsage, Usage
 
-COMMON = {'use', 'driver', 'transport', 'family', 'billing', 'quota', 'first_when_writer', 'model', 'effort'}
+# revision：部署目录里执行者的内容版本，由装配函数算出（#293）；变了就开新会话、对比表分版。
+COMMON = {'use', 'driver', 'transport', 'family', 'billing', 'quota', 'first_when_writer', 'model', 'effort', 'revision'}
 
 
 def text(value):
@@ -66,6 +67,7 @@ def instructions(config):
 class Driver:
     fields = {}
     settings_file = ''  # 执行者目录里这一家的设置文件名
+    isolation = False  # 能不能按执行者目录隔离启动（不读本机个人配置）
     family = ''
     binary = ''
     allocated_session = False
@@ -92,7 +94,7 @@ class Driver:
                 fail('family', '配了 gateway 必须写明模型那一家')
         elif config.get('family', self.family) != self.family:
             fail('family', f'由驱动确定为 {self.family}，不能将同一家伪装成不同家')
-        for key in ('model', 'effort'):
+        for key in ('model', 'effort', 'revision'):
             if key in config and not text(config[key]):
                 fail(key, '必须是非空字符串')
         if 'first_when_writer' in config and not strings(config['first_when_writer']):
