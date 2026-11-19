@@ -78,10 +78,10 @@ def human(size):
 
 
 def _concerns(directory):
-    """只读打开 managers.db；读不到就当没有当前事项。"""
+    """只读打开 managers.db；读不到返回 None，调用方据此不要动会话目录。"""
     path = Path(directory) / 'managers.db'
     if not path.exists():
-        return []
+        return None
     for query in ('?mode=ro', '?immutable=1'):
         try:
             connection = sqlite3.connect(path.as_uri() + query, uri=True, timeout=0)
@@ -91,13 +91,25 @@ def _concerns(directory):
                 connection.close()
         except (sqlite3.Error, ValueError, TypeError):
             continue
-    print(f'车间 prune：读不了 {path}，项目经理会话按没有当前事项处理', file=sys.stderr)
-    return []
+    print(f'车间 prune：读不了 {path}，经理会话目录这次不删', file=sys.stderr)
+    return None
 
 
 def protected_episodes(directory):
-    return {row.get('episode') for row in _concerns(directory)
+    concerns = _concerns(directory)
+    if concerns is None:
+        return None
+    return {row.get('episode') for row in concerns
             if row.get('episode') and (row.get('active') or row.get('token'))}
+
+
+def _sweep_manager_sessions(state_dir, now, dry_run):
+    """当前事项读不到时不删会话目录，避免把 active 的工作现场清掉。"""
+    protected = protected_episodes(state_dir)
+    if protected is None:
+        return []
+    return sweep_sessions(state_dir, now, keep_seconds=MANAGER_SESSION_KEEP_SECONDS,
+                          protected=protected, dry_run=dry_run)
 
 
 def ended_workdirs(log):
@@ -324,8 +336,7 @@ def prune(args, log, rules, registry):
                            keep_seconds=MANAGER_JOBS_KEEP_SECONDS, dry_run=True)
     core_jobs = sweep_directory(args.state_dir / 'jobs', now,
                                 keep_seconds=KEEP_SECONDS, dry_run=True)
-    sessions = sweep_sessions(args.state_dir, now, keep_seconds=MANAGER_SESSION_KEEP_SECONDS,
-                              protected=protected_episodes(args.state_dir), dry_run=True)
+    sessions = _sweep_manager_sessions(args.state_dir, now, True)
     candidates, kept, orphans = plan_worktrees(log, rules, registry)
 
     total_count = len(rounds) + len(jobs) + len(core_jobs) + len(sessions) + len(candidates)
@@ -364,9 +375,7 @@ def prune(args, log, rules, registry):
                                    keep_seconds=MANAGER_JOBS_KEEP_SECONDS, measure=True)
     removed_core_jobs = sweep_directory(args.state_dir / 'jobs', time.time(),
                                         keep_seconds=KEEP_SECONDS, measure=True)
-    removed_sessions = sweep_sessions(args.state_dir, time.time(),
-                                      keep_seconds=MANAGER_SESSION_KEEP_SECONDS,
-                                      protected=protected_episodes(args.state_dir))
+    removed_sessions = _sweep_manager_sessions(args.state_dir, time.time(), False)
     removed_size = (sum(r['bytes'] for r in removed_rounds) + sum(r['bytes'] for r in removed_jobs)
                     + sum(r['bytes'] for r in removed_core_jobs) + sum(r['bytes'] for r in removed_sessions))
     removed_count = (len(removed_rounds) + len(removed_jobs) + len(removed_core_jobs)

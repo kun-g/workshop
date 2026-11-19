@@ -11,7 +11,9 @@ import os
 from pathlib import Path
 import re
 import shutil
+import struct
 import subprocess
+import sys
 import time
 
 ROUND_KEEP_SECONDS = 3 * 86400
@@ -36,17 +38,36 @@ def size_of(path):
     return total
 
 
+# macOS 的 struct flock：l_start、l_len、l_pid、l_type、l_whence。F_GETLK 只查询，
+# 不会像 flock 探测那样短暂抢住 run.lock，撞上正在启动的轮次会让它永远起不来。
+# 其他平台 F_GETLK 看不到 flock 锁，见 held 里的保守处理。
+if sys.platform == 'darwin':
+    _FLOCK = struct.Struct('@qqihh')
+else:
+    _FLOCK = None
+
+
 def held(path):
+    """只查 run.lock 是否被持有，不自己抢锁。查不了按还在跑处理，宁可少删。"""
     try:
         handle = os.open(path, os.O_RDWR)
+    except FileNotFoundError:
+        return False
     except OSError:
-        return False
+        return True
     try:
-        try:
-            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
+        if _FLOCK is None:
             return True
-        return False
+        query = _FLOCK.pack(0, 0, 0, fcntl.F_WRLCK, os.SEEK_SET)
+        try:
+            answer = fcntl.fcntl(handle, fcntl.F_GETLK, query)
+        except (OSError, struct.error):
+            return True
+        try:
+            kind = _FLOCK.unpack(answer)[3]
+        except struct.error:
+            return True
+        return kind != fcntl.F_UNLCK
     finally:
         os.close(handle)
 

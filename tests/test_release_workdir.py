@@ -124,6 +124,22 @@ def test_merged_pr_releases_worktree_and_branch_even_without_pushed_commits(loca
     assert branches(local['repo']) == ['main']
 
 
+def test_merged_pr_releases_after_origin_main_moves_on(local):
+    # PR head 就是工作区 tip；之后主干又前进。压缩合并的 main 提交不在 PR head 里，
+    # 但它已经在远端，不算「本地多出来」的提交。
+    head = commit(local['workdir'], 'pr.txt', 'pr\n', 'pr work')
+    merged(local, 23, headRefOid=head)
+    commit(local['repo'], 'main.txt', 'main\n', 'main moves on')
+    git(local['repo'], 'push', '-q', 'origin', 'main')
+    # 确认远端主干真的前进了，且这个提交不在 PR head 里；旧参数会把它计入「本地多出」。
+    assert git(local['repo'], 'rev-parse', 'origin/main') != head
+    assert git(local['repo'], 'rev-list', '--count', 'origin/main', '--not', head) == '1'
+    assert local['executor'].release(local['item'], local['target'], dry_run=True) == Release(
+        True, f"删 {local['workdir']}，删分支 {local['branch']}（PR #23 已合并）")
+    assert local['executor'].release(local['item'], local['target']) == Release(True)
+    assert not local['workdir'].exists() and local['branch'] not in branches(local['repo'])
+
+
 def test_merged_pr_keeps_worktree_when_tip_has_commit_outside_pr_head(local):
     # PR 合并的是 head；工作区后来又多了一次本地提交，远端也没有，删分支就丢了。
     head = commit(local['workdir'], 'pr.txt', 'pr\n', 'pr work')

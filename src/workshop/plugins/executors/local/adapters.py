@@ -312,8 +312,10 @@ class Executor:
     def _outside(self, path, ref, head):
         """ref 上有多少提交既不在 PR 的 head 里，也不在任何远端；查不了返回 None。"""
         try:
+            # 一个 --not 管到命令末尾：head 和所有远端都排除，不能写两个 --not，
+            # 第二个会把 --remotes 又翻回「计入」，压缩合并后永远算出一堆「本地多出」。
             result = self._git('-C', str(path), 'rev-list', '--count', ref,
-                               '--not', head, '--not', '--remotes', check=False)
+                               '--not', head, '--remotes', check=False)
         except Retryable:
             return None
         if result.returncode:

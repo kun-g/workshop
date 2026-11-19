@@ -1,5 +1,6 @@
 """状态目录保留：执行者轮次、经理作业、经理会话，以及存量清理命令。"""
 from datetime import datetime, timedelta, timezone
+import fcntl
 import json
 import os
 from pathlib import Path
@@ -272,6 +273,10 @@ def test_plan_worktrees_asks_flow_before_releasing(tmp_path):
 def test_prune_command_cleans_old_rounds_jobs_and_sessions(tmp_path, monkeypatch, capsys):
     state = tmp_path / 'state'
     state.mkdir()
+    db = sqlite3.connect(state / 'managers.db')
+    db.execute('CREATE TABLE concerns(body TEXT)')
+    db.commit()
+    db.close()
     jobs = state / 'manager-jobs'
     old_job = jobs / 'old'
     old_job.mkdir(parents=True)
@@ -308,13 +313,56 @@ def test_prune_command_cleans_old_rounds_jobs_and_sessions(tmp_path, monkeypatch
     assert not round_path.exists()
 
 
+def test_prune_keeps_sessions_when_managers_db_unreadable(tmp_path, monkeypatch, capsys):
+    state = tmp_path / 'state'
+    state.mkdir()
+    old = session_dir(state, '11111111-1111-1111-1111-111111111111')
+    (state / 'managers.db').mkdir()  # sqlite 打不开：模拟库损坏或权限问题。
+    log = SimpleNamespace(db=sqlite3.connect(':memory:'))
+    log.db.execute('CREATE TABLE items(body TEXT)')
+    args = SimpleNamespace(state_dir=state, dry_run=False, verbose=False, executor_state_dir=None)
+    rules = SimpleNamespace(data={'targets': {}}, target=lambda *a: {})
+    registry = SimpleNamespace(get=lambda *a: None)
+    monkeypatch.setenv('WORKSHOP_EXECUTOR_STATE_DIR', str(tmp_path / 'executors'))
+
+    assert prune_module.prune(args, log, rules, registry) == 0
+    err = capsys.readouterr().err
+    assert old.exists() and '读不了' in err and '经理会话目录这次不删' in err
+
+
+@pytest.mark.skipif(sys.platform != 'darwin', reason='macOS 的 F_GETLK 才能看到 flock 锁')
+def test_held_queries_the_lock_without_taking_it(tmp_path, monkeypatch):
+    path = tmp_path / 'run.lock'
+    path.write_text('')
+    commands = []
+    real_fcntl, real_flock = fcntl.fcntl, fcntl.flock
+
+    def spy(fd, command, argument):
+        commands.append(command)
+        return real_fcntl(fd, command, argument)
+
+    def steal(*args, **kwargs):
+        raise AssertionError('held 不能去抢 run.lock')
+
+    monkeypatch.setattr(retention.fcntl, 'fcntl', spy)
+    monkeypatch.setattr(retention.fcntl, 'flock', steal)
+    assert retention.held(path) is False
+    with path.open('a') as guard:
+        real_flock(guard, fcntl.LOCK_EX)
+        assert retention.held(path) is True
+    assert retention.held(path) is False
+    assert fcntl.F_GETLK in commands
+
+
 def test_prune_rechecks_item_and_rounds_before_deleting_worktree(tmp_path, monkeypatch, capsys):
     state = tmp_path / 'state'
     state.mkdir()
     workdir = tmp_path / 'ws-aaaaaaaaaaaaaaaa'
     workdir.mkdir()
+    # 旧版本已经把它标成「留着」；修正后存量命令仍要按新规则重新判断。
     ended = {'id': 'alpha:7', 'target': 'alpha', 'state': '完成',
-             'workdir': str(workdir), 'sessions': {'writer': 's1'}}
+             'workdir': str(workdir), 'sessions': {'writer': 's1'},
+             'workdir_released': '留着：HEAD 有 1 个提交不在 PR #1 的 head 里，也没在远端，没删'}
     db = sqlite3.connect(':memory:')
     db.execute('CREATE TABLE items(body TEXT)')
     db.execute('INSERT INTO items VALUES (?)', (json.dumps(ended),))
