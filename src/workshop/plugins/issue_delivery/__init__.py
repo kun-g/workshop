@@ -104,6 +104,10 @@ class IssueDelivery:
     def __init__(self, io=None):
         self.io = io or IO()
 
+    @staticmethod
+    def validate(target):
+        intake.validate(target)
+
     @github_scope
     def hold_workdir(self, item, target):
         """收尾后还有打开的 PR，执行者的 worktree 和分支先留着。"""
