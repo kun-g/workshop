@@ -8,7 +8,10 @@ class Unavailable(Exception):
 
 
 class Retryable(Exception):
-    """暂时故障；启动方法仅在确认没有启动副作用时使用。来源退避至30分钟，其余连续三次升级故障。"""
+    """暂时故障；启动方法仅在确认没有启动副作用时使用。
+
+    来源退避至 30 分钟；其余连续三次升级隔离，之后每小时自动重试一次，成功即解除。
+    代码错误（TypeError、KeyError、配置缺字段等）不要继承它，那些立即隔离、交项目经理。"""
 
 
 class TargetBlocked(Exception):
@@ -23,8 +26,10 @@ class WaitRejected(Exception):
     """被调等待服务明确拒绝业务请求；只阻塞当前活。"""
 
 
-class WaitUnavailable(Exception):
-    """等待服务暂时不可达或未确认结果；保留幂等操作号重查。"""
+class WaitUnavailable(Retryable):
+    """等待服务暂时不可达或未确认结果；保留幂等操作号重查。
+
+    也是可自动重试的瞬时故障：流程没接住、冒到核心时按 Retryable 退避，不永久标坏。"""
 
 
 class Source(Protocol):

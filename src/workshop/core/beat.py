@@ -11,7 +11,7 @@ import time
 
 from .jobs import Pending
 from .models import stamp
-from . import rounds, relations, waits, hooks, activity, managers
+from . import rounds, relations, waits, hooks, activity, managers, faults
 
 SLOW_TICK_MS = 100
 SLOW_ITEM_MS = 5
@@ -53,6 +53,11 @@ def one(engine, began=None):
             with Span(spans, "reap"):
                 if engine.jobs:
                     engine.jobs.reap()
+            # 到点的插件自动重试先解除隔离、恢复被卡的活，这一拍再按原路径重试。
+            with Span(spans, "wake"):
+                if faults.wake_broken(engine):
+                    # 收回工作目录每进程只做一次；解除隔离后让它按退避时间再问一次。
+                    engine.cleaned_flows = False
             # 外部事件先归件：事件到开始处理不排在清目录、读来源之后（核心 R27）。
             with Span(spans, "classify"):
                 engine.classify_events()

@@ -9,6 +9,7 @@ from .models import Classification
 from .jobs import Pending
 from .flows import entries, matches
 from .stages import gate
+from .faults import RETRY_CAP_SECONDS, active_broken
 
 
 def ingest(engine, event: Event, round_token: str | None = None, *, ingress: str = "source", directed=False) -> bool:
@@ -90,7 +91,14 @@ def record_event(engine, event, ingress, *, namespaced=False, classify=False):
             if item["depth"] > engine.rules.data["limits"]["chain_depth"]:
                 engine.block(item, "事件连锁超过上限")
             elif engine.flow_broken(event.target, event.flow):
-                engine.block(item, "流程插件等待修复", plugin=True)
+                control = active_broken(engine, event.target, event.flow)
+                if control.get('auto_retry') and control.get('retry_at'):
+                    # 自动重试中的隔离：隔离期间新进来或被更新的活挂到同一段隔离上，
+                    # 到点一起恢复。已经属于别段隔离的活由 block 保持原样。
+                    engine.block(item, "流程插件等待修复", plugin=True,
+                                 retry_at=control.get('retry_at'), failure_key=control.get('id'))
+                else:
+                    engine.block(item, "流程插件等待修复", plugin=True)
         return added
 
 
@@ -289,10 +297,16 @@ def source_retry(engine, target, name, exc):
         count = state.get("count", 0) + 1
         elapsed = (now - since).total_seconds()
         delay = (60, 120, 300, 600)[min(count - 1, 3)]
-        at = stamp(min(now + timedelta(seconds=delay), since + timedelta(minutes=30))) if elapsed < 1800 else None
+        if elapsed < 1800:
+            at = stamp(min(now + timedelta(seconds=delay), since + timedelta(minutes=30)))
+        else:
+            # 隔离期间每小时自动重试一次；成功即解除隔离，失败的活按原状恢复。
+            at = stamp(now + timedelta(seconds=RETRY_CAP_SECONDS))
         engine.fact("plugin_retry", {"target": target, "port": "source", "name": name,
                   "count": count, "error": str(exc), "since": stamp(since), "elapsed_seconds": elapsed, "at": at})
-        engine.fact("control", {"id": key, "count": count, "since": stamp(since), "at": at})
+        engine.fact("control", {"id": key, "count": count, "since": stamp(since), "at": at,
+                                "target": target, "port": "source", "name": name})
         if elapsed >= 1800:
-            engine.broken(target, "source", name, Retryable(f"来源连续失败 {elapsed:.0f} 秒；最后错误：{exc}"))
+            engine.broken(target, "source", name, Retryable(f"来源连续失败 {elapsed:.0f} 秒；最后错误：{exc}"),
+                          retry={"at": at, "count": count, "key": key})
 

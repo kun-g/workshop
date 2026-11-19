@@ -1,7 +1,10 @@
 import base64
+import io
 import json
 import subprocess
+import sys
 from types import SimpleNamespace
+import urllib.error
 
 import pytest
 
@@ -90,3 +93,78 @@ def test_token_missing_configured_repository_is_not_usable(minting, monkeypatch)
     monkeypatch.setattr(github_token, 'api', api)
     with pytest.raises(ValueError, match='coverage is incomplete'):
         github_token.mint(args)
+
+
+def test_keychain_failure_is_classified_without_secret(minting, monkeypatch):
+    args, _, _, _ = minting
+    def run(argv, **kwargs):
+        raise subprocess.CalledProcessError(44, argv, b'', b'user canceled private-key-material')
+    monkeypatch.setattr(subprocess, 'run', run)
+    with pytest.raises(github_token.SigningFailure) as error:
+        github_token.mint(args)
+    assert error.value.kind == 'keychain'
+    assert 'security exit 44' in error.value.detail
+    assert 'private-key-material' not in error.value.detail
+
+
+def test_github_http_failure_keeps_status_and_message_but_not_body_secrets():
+    jwt = 'eyJhbGciOiJSUzI1NiJ9.eyJpc3MiOiJ0ZXN0In0.c2lnbmF0dXJlLXNlY3JldA'
+    def fail(request, timeout):
+        body = io.BytesIO(json.dumps({'message': 'Bad credentials ghs_abcdefghijklmnopqrstuvwxyz0123456789 ' + jwt}).encode())
+        raise urllib.error.HTTPError(request.full_url, 403, 'Forbidden', {}, body)
+    import workshop.github_token as module
+    original = module.urllib.request.urlopen
+    module.urllib.request.urlopen = fail
+    try:
+        with pytest.raises(module.SigningFailure) as error:
+            module.api('/app', 'jwt')
+    finally:
+        module.urllib.request.urlopen = original
+    assert error.value.kind == 'github'
+    assert '/app 返回 HTTP 403' in error.value.detail and 'Bad credentials' in error.value.detail
+    assert 'ghs_' not in error.value.detail and jwt not in error.value.detail
+    assert '[已隐藏]' in error.value.detail
+
+
+def test_network_failure_is_classified():
+    import workshop.github_token as module
+    original = module.urllib.request.urlopen
+    def fail(request, timeout):
+        raise urllib.error.URLError(ConnectionRefusedError(61, 'Connection refused'))
+    module.urllib.request.urlopen = fail
+    try:
+        with pytest.raises(module.SigningFailure) as error:
+            module.api('/app', 'jwt')
+    finally:
+        module.urllib.request.urlopen = original
+    assert error.value.kind == 'network' and '/app 网络错误' in error.value.detail
+
+
+def test_main_prints_one_classified_line_and_never_the_token(minting, monkeypatch, capsys):
+    args, _, path, _ = minting
+    monkeypatch.setattr(sys, 'argv', ['github_token', '--repo', args.repo, '--config', str(path),
+                                      '--app', args.app, '--key-service', args.key_service,
+                                      '--key-account', args.key_account])
+    def mint(_):
+        raise github_token.SigningFailure('github', 'token ghs_abcdefghijklmnopqrstuvwxyz0123456789 rejected')
+    monkeypatch.setattr(github_token, 'mint', mint)
+    assert github_token.main() == 1
+    out, err = capsys.readouterr()
+    assert out == ''
+    assert err.startswith('SIGNING_ERROR ')
+    reason = json.loads(err.removeprefix('SIGNING_ERROR '))
+    assert reason['kind'] == 'github' and 'ghs_' not in reason['detail'] and '[已隐藏]' in reason['detail']
+
+
+def test_main_unexpected_failure_keeps_only_the_exception_type(minting, monkeypatch, capsys):
+    args, _, path, _ = minting
+    monkeypatch.setattr(sys, 'argv', ['github_token', '--repo', args.repo, '--config', str(path),
+                                      '--app', args.app, '--key-service', args.key_service,
+                                      '--key-account', args.key_account])
+    def mint(_):
+        raise RuntimeError('private-key-material')
+    monkeypatch.setattr(github_token, 'mint', mint)
+    assert github_token.main() == 1
+    out, err = capsys.readouterr()
+    assert out == '' and 'private-key-material' not in err
+    assert json.loads(err.removeprefix('SIGNING_ERROR ')) == {'kind': 'unknown', 'detail': 'RuntimeError'}

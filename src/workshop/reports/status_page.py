@@ -31,11 +31,11 @@ def tone(state):
     return TONE.get(state, "run")
 
 
-def due_at(row):
+def due_at(row, field="due"):
     """到点时间，本机时区，写到分钟；活里没记就写「未记录」。"""
     try:
-        return datetime.fromisoformat(row.get("due") or "").astimezone().strftime("%m-%d %H:%M")
-    except ValueError:
+        return datetime.fromisoformat(row.get(field) or "").astimezone().strftime("%m-%d %H:%M")
+    except (TypeError, ValueError):
         return "未记录"
 
 
@@ -65,7 +65,9 @@ def brief(row, asks):
     if row["stuck"]:
         owner = row.get("owner") or "项目经理"
         advice = row["advice"].removeprefix(owner).lstrip("：: ，,")  # 建议动作常以执行者开头，别写成「项目经理：项目经理…」
-        return f"{owner}：{sentence(advice, wide - len(owner) - 1)}", sentence(row["reason"] or "原因未记录", wide)
+        when = due_at(row, "retry_at") if row.get("auto_retry") else ""
+        suffix = f"（下次 {when}）" if when and when != "未记录" else ""
+        return f"{owner}：{sentence(advice, wide - len(owner) - 1 - len(suffix))}{suffix}", sentence(row["reason"] or "原因未记录", wide)
     if state == "等你":
         return f"Kun：{sentence(asks.get(row['id']) or row['next'], wide - 4)}", ""
     if state == "暂停":

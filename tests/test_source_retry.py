@@ -159,6 +159,31 @@ def test_nontransient_errors_still_isolate_immediately(engine, tmp_path, monkeyp
     assert not engine.control(RETRY).get('count')
 
 
+def test_broken_source_is_woken_hourly_and_recovers(engine, tmp_path, monkeypatch):
+    approval_wait(engine)
+    engine.fact('cursor', {'id': 'alpha:source', 'cursor': None})
+    state = wire_source(engine, tmp_path, monkeypatch)
+    t0 = engine.clock()
+    for minute in (0, 1, 3, 8, 18, 28, 30):
+        engine.clock.now = t0 + timedelta(minutes=minute)
+        engine.sources()
+    control = engine.control('alpha')
+    assert control['broken'] and control['auto_retry']
+    assert control['retry_at'] == stamp(t0 + timedelta(minutes=90))
+    assert item(engine)['state'] == '卡住' and item(engine)['plugin_blocked']
+    # 没到点的一拍不读来源；到点这一拍自动解除隔离，按原路径重试并恢复被卡的活。
+    state['fault'] = None
+    engine.clock.now = t0 + timedelta(minutes=89)
+    engine.tick()
+    assert engine.control('alpha')['broken'] and state['reads'] == 7
+    engine.clock.now = datetime.fromisoformat(control['retry_at'])
+    engine.tick()
+    assert not engine.control('alpha').get('broken')
+    assert not item(engine).get('plugin_blocked') and item(engine)['state'] == '等你'
+    assert engine.control(RETRY)['count'] == 0
+    assert state['reads'] == 9  # 一次拉取加一次 normalize
+
+
 def test_sources_have_separate_windows_and_preserve_failed_cursor(engine, monkeypatch):
     original = engine.plugins.get('source', 'source')
     other = FakeSource()
