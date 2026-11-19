@@ -385,6 +385,18 @@ def test_engine_kept_workdir_records_reason_once(engine):
     assert item(engine)['workdir'] == '/fake/workdir'
 
 
+def test_kept_workdir_query_only_returns_directories_still_there(engine, tmp_path):
+    # 目录已不在（手工删了、存量命令收回了）就不再登记项目经理事项。
+    wire(engine, Flow(), Release(False, '/w/ws-1 有 1 处未提交改动，没删'))
+    complete(engine)
+    engine.tick()
+    assert engine.log.kept_workdirs() == []
+    real = tmp_path / 'ws-real'
+    real.mkdir()
+    engine.change(item(engine), workdir=str(real))
+    assert [row['id'] for row in engine.log.kept_workdirs()] == ['alpha:one']
+
+
 def test_engine_executor_retry_keeps_workdir_and_target_healthy(engine):
     releaser = wire(engine, Flow(), Retryable('Orca 没开'))
     complete(engine)

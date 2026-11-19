@@ -247,11 +247,15 @@ class Log:
             f"SELECT body FROM items WHERE {RELEASE_ITEMS} = 1 ORDER BY rowid")]
 
     def kept_workdirs(self):
-        """收尾时执行者说不能收的工作目录；原因记在活上，项目经理要看见。"""
-        return [json.loads(row[0]) for row in self.db.execute(
+        """收尾时执行者说不能收、且目录还在的工作目录；原因记在活上，项目经理要看见。
+
+        目录已经不在（手工删了、存量命令收回了）就不用再登记事项。
+        """
+        rows = [json.loads(row[0]) for row in self.db.execute(
             "SELECT body FROM items WHERE json_extract(body, '$.state') IN ('完成', '放弃') "
             "AND coalesce(json_extract(body, '$.workdir'), '') != '' "
             "AND coalesce(json_extract(body, '$.workdir_released'), '') LIKE '留着：%' ORDER BY rowid")]
+        return [item for item in rows if Path(item['workdir']).exists()]
 
     def program_items(self):
         return [json.loads(row[0]) for row in self.db.execute(

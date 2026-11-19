@@ -85,8 +85,8 @@ def main(argv=None):
                          if row.get('episode') and (row.get('active') or row.get('token'))}
             try:
                 maybe_sweep_sessions(args.state_dir, now, protected)
-            except OSError:
-                pass
+            except Exception:
+                pass  # 清理是后台维护，不能挡住这一拍的事项处理。
             for key, fault in message.get('faults', {}).items():
                 store.observe('system:' + key, fault, 'watch', now)
             for row in store.all():
