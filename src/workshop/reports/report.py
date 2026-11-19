@@ -15,7 +15,8 @@ from .manager_status import read_managers, sections
 ENDED = ("完成", "放弃")
 
 
-def waiting_records(log, rules, plugins, item_id=None):
+def waiting_records(log, rules, plugins, item_id=None, cache=None):
+    """cache 是 {等待号: 上次读到的记录}：读到就更新，读不到就用它顶上并标 stale（上次读到的时间）；没有旧数据才写读取失败。"""
     result = []
     for wait in log.all('waits'):
         if item_id and wait['item'] != item_id:
@@ -25,14 +26,28 @@ def waiting_records(log, rules, plugins, item_id=None):
         try:
             config = rules.get('wait_services', {})[wait['provider']]
             record = plugins.get('wait', wait['provider']).read(wait['ref'], config)
-            content = record['content']
-            seconds = max(0, int((utcnow() - datetime.fromisoformat(record['started_at'])).total_seconds()))
-            result.append({**wait, 'content': content, 'record': record, 'seconds': seconds,
-                           'question': content.get('question', '等待外部结果'),
-                           'recommend': content.get('recommend', '—'), 'reason': content.get('reason', '')})
+            if cache is not None:
+                cache[wait['ref']] = {'record': record, 'at': utcnow().isoformat()}
+            result.append(shaped(wait, record))
         except Exception as exc:
-            result.append({**wait, 'question': '等待服务读取失败：' + str(exc), 'recommend': '—', 'reason': '', 'seconds': None})
+            old = (cache or {}).get(wait['ref'])
+            if old:
+                result.append({**shaped(wait, old['record']), 'stale': old['at'], 'stale_error': str(exc)})
+            else:
+                result.append({**wait, 'question': '等待服务读取失败：' + str(exc), 'recommend': '—', 'reason': '', 'seconds': None})
+    if cache is not None and not item_id:  # 不再等的不留旧数据
+        live = {w['ref'] for w in log.all('waits') if w['state'] == 'waiting'}
+        for ref in [r for r in cache if r not in live]:
+            del cache[ref]
     return result
+
+
+def shaped(wait, record):
+    content = record['content']
+    seconds = max(0, int((utcnow() - datetime.fromisoformat(record['started_at'])).total_seconds()))
+    return {**wait, 'content': content, 'record': record, 'seconds': seconds,
+            'question': content.get('question', '等待外部结果'),
+            'recommend': content.get('recommend', '—'), 'reason': content.get('reason', '')}
 
 
 def state_since(log, item):
@@ -53,7 +68,7 @@ def origin(item, target, flow: Flow | None):
     return None
 
 
-def overview(log, *, everything=False, states=(), targets=(), flows=(), rules=None, plugins: Plugins | None = None):
+def overview(log, *, everything=False, states=(), targets=(), flows=(), rules=None, plugins: Plugins | None = None, wait_cache=None):
     """总览要用的数据，文字和网页共用。默认只取没结束的活；states、targets、flows 是筛选，空表示不筛。"""
     if rules is None:
         rules = (log.get("controls", "@rules") or {}).get("data", {})
@@ -84,7 +99,9 @@ def overview(log, *, everything=False, states=(), targets=(), flows=(), rules=No
                      "flow": item.get("flow") or "", "stage": item["stage"], "state": item["state"], "shown": shown,
                      "stuck": stuck, "who": row["executor"] if row else "车间", "next": next_step, "blocker": blocker,
                      "reason": item["blocked_by"], "advice": item["next"],
-                     "owner": (item.get("leave") or {}).get("owner") or "", "origin": origin(item, target, flow)})
+                     "owner": (item.get("leave") or {}).get("owner") or "", "origin": origin(item, target, flow),
+                     "due": (item.get("leave") or {}).get("at") or (item.get("after_wait") or {}).get("at") or "",
+                     "about": (item.get("leave") or {}).get("about") or ""})
     filtered = bool(states or targets or flows)
     picked = [r for r in rows
               if (everything or states or r["state"] not in ENDED)
@@ -107,7 +124,7 @@ def overview(log, *, everything=False, states=(), targets=(), flows=(), rules=No
     return {"managers": read_managers(log.path.parent.resolve()), "rows": picked, "total": count, "ended": count - sum(r["state"] not in ENDED for r in rows),
             "hidden": count - len(picked), "everything": everything, "filtered": filtered,
             "unreadable": unread, "asks": asks, "uncertain": uncertain,
-            "waits": [w for w in waiting_records(log, rules, plugins) if w['item'] in ids],
+            "waits": [w for w in waiting_records(log, rules, plugins, cache=wait_cache) if w['item'] in ids],
             "filters": {"states": list(states), "targets": list(targets), "flows": list(flows)}}
 
 

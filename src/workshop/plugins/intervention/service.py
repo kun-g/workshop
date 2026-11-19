@@ -53,6 +53,13 @@ class Service:
                 raise ValueError('status.command 必须为非空 argv')
         return config
 
+    def status_page(self):
+        """规则顶层的状态页本机地址；没配返回 None，卡片按钮退回回调。"""
+        page = yaml.safe_load(self.rules.read_text()).get('status_page')
+        if page is not None and not (isinstance(page, str) and page.startswith('http://127.0.0.1:')):
+            raise ValueError('status_page 必须是 http://127.0.0.1:端口/… 的本机地址')
+        return page
+
     def policy(self, point):
         config = self.configuration()
         points = config.get('points', {})

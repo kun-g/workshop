@@ -1,9 +1,10 @@
-from .manager_status import sections
+from .manager_status import readable, sections
 """把总览（report.overview）排成一页自包含的网页：纯规则排版，不调模型，离线能开。
 
 每件活占一行：标题 · 下一步（谁做什么；卡住的活下面补一句原因）；等了多久和原文（下一步、原因、卡在谁手里）折叠在行下。
 生成时间和「等了多久」带着时间戳，页面里的小脚本按打开时的本机时钟重算，页面放旧了看得出。
 """
+import json
 import re
 from collections import Counter, defaultdict
 from importlib.resources import files
@@ -17,6 +18,7 @@ LOGO = ASSETS.joinpath("logo.svg").read_text(encoding="utf-8")
 FAVICON = "data:image/svg+xml," + quote(ASSETS.joinpath("favicon.svg").read_text(encoding="utf-8"), safe="")
 
 ENDED = ("完成", "放弃")
+WAITING = ("等前置", "等子单", "等资料")  # 各自一栏，列头写在等什么
 # 状态在页面里的先后和颜色类；没列到的状态（例如作业字样「等检查」）按在跑算。
 ORDER = ["卡住", "等你", "跑着", "等前置", "等子单", "等资料", "排队", "定时", "暂停", "完成", "放弃"]
 TONE = {"卡住": "stuck", "等你": "wait", "等前置": "timer", "等子单": "timer", "等资料": "timer", "跑着": "run", "排队": "timer", "定时": "timer", "暂停": "pause",
@@ -27,6 +29,14 @@ STALE_MINUTES = 10  # 页面放了这么久，更新时间变红
 
 def tone(state):
     return TONE.get(state, "run")
+
+
+def due_at(row):
+    """到点时间，本机时区，写到分钟；活里没记就写「未记录」。"""
+    try:
+        return datetime.fromisoformat(row.get("due") or "").astimezone().strftime("%m-%d %H:%M")
+    except ValueError:
+        return "未记录"
 
 
 def lane(row):
@@ -62,12 +72,16 @@ def brief(row, asks):
         return "项目经理：恢复已暂停的交付对象", ""
     if state in ENDED:
         return "无需处理", ""
-    if state in ("定时", "排队"):
+    if state in WAITING:  # 栏名已经写了在等什么，行里不再重复「车间：等前置：」
+        return sentence(row["next"].removeprefix(state).lstrip("：: "), wide), ""
+    if state == "定时":  # next 有时是到点的时间戳，说做什么的是工序登记的 about
+        return f"车间：{sentence(row.get('about') or row['next'], wide - 3)}", ""
+    if state == "排队":
         return f"车间：{sentence(row['next'], wide - 3)}", ""
     return f"{row['who']}：{sentence(row['next'], wide - len(row['who']) - 1)}", ""
 
 
-def item(row, asks, now, *, badge=True, running=False):
+def item(row, asks, now, *, badge=True, running=False, due=False):
     todo, reason = brief(row, asks)
     pill = f'<span class="pill {tone(row["shown"])}">{e(row["shown"])}</span>' if badge else ""
     since = row.get("since") or ""
@@ -85,18 +99,19 @@ def item(row, asks, now, *, badge=True, running=False):
     body = "".join(f"<p><b>{k}</b>{v if k == '等了多久' else e(v)}</p>" for k, v in raw if k and v)
     return (f'<details class="item"><summary><span class="name">{e(title)}{pill}<span class="ref">{ref}</span><button type="button" class="copy" data-copy="{e(row["id"])}" title="复制 {e(row["id"])}">复制 ID</button>{quote}</span>'
             + (f'<span class="stage">{e(row["stage"])}</span>{clock}' if running else
-               f'<span class="todo">{e(todo)}' + (f'<span class="why">{e(reason)}</span>' if reason else "") + '</span>')
+               f'<span class="todo">{e(todo)}' + (f'<span class="why">{e(reason)}</span>' if reason else "") + '</span>'
+               + (f'<span class="due">{e(due_at(row))}</span>' if due else ""))
             + '</summary>'
             + f'<div class="body">{body}</div></details>')
 
 
-def section(title, rows, asks, now, *, note="", badge=True, folded=False, warn=False, running=False):
+def section(title, rows, asks, now, *, head2="下一步", note="", badge=True, folded=False, warn=False, running=False, due=False):
     if not rows:
         return ""
-    longest = sorted(rows, key=lambda r: r.get("since") or "9")  # 等得最久的排前面；没起点的排最后
+    longest = sorted(rows, key=lambda r: (r.get("due") if due else r.get("since")) or "9")  # 等得最久的（定时的是先到点的）排前面；没起点的排最后
     head = f"{e(title)} {len(rows)} 件"
-    body = f'<div class="group{" warn" if warn else ""}{" running" if running else ""}"><div class="cols"><span>标题</span>' + ("<span>阶段</span><span>执行时长</span>" if running else "<span>下一步</span>") + '</div>' \
-           + "".join(item(r, asks, now, badge=badge, running=running) for r in longest) + "</div>"
+    body = f'<div class="group{" warn" if warn else ""}{" running" if running or due else ""}"><div class="cols"><span>标题</span>' + ("<span>阶段</span><span>执行时长</span>" if running else f"<span>{e(head2)}</span>" + ("<span>到点时间</span>" if due else "")) + '</div>' \
+           + "".join(item(r, asks, now, badge=badge, running=running, due=due) for r in longest) + "</div>"
     if folded:
         return f'<details class="fold"><summary><h2>{head}</h2></summary>{body}</details>'
     return f'<h2>{head}</h2>' + (f'<p class="note">{e(note)}</p>' if note else "") + body
@@ -122,9 +137,15 @@ def chart(rows, key):
 
 
 def manager_sections(view):
-    return ''.join('<h2>' + e(h) + '</h2><div class="card">' + ''.join('<p>' + e(line) + '</p>' for line in v['lines'])
-                   + ('<details><summary>详情</summary><pre>' + e('\n'.join(v['details'])) + '</pre></details>' if v['details'] else '')
-                   + '</div>' for h, v in sections(view).items())
+    """每条记录一行，详情跟着自己那一条折叠；没有记录时只有「没有」。lines 和 details 一一对应（「没有」占位时 details 为空）。"""
+    out = []
+    for h, v in sections(view).items():
+        details = v['details'] if len(v['details']) == len(v['lines']) else [''] * len(v['lines'])
+        rows = ''.join('<div class="rec"><p>' + e(line) + '</p>'
+                       + ('<details><summary>详情</summary>' + ''.join('<p><b>' + e(k) + '</b>' + e(v) + (f'<button type="button" class="copy" data-copy="{e(v)}" title="复制 {e(v)}">复制</button>' if k in ('事项', '等待号') else '') + '</p>' for k, v in readable(json.loads(d))) + '</details>' if d else '')
+                       + '</div>' for line, d in zip(v['lines'], details))
+        out.append('<h2 id="' + e(h) + '">' + e(h) + '</h2><div class="card mgr">' + rows + '</div>')
+    return ''.join(out)
 
 
 def page(view, now=None):
@@ -140,7 +161,9 @@ def page(view, now=None):
     stuck = [r for r in rows if r["stuck"]]
     waiting = [r for r in rows if r["shown"] == "等你" and not r["stuck"]]
     ended = [r for r in rows if r["state"] in ENDED]
-    moving = [r for r in rows if r not in stuck and r not in waiting and r not in ended]
+    others = [r for r in rows if r not in stuck and r not in waiting and r not in ended]
+    by_state = {s: [r for r in others if r["shown"] == s] for s in ("排队", *WAITING, "定时")}
+    moving = [r for r in others if not any(r in rs for rs in by_state.values())]
     counts = Counter("卡住" if r["stuck"] else r["shown"] for r in rows if r["state"] not in ENDED)
     filters = "；".join(f"{k} {'、'.join(v)}" for k, v in (("状态", view["filters"]["states"]), ("交付对象", view["filters"]["targets"]),
                                                           ("流程", view["filters"]["flows"])) if v)
@@ -170,6 +193,11 @@ def page(view, now=None):
 {section("卡住", stuck, asks, now, badge=False, warn=True)}
 {manager_sections(view)}
 {section("在动", moving, asks, now, running=True)}
+{section("排队", by_state["排队"], asks, now, badge=False)}
+{section("等前置", by_state["等前置"], asks, now, badge=False, head2="在等哪些前置")}
+{section("等子单", by_state["等子单"], asks, now, badge=False, head2="在等哪些子单")}
+{section("等资料", by_state["等资料"], asks, now, badge=False, head2="在等什么资料")}
+{section("定时", by_state["定时"], asks, now, badge=False, head2="到点做什么", due=True)}
 {section("已结束", ended, asks, now, folded=True)}
 {('<h2>等回答的问卡（旧记录）</h2><div class="card">' + ''.join('<p>'+e(c['decision'])+'</p>' for c in view['asks'])+'</div>') if view['asks'] else ''}
 {f'<details class="fold"><summary><h2>通道待对账</h2></summary><div class="card"><p class="note">车间给你发卡片、读你的回答走的是飞书；这里列的是「发出去不确定到没到」「你答了读不到」两类。</p>{channel}</div></details>' if channel else ""}
@@ -227,6 +255,9 @@ h3{margin:0 0 4px;font-size:14px}h3 em{font-style:normal;color:var(--mute);margi
 .legend{display:flex;flex-wrap:wrap;gap:14px;margin-top:10px;font-size:12px;color:var(--mute)}
 .legend i{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:5px;vertical-align:-1px}
 .list{padding-left:14px}
+.mgr .rec{padding:8px 0;border-top:1px solid var(--line)}.mgr .rec:first-child{border-top:0}.mgr .rec p{margin:0}
+.mgr details p{margin:4px 0 0;font-size:13px}.mgr details b{min-width:7em}
+.mgr details{margin-top:4px}.mgr summary{cursor:pointer;color:var(--mute);font-size:12px}
 details.item{border-top:1px solid var(--line)}
 details.item>summary,.cols{display:grid;grid-template-columns:minmax(160px,1fr) minmax(0,1.6fr);gap:4px 12px;align-items:baseline}
 details.item>summary{padding:7px 0;cursor:pointer;list-style:none}
@@ -245,6 +276,6 @@ code{font:12px ui-monospace,Menlo,monospace;overflow-wrap:anywhere;margin-right:
 details.fold>summary{cursor:pointer;color:var(--mute);font-size:12px;list-style:none}
 details.fold>summary{color:var(--ink);font-size:inherit}details.fold>summary::before{content:"▸ ";color:var(--mute)}
 details.fold[open]>summary::before{content:"▾ "}
-.running details.item>summary,.running .cols{grid-template-columns:minmax(160px,1fr) minmax(0,1fr) 8em}.since{color:var(--ink)}
+.running details.item>summary,.running .cols{grid-template-columns:minmax(160px,1fr) minmax(0,1fr) 8em}.since{color:var(--ink)}.due{font-variant-numeric:tabular-nums}
 @media (max-width:600px){details.item>summary,.running details.item>summary{grid-template-columns:1fr}.cols{display:none}.lane{grid-template-columns:80px 1fr 28px}}
 """

@@ -261,7 +261,11 @@ def main(argv=None):
                 else:
                     paths = engine.wake_paths()
                     from .reports.status_writer import StatusWriter
-                    with StatusWriter(log.path, plugins=Registry()) as writer, Mailbox(args.state_dir, paths) as mailbox:
+                    from contextlib import nullcontext
+                    from .reports.status_server import StatusServer
+                    page_url = engine.rules.data.get('status_page')
+                    server = StatusServer(log.path.parent / 'status.html', page_url) if page_url else nullcontext()
+                    with StatusWriter(log.path, plugins=Registry()) as writer, Mailbox(args.state_dir, paths) as mailbox, server:
                         received_at = None
                         while True:
                             engine.tick(received_at)

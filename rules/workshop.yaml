@@ -306,6 +306,9 @@ skip_ask:
 # 阶段可单独指定候选；省略时沿用 writer/reviewer/acceptor。
 stage_executors: {}
 
+# 状态页在本机的地址：车间主进程在这里只读提供 status.html（只监听本机），介入点卡片的按钮打开它。
+status_page: http://127.0.0.1:8765/status.html
+
 # 独立介入点能力；迁移单完成前不绑定现役流程、不改现役消息出口。
 wait_services:
   intervention:

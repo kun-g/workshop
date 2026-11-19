@@ -159,13 +159,25 @@ def test_page_throttled_and_refreshed_when_old(engine, tmp_path):
 
 
 def test_moving_rows_show_stage_and_duration_columns():
-    moving = row(shown="定时", state="定时", stuck=False, stage="执行", next="等约好的时间")
+    moving = row(shown="跑着", state="跑着", stuck=False, stage="执行", next="等约好的时间")
     html = page(view(moving), NOW)
     head = html[html.index("在动 1 件"):]
     assert "<span>标题</span><span>阶段</span><span>执行时长</span>" in head and "<span>下一步</span>" not in head
     (line,) = [s for s in summaries(head) if "任务关系" in s]
     assert '<span class="stage">执行</span>' in line and re.search(r'class="since"[^>]*>1 小时</span>', line) and 'class="todo"' not in line
     assert "<b>等了多久</b>" not in head  # 已经在行里，展开里不再重复
+
+
+def test_timed_and_waiting_rows_get_their_own_sections():
+    timed = row(id="t:2", shown="定时", state="定时", stuck=False, next="2026-11-19T03:40:00+00:00", about="回查线上版本", due="2026-11-19T03:40:00+00:00")
+    soon = row(id="t:1", shown="定时", state="定时", stuck=False, next="x", about="先到点", due="2026-11-19T01:00:00+00:00")
+    wait = row(id="w:1", shown="等前置", state="等前置", stuck=False, next="等前置：ws#174、ws#175")
+    html = page(view(timed, soon, wait), NOW)
+    assert "在动" not in html
+    assert "<span>标题</span><span>在等哪些前置</span>" in html and "<span>标题</span><span>到点做什么</span><span>到点时间</span>" in html
+    assert "回查线上版本" in html and html.index("先到点") < html.index("回查线上版本")  # 先到点的排前面
+    todo = [s for s in re.findall(r'<span class="todo">([^<]*)', html)]
+    assert "ws#174、ws#175" in todo and not any("等前置：" in t for t in todo)
 
 
 def test_copy_id_button_on_every_row():
@@ -239,3 +251,38 @@ def test_writer_notices_fact_without_engine_dirty_flag_and_preserves_page_on_err
     writer.refresh()
     assert 'test blocker' in path.read_text() and writer.seq > seq
     assert not list(tmp_path.glob('status.html.*.tmp'))
+
+
+def test_unreadable_wait_falls_back_to_last_read_record():
+    from workshop.reports.report import waiting_records
+
+    class FakeLog:
+        def __init__(self, waits):
+            self.waits = waits
+
+        def all(self, table):
+            return self.waits
+
+    class Service:
+        broken = False
+
+        def read(self, ref, config):
+            if self.broken:
+                raise OSError('Connection refused')
+            return {'content': {'question': '看卡', 'recommend': '回过'}, 'started_at': '2026-11-19T01:00:00+00:00'}
+
+    service = Service()
+    plugins = type('P', (), {'get': lambda self, port, name: service})()
+    log = FakeLog([{'ref': 'wait:1', 'item': 'a:1', 'provider': 'p', 'state': 'waiting'}])
+    rules = {'wait_services': {'p': {}}}
+    cache = {}
+    (fresh,) = waiting_records(log, rules, plugins, cache=cache)
+    assert fresh['question'] == '看卡' and 'stale' not in fresh and 'wait:1' in cache
+    service.broken = True
+    (old,) = waiting_records(log, rules, plugins, cache=cache)
+    assert old['question'] == '看卡' and old['recommend'] == '回过' and old['stale'] and 'Connection refused' in old['stale_error']
+    (none,) = waiting_records(log, rules, plugins, cache={})  # 没有旧数据：照旧写读取失败
+    assert none['question'].startswith('等待服务读取失败')
+    log.waits = []  # 不再等了：旧数据不留
+    waiting_records(log, rules, plugins, cache=cache)
+    assert cache == {}
