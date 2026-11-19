@@ -110,7 +110,13 @@ class Store:
             row.update(episode=str(uuid.uuid4()), state='queued', candidate=0, attempts=[], conclusion=None,
                        delivered=0, facts=[], active=True, publication=None, created=now)
             changed = True
-        if not any(f['digest'] == digest for f in row['facts']):
+        # 空闲事实只和最后一条比：分类回到更早出现过的值也是一次新状态，
+        # 不追加的话 last_situation 会停在旧值上，会话停不掉、程序结论也重写不了。
+        if key == 'idle':
+            seen = bool(row['facts']) and row['facts'][-1]['digest'] == digest
+        else:
+            seen = any(f['digest'] == digest for f in row['facts'])
+        if not seen:
             row['facts'].append({'digest': digest, 'at': now, 'value': fact})
             if row['state'] in ('resolved', 'blocked', 'unavailable'):
                 row.update(state='queued', candidate=0, conclusion=None)

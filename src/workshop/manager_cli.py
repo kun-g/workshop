@@ -14,15 +14,15 @@ from .registry import Registry
 
 
 def idle_situation(state_dir):
-    """读核心当时的真实状态给空闲分类；读不到就是判断不了，交给项目经理（other）。"""
+    """读核心当时的真实状态给空闲分类；读不到返回 None，这一拍不记事实，保留上一拍结论。"""
     try:
         log = Log.readonly(Path(state_dir) / 'workshop.db')
     except (OSError, ValueError, sqlite3.Error):
-        return 'other'
+        return None
     try:
         return classify_idle(log)
     except (OSError, ValueError, sqlite3.Error):
-        return 'other'
+        return None
     finally:
         log.close()
 
@@ -76,9 +76,12 @@ def main(argv=None):
             due = (business.get('total') == 0 and idle
                    and (datetime.fromisoformat(now) - datetime.fromisoformat(idle)).total_seconds() >= 300)
             if due:
-                # 满五分钟之后每拍按核心的真实状态重新分类；状态变了才记新事实，判断不了归 other。
-                store.observe('idle', {'idle_since': idle, 'reason': '业务连续五分钟为零',
-                                       'situation': idle_situation(args.state_dir)}, 'watch', now)
+                # 满五分钟之后每拍按核心的真实状态重新分类；和最后一条事实不同才记，
+                # 读不到核心库（例如锁住）就不记，保留上一拍的结论，下一拍再读。
+                situation = idle_situation(args.state_dir)
+                if situation is not None:
+                    store.observe('idle', {'idle_since': idle, 'reason': '业务连续五分钟为零',
+                                           'situation': situation}, 'watch', now)
             elif business.get('total', 0) > 0:
                 for row in store.all():
                     if row['id'] == 'idle':

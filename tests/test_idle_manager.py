@@ -1,5 +1,6 @@
 """空闲的三种情况：没活 → 要新需求；全在明确等 → 静默；其余起会话（介入点 R11、R12）。"""
 import json
+import sqlite3
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -133,6 +134,58 @@ def test_running_idle_session_is_stopped_when_idle_needs_no_judgment(coordinator
     else:
         assert row['state'] == 'blocked'
         assert row['conclusion']['action'] == '车间空了，要新需求'
+
+
+def test_idle_flip_flops_back_to_waiting_stop_the_running_session(coordinator):
+    # 同一空闲段 waiting → other → waiting：分类回到更早出现过的值，也要停会话。
+    c, executor, _ = coordinator
+    c.store.observe('idle', idle_fact(situation='waiting'), 'watch', NOW)
+    c.drive(c.store.all()[0])
+    assert c.store.all()[0]['state'] == 'resolved'
+    c.store.observe('idle', idle_fact(situation='other'), 'watch', NOW)
+    c.drive(c.store.all()[0])
+    token = c.store.all()[0]['token']
+    assert c.store.all()[0]['state'] == 'running'
+    c.store.observe('idle', idle_fact(situation='waiting'), 'watch', NOW)
+    c.drive(c.store.all()[0])
+    row = c.store.all()[0]
+    assert ('stop', token) in executor.calls
+    assert row['state'] == 'resolved'
+    assert [fact['value']['situation'] for fact in row['facts']] == ['waiting', 'other', 'waiting']
+
+
+def test_idle_flip_flops_back_to_other_start_a_new_session(coordinator):
+    # other → none → other：程序写过「车间空了」的 blocked 之后仍要重新起会话。
+    c, executor, _ = coordinator
+    c.store.observe('idle', idle_fact(situation='other'), 'watch', NOW)
+    c.drive(c.store.all()[0])
+    c.store.observe('idle', idle_fact(situation='none'), 'watch', NOW)
+    c.drive(c.store.all()[0])
+    assert c.store.all()[0]['state'] == 'blocked'
+    c.store.observe('idle', idle_fact(situation='other'), 'watch', NOW)
+    c.drive(c.store.all()[0])
+    row = c.store.all()[0]
+    assert row['state'] == 'running'
+    names = [call[0] for call in executor.calls]  # 第二次可续接上次会话
+    assert names.count('launch') + names.count('resume') == 2
+    assert [fact['value']['situation'] for fact in row['facts']] == ['other', 'none', 'other']
+
+
+def test_idle_flip_flops_back_to_none_rewrite_the_empty_conclusion(coordinator):
+    # none → waiting → none：结论要从 resolved 改回「车间空了，要新需求」。
+    c, executor, _ = coordinator
+    c.store.observe('idle', idle_fact(situation='none'), 'watch', NOW)
+    c.drive(c.store.all()[0])
+    assert c.store.all()[0]['conclusion']['action'] == '车间空了，要新需求'
+    c.store.observe('idle', idle_fact(situation='waiting'), 'watch', NOW)
+    c.drive(c.store.all()[0])
+    assert c.store.all()[0]['state'] == 'resolved'
+    c.store.observe('idle', idle_fact(situation='none'), 'watch', NOW)
+    c.drive(c.store.all()[0])
+    row = c.store.all()[0]
+    assert row['state'] == 'blocked'
+    assert row['conclusion']['action'] == '车间空了，要新需求'
+    assert [fact['value']['situation'] for fact in row['facts']] == ['none', 'waiting', 'none']
 
 
 @pytest.mark.parametrize(('situation', 'session', 'state', 'action'), [
@@ -300,11 +353,24 @@ def test_manager_cli_stuck_item_starts_a_session(tmp_path, monkeypatch, capsys):
     assert ('executor', 'launch') in calls
 
 
-def test_manager_cli_without_core_state_starts_a_session(tmp_path, monkeypatch, capsys):
+def test_manager_cli_keeps_the_last_conclusion_when_core_state_is_unreadable(tmp_path, monkeypatch, capsys):
+    # 读不到 workshop.db（例如加锁时 timeout=0 立刻失败）不是「判断不了」：
+    # 这一拍不记事实，保留上一拍结论，下一拍再读。
+    active_idle_from_previous_segment(tmp_path)
+    from workshop import manager_cli
+
+    class LockedLog:
+        @staticmethod
+        def readonly(path):
+            raise sqlite3.OperationalError('database is locked')
+
+    monkeypatch.setattr(manager_cli, 'Log', LockedLog)
     row, executor, calls, _ = run_tick(tmp_path, monkeypatch, capsys,
                                        {'total': 0, 'idle_since': IDLE})
-    assert row['state'] == 'running', row.get('error')
-    assert ('executor', 'launch') in calls
+    assert row['state'] == 'resolved'
+    assert row['conclusion'] == {'schema': 'manager/v1', 'result': 'resolved'}
+    assert [fact['value']['idle_since'] for fact in row['facts']] == ['2026-11-19T07:00:00+00:00']
+    assert executor.calls == [] and not [call for call in calls if call[0] == 'executor']
 
 
 def active_idle_from_previous_segment(tmp_path):
