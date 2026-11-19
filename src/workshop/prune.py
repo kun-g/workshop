@@ -49,13 +49,19 @@ def placeholder(jobs_dir, item, name, deadline):
     if path.exists():
         raise FileExistsError(str(path))
     path.mkdir(parents=True)
-    handle = os.open(path / 'lock', os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        handle = os.open(path / 'lock', os.O_CREAT | os.O_RDWR, 0o600)
+    except BaseException:
+        shutil.rmtree(path, ignore_errors=True)
+        raise
     try:
         fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        # 先写 pid 再写 spec：别的进程（包括不走守护进程锁的调用）在两步之间看到目录时，
+        # 也会按「已登记、锁被持有」处理成 Pending，而不是把它当成未登记的作业重起。
+        write(path / 'pid', -1)
         write(path / 'spec.json', {'port': 'executor', 'name': name, 'method': 'release',
                                    'identity': release_identity(item), 'deadline': deadline,
                                    'placeholder': True})
-        write(path / 'pid', -1)
         yield path
     finally:
         os.close(handle)
