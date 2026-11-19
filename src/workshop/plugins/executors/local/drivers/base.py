@@ -104,13 +104,15 @@ class Driver:
             if not mapping(quota):
                 fail('quota', '必须是对象')
             for key in quota:
-                if key not in ('provider', 'window', 'min_remaining', 'label'):
+                if key not in ('provider', 'window', 'min_remaining', 'pace_margin', 'label'):
                     fail('quota.' + key, '字段拼错')
             for key in ('provider', 'window'):
                 if not text(quota.get(key)):
                     fail('quota.' + key, '必须写明')
             if 'min_remaining' in quota and (type(quota['min_remaining']) not in (int, float) or not 0 <= quota['min_remaining'] <= 100):
                 fail('quota.min_remaining', '必须在 0 到 100 之间')
+            if 'pace_margin' in quota and (type(quota['pace_margin']) not in (int, float) or not -100 <= quota['pace_margin'] <= 100):
+                fail('quota.pace_margin', '必须是 -100 到 100 之间的数')
 
     def directory_settings(self, path):
         """读执行者目录里的设置文件；没有这个文件时为空。格式不对抛 ValueError。"""
