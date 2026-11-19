@@ -134,7 +134,7 @@ targets:
         pending_limit: 10000
     selector: quota
     quota_snapshot: *quota_snapshot
-    sources: {github: {}, main_branch: {every: 1h}, watch_updates: {}}
+    sources: {github: {}, main_branch: {every: 10m}, watch_updates: {}}
     watch_updates:
       enabled: true
       timezone: Asia/Singapore

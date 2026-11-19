@@ -401,7 +401,7 @@ def test_registered_rules_load_both_flows_and_default_issue_ids():
     release = rules.target('workshop', 'scheduled_release')
     assert issue['flow_default'] and issue['release'] == 'none'
     assert not release['flow_default']
-    assert release['sources']['main_branch']['every'] == '1h'
+    assert release['sources']['main_branch']['every'] == '10m'
     assert ScheduledRelease().stages(release) == ('证据', '交付', '验收', '收尾')
     assert issue['stages'] == ['接单', '执行', '交付', '收尾']
     # 集群批次保留全部七段（含接单占位），不跟 issue 交付的阶段走。
