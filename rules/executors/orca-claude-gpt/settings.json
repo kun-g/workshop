@@ -1,0 +1,37 @@
+{
+  "skipDangerousModePermissionPrompt": true,
+  "env": {
+    "HTTP_PROXY": "http://127.0.0.1:17897",
+    "HTTPS_PROXY": "http://127.0.0.1:17897",
+    "http_proxy": "http://127.0.0.1:17897",
+    "https_proxy": "http://127.0.0.1:17897",
+    "NO_PROXY": "localhost,127.0.0.1,::1",
+    "no_proxy": "localhost,127.0.0.1,::1",
+    "AWS_PROFILE": "AWS1-agent"
+  },
+  "permissions": {
+    "ask": [
+      "Bash(gh-human:*)"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "f=\"$HOME/workspace/runtime/tools/agent_guard/identity_guard.py\"; [ -f \"$f\" ] || exit 0; exec python3 -I \"$f\""
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "f=\"$HOME/workspace/runtime/tools/grant_console_owner/merge_guard_scope.py\"; [ -f \"$f\" ] || exit 0; exec python3 -I \"$f\""
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -35,6 +35,8 @@ PRICES = {
     'claude-sonnet-4-5': Price((3, .3, 3.75, 6, 15), ANTHROPIC, '2026-11-13'),
     'claude-haiku-4-5': Price((1, .1, 1.25, 2, 5), ANTHROPIC, '2026-11-13'),
     'gpt-6-astra': Price((10, 1, 12.5, 25, 50), OPENAI, '2026-11-13'),
+    'gpt-6.2-astra': Price((8, .4, 10, 20, 40), OPENAI, '2026-11-19'),
+    'gpt-6.2-sol': Price((2, .1, 2.5, 5, 10), OPENAI, '2026-11-19'),
     'gpt-6.1-sol': Price((2, .1, 2.5, 5, 10), OPENAI, '2026-11-13'),
     'gpt-6.1-terra': Price((1, .05, 1.25, 2.5, 5), OPENAI, '2026-11-13'),
     'gpt-6-luna': Price((.1, .01, .125, .25, .5), OPENAI, '2026-11-13'),

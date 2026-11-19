@@ -53,7 +53,7 @@ def test_all_stages_but_execution_use_quota_and_writer_tries_codex_first():
         assert RULES.selector(stage, "workshop") == "quota"
         assert RULES.selector(stage, "grant-console") == "quota"
     writer = RULES.candidates("执行", "workshop")
-    assert [c["use"] for c in writer] == ["orca-codex", "orca-claude"]
+    assert [c["use"] for c in writer] == ["orca-codex", "orca-claude", "orca-claude-gpt"]
     assert writer[0]["model"] and writer[0]["effort"] and writer[0]["quota"]["min_remaining"] == 15
     assert callable(Registry().get("selector", "quota").select)
 

@@ -86,7 +86,11 @@ class Driver:
             fail('transport', '只能是 orca 或 headless')
         if config['billing'] not in ('subscription', 'metered'):
             fail('billing', '只能是 subscription 或 metered')
-        if config.get('family', self.family) != self.family:
+        if 'gateway' in config:
+            # 经本机网关换了模型（核心 R25）：按模型算哪一家，必须写明。
+            if not text(config.get('family')):
+                fail('family', '配了 gateway 必须写明模型那一家')
+        elif config.get('family', self.family) != self.family:
             fail('family', f'由驱动确定为 {self.family}，不能将同一家伪装成不同家')
         for key in ('model', 'effort'):
             if key in config and not text(config[key]):
