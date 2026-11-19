@@ -42,7 +42,8 @@ def parser():
     status_command.add_argument("--flow", help="只列这些流程，逗号分隔")
     status_command.add_argument("--html", nargs="?", const="", metavar="文件",
                                 help="写成一页网页；不给文件名时写到 --state-dir/status.html，打印路径")
-    commands.add_parser("usage")
+    usage_command = commands.add_parser("usage", help="花费和用量：今天、最近 7 天、按活、按实际模型、按执行者配置档")
+    usage_command.add_argument("--since", help="按执行者配置档只算这一天（YYYY-MM-DD）及以后开工的活；默认最近 7 天")
     commands.add_parser("compact-managers", help="瘦身 managers.db：备份、把 history 转成变化记录并 VACUUM；可重复跑")
     metrics_command = commands.add_parser("metrics", help="只读查看供给、流动、负载及小时明细")
     metrics_command.add_argument("--since", help="回看时长，默认 24h；支持 s/m/h/d")
@@ -132,7 +133,7 @@ def read_command(args):
                     print(unfiled(log, rules, Registry()) if args.unfiled else
                           why(log, args.item, rules, Registry(), raw=args.raw))
                 else:
-                    print(usage(log))
+                    print(usage(log, since=args.since))
             return 0
         finally:
             log.close()

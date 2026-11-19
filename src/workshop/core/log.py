@@ -104,12 +104,13 @@ class Log:
             raise ValueError('字段须为非空的简单名称列表')
         return 'json_object(' + ','.join(f"'{field}',json_extract(body,'$.{field}')" for field in fields) + ')'
 
-    def selected_facts(self, kinds, fields, *, after=-1):
-        """按种类、序号只取指定字段，避免加载无关的大块正文。"""
+    def selected_facts(self, kinds, fields, *, after=-1, item=None):
+        """按种类、序号（可再按活）只取指定字段，避免加载无关的大块正文。"""
         columns = self.selected_body(fields)
         marks = ','.join('?' for _ in kinds)
+        where, values = ('', ()) if item is None else (' AND item=?', (item,))
         rows = self.db.execute(f'SELECT seq,kind,item,at,{columns} AS body FROM facts '
-                               f'WHERE seq>? AND kind IN ({marks}) ORDER BY seq', (after, *kinds))
+                               f'WHERE seq>? AND kind IN ({marks}){where} ORDER BY seq', (after, *kinds, *values))
         return [{**dict(row), 'body': {k: v for k, v in json.loads(row['body']).items() if v is not None}}
                 for row in rows]
 

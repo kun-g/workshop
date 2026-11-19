@@ -1,6 +1,6 @@
 """只读的状态、起因与用量查询。"""
 from dataclasses import fields
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 import json
 from workshop.core.jobs import running as running_jobs
 from workshop.core.models import Event, utcnow
@@ -10,6 +10,7 @@ from workshop.core.holding import resolve
 
 
 from .manager_status import read_managers, sections
+from . import profiles
 
 
 ENDED = ("完成", "放弃")
@@ -415,7 +416,8 @@ def model_metrics(log):
     return result
 
 
-def usage(log, now=None):
+def usage(log, now=None, since=None):
+    """since 是 YYYY-MM-DD：「按执行者配置档」只算这一天（本地时间）及以后开工的活；不给时算最近 7 天开工的。"""
     now = (now or utcnow()).astimezone()
     today = now.replace(hour=0, minute=0, second=0, microsecond=0)
     rows = [r for r in log.all("rounds") if r["status"] == "ended"]
@@ -447,4 +449,15 @@ def usage(log, now=None):
         average = f"{average:.1f}" if average is not None else "未知"
         lines.append(f'{display(model)}\t{stats["rounds"]}\t{rate("审查")}\t{rate("验收")}\t{average}（缺 {stats["duration_missing"]}）'
                      f'\t{tokens}\t{cost}\t{hit}（缺 {stats["cache_missing"]}）\t未上报 {stats["unreported"]} 轮；子 agent 未计 {stats["children_unreported"]} 轮')
+    if since is None:
+        start = now - timedelta(days=7)
+        scope = f"最近 7 天开工的活：{start:%Y-%m-%d %H:%M} 起"
+    else:
+        try:
+            day = date.fromisoformat(since)
+        except ValueError:
+            raise ValueError(f"--since 要写成 YYYY-MM-DD，收到 {since}") from None
+        start = datetime.combine(day, datetime.min.time()).astimezone()
+        scope = f"{day.isoformat()} 起开工的活"
+    lines += profiles.render(profiles.profile_rows(log, start), scope)
     return "\n".join(lines)
