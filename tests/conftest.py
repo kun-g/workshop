@@ -249,6 +249,12 @@ def outside_round(monkeypatch):
     monkeypatch.delenv("WORKSHOP_STATE_DIR", raising=False)
 
 
+@pytest.fixture(autouse=True)
+def without_deployment(monkeypatch):
+    # 跑测试的机器上的部署目录（~/.config/workshop）不能影响结果；测叠加的测试自己显式指定目录（#293）。
+    monkeypatch.setenv("WORKSHOP_DEPLOYMENT", "none")
+
+
 @pytest.fixture
 def engine(tmp_path):
     engine = build(tmp_path)

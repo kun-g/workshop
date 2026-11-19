@@ -45,6 +45,7 @@ class Driver(Base):
         'executor_dir': text, 'gateway': lambda v: isinstance(v, dict),
     }
     settings_file = 'settings.json'
+    isolation = True
     # 网关探测：不带认证访问根地址，拿到任何 HTTP 回应就算连得上。
     gateway_timeout = 3
 

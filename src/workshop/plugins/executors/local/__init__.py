@@ -11,7 +11,8 @@ def default_profile(name):
     if name not in profiles:
         raise ValueError(f'配置档 {name} 未在规则中定义')
     from .drivers import load
-    return load(profiles[name]['driver']).bind(name, dict(profiles[name]), path)
+    # 执行环境不写按 Orca（核心 R25），和装配函数一致。
+    return load(profiles[name]['driver']).bind(name, {'transport': 'orca', **profiles[name]}, path)
 
 
 def make_orca_claude():

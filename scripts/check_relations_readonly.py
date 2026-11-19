@@ -11,7 +11,7 @@ from workshop.core.log import Log
 from workshop.core.models import Event, STAGES
 from workshop.core.relations import refresh, admit
 from workshop.reports.report import status, why
-from workshop.core.rules import Rules
+from workshop.deployment import assemble
 from workshop.registry import Registry
 
 
@@ -25,7 +25,7 @@ def main():
     parser.add_argument('--output', type=Path, required=True, help='必须是不存在的新目录；不使用生产状态库')
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=False)
-    rules, plugins = Rules.load(args.rules.resolve()), Registry()
+    rules, plugins = assemble(args.rules.resolve()).rules, Registry()
     with closing(Log(args.output / 'workshop.db')) as log:
         engine = Engine(log, rules, plugins)
         for key in args.objects:

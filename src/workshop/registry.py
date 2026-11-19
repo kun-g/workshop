@@ -84,8 +84,8 @@ class Registry:
         return self.instances[key]
 
 
-def load_rules(path):
-    """Public assembly entry point: generic rule shape plus driver capabilities."""
-    from .core.rules import Rules
+def load_rules(path, deployment=None):
+    """Public assembly entry point: repository rules plus deployment directory, then driver capabilities."""
+    from .deployment import assemble
     registry = Registry()
-    return registry.configure(Rules.load(path))
+    return registry.configure(assemble(path, deployment).rules)

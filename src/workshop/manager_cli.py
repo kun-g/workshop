@@ -10,7 +10,7 @@ from .core.jobs import Jobs, SWEEP_SECONDS, execute
 from .core.log import Log
 from .core.managers import (MANAGER_JOBS_KEEP_SECONDS, Store, Coordinator, classify_idle,
                             observe_items, observe_workdirs, observe_failures, maybe_sweep_sessions)
-from .core.rules import Rules
+from .deployment import assemble
 from .registry import Registry
 
 
@@ -50,7 +50,7 @@ def main(argv=None):
         finally:
             store.close()
     registry = Registry()
-    rules = registry.configure(Rules.load(args.rules))
+    rules = registry.configure(assemble(args.rules).rules)
     if args.command == 'job':
         execute(args.directory, registry)
         return 0

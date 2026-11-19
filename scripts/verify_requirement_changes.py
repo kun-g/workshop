@@ -6,7 +6,7 @@ from pathlib import Path
 import tempfile
 
 from workshop import github_identity
-from workshop.core.rules import Rules
+from workshop.deployment import assemble
 from workshop.plugins.issue_delivery import IssueDelivery
 from workshop.plugins.issue_delivery.io import IO
 from workshop.plugins.issue_delivery.requirements import change_documents, missing_documents, section
@@ -73,6 +73,6 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--rules', type=Path, default=Path(__file__).resolve().parents[1] / 'rules/workshop.yaml')
     args = parser.parse_args()
-    target = Rules.load(args.rules).target('workshop', 'issue_delivery')
+    target = assemble(args.rules).rules.target('workshop', 'issue_delivery')
     assert target['github_identity']['mode'] == 'app'
     replay(target)

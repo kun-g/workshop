@@ -14,7 +14,7 @@ import sqlite3
 import sys
 
 from workshop.core.log import Log
-from workshop.core.rules import Rules
+from workshop.deployment import assemble
 from workshop.registry import Registry
 from workshop.reports.report import status, overview
 
@@ -356,7 +356,7 @@ def verify(args):
     since, version = release_start(state)
     with closing(Log.readonly(state / 'workshop.db')) as log:
         saved = log.get('controls', '@rules')
-        rules = Rules.load(Path(saved['path']))
+        rules = assemble(Path(saved['path'])).rules
         for config in rules.data.get('wait_services', {}).values():
             if isinstance(config.get('endpoint'), str):
                 config['endpoint'] = str(resident_path(config['endpoint'], state))

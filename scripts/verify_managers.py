@@ -18,7 +18,7 @@ import time
 
 import yaml
 from workshop.core.log import Log
-from workshop.core.rules import Rules
+from workshop.deployment import assemble
 from workshop.core.managers import Store
 from workshop.core.models import Brief, Event, stamp
 from workshop.core.jobs import write
@@ -213,7 +213,7 @@ def verify(args):
         log = Log(state / 'workshop.db')
         body = asdict(Event('replay','business','workshop','verification','核对真实资料', args.issue.read_text(), action='ready'))
         log.append('event', body, 'workshop:verification')
-        log.append('round_reserved', {'token':normal_token,'item':'workshop:verification','stage':'执行','executor':'manager-codex', 'config':{**normal_profile,'family':'codex'}, 'target':{**Rules.load(rulepath).target('workshop'),**target}, 'session':normal.session, 'status':'running', 'at':stamp(datetime.now(timezone.utc)), 'deadline':stamp(datetime.now(timezone.utc)+timedelta(hours=1)), 'started':asdict(normal), 'receipt':None, 'brief':asdict(brief)}, 'workshop:verification')
+        log.append('round_reserved', {'token':normal_token,'item':'workshop:verification','stage':'执行','executor':'manager-codex', 'config':{**normal_profile,'family':'codex'}, 'target':{**assemble(rulepath).rules.target('workshop'),**target}, 'session':normal.session, 'status':'running', 'at':stamp(datetime.now(timezone.utc)), 'deadline':stamp(datetime.now(timezone.utc)+timedelta(hours=1)), 'started':asdict(normal), 'receipt':None, 'brief':asdict(brief)}, 'workshop:verification')
         log.close(); ring(state)
         wait(lambda: heartbeat().get('business', {}).get('agents') == 1)
         assert not load(state/'heartbeat.json',{}).get('delivery_failed_count')
