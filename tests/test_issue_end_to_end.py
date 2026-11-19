@@ -405,7 +405,7 @@ def test_round_on_removed_stage_is_superseded(world, stage):
 def visual_until_card(world, name):
     from test_intervention_business import Port
     from workshop.plugins.intervention.service import Service
-    set_body(world, BODY.replace('## 要不要亲眼看\n否\n', '## 要不要亲眼看\n是\n看什么：打开状态页看错误提示\n在哪看：飞书私聊\n怎么回：引用送达回复过或不对\n'))
+    set_body(world, BODY.replace('## 要不要亲眼看\n否\n', '## 要不要亲眼看\n是\n看什么：打开状态页看错误提示\n在哪看：飞书私聊\n怎么回：引用送达回复过或不对\nKun 确认：会话 `2ba67f64-4e2b-47b0-9213-00c871c6e28c`\n> 看错误提示\n'))
     engine = engine_for(world, name)
     service = Service(world['root'] / (name+'service'), Path('rules/workshop.yaml'))
     service.transport = lambda *a: {'state':'sent','external':'om_visual'}
