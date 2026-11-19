@@ -66,6 +66,32 @@ def test_signing_failure_no_action_and_no_secret(tmp_path, signing, monkeypatch,
     assert 'private-key-material' not in str(error.value) and 'leaked-token' not in str(error.value)
 
 
+def test_signing_reason_reads_only_the_marked_line_and_scrubs_secrets():
+    stderr = ('warning: private-key-material\n'
+              'SIGNING_ERROR not-json\n'
+              'SIGNING_ERROR ' + json.dumps({'kind': 'keychain', 'detail':
+                  '读不到私钥 ghs_abcdefghijklmnopqrstuvwxyz0123456789'}))
+    reason = identity.signing_reason(stderr)
+    assert reason.startswith('keychain: 读不到私钥')
+    assert 'ghs_' not in reason and '[已隐藏]' in reason and 'private-key-material' not in reason
+
+
+def test_sign_failure_carries_classified_reason_without_signer_output(signing, monkeypatch):
+    def fake(argv, **kwargs):
+        stderr = ('private-key-material\nSIGNING_ERROR ' +
+                  json.dumps({'kind': 'github', 'detail': '/app 返回 HTTP 403：Bad credentials'}))
+        return subprocess.CompletedProcess(argv, 1, '', stderr)
+    monkeypatch.setattr(subprocess, 'run', fake)
+    with pytest.raises(identity.IdentityError) as error:
+        identity.sign(signing, 'kun-g/workshop', {'PATH': '/usr/bin'})
+    message = str(error.value)
+    assert 'github: /app 返回 HTTP 403：Bad credentials' in message
+    assert 'private-key-material' not in message
+    # 签发失败按瞬时故障处理，核心会退避重试而不是永久隔离。
+    from workshop.core.ports import Retryable
+    assert isinstance(error.value, Retryable)
+
+
 def test_actions_use_real_gh_scope_and_redact_outputs(signing, monkeypatch):
     calls = []
     def fake(argv, **kwargs):
@@ -142,7 +168,8 @@ def test_target_blocked_serialized_without_notice(tmp_path):
     directory.mkdir()
     (directory / 'spec.json').write_text(json.dumps({'port': 'flow', 'name': 'failure', 'method': 'fail', 'args': encode([])}))
     execute(directory, engine.plugins)
-    assert read(directory / 'result.json')['error']['kind'] == 'TargetBlocked'
+    # 签发失败是可自动重试的瞬时故障：作业边界保留 Retryable，核心据此退避而不是永久标坏。
+    assert read(directory / 'result.json')['error']['kind'] == 'Retryable'
     engine.log.close()
 
 

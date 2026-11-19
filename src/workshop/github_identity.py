@@ -6,15 +6,38 @@ keeps the token in memory and redacts command output before it reaches any journ
 from contextvars import ContextVar
 from functools import wraps
 from inspect import signature
+import json
 import os
 from pathlib import Path
+import re
 import subprocess
 
-from workshop.core.ports import TargetBlocked
+from workshop.core.ports import Retryable, TargetBlocked
 
 
-class IdentityError(TargetBlocked):
-    pass
+class IdentityError(TargetBlocked, Retryable):
+    """App 令牌一时签不出：当前目标缺动作前提，但属于可自动重试的瞬时故障。"""
+
+
+# 签发器只回一行固定前缀的分类结果；其余 stderr 一律不进异常（可能含密钥）。
+SIGNING_ERROR = 'SIGNING_ERROR '
+SECRET = re.compile(r'(?i)(bearer\s+)\S+'
+                    r'|\b(?:gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,})\b'
+                    r'|\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b')
+
+
+def signing_reason(stderr):
+    for line in reversed((stderr or '').splitlines()):
+        if not line.startswith(SIGNING_ERROR):
+            continue
+        try:
+            value = json.loads(line[len(SIGNING_ERROR):])
+        except ValueError:
+            continue
+        kind, detail = value.get('kind'), value.get('detail')
+        if isinstance(kind, str) and isinstance(detail, str):
+            return SECRET.sub('[已隐藏]', f'{kind}: {detail}')[:300]
+    return ''
 
 
 def configuration(target, *, relations_read=False):
@@ -50,9 +73,12 @@ def sign(config, repo, source=None, *, relations_read=False):
     except (OSError, subprocess.TimeoutExpired):
         raise IdentityError(f'{repo} App 签发不可用或超时；未执行动作，无个人身份回退') from None
     # Neither successful nor failed signer output may be included in an exception.
+    # 例外：签发器自己写的一行分类结果（固定前缀、已去掉疑似密钥）只用来查原因。
     token = result.stdout.strip()
     if result.returncode or not token or any(c.isspace() for c in token):
-        raise IdentityError(f'{repo} App 签发失败（exit {result.returncode} 或空/无效令牌）；未执行动作，无个人身份回退')
+        reason = signing_reason(result.stderr)
+        raise IdentityError(f'{repo} App 签发失败（exit {result.returncode} 或空/无效令牌）'
+                            + (f'；{reason}' if reason else '') + '；未执行动作，无个人身份回退')
     return token
 
 

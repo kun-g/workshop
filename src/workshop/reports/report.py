@@ -91,6 +91,8 @@ def overview(log, *, everything=False, states=(), targets=(), flows=(), rules=No
                      "flow": item.get("flow") or "", "stage": item["stage"], "state": item["state"], "shown": shown,
                      "stuck": stuck, "who": row["executor"] if row else "车间", "next": next_step, "blocker": blocker,
                      "reason": item["blocked_by"], "advice": item["next"],
+                     "retry_at": item.get("plugin_retry_at") or "",
+                     "auto_retry": bool(item.get("plugin_blocked") and item.get("plugin_retry_at")),
                      "owner": (item.get("leave") or {}).get("owner") or "", "origin": origin(item, target, flow),
                      "due": (item.get("leave") or {}).get("at") or (item.get("after_wait") or {}).get("at") or "",
                      "about": (item.get("leave") or {}).get("about") or ""})
@@ -134,7 +136,8 @@ def status(log, **options):
     lines.append("卡住\n活\t阶段\t原因\t建议动作")
     for r in rows:
         if r["state"] == "卡住":
-            lines.append("\t".join((r["id"], r["stage"], one_line(r["reason"]), one_line(r["advice"]))))
+            advice = one_line(r["advice"]) + retry_note(r)
+            lines.append("\t".join((r["id"], r["stage"], one_line(r["reason"]), advice)))
     for heading, snapshot in sections(view).items():
         lines.extend([heading, *snapshot['lines']])
         if heading == '等你':
@@ -146,6 +149,17 @@ def status(log, **options):
 
 def one_line(text):
     return " ".join(str(text).split())
+
+
+def retry_note(row):
+    """自动重试的到点时间，本机时区；没有自动重试的计划就返回空串。"""
+    if not row.get("auto_retry") or not row.get("retry_at"):
+        return ""
+    try:
+        when = datetime.fromisoformat(row["retry_at"]).astimezone().strftime("%m-%d %H:%M")
+    except (TypeError, ValueError):
+        when = row["retry_at"]
+    return f"；车间自动重试，下次 {when}"
 
 
 ACTIONS = {"update": "更新", "rework": "返工", "ready": "放行"}

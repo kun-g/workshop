@@ -12,13 +12,17 @@ def cleanup_flows(engine):
     for name, rule in engine.rules.data['targets'].items():
         for flow in entries(rule):
             target = engine.rules.target(name, flow)
-            if engine.flow_broken(name, flow):
+            key = f'cleanup:{name}:{flow}'
+            if engine.flow_broken(name, flow) or not engine.retry_due(key):
                 continue
             try:
                 if getattr(engine.plugins.get('flow', target['plugin']), 'cleanup', None):
                     engine.call('flow', target['plugin'], 'cleanup', target, keep)
+                engine.retry_clear(key)
             except Pending:
                 pass
+            except Retryable as exc:
+                engine.retry_failure(name, 'flow', target['plugin'], key, exc)
             except Exception as exc:
                 engine.broken(name, 'flow', target['plugin'], exc)
 

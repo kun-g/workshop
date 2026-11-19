@@ -41,6 +41,16 @@ def stale_time(text):
     return datetime.fromisoformat(text).astimezone().strftime('%m-%d %H:%M')
 
 
+def auto_retry_note(fact):
+    """插件瞬时故障的自动重试说明：事项首行要能直接看出下次几点，不用人手工 resume。"""
+    if not isinstance(fact, dict):
+        return ''
+    control = fact.get('control')
+    if isinstance(control, dict) and control.get('broken') and control.get('auto_retry') and control.get('retry_at'):
+        return '插件故障，车间自动重试中，下次 ' + stale_time(control['retry_at'])
+    return ''
+
+
 def readable(record):
     """详情给人看：每项一行「名称：内容」，空的不显示；不出原始 JSON。等你的记录和项目经理事项各取各的字段。"""
     if 'question' in record:
@@ -51,6 +61,7 @@ def readable(record):
         conclusion = record.get('conclusion') or {}
         fact = record['facts'][-1]['value'] if record.get('facts') else {}
         pairs = [('原因', conclusion.get('reason') or fact.get('reason') or fact.get('text')), ('要做的', conclusion.get('action')),
+                 ('自动重试', auto_retry_note(fact).removeprefix('插件故障，车间自动重试中，') or None),
                  ('项目经理查了什么', conclusion.get('evidence')), ('状态', STATES.get(record.get('state'), record.get('state'))),
                  ('尝试次数', len(record.get('attempts') or []) or None), ('事项', record.get('id'))]
     return [(k, str(v)) for k, v in pairs if v]
@@ -72,7 +83,11 @@ def sections(view):
         title = fact.get('title') or heading_of(m['id'])
         conclusion = m.get('conclusion') or {}
         reason = conclusion.get('reason') or fact.get('reason') or fact.get('text') or '正在核对原因'
+        retry = auto_retry_note(fact)
         action = conclusion.get('action')
+        if retry:
+            # 车间自己会到点重试：事项首行直说下次几点，不再显示「手工 resume」这类旧动作。
+            reason, action = retry, None
         result[heading]['lines'].append(str(title)[:32] + '：' + str(reason) + ('；' + action if action else ''))
         result[heading]['details'].append(json.dumps(m, ensure_ascii=False, sort_keys=True))
     for row in result.values():

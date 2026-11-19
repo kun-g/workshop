@@ -7,6 +7,7 @@ from .models import Event, due, stamp
 from .flows import entries
 from .stages import gate
 from .gates import initial_stage
+from . import faults
 
 
 def resolve(log, targets, text, *, allow_new=False):
@@ -59,6 +60,7 @@ def abandon(engine, item_id, reason):
         engine.change(item, state="放弃", next=f"已放弃：{reason.strip()}", blocked_by="", serial_hold=False,
                     pending_advance=None, after_wait=None, wait_for_ready=False, retry_at=None,
                     pending_rework=False, plugin_blocked=False, before_plugin_failure=None,
+                    plugin_failure_key=None, plugin_retry_at=None,
                     leave={"kind": "等你", "about": "已放弃；要再做就返工"})
 
 
@@ -160,7 +162,8 @@ def resume(engine, target, selected: list[str], expected: list[str] | None = Non
             raise ValueError("遗漏清单已变化，请重新查看后选择")
         if not set(selected).issubset({e["id"] for e in missed}):
             raise ValueError("选择中有未知事件；请重新查看遗漏清单")
-        engine.fact("control", {"id": target, "paused": False, "broken": False})
+        engine.fact("control", {"id": target, "paused": False, "broken": False,
+                                "action_blocked": False, "auto_retry": False, "retry_at": None})
         for entry in missed:
             replay = entry["id"] in selected
             engine.fact("deferred_resolved", {"id": entry["id"], "replayed": replay})
@@ -200,15 +203,10 @@ def restore_target(engine, target, plugin=None):
         if plugin is not None and name != plugin:
             continue
         if engine.control(key).get('broken'):
-            engine.fact('control', {'id': key, 'broken': False, 'action_blocked': False})
+            engine.fact('control', {'id': key, 'broken': False, 'action_blocked': False,
+                                    'auto_retry': False, 'retry_at': None})
     # 被插件故障卡住的活都还没结束，未结束活的查询覆盖它们。
-    for item in engine.log.open_items():
-        if (item["target"] == target and item.get("plugin_blocked")
-                and (plugin is None or engine.item_target(item)["plugin"] == plugin)):
-            restored = dict(item["before_plugin_failure"])
-            if restored["state"] == "等你" and not item.get("wait_for_ready") and not engine.waiting(item):
-                restored.update(state="空闲", next="按已收到的回答继续", blocked_by="")
-            engine.change(item, **restored, plugin_blocked=False, before_plugin_failure=None)
+    faults.restore_items(engine, target, plugin)
 
 
 def release_here(engine, ref, quote, session):
@@ -225,11 +223,14 @@ def release_here(engine, ref, quote, session):
         elif ':' in key:
             flow, key = key.split(':', 1)
         if engine.control(target).get('action_blocked'):
-            engine.fact('control', {'id': target, 'broken': False, 'action_blocked': False})
+            engine.fact('control', {'id': target, 'broken': False, 'action_blocked': False,
+                                    'auto_retry': False, 'retry_at': None})
             engine.restore_target(target)
         selected = engine.rules.target(target, flow)
         failure_key = f"@flow:{target}:{selected['plugin']}"
         if engine.control(failure_key).get('action_blocked'):
+            engine.fact('control', {'id': failure_key, 'broken': False, 'action_blocked': False,
+                                    'auto_retry': False, 'retry_at': None})
             engine.restore_target(target, selected['plugin'])
         engine.ingest(Event('session', str(uuid.uuid4()), target, key, f'会话放行 {item_id}',
                           {'channel': 'session', 'session': session, 'quote': quote}, action='ready', flow=flow), directed=True)
