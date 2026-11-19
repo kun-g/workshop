@@ -217,8 +217,80 @@ def test_fourth_dod_failure_is_stuck(world):
     hand_over(engine, world)
     stuck = item(engine, '7')
     assert stuck['stage'] == '交付' and stuck['state'] == '卡住' and '3 次' in stuck['blocked_by']
-    assert len(remote(world)['comments']) == 3
+    comments = remote(world)['comments']
+    assert len(comments) == 4 and '记卡住' in comments[-1]['body'] and 'raw check output' in comments[-1]['body']
+    assert remote(world)['pr']['draft'] is True
     assert not engine.log.all('cards')
+    engine.log.close()
+
+
+def test_stuck_at_limit_keeps_raw_output_on_pr_and_in_why(world):
+    """ws#254：到上限记卡住时，PR 改回 Draft、评论原样输出；why 的交付记录有失败的检查名、退出码和输出结尾。"""
+    sha = commit(world, {'scripts/check.sh': '#!/bin/sh\necho first-line\necho flaky-test-failed >&2\nexit 5\n'}, 'fail')
+    set_pr(world, head={'sha': sha})
+    engine = engine_for(world, 'stuck-output')
+    start(engine)
+    for _ in range(3):
+        ensure_round(engine)
+        set_pr(world, draft=False)
+        hand_over(engine, world)
+        assert item(engine, '7')['stage'] == '执行'
+    ensure_round(engine)
+    set_pr(world, draft=False)
+    hand_over(engine, world)
+    stuck = item(engine, '7')
+    assert stuck['state'] == '卡住' and '退回执行已 3 次' in stuck['blocked_by']
+    assert remote(world)['pr']['draft'] is True
+    comments = remote(world)['comments']
+    assert len(comments) == 4
+    last = comments[-1]
+    assert last['number'] == 11 and '<!-- workshop-comment: alpha:7 -->' in last['body']
+    assert '记卡住' in last['body'] and 'exit 5' in last['body'] and 'flaky-test-failed' in last['body']
+    record = [line for line in why(engine.log, 'alpha:7').splitlines() if '程序完成 交付' in line][-1]
+    assert 'scripts/check.sh（exit 5）' in record and '退回执行已 3 次' in record
+    assert 'first-line' in record and 'flaky-test-failed' in record
+    # 卡住后再核：新的失败留一条，同一失败再核不重复留。
+    flow = world['flow']
+    evidence = flow._return({**stuck, 'checks': [['scripts/check.sh']]}, world['target'], [['scripts/check.sh']],
+                            '合并前 DoD', 'again', '', head=sha)
+    assert evidence.blocked
+    flow._return({**stuck, 'checks': [['scripts/check.sh']]}, world['target'], [['scripts/check.sh']],
+                 '合并前 DoD', 'again', '', head=sha)
+    assert len(remote(world)['comments']) == 5
+    engine.log.close()
+
+
+def test_visual_rejections_do_not_count_toward_return_limit(world):
+    """ws#254：亲眼看两次「不对」后，第一次合并前 DoD 没过仍退回执行，不卡住。"""
+    engine, service, wait = visual_until_card(world, 'visual-count')
+    for round_, number in enumerate((12, 13)):
+        visual_reply(service, wait, f'不对：第 {round_ + 1} 次', operation=f'reply{round_}')
+        for _ in range(4):
+            engine.clock.now += timedelta(seconds=60)
+            engine.tick()
+        back = item(engine, '7')
+        assert back['stage'] == '执行' and back['state'] != '卡住', back
+        assert world['io'].read(back, world['target']).get('returns', 0) == 0
+        # 修复是新的 PR、新的合并提交：亲眼看按交付版本再送一次。
+        sha = commit(world, {f'fix{number}.txt': 'fix\n'}, f'fix {number}')
+        old = remote(world)['pr']
+        edit(world, sha=sha, prs=remote(world).get('prs', []) + [old],
+             pr={'number': number, 'body': PR_BODY, 'head': {'sha': sha}, 'state': 'open', 'merged': False})
+        if round_ == 1:
+            break
+        ensure_round(engine)
+        finish(engine, key='7', evidence=[result(world, head=sha)])
+        for _ in range(3):
+            engine.tick()
+        assert item(engine, '7')['state'] == '等你'
+        wait = [w for w in service.store.all('wait') if w['id'] != wait['id']][-1]
+    ensure_round(engine)
+    missing_evidence(world)
+    hand_over(engine, world)
+    back = item(engine, '7')
+    assert back['stage'] == '执行' and back['state'] != '卡住', back
+    assert world['io'].read(back, world['target'])['returns'] == 1
+    assert remote(world)['pr']['draft'] is True and '没附证据' in remote(world)['comments'][-1]['body']
     engine.log.close()
 
 
@@ -353,9 +425,9 @@ def visual_until_card(world, name):
     return engine, service, wait
 
 
-def visual_reply(service, wait, value):
-    return service.call('answer', {'operation':'reply', 'ref':wait['id'], 'value':value,
-        'source': {'channel':'external','reference':'om_reply','evidence':'回源身份核实',
+def visual_reply(service, wait, value, operation='reply'):
+    return service.call('answer', {'operation':operation, 'ref':wait['id'], 'value':value,
+        'source': {'channel':'external','reference':'om_' + operation,'evidence':'回源身份核实',
                    'version':wait['content']['version'],'delivery':wait['content']['delivery']}})
 
 
@@ -627,7 +699,10 @@ def test_conflicts_share_return_limit_with_both_dod_segments(world, monkeypatch)
     engine.tick()
     stuck = item(engine, '7')
     assert stuck['state'] == '卡住' and '退回执行已 3 次' in stuck['blocked_by']
-    assert len(remote(world)['comments']) == 3 and not engine.log.all('cards')
+    # 到上限也和普通退回一样在 PR 留原样输出（ws#254）。
+    comments = remote(world)['comments']
+    assert len(comments) == 4 and '记卡住' in comments[-1]['body'] and 'blocked again' in comments[-1]['body']
+    assert not engine.log.all('cards')
     engine.log.close()
 
 
