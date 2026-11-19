@@ -35,7 +35,7 @@ def roles(data, name):
 
 
 def inspect(rules_path, deployment, state_dir, registry=Registry):
-    """返回 (行, 警告)；不通过时抛 ValueError（错误里有执行者名和文件名）。"""
+    """返回 (行, 警告, 阶梯行)；不通过时抛 ValueError（错误里有执行者名和文件名）。"""
     assembly = assemble(rules_path, deployment)
     configured = registry().configure(assembly.rules)
     profiles = configured.data.get('executor_profiles', {})
@@ -60,13 +60,19 @@ def inspect(rules_path, deployment, state_dir, registry=Registry):
         for name in sorted(set(running) - set(profiles)):
             warnings.append(f'{name}：状态库里还有在跑的轮（{"、".join(sorted(set(running[name])))}），'
                             '加载结果里已没有这个执行者')
-    return lines, warnings
+    return lines, warnings, ladder_lines(configured.data)
+
+
+def ladder_lines(data):
+    """配了执行者阶梯时每级一行，制表符分隔：级号、成员、接手者；没配时为空（ws#301）。"""
+    return [f'{number}\t{",".join(level["members"])}\t{",".join(level["takeover"])}'
+            for number, level in enumerate(data.get('ladder') or [], 1)]
 
 
 def check(rules_path, deployment, state_dir, out=None, err=None, registry=Registry):
     out, err = out or sys.stdout, err or sys.stderr
     try:
-        lines, warnings = inspect(rules_path, deployment, state_dir, registry)
+        lines, warnings, ladder = inspect(rules_path, deployment, state_dir, registry)
     except (ValueError, KeyError, TypeError, OSError) as exc:
         print(f'车间：{exc}', file=err)
         return 2
@@ -74,6 +80,10 @@ def check(rules_path, deployment, state_dir, out=None, err=None, registry=Regist
         print(line, file=out)
     for warning in warnings:
         print('警告：' + warning, file=out)
+    if ladder:
+        print('阶梯（级号、成员、接手者）', file=out)
+        for line in ladder:
+            print(line, file=out)
     return 0
 
 

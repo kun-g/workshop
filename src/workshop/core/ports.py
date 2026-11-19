@@ -217,7 +217,8 @@ class Selector(Protocol):
         """候选含 config 与 available 快照；返回候选配置和理由，None 表示没有可用候选。
 
         target["selection"] 是挑选上下文：writer、reviewed、retry_executor、excluded，
-        以及 item（活号）和 rule_candidates（规则里这一阶段的候选名，按规则顺序，未去掉不可用的）。"""
+        以及 item（活号）和 rule_candidates（规则里这一阶段的候选名，按规则顺序，未去掉不可用的）；
+        takeover 是阶梯指定的接手者（没有时为 None），有它时候选只有它一个，理由要写明。"""
         ...
 
 

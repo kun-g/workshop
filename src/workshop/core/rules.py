@@ -3,6 +3,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from .models import STAGES, DEFAULT_BRIEF_MAX_CHARS
 from .flows import configured, entries as flow_entries, validate as validate_flows
+from . import ladder
 import yaml
 
 
@@ -120,10 +121,28 @@ class Rules:
             configs = resolved
         if any(not isinstance(c, dict) or c.get("billing") not in ("subscription", "metered") for c in configs):
             raise ValueError("每个执行者必须写明 billing=subscription 或 metered")
+        if "ladder" in data:
+            # 部署目录配的执行者阶梯（核心 R14）；点到的执行者必须是配置档或某个候选。
+            defined = set(profiles) or {(c if isinstance(c, str) else c.get("use")) for c in configs_named(data, mappings)}
+            data = {**data, "ladder": ladder.validate(data["ladder"], defined)}
         for name in ("ask_first", "skip_ask"):
             if not isinstance(data.get(name), list) or not all(isinstance(v, str) for v in data[name]):
                 raise ValueError(f"{name} 必须是列表")
         return cls(data)
+
+    def executor(self, name: str) -> dict:
+        """一个执行者的完整候选配置，不论它在不在本阶段的候选里（阶梯接手者用）。"""
+        profile = self.data.get("executor_profiles", {}).get(name)
+        if profile is not None:
+            config = {**profile, "use": name}
+        else:
+            mappings = [self.data.get("stage_executors", {})] + [
+                self.target(t, f).get("stage_executors", {}) for t in self.data["targets"]
+                for f in flow_entries(self.data["targets"][t])]
+            found = [c for c in configs_named(self.data, mappings) if isinstance(c, dict) and c.get("use") == name]
+            config = dict(found[0]) if found else {"use": name}
+        config.setdefault("family", config.get("driver", config["use"]))
+        return config
 
     def target(self, name: str, flow: str = "") -> dict:
         return configured(name, self.data["targets"][name], flow)
@@ -149,3 +168,11 @@ class Rules:
         local = self.target(target, flow)
         return local.get("stage_selectors", {}).get(stage, local.get("selector",
                         self.data.get("stage_selectors", {}).get(stage, self.data.get("selector", "ordered"))))
+
+
+def configs_named(data, mappings):
+    """executors 各角色和阶段候选里写到的全部候选（字符串或对象）。"""
+    configs = []
+    for entries in list(data.get("executors", {}).values()) + [e for m in mappings for e in m.values()]:
+        configs.extend(entries if isinstance(entries, list) else [entries])
+    return configs

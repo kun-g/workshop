@@ -6,6 +6,7 @@
 - 一个可用的都没有时返回 Selection(None, 理由)，核心照 quota 挑法的情形记卡住。
 - 这件活在本阶段已经开过轮（真启动过，不算启动时报不可用的），本该分给谁改为最近一轮的执行者：
   规则候选增减后在途的活不换人；它不可用时照上面改分并写明理由。
+- 阶梯指定了接手者（挑选上下文的 takeover）时核心只交来它一个：不按活号分配，额度门槛照样看，理由写明（ws#301）。
 活号和规则候选名单从核心交来的挑选上下文 target["selection"] 的 item、rule_candidates 读。
 """
 from datetime import datetime, timezone
@@ -57,6 +58,12 @@ class ExperimentSelector:
         if not usable:
             reasons = [f"{name}：{why}" for name, why in skipped.items()]
             return Selection(None, "；".join([f"实验分配：{item} 没有可用候选，{counts}"] + reasons) + suffix)
+        takeover = selection.get("takeover")
+        if takeover:
+            # 阶梯指定了接手者：核心只交来它一个，不按活号分配；额度门槛照样看（ws#301）。
+            chosen = next((config for config in usable if config["use"] == takeover), usable[0])
+            return Selection(chosen, "；".join([f"实验分配：{item} 交给阶梯指定的接手者 {takeover}，不按活号分配"]
+                                              + notes) + suffix)
         names = [config["use"] for config in usable]
         previous = self.previous(history, stage)
         intended = previous if previous in rule else rule[bucket(item, len(rule))]

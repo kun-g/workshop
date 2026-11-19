@@ -91,7 +91,7 @@ def overview(log, *, everything=False, states=(), targets=(), flows=(), rules=No
         rows.append({"id": item["id"], "title": item.get("title") or item["id"], "target": item["target"],
                      "priority": (item.get('relations') or {}).get('priority', 'P1'),
                      "flow": item.get("flow") or "", "stage": item["stage"], "state": item["state"], "shown": shown,
-                     "stuck": stuck, "who": row["executor"] if row else "车间", "next": next_step, "blocker": blocker,
+                     "stuck": stuck, "who": who(row, item), "next": next_step, "blocker": blocker,
                      "reason": item["blocked_by"], "advice": item["next"],
                      "retry_at": item.get("plugin_retry_at") or "",
                      "auto_retry": bool(item.get("plugin_blocked") and item.get("plugin_retry_at")),
@@ -116,6 +116,13 @@ def overview(log, *, everything=False, states=(), targets=(), flows=(), rules=No
             "hidden": count - len(picked), "everything": everything, "filtered": filtered, "holds": holds,
             "waits": [w for w in waiting_records(log, rules, plugins, cache=wait_cache) if w['item'] in ids],
             "filters": {"states": list(states), "targets": list(targets), "flows": list(flows)}}
+
+
+def who(row, item):
+    """谁在推：有在跑的轮写执行者；没有时写车间，阶梯指定了接手者就一并写明（ws#301）。"""
+    if row:
+        return row["executor"]
+    return f'车间（阶梯指定 {item["takeover"]}）' if item.get("takeover") else "车间"
 
 
 def status(log, **options):
@@ -284,6 +291,10 @@ def why(log, item_id, rules=None, plugins=None, raw=False):
             detail = f'挑选逻辑起轮失败 {body["reason"]}'
         elif kind == "selection_none":
             detail = f'挑选逻辑没选出执行者 {body["reason"]}'
+        elif kind == "executor_handover":
+            skipped = "、".join(f"第 {n} 级" for n in body["skipped"]) or "无"
+            detail = (f'阶梯换人 {body["from"]}（第 {body["from_level"]} 级）→ {body["to"]}（第 {body["to_level"]} 级），'
+                      f'原因 {body["cause"]}：{body["reason"]}；跳过：{skipped}')
         elif kind in ("card_rejected", "card_cancelled_external"):
             detail = f'卡片{ "拒收" if kind == "card_rejected" else "作废"} {body["id"]}：{body["reason"]}'
         elif kind == "card_changed" and body.get("read_failures") == 10:

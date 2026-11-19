@@ -2,7 +2,8 @@
 
 部署目录默认 ~/.config/workshop，环境变量 WORKSHOP_DEPLOYMENT 可改，设成空或 none 就不叠加：
 
-    deployment.yaml          可选；orca（不写按 true）、roles（写了的角色以它为准）
+    deployment.yaml          可选；orca（不写按 true）、roles（写了的角色以它为准）、
+                             ladder（执行者阶梯：做不下来的活逐级换更强的接着做，ws#301）
     executors/<名字>/
         executor.yaml        配置档定义，字段和规则里的配置档一样
         settings.json        可选；和 rules.md 有一个就隔离启动，读这个目录
@@ -18,6 +19,7 @@ from pathlib import Path
 
 import yaml
 
+from .core import ladder
 from .core.rules import Rules
 
 ENVIRONMENT = 'WORKSHOP_DEPLOYMENT'
@@ -75,7 +77,7 @@ def _driver(name):
 def _settings(root):
     file = root / SETTINGS_FILE
     if not file.exists():
-        return {'orca': True, 'roles': {}}
+        return {'orca': True, 'roles': {}, 'ladder': None}
     where = f'部署目录的 {file}'
     try:
         value = yaml.safe_load(file.read_text())
@@ -84,9 +86,9 @@ def _settings(root):
     value = {} if value is None else value
     if not isinstance(value, dict):
         raise ValueError(f'{where}：顶层必须是对象')
-    extra = sorted(str(k) for k in value if k not in ('orca', 'roles'))
+    extra = sorted(str(k) for k in value if k not in ('orca', 'roles', 'ladder'))
     if extra:
-        raise ValueError(f'{where}：不认的字段 {"、".join(extra)}；只认 orca、roles')
+        raise ValueError(f'{where}：不认的字段 {"、".join(extra)}；只认 orca、roles、ladder')
     orca = value.get('orca', True)
     if type(orca) is not bool:
         raise ValueError(f'{where}：orca 只能是 true 或 false')
@@ -99,7 +101,7 @@ def _settings(root):
         if (not isinstance(names, list) or not names or not all(isinstance(n, str) and n for n in names)
                 or len(set(names)) != len(names)):
             raise ValueError(f'{where}：roles.{role} 必须是不重复的执行者名列表')
-    return {'orca': orca, 'roles': roles}
+    return {'orca': orca, 'roles': roles, 'ladder': value.get('ladder')}
 
 
 def _executor(path, name, orca):
@@ -180,6 +182,12 @@ def assemble(path, deployment=None):
                         profiles[name] = {**profile, 'transport': HEADLESS}
             _roles(data, settings['roles'], profiles, root / SETTINGS_FILE)
             _managers(data, profiles, origins, path, root)
+            if settings['ladder'] is not None:
+                try:
+                    # 接手的执行者不要求在写代码的候选里，只要有定义。
+                    data['ladder'] = ladder.validate(settings['ladder'], set(profiles))
+                except ValueError as exc:
+                    raise ValueError(f'部署目录的 {root / SETTINGS_FILE}：{exc}') from exc
     rules = Rules.validate(data)
     return Assembly(Rules(rules.data, str(path.expanduser().resolve())), origins, applied, tuple(unisolated))
 
