@@ -285,3 +285,18 @@ def test_unreadable_wait_falls_back_to_last_read_record():
     log.waits = []  # 不再等了：旧数据不留
     waiting_records(log, rules, plugins, cache=cache)
     assert cache == {}
+
+
+def test_stuck_auto_retry_line_shows_next_time_without_manual_resume():
+    retry_at = "2026-11-16T23:10:00+08:00"
+    html = page(view(row(owner="车间", advice="到点自动重试插件故障；不用手工恢复",
+                       auto_retry=True, retry_at=retry_at)), NOW)
+    (line,) = [s for s in summaries(html) if "任务关系" in s]
+    when = datetime.fromisoformat(retry_at).astimezone().strftime("%m-%d %H:%M")
+    assert "车间：" in line and f"（下次 {when}）" in line
+
+
+def test_stuck_permanent_failure_keeps_project_manager_line():
+    html = page(view(row(auto_retry=False, retry_at="")), NOW)
+    (line,) = [s for s in summaries(html) if "任务关系" in s]
+    assert "项目经理：" in line and "下次" not in line

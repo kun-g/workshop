@@ -253,8 +253,12 @@ def clear_broken(engine, key, control):
 
 
 def wake_broken(engine):
-    """到点的自动重试：解除隔离、恢复被卡的活，让这一拍按原来的路径再试一次。"""
+    """到点的自动重试：解除隔离、恢复被卡的活，让这一拍按原来的路径再试一次。
+
+    返回是否解除了隔离；收回工作目录这类每进程只做一次的步骤据此重新放行。
+    """
     now = stamp(engine.clock())
+    woke = False
     for control in engine.log.all("controls", where=("auto_retry", True)):
         if not control.get("broken") or not control.get("retry_at") or control["retry_at"] > now:
             continue
@@ -262,3 +266,5 @@ def wake_broken(engine):
                                           "plugin": control.get("plugin"), "retry_at": control["retry_at"],
                                           "count": control.get("retry_count")})
         clear_broken(engine, control["id"], control)
+        woke = True
+    return woke

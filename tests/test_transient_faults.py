@@ -113,6 +113,25 @@ def test_transient_flow_failure_blocks_only_the_affected_flow(tmp_path):
         engine.log.close()
 
 
+def test_woken_cleanup_is_retried_in_the_same_process(engine):
+    engine.ingest(event())
+    engine.tick()
+    calls = []
+    def cleanup(target, keep):
+        calls.append(target['name'])
+    engine.plugins.get('flow', 'flow').cleanup = cleanup
+    for _ in range(3):
+        engine.retry_failure('alpha', 'flow', 'flow', 'cleanup:alpha:flow', Retryable('暂时不通'))
+    control = engine.control('alpha')
+    assert control['broken'] and control['auto_retry']
+    assert engine.cleaned_flows is True
+    engine.clock.now = datetime.fromisoformat(control['retry_at'])
+    engine.tick()
+    assert not engine.control('alpha').get('broken')
+    assert calls == ['alpha']
+    assert not engine.control('retry:cleanup:alpha:flow').get('count')
+
+
 def test_status_and_manager_item_show_auto_retry_time(engine):
     engine.ingest(event())
     engine.tick()
