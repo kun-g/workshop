@@ -1,0 +1,4465 @@
+
+----- 副本：准备（verify_intervention_cutover.Replay.prepare） -----
+副本 <回放目录>/converted
+现役来源 /Users/kun/.local/state/workshop/workshop.db、/Users/kun/.local/state/workshop-intervention/intervention.db（sqlite 在线备份，只读）
+大小 {'workshop.db': 2349830144, 'intervention.db': 137957376}
+复制耗时 2.28 秒
+
+----- 副本：环境 -----
+{
+ "state": "<回放目录>/converted/state",
+ "service_db": "<回放目录>/converted/intervention/intervention.db",
+ "rules": "<回放目录>/converted/rules.yaml",
+ "endpoint": "/tmp/w176-aekrltci/s.sock",
+ "stub_bin": "<回放目录>/converted/bin-live",
+ "real_lark_for_GET_only": "/Users/kun/workspace/runtime/worktrees/oh-my-assistant/workbench/workbench/agent-bin/lark-cli",
+ "batch_copied": "c04fde79f40b8307c0b3a2bd4321d142a0c5ee0e1a7f7f26da4791050bfcad55",
+ "managers_db": "<回放目录>/converted/state/managers.db"
+}
+
+========== 切换：转换前登记在途、cutover、对账、比较在途 ==========
+
+----- 切换前在副本上登记的在途（现役此刻没有在跑的程序作业、没有在等的等待） -----
+{
+ "item": "workshop:cutover-inflight",
+ "wait_ref": "wait:e066a8a498cabe4bde3a6d8055b0bfd3f666633fd1d9078b8c925ec812748ce5",
+ "job": "<回放目录>/converted/state/jobs/verification",
+ "program_pid": 59708
+}
+
+----- 切换前在途（副本） -----
+{
+ "rounds": {
+  "826e68c4-313b-4032-97c5-b523d01786bd": {
+   "item": "workshop:176",
+   "stage": "执行",
+   "executor": "orca-claude",
+   "status": "running",
+   "at": "2026-11-19T06:02:02.863445+00:00",
+   "deadline": "2026-11-19T08:02:02.863364+00:00"
+  }
+ },
+ "jobs": {
+  "verification": {
+   "spec": {
+    "port": "flow",
+    "method": "assess",
+    "name": "issue_delivery",
+    "item": "workshop:cutover-inflight",
+    "label": "隔离回放程序作业"
+   },
+   "pid": 59708,
+   "held": true
+  }
+ },
+ "waits": {
+  "decision:workshop:cutover-inflight:inflight": {
+   "item": "workshop:cutover-inflight",
+   "state": "waiting",
+   "ref": "wait:e066a8a498cabe4bde3a6d8055b0bfd3f666633fd1d9078b8c925ec812748ce5",
+   "stage": "执行"
+  }
+ },
+ "items": {
+  "workshop:watch_updates:check": {
+   "stage": "验收",
+   "state": "定时",
+   "round": null,
+   "wait_id": null,
+   "next": "等反馈：92 个版本、6 条需要、7 项新功能"
+  },
+  "workshop:176": {
+   "stage": "执行",
+   "state": "跑着",
+   "round": "826e68c4-313b-4032-97c5-b523d01786bd",
+   "wait_id": null,
+   "next": "等回执"
+  },
+  "workshop:cutover-inflight": {
+   "stage": "执行",
+   "state": "等你",
+   "round": null,
+   "wait_id": "decision:workshop:cutover-inflight:inflight",
+   "next": "等回答"
+  }
+ }
+}
+
+----- 转换：cutover（先 workshop 后 grant-console） -----
+$ <worktree>/.venv/bin/python3 <worktree>/scripts/convert_intervention.py --state-dir <回放目录>/converted/state --intervention-db <回放目录>/converted/intervention/intervention.db --rules <回放目录>/converted/rules.yaml --backup-dir <回放目录>/converted/backups cutover
+exit=0（3.27 秒）
+备份：<回放目录>/converted/backups/workshop.db.before-cutover-all-20261119T073845117821Z（2.05 秒）
+workshop：旧记录 109 条，本次写 109 条，跳过已转 0 条
+grant-console：旧记录 79 条，本次写 79 条，跳过已转 0 条
+整段转换耗时 3.21 秒
+
+----- 转换：对账表 -----
+$ <worktree>/.venv/bin/python3 <worktree>/scripts/convert_intervention.py --state-dir <回放目录>/converted/state --intervention-db <回放目录>/converted/intervention/intervention.db --rules <回放目录>/converted/rules.yaml --backup-dir <回放目录>/converted/backups reconcile
+exit=0（0.35 秒）
+reconcile：状态目录 <回放目录>/converted/state，交付对象 workshop、grant-console，共 190 条
+交付对象	类别	去向	条数
+workshop	介入点送达	保留	2
+workshop	审批卡	历史：已答	9
+workshop	送回定时	取消：活已结束	41
+workshop	通知	历史：已发	48
+workshop	问卡	历史：已答	10
+workshop	非车间工序定时	取消：活已结束	1
+grant-console	frozen_approved	历史：冻结批准	3
+grant-console	审批卡	历史：已作废	1
+grant-console	审批卡	历史：已答	19
+grant-console	送回定时	取消：活已结束	21
+grant-console	通知	历史：已发	33
+grant-console	通道对账记录	历史：通道已退役	1
+grant-console	问卡	历史：已答	1
+交付对象	类别	原编号	活	去向	理由
+workshop	介入点送达	delivery:1493734f7fd3f0d0d15a06a62e31972d2a289b677d7515f60c97a7504f6c77f1		保留	约定的送达按原送达号由介入点服务对账，不补发、不重发
+workshop	介入点送达	delivery:74e3494627d4cc647e320fe40ab3cd88d65f43697bc379ecf35e4fcccc96d370		保留	约定的送达按原送达号由介入点服务对账，不补发、不重发
+workshop	审批卡	workshop:102:5527fe8f-933e-434b-a117-84215cf62e7a:visual-acceptance	workshop:102	历史：已答	已答的问卡只留作历史；回答不当授权中心的授权
+workshop	审批卡	workshop:102:c483cf65-9778-45ae-84ca-a5611903dc7b:visual-acceptance	workshop:102	历史：已答	已答的问卡只留作历史；回答不当授权中心的授权
+workshop	审批卡	workshop:122:4a879cc5-0ef5-4f0a-ba9e-8a6404c0c596:visual-acceptance	workshop:122	历史：已答	已答的问卡只留作历史；回答不当授权中心的授权
+workshop	审批卡	workshop:14:1b443ef7-a5e2-4ec5-a72e-4d48a531cbd6:incremental-feeds	workshop:14	历史：已答	已答的问卡只留作历史；回答不当授权中心的授权
+workshop	审批卡	workshop:151:87bd3169-e55a-4fc1-bb33-9e432b82b512:requirement-change	workshop:151	历史：已答	已答的问卡只留作历史；回答不当授权中心的授权
+workshop	审批卡	workshop:177:f06dd4dc-7a13-4f0a-9aef-c72436c6ab33:requirement-change	workshop:177	历史：已答	已答的问卡只留作历史；回答不当授权中心的授权
+workshop	审批卡	workshop:184:0567b9f6-e6ed-41c2-bd43-3003b9013666:fixture-state	workshop:184	历史：已答	已答的问卡只留作历史；回答不当授权中心的授权
+workshop	审批卡	workshop:184:09271153-f9e2-4369-8015-9ef46446c99a:requirement-wording	workshop:184	历史：已答	已答的问卡只留作历史；回答不当授权中心的授权
+workshop	审批卡	workshop:184:3c576108-414a-486e-be79-3715979eb6e3:visual-acceptance	workshop:184	历史：已答	已答的问卡只留作历史；回答不当授权中心的授权
+workshop	送回定时	workshop:101:leave:c6c88826-86c4-470d-9f86-737150a6fe3e	workshop:101	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:102:leave:b623bbd5-bfad-4e3b-9151-6b6897520449	workshop:102	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:104:leave:9ee30d88-e9a7-4766-9966-c32a0c090da4	workshop:104	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:107:leave:77fcbbbd-9499-439a-9e00-41ee9dbb3069	workshop:107	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:112:leave:be9f8d55-9930-4f2a-9f13-1da089339b67	workshop:112	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:113:leave:ae336399-bf9f-4525-ac69-f11c0ae98fd9	workshop:113	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:121:leave:c6a0549e-77e7-4de9-a751-c3fa8dc51649	workshop:121	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:122:leave:2180b5bf-b0ba-4d49-a054-8a623a365667	workshop:122	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:122:leave:687db474-b57a-48e4-9a24-ed5385be8192	workshop:122	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:143:leave:ac10a81c-e9a8-49de-a0c2-2e3af95485de	workshop:143	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:144:leave:060e3efd-fd09-445c-8649-24dc87e3811a	workshop:144	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:14:leave:9353b469-3374-4a12-afab-c4c5edb8237c	workshop:14	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:151:leave:1ad584b7-87db-49ed-9f32-8001217fd0b5	workshop:151	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:157:leave:c07f03be-45c8-41cd-89d8-f5c85fb3e32f	workshop:157	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:15:leave:4bbed9f5-bb0d-40e3-ab60-ba79421b1746	workshop:15	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:164:leave:20a83950-0226-468d-9495-c09025d2666e	workshop:164	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:167:leave:ba1ef873-15f2-4081-b2d5-dfdcde2a66cf	workshop:167	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:172:leave:bbc2b169-e5be-44f7-b939-ab514536e946	workshop:172	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:177:leave:490b0dee-2c12-4355-92fc-e7dd6febd816	workshop:177	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:18:leave:1f71e619-1909-4d3b-96c8-d4ff0cd75c73	workshop:18	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:211:leave:90aa8a27-519d-44dd-9253-ac809ffb9bc0	workshop:211	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:220:leave:f6489925-df16-4acd-9762-a43b860c85c7	workshop:220	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:29:leave:fe51a057-2d62-40f5-8b7a-c3794e8cfc33	workshop:29	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:30:leave:a8bf4c32-0db9-49b2-b568-6eb301e8e8da	workshop:30	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:31:leave:8d788d9c-b297-4280-acd1-21b5615564f9	workshop:31	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:32:leave:e4514d44-e466-41af-bf55-26c00f44376c	workshop:32	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:37:leave:a361d3e2-7f7f-4d50-9653-fc2c50049a26	workshop:37	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:44:leave:52688d7e-7e52-4949-be08-864755ab6680	workshop:44	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:46:leave:17e2dd33-c0d6-4ab5-bfc5-6968c5f81a80	workshop:46	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:48:leave:b33c0778-1142-4e3d-a090-b1637a9f60d6	workshop:48	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:52:leave:55b30d83-3d3b-4d5e-9cc5-216310027528	workshop:52	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:5:leave:0e16fa5c-7c18-4a5d-9f2d-a6be230cd75d	workshop:5	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:71:leave:435909e1-25da-405c-8206-739511fdb4c4	workshop:71	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:74:leave:aa658754-294e-474a-8dc0-eb697ce3d87c	workshop:74	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:76:leave:f49b57d0-b296-4fdb-880c-7928e2a451ec	workshop:76	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:78:leave:ca2042ed-0570-4d0c-8651-ef6882a920a2	workshop:78	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:81:leave:9523fa0f-5f4a-46b4-98d6-533aab1dadad	workshop:81	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:84:leave:a97e3cd3-be80-4a94-aae7-b210da3fe420	workshop:84	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:93:leave:f3d8be91-110d-4eb9-b4f3-e569e2bf18b7	workshop:93	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:97:leave:a16130d0-317f-422c-8e0d-e6c624486dd7	workshop:97	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	送回定时	workshop:99:leave:6130446e-10d0-462a-b27e-e630bbe7f8d1	workshop:99	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+workshop	通知	@workshop:plugin:flow:issue_delivery:4987	@workshop	历史：已发	已发的通知只留作历史
+workshop	通知	@workshop:plugin:flow:issue_delivery:5147	@workshop	历史：已发	已发的通知只留作历史
+workshop	通知	@workshop:plugin:flow:issue_delivery:520	@workshop	历史：已发	已发的通知只留作历史
+workshop	通知	workshop:14:notice:ci-read-permission	workshop:14	历史：已发	已发的通知只留作历史
+workshop	通知	workshop:18:notice:acceptance-passed	workshop:18	历史：已发	已发的通知只留作历史
+workshop	通知	workshop:18:notice:accepted	workshop:18	历史：已发	已发的通知只留作历史
+workshop	通知	workshop:26:notice:acceptance-passed	workshop:26	历史：已发	已发的通知只留作历史
+workshop	通知	workshop:26:notice:accepted	workshop:26	历史：已发	已发的通知只留作历史
+workshop	通知	workshop:26:notice:clarified	workshop:26	历史：已发	已发的通知只留作历史
+workshop	通知	workshop:29:notice:accepted	workshop:29	历史：已发	已发的通知只留作历史
+workshop	通知	workshop:30:notice:accepted	workshop:30	历史：已发	已发的通知只留作历史
+workshop	通知	workshop:32:notice:accepted	workshop:32	历史：已发	已发的通知只留作历史
+workshop	通知	workshop:32:notice:ws32-clear	workshop:32	历史：已发	已发的通知只留作历史
+workshop	通知	workshop:32:notice:ws32-intake	workshop:32	历史：已发	已发的通知只留作历史
+workshop	通知	workshop:37:notice:acceptance-ws37	workshop:37	历史：已发	已发的通知只留作历史
+workshop	通知	workshop:37:notice:accepted	workshop:37	历史：已发	已发的通知只留作历史
+workshop	通知	workshop:41:notice:acceptance-passed	workshop:41	历史：已发	已发的通知只留作历史
+workshop	通知	workshop:41:notice:accepted	workshop:41	历史：已发	已发的通知只留作历史
+workshop	通知	workshop:41:notice:ask-41	workshop:41	历史：已发	已发的通知只留作历史
+workshop	通知	workshop:41:notice:clarified-41	workshop:41	历史：已发	已发的通知只留作历史
+workshop	通知	workshop:41:notice:conflict-41	workshop:41	历史：已发	已发的通知只留作历史
+workshop	通知	workshop:41:notice:conflict-41b	workshop:41	历史：已发	已发的通知只留作历史
+workshop	通知	workshop:41:notice:deliver-41	workshop:41	历史：已发	已发的通知只留作历史
+workshop	通知	workshop:41:notice:evidence-41	workshop:41	历史：已发	已发的通知只留作历史
+workshop	通知	workshop:41:notice:evidence-41b	workshop:41	历史：已发	已发的通知只留作历史
+workshop	通知	workshop:41:notice:evidence-41c	workshop:41	历史：已发	已发的通知只留作历史
+workshop	通知	workshop:41:notice:intake-41	workshop:41	历史：已发	已发的通知只留作历史
+workshop	通知	workshop:41:notice:keep-41	workshop:41	历史：已发	已发的通知只留作历史
+workshop	通知	workshop:41:notice:port-41	workshop:41	历史：已发	已发的通知只留作历史
+workshop	通知	workshop:41:notice:pr-41	workshop:41	历史：已发	已发的通知只留作历史
+workshop	通知	workshop:41:notice:rebase-41	workshop:41	历史：已发	已发的通知只留作历史
+workshop	通知	workshop:44:notice:acceptance-failed	workshop:44	历史：已发	已发的通知只留作历史
+workshop	通知	workshop:44:notice:acceptance-notice-format-blocked	workshop:44	历史：已发	已发的通知只留作历史
+workshop	通知	workshop:44:notice:ws44-app-identity-blocked	workshop:44	历史：已发	已发的通知只留作历史
+workshop	通知	workshop:46:notice:ws46-check-environment-aa86e082	workshop:46	历史：已发	已发的通知只留作历史
+workshop	通知	workshop:46:notice:完成:f76c3231cf4a2fc272f07a8803715ed0291889cb	workshop:46	历史：已发	已发的通知只留作历史
+workshop	通知	workshop:48:notice:acceptance-return-9b10b7c	workshop:48	历史：已发	已发的通知只留作历史
+workshop	通知	workshop:48:notice:clarified-48	workshop:48	历史：已发	已发的通知只留作历史
+workshop	通知	workshop:48:notice:pr-56-opened	workshop:48	历史：已发	已发的通知只留作历史
+workshop	通知	workshop:48:notice:ws48-a1-environment-blocked	workshop:48	历史：已发	已发的通知只留作历史
+workshop	通知	workshop:48:notice:ws48-blocked-by-71-independent-check	workshop:48	历史：已发	已发的通知只留作历史
+workshop	通知	workshop:52:notice:ws52-unlabeled	workshop:52	历史：已发	已发的通知只留作历史
+workshop	通知	workshop:5:notice:acceptance-passed	workshop:5	历史：已发	已发的通知只留作历史
+workshop	通知	workshop:5:notice:accepted	workshop:5	历史：已发	已发的通知只留作历史
+workshop	通知	workshop:5:notice:rerun-acceptance	workshop:5	历史：已发	已发的通知只留作历史
+workshop	通知	workshop:5:notice:runtime-update	workshop:5	历史：已发	已发的通知只留作历史
+workshop	通知	workshop:62:notice:ws62-receipt-format-cfe4c682	workshop:62	历史：已发	已发的通知只留作历史
+workshop	通知	workshop:74:notice:完成:8e599a9caf0ee002279739603e85141cf4b1f557	workshop:74	历史：已发	已发的通知只留作历史
+workshop	问卡	workshop:14:workshop:14:leave:885ec452-f821-47b6-8b03-4fe8255ee59b	workshop:14	历史：已答	已答的问卡只留作历史；回答不当授权中心的授权
+workshop	问卡	workshop:32:8b9d481d-4bb2-4374-a1dd-35628151698d:serial-detect	workshop:32	历史：已答	已答的问卡只留作历史；回答不当授权中心的授权
+workshop	问卡	workshop:41:3cf80832-c968-4fd3-b73d-b2528f144e74:codex-user-config	workshop:41	历史：已答	已答的问卡只留作历史；回答不当授权中心的授权
+workshop	问卡	workshop:46:fa2ee12b-efd4-484e-a157-3159dcab61fb:title-mode	workshop:46	历史：已答	已答的问卡只留作历史；回答不当授权中心的授权
+workshop	问卡	workshop:62:c6ee45f4-01cc-47d4-9880-22cfa1b4e17c:cursor-mode	workshop:62	历史：已答	已答的问卡只留作历史；回答不当授权中心的授权
+workshop	问卡	workshop:74:workshop:74:leave:0129309a-0304-48ce-a7c6-af52b4ad5f99	workshop:74	历史：已答	已答的问卡只留作历史；回答不当授权中心的授权
+workshop	问卡	workshop:75:d99905a2-7671-4f3e-93ba-c95a417c08eb:wake-file-probe	workshop:75	历史：已答	已答的问卡只留作历史；回答不当授权中心的授权
+workshop	问卡	workshop:75:workshop:75:leave:0dedcea9-58dc-4cf4-b314-9aa52b3e3e82	workshop:75	历史：已答	已答的问卡只留作历史；回答不当授权中心的授权
+workshop	问卡	workshop:75:workshop:75:leave:581f60dd-964d-4099-bbb2-8683584b3c22	workshop:75	历史：已答	已答的问卡只留作历史；回答不当授权中心的授权
+workshop	问卡	workshop:75:workshop:75:leave:9c3c0cd6-5200-4939-a8ed-373291e4f07e	workshop:75	历史：已答	已答的问卡只留作历史；回答不当授权中心的授权
+workshop	非车间工序定时	workshop:75:leave:d53f7da4-a251-4cab-8a46-77c8ae8058f8	workshop:75	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+grant-console	frozen_approved	grant-console:136	grant-console:136	历史：冻结批准	冻结路径关口已取消（介入点 R8）；批准作废，其它仍有效的关口重查
+grant-console	frozen_approved	grant-console:154	grant-console:154	历史：冻结批准	冻结路径关口已取消（介入点 R8）；批准作废，其它仍有效的关口重查
+grant-console	frozen_approved	grant-console:93	grant-console:93	历史：冻结批准	冻结路径关口已取消（介入点 R8）；批准作废，其它仍有效的关口重查
+grant-console	审批卡	grant-console:104:15701534-9447-4a39-94ce-e2da1d522fe1:visual-acceptance	grant-console:104	历史：已答	已答的问卡只留作历史；回答不当授权中心的授权
+grant-console	审批卡	grant-console:104:4f216ca2-f42c-473d-b3cd-51e16fff0b7a:requirement-change	grant-console:104	历史：已答	已答的问卡只留作历史；回答不当授权中心的授权
+grant-console	审批卡	grant-console:136:approval:c7ee5b94-015a-4663-afac-169344c01094	grant-console:136	历史：已答	已答的问卡只留作历史；回答不当授权中心的授权
+grant-console	审批卡	grant-console:143:f1b68ab0-a36a-4ae7-94e8-bff019554156:gc143-release-2201	grant-console:143	历史：已答	已答的问卡只留作历史；回答不当授权中心的授权
+grant-console	审批卡	grant-console:144:9e626025-56a1-4588-91e0-877188c6789d:gc144-release-approval	grant-console:144	历史：已答	已答的问卡只留作历史；回答不当授权中心的授权
+grant-console	审批卡	grant-console:152:2b9a0338-df54-448b-8f6f-eaa83fe32611:requirement-change	grant-console:152	历史：已答	已答的问卡只留作历史；回答不当授权中心的授权
+grant-console	审批卡	grant-console:154:28c9701e-76ef-4fec-b829-6eb038aae0e1:cluster-scope-exception	grant-console:154	历史：已答	已答的问卡只留作历史；回答不当授权中心的授权
+grant-console	审批卡	grant-console:154:approval:7bd16e10-6d52-4a91-840b-564ccc338113	grant-console:154	历史：已答	已答的问卡只留作历史；回答不当授权中心的授权
+grant-console	审批卡	grant-console:154:d21a6523-38ed-4353-8563-f6387f272f9e:release-card-rule	grant-console:154	历史：已答	已答的问卡只留作历史；回答不当授权中心的授权
+grant-console	审批卡	grant-console:160:710b21bb-63aa-4415-a8c6-27db339b38f3:requirement-change	grant-console:160	历史：已答	已答的问卡只留作历史；回答不当授权中心的授权
+grant-console	审批卡	grant-console:170:eb2b6f0f-2bcf-4d81-86d6-478f359c0d03:requirement-change	grant-console:170	历史：已答	已答的问卡只留作历史；回答不当授权中心的授权
+grant-console	审批卡	grant-console:171:cee3b3ac-048e-472b-8aff-887779625b6d:requirement-change	grant-console:171	历史：已作废	已作废或拒收的问卡只留作历史
+grant-console	审批卡	grant-console:175:552d3331-ef24-4aaf-8d4d-fc3e551235c0:visual-acceptance	grant-console:175	历史：已答	已答的问卡只留作历史；回答不当授权中心的授权
+grant-console	审批卡	grant-console:175:6389f67d-2685-4c41-94a1-eabe8364f177:requirement-change	grant-console:175	历史：已答	已答的问卡只留作历史；回答不当授权中心的授权
+grant-console	审批卡	grant-console:175:79902995-9d98-47e4-9949-7896c6b6bff7:visual-acceptance	grant-console:175	历史：已答	已答的问卡只留作历史；回答不当授权中心的授权
+grant-console	审批卡	grant-console:191:8c456084-2e59-4dc8-9bf3-6e4ba4d2c731:visual-acceptance	grant-console:191	历史：已答	已答的问卡只留作历史；回答不当授权中心的授权
+grant-console	审批卡	grant-console:5:913e89ea-f874-45a8-9c08-fcdf1382af18:requirement-change	grant-console:5	历史：已答	已答的问卡只留作历史；回答不当授权中心的授权
+grant-console	审批卡	grant-console:5:approval:a743af8e-57bf-4864-9c4f-8e0016ac2ffc	grant-console:5	历史：已答	已答的问卡只留作历史；回答不当授权中心的授权
+grant-console	审批卡	grant-console:80:6c5af82b-0c6a-4a93-81e8-6fae1ca00d1c:requirement-change	grant-console:80	历史：已答	已答的问卡只留作历史；回答不当授权中心的授权
+grant-console	审批卡	grant-console:93:approval:256f5721-1a61-4a17-a553-bed3656d5486	grant-console:93	历史：已答	已答的问卡只留作历史；回答不当授权中心的授权
+grant-console	送回定时	grant-console:104:leave:6d7a0207-94ab-4ada-803b-5cf3527aa6ff	grant-console:104	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+grant-console	送回定时	grant-console:104:leave:97ae382a-a29a-4841-abb9-eec0826e3ead	grant-console:104	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+grant-console	送回定时	grant-console:104:leave:cca9136b-9b5e-430c-8998-4080dc888dc6	grant-console:104	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+grant-console	送回定时	grant-console:143:leave:5f972bda-6fcb-4c34-82e8-1b74e4f71497	grant-console:143	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+grant-console	送回定时	grant-console:144:leave:431a070c-b435-4b41-91b9-ace5ce1cf673	grant-console:144	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+grant-console	送回定时	grant-console:150:leave:82cd651b-4d83-41a1-bdd8-d44e0a8dab03	grant-console:150	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+grant-console	送回定时	grant-console:152:leave:2655bfd2-df8f-4763-ae4b-a9fb20403ced	grant-console:152	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+grant-console	送回定时	grant-console:152:leave:47ec517c-c2d0-4bc5-8fe3-181b331a58cd	grant-console:152	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+grant-console	送回定时	grant-console:154:leave:75e2dd58-7276-48b7-b325-8b8e85832ec7	grant-console:154	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+grant-console	送回定时	grant-console:160:leave:362881ab-e262-42b1-986c-52de8f9d3203	grant-console:160	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+grant-console	送回定时	grant-console:170:leave:43976d9f-c11e-45bd-9279-ecfc7753d255	grant-console:170	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+grant-console	送回定时	grant-console:170:leave:54d94a6b-df96-4e2b-9133-0e744b17a426	grant-console:170	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+grant-console	送回定时	grant-console:171:leave:97d75d3f-fc6a-4ab3-af5a-5e334d0610b5	grant-console:171	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+grant-console	送回定时	grant-console:174:leave:ef2a1f52-1983-4b3f-ad53-112b1616c8b3	grant-console:174	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+grant-console	送回定时	grant-console:175:leave:a63219b1-da98-451a-a1ef-7d7b6b76abd4	grant-console:175	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+grant-console	送回定时	grant-console:191:leave:ac40b8c1-59f6-44a8-8d92-ceded252ca24	grant-console:191	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+grant-console	送回定时	grant-console:5:leave:1a984500-9214-498d-8262-f87e067a836c	grant-console:5	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+grant-console	送回定时	grant-console:5:leave:341b1862-1ddc-47dc-a3e5-a193a34b1920	grant-console:5	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+grant-console	送回定时	grant-console:81:leave:a61bd6d0-5e94-40ac-8206-d4546b93d54e	grant-console:81	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+grant-console	送回定时	grant-console:81:leave:b7450ce9-e19b-47ea-a72c-cfcc88d1767f	grant-console:81	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+grant-console	送回定时	grant-console:93:leave:9c19dc4e-8126-40bb-9879-398c4afec727	grant-console:93	取消：活已结束	活已结束，到点不再找 Kun（介入点 R10、R13）
+grant-console	通知	@grant-console:plugin:flow:issue_delivery:4977	@grant-console	历史：已发	已发的通知只留作历史
+grant-console	通知	@grant-console:plugin:flow:issue_delivery:5137	@grant-console	历史：已发	已发的通知只留作历史
+grant-console	通知	@grant-console:plugin:flow:issue_delivery:517	@grant-console	历史：已发	已发的通知只留作历史
+grant-console	通知	grant-console:109:failing:c2cb5b7c-c8ea-4d64-a5a4-da80f3e370c4	grant-console:109	历史：已发	已发的通知只留作历史
+grant-console	通知	grant-console:109:notice:gc109-clarify	grant-console:109	历史：已发	已发的通知只留作历史
+grant-console	通知	grant-console:109:notice:gc109-deliver	grant-console:109	历史：已发	已发的通知只留作历史
+grant-console	通知	grant-console:109:notice:gc109-evidence	grant-console:109	历史：已发	已发的通知只留作历史
+grant-console	通知	grant-console:109:notice:gc109-exec	grant-console:109	历史：已发	已发的通知只留作历史
+grant-console	通知	grant-console:109:notice:gc109-intake	grant-console:109	历史：已发	已发的通知只留作历史
+grant-console	通知	grant-console:109:notice:gc109-rework-test	grant-console:109	历史：已发	已发的通知只留作历史
+grant-console	通知	grant-console:143:failing:bfe506a6-28b2-4879-b9a2-3b008e2dab6a	grant-console:143	历史：已发	已发的通知只留作历史
+grant-console	通知	grant-console:143:notice:gc143-acceptance-bb6b03e	grant-console:143	历史：已发	已发的通知只留作历史
+grant-console	通知	grant-console:143:notice:gc143-release-verified	grant-console:143	历史：已发	已发的通知只留作历史
+grant-console	通知	grant-console:143:notice:gc143-review-5cbb60a	grant-console:143	历史：已发	已发的通知只留作历史
+grant-console	通知	grant-console:143:notice:完成:bb6b03e1aa1f4371b98478b9e5ae35365c44f5dd	grant-console:143	历史：已发	已发的通知只留作历史
+grant-console	通知	grant-console:144:failing:8e0a4800-36ed-4405-a1d3-00ea385c8542	grant-console:144	历史：已发	已发的通知只留作历史
+grant-console	通知	grant-console:144:notice:accepted	grant-console:144	历史：已发	已发的通知只留作历史
+grant-console	通知	grant-console:144:notice:gc144-acceptance-passed	grant-console:144	历史：已发	已发的通知只留作历史
+grant-console	通知	grant-console:144:notice:gc144-clarify	grant-console:144	历史：已发	已发的通知只留作历史
+grant-console	通知	grant-console:144:notice:gc144-deliver	grant-console:144	历史：已发	已发的通知只留作历史
+grant-console	通知	grant-console:144:notice:gc144-evidence	grant-console:144	历史：已发	已发的通知只留作历史
+grant-console	通知	grant-console:144:notice:gc144-exec	grant-console:144	历史：已发	已发的通知只留作历史
+grant-console	通知	grant-console:144:notice:gc144-grant-reminder	grant-console:144	历史：已发	已发的通知只留作历史
+grant-console	通知	grant-console:144:notice:gc144-intake	grant-console:144	历史：已发	已发的通知只留作历史
+grant-console	通知	grant-console:144:notice:gc144-released	grant-console:144	历史：已发	已发的通知只留作历史
+grant-console	通知	grant-console:145:notice:gc145-existing-merged-pr-route	grant-console:145	历史：已发	已发的通知只留作历史
+grant-console	通知	grant-console:150:failing:39d95518-c51d-4b59-8269-d87107345f88	grant-console:150	历史：已发	已发的通知只留作历史
+grant-console	通知	grant-console:150:notice:acceptance-receipt-format-blocked-a4d368c	grant-console:150	历史：已发	已发的通知只留作历史
+grant-console	通知	grant-console:150:notice:gc150-cleanup-must-fix	grant-console:150	历史：已发	已发的通知只留作历史
+grant-console	通知	grant-console:150:notice:gc150-review-34180d2	grant-console:150	历史：已发	已发的通知只留作历史
+grant-console	通知	grant-console:150:notice:gc150-review-937f2d4	grant-console:150	历史：已发	已发的通知只留作历史
+grant-console	通知	grant-console:93:notice:gc93-promtool-missing	grant-console:93	历史：已发	已发的通知只留作历史
+grant-console	通知	grant-console:om_x100b605b531ebca0c01f55c807a3fcc:notice:binding-test-109	grant-console:om_x100b605b531ebca0c01f55c807a3fcc	历史：已发	已发的通知只留作历史
+grant-console	通道对账记录	reconcile:grant-console:170:eb2b6f0f-2bcf-4d81-86d6-478f359c0d03:requirement-change	grant-console:170:eb2b6f0f-2bcf-4d81-86d6-478f359c0d03	历史：通道已退役	旧通道的对账计数清掉；卡片去向见同号的卡片行
+grant-console	问卡	grant-console:191:grant-console:191:leave:1da14091-7611-405c-ae44-577a925ef822	grant-console:191	历史：已答	已答的问卡只留作历史；回答不当授权中心的授权
+workshop 转换状态：done
+grant-console 转换状态：done
+未转 0 条
+
+===== [8.0] 在跑的轮、程序作业和等待在切换前后都保留 =====
+
+----- 切换前后在途比较 -----
+切换前在途：{'rounds': 1, 'jobs': 1, 'waits': 1}
+rounds	826e68c4-313b-4032-97c5-b523d01786bd	切换前=running	切换后=相同
+jobs	verification	切换前=在跑	切换后=相同
+waits	decision:workshop:cutover-inflight:inflight	切换前=waiting	切换后=相同
+items	workshop:176	切换前={'stage': '执行', 'state': '跑着', 'round': '826e68c4-313b-4032-97c5-b523d01786bd', 'wait_id': None, 'next': '等回执'}	切换后=相同
+items	workshop:cutover-inflight	切换前={'stage': '执行', 'state': '等你', 'round': None, 'wait_id': 'decision:workshop:cutover-inflight:inflight', 'next': '等回答'}	切换后=相同
+
+----- 切换后 workshop status（副本） -----
+$ <worktree>/.venv/bin/python3 -m workshop.cli --state-dir <回放目录>/converted/state --rules <回放目录>/converted/rules.yaml status
+exit=0（0.07 秒）
+活 3 件 · 跑着 1 · 等你 1 · 卡住 0 · 定时 1
+另有 222 件没列出（已结束；workshop status --all 看全部）
+活	阶段	状态	谁在推	下一步	卡在谁手里	优先级
+workshop:watch_updates:check	验收	定时	车间	等反馈：92 个版本、6 条需要、7 项新功能	—	P1
+workshop:176	执行	跑着	orca-claude	等回执	—	P1
+workshop:cutover-inflight	执行	隔离回放程序作业	车间	等回答	—	P1
+卡住
+活	阶段	原因	建议动作
+等你
+隔离回放：切换前在途的活：隔离回放：切换前在等的取舍；推荐：保留
+详情（等待号、版本、原因、推荐、等了多久）
+详情
+{"attempt": 0, "content": {"key": "inflight", "question": "隔离回放：切换前在等的取舍", "reason": "只用来比较切换前后等待是否保留", "recommend": "保留", "stage": "执行", "version": "v1"}, "id": "decision:workshop:cutover-inflight:inflight", "item": "workshop:cutover-inflight", "next_at": "2026-11-19T07:38:44.769837+00:00", "operation": "decision:workshop:cutover-inflight:inflight", "provider": "intervention", "question": "隔离回放：切换前在等的取舍", "reason": "只用来比较切换前后等待是否保留", "recommend": "保留", "record": {"acknowledged": false, "answer": null, "content": {"key": "inflight", "question": "隔离回放：切换前在等的取舍", "reason": "只用来比较切换前后等待是否保留", "recommend": "保留", "stage": "执行", "version": "v1"}, "id": "wait:e066a8a498cabe4bde3a6d8055b0bfd3f666633fd1d9078b8c925ec812748ce5", "owner": "workshop:cutover-inflight", "point": "decision", "started_at": "2026-11-19T07:38:44.779204+00:00", "superseded": false, "token": null}, "ref": "wait:e066a8a498cabe4bde3a6d8055b0bfd3f666633fd1d9078b8c925ec812748ce5", "seconds": 4, "stage": "执行", "state": "waiting", "token": null}
+项目经理处理中
+没有
+处理不了
+grant-console:170 送达：旧问卡已答且活已完成，残留对账告警无现有清理命令；交协调对话处理残留问卡
+主循环：最新版本空闲时仍持续慢拍，现有授权命令无修复入口；交协调对话处理主循环慢拍
+详情
+{"active": true, "attempts": [], "candidate": 0, "conclusion": {"action": "交协调对话处理残留问卡", "evidence": "已读角色手册、pm.md、问题记录及PM工具README。status --all --target grant-console确认170已完成，旧requirement-change卡仍待对账；why确认11-15T07:37:53Z已登记Kun原话“170批准”，11:14:45Z完成、11:15:04Z关闭。共享记录11-16 13:36已有同一问题。只读核对CLI、asking.py、holding.py和reask.py：回答不清对账标记，撤问仅处理未运行的等你活；无适用清理入口。未重发、代答或改业务状态。", "reason": "旧问卡已答且活已完成，残留对账告警无现有清理命令", "result": "blocked", "schema": "manager/v1", "status_location": "处理不了"}, "config": {"billing": "subscription", "driver": "codex", "effort": "high", "family": "codex", "ignore_rules": true, "ignore_user_config": true, "model": "gpt-6.1-sol", "permission_mode": "never", "prompt": "项目经理只用现有授权命令疏通和记录；禁止修改代码、规则、需求、开单、代答或发消息。", "require_subscription_login": true, "sandbox": "workspace-write", "settings": {"sandbox_workspace_write": {"network_access": true, "writable_roots": ["/Users/kun/.local/state/workshop"]}}, "skip_git_repo_check": true, "transport": "headless", "use": "manager-codex"}, "created": "2026-11-18T16:00:45.725466+00:00", "delivered": 1, "episode": "aa0fd24b-1fab-443d-a6bc-e81de8b47ec8", "executor": "manager-codex", "facts": [{"at": "2026-11-18T16:00:45.725466+00:00", "digest": "f49c5a2873009afed6bf8b277509745cc70c4b7fe107bca6974ad8773c8775bf", "value": {"delivery": "grant-console:170:eb2b6f0f-2bcf-4d81-86d6-478f359c0d03:requirement-change", "reason": "通道送达未确认"}}], "generation": 1, "id": "fault:delivery:grant-console:170:eb2b6f0f-2bcf-4d81-86d6-478f359c0d03:requirement-change", "last_executor": "manager-codex", "last_session": "337a821a-946a-46f5-a6fb-664cf3a2fb2d", "owner": "core", "publication": "4fb59dac393b977fe17a46a1543b8dc28a1e796956e2c6981716c5acddc6f26b", "publish_error": "JobFailed: [Errno 61] Connection refused", "published_business": {"idle_since": null, "total": 1}, "resume_allowed": true, "revision": 253, "started": null, "starting_facts": 1, "state": "blocked", "token": null, "updated": "2026-11-18T21:21:22.074750+00:00"}
+{"active": true, "attempts": [], "candidate": 0, "conclusion": {"action": "交协调对话处理主循环慢拍", "evidence": "已读角色手册、pm.md及问题记录。显式指定状态目录查status：业务跑着0；watch慢拍告警仍在。运行版本与主检出及成功发版均f72a38c。最近100条慢拍：361—422ms，中位383.0ms；心跳步骤中位347.163ms。beat.py心跳调用activity.snapshot，后者逐个读取jobs及查询轮次结束时间；未逐子调用计时。CLI及PM工具无相应恢复入口。证据和交接留本会话目录；未改业务状态、未发通知。", "reason": "最新版本空闲时仍持续慢拍，现有授权命令无修复入口", "result": "blocked", "schema": "manager/v1", "status_location": "处理不了"}, "config": {"billing": "subscription", "driver": "codex", "effort": "high", "family": "codex", "ignore_rules": true, "ignore_user_config": true, "model": "gpt-6.1-sol", "permission_mode": "never", "prompt": "项目经理只用现有授权命令疏通和记录；禁止修改代码、规则、需求、开单、代答或发消息。", "require_subscription_login": true, "sandbox": "workspace-write", "settings": {"sandbox_workspace_write": {"network_access": true, "writable_roots": ["/Users/kun/.local/state/workshop"]}}, "skip_git_repo_check": true, "transport": "headless", "use": "manager-codex"}, "created": "2026-11-18T16:02:49.962238+00:00", "delivered": 1, "episode": "c2a90cf8-bb0e-4277-9e26-c43ecd2301c3", "executor": "manager-codex", "facts": [{"at": "2026-11-18T16:02:49.962238+00:00", "digest": "775b003a8ac58e3680945f5bba7ce719e459233c387cf55d2c68f01e29c221ac", "value": {"anchor": "2026-11-18T16:00:48.249834+00:00", "confirmed": true, "id": "workshop-watch:d1fd7e837db94f31:2026-11-18:07d297c105d4601eede9f8da", "reported": false, "since": "2026-11-18T16:02:49.962238+00:00", "text": "车间 heartbeat.json 连续三次观测到不同心跳的 tick_ms 超过 100 毫秒，需要你检查主循环，详见 watch.json。"}}], "generation": 1, "id": "system:tick", "last_executor": "manager-codex", "last_session": "d32be13a-5f1e-4323-b917-50f7b259ccdf", "owner": "watch", "publication": "bcf7a9eceab0c8858fe977fc35e0725f8b6c1e5e933846ac1bfb843c82185ff9", "publish_error": "JobFailed: [Errno 61] Connection refused", "published_business": {"idle_since": null, "total": 1}, "resume_allowed": true, "revision": 239, "started": null, "starting_facts": 1, "state": "blocked", "token": null, "updated": "2026-11-18T16:02:49.962238+00:00"}
+[8.0] 走通
+
+----- 副本里结束并放弃现役在跑的活（只改副本） -----
+[
+ {
+  "id": "workshop:176",
+  "state": "放弃",
+  "next": "已放弃：隔离回放：现役在跑的活，副本里不接着做"
+ }
+]
+
+========== 第 8 项：workshop 这一批 ==========
+
+===== [8.1] 写全了的 issue 自动打标签接单、缺省 P1（真实来源） =====
+
+----- workshop：副本里待归类的现役事件 -----
+[]
+
+----- workshop：开着的 issue 逐个过真实接单（App 只读；标签写只记账） -----
+[
+ {
+  "issue": 176,
+  "title": "介入点：存量转换、旧出口停用与逐批真实验收",
+  "author": "lambdatheory-agent[bot]",
+  "labels": [
+   "Ready for Agent"
+  ],
+  "item_in_copy": "放弃"
+ },
+ {
+  "issue": 168,
+  "title": "核心模块梳理：哪些只能放核心，核心与插件怎么划界、怎么协作",
+  "author": "lambdatheory-agent[bot]",
+  "labels": [],
+  "item_in_copy": null,
+  "labels_recorded": [],
+  "item_created": false,
+  "priority": null,
+  "classification": [
+   {
+    "kind": "event_discarded",
+    "summary": "未写全：缺「合并前 DoD」节，或节里没有逐项列出的条件；缺「不可逆或对外的动作」节（没有就写「无」）；亲眼看缺「看什么：」段；亲眼看缺「在哪看：」段；亲眼看缺「怎么回：」段；依据： R17 的需求文档不存在或不唯一",
+    "action": null
+   }
+  ]
+ }
+]
+
+----- workshop：现役已接单的开着的 issue（副本里的历史，不是本次回放） -----
+[
+ {
+  "id": "workshop:176",
+  "stage": "执行",
+  "state": "放弃",
+  "priority": "P1"
+ }
+]
+[8.1] 没走：kun-g/workshop 开着的 issue 里没有「写全了、还没标签、副本里也没有活」的：写全了的都已被现役接单（副本里已有活），没接的都没写全；正向路径要一个新写全的 issue，或改写真实正文（不做）
+
+===== [8.2-4] 无卡等你→会话回答→授权原申请批准后接着做→到点自动续跑（真实 codex 订阅轮次） =====
+
+----- workshop：等你时 workshop status（副本） -----
+活 3 件 · 跑着 0 · 等你 2 · 卡住 0 · 定时 1
+另有 223 件没列出（已结束；workshop status --all 看全部）
+活	阶段	状态	谁在推	下一步	卡在谁手里	优先级
+workshop:watch_updates:check	验收	定时	车间	等反馈：92 个版本、6 条需要、7 项新功能	—	P1
+workshop:cutover-inflight	执行	隔离回放程序作业	车间	等回答	—	P1
+workshop:dod-replay	执行	等你	车间	等待外部结果	—	P1
+卡住
+活	阶段	原因	建议动作
+等你
+隔离回放：切换前在途的活：隔离回放：切换前在等的取舍；推荐：保留
+隔离回放：介入点：存量转换、旧出口停用与逐批真实验收：回放：两条路径先做哪条；推荐：A
+详情（等待号、版本、原因、推荐、等了多久）
+详情
+{"attempt": 1, "content": {"key": "inflight", "question": "隔离回放：切换前在等的取舍", "reason": "只用来比较切换前后等待是否保留", "recommend": "保留", "stage": "执行", "version": "v1"}, "error": "", "id": "decision:workshop:cutover-inflight:inflight", "item": "workshop:cutover-inflight", "next_at": "2026-11-19T07:40:03.774317+00:00", "operation": "decision:workshop:cutover-inflight:inflight", "provider": "intervention", "question": "隔离回放：切换前在等的取舍", "reason": "只用来比较切换前后等待是否保留", "recommend": "保留", "record": {"acknowledged": false, "answer": null, "content": {"key": "inflight", "question": "隔离回放：切换前在等的取舍", "reason": "只用来比较切换前后等待是否保留", "recommend": "保留", "stage": "执行", "version": "v1"}, "id": "wait:e066a8a498cabe4bde3a6d8055b0bfd3f666633fd1d9078b8c925ec812748ce5", "owner": "workshop:cutover-inflight", "point": "decision", "started_at": "2026-11-19T07:38:44.779204+00:00", "superseded": false, "token": null}, "ref": "wait:e066a8a498cabe4bde3a6d8055b0bfd3f666633fd1d9078b8c925ec812748ce5", "seconds": 28, "stage": "执行", "state": "waiting", "token": null}
+{"attempt": 0, "content": {"key": "replay-path", "question": "回放：两条路径先做哪条", "reason": "验证会话回答只恢复这件活，不产生真实授权", "recommend": "A", "stage": "执行", "version": "v1"}, "id": "decision:workshop:dod-replay:after:07160569-11e2-4930-97b9-ab90b5e053a7", "item": "workshop:dod-replay", "next_at": "2026-11-19T07:39:13.160903+00:00", "operation": "decision:workshop:dod-replay:after:07160569-11e2-4930-97b9-ab90b5e053a7", "provider": "intervention", "question": "回放：两条路径先做哪条", "reason": "验证会话回答只恢复这件活，不产生真实授权", "recommend": "A", "record": {"acknowledged": false, "answer": null, "content": {"key": "replay-path", "question": "回放：两条路径先做哪条", "reason": "验证会话回答只恢复这件活，不产生真实授权", "recommend": "A", "stage": "执行", "version": "v1"}, "id": "wait:337aa086c146e36dcd42dee09e330b7cf12e6f40e399ab0b89a8f6f17b4255aa", "owner": "workshop:dod-replay", "point": "decision", "started_at": "2026-11-19T07:39:13.159611+00:00", "superseded": false, "token": null}, "ref": "wait:337aa086c146e36dcd42dee09e330b7cf12e6f40e399ab0b89a8f6f17b4255aa", "seconds": 0, "stage": "执行", "state": "waiting", "token": null}
+项目经理处理中
+没有
+处理不了
+grant-console:170 送达：旧问卡已答且活已完成，残留对账告警无现有清理命令；交协调对话处理残留问卡
+主循环：最新版本空闲时仍持续慢拍，现有授权命令无修复入口；交协调对话处理主循环慢拍
+详情
+{"active": true, "attempts": [], "candidate": 0, "conclusion": {"action": "交协调对话处理残留问卡", "evidence": "已读角色手册、pm.md、问题记录及PM工具README。status --all --target grant-console确认170已完成，旧requirement-change卡仍待对账；why确认11-15T07:37:53Z已登记Kun原话“170批准”，11:14:45Z完成、11:15:04Z关闭。共享记录11-16 13:36已有同一问题。只读核对CLI、asking.py、holding.py和reask.py：回答不清对账标记，撤问仅处理未运行的等你活；无适用清理入口。未重发、代答或改业务状态。", "reason": "旧问卡已答且活已完成，残留对账告警无现有清理命令", "result": "blocked", "schema": "manager/v1", "status_location": "处理不了"}, "config": {"billing": "subscription", "driver": "codex", "effort": "high", "family": "codex", "ignore_rules": true, "ignore_user_config": true, "model": "gpt-6.1-sol", "permission_mode": "never", "prompt": "项目经理只用现有授权命令疏通和记录；禁止修改代码、规则、需求、开单、代答或发消息。", "require_subscription_login": true, "sandbox": "workspace-write", "settings": {"sandbox_workspace_write": {"network_access": true, "writable_roots": ["/Users/kun/.local/state/workshop"]}}, "skip_git_repo_check": true, "transport": "headless", "use": "manager-codex"}, "created": "2026-11-18T16:00:45.725466+00:00", "delivered": 1, "episode": "aa0fd24b-1fab-443d-a6bc-e81de8b47ec8", "executor": "manager-codex", "facts": [{"at": "2026-11-18T16:00:45.725466+00:00", "digest": "f49c5a2873009afed6bf8b277509745cc70c4b7fe107bca6974ad8773c8775bf", "value": {"delivery": "grant-console:170:eb2b6f0f-2bcf-4d81-86d6-478f359c0d03:requirement-change", "reason": "通道送达未确认"}}], "generation": 1, "id": "fault:delivery:grant-console:170:eb2b6f0f-2bcf-4d81-86d6-478f359c0d03:requirement-change", "last_executor": "manager-codex", "last_session": "337a821a-946a-46f5-a6fb-664cf3a2fb2d", "owner": "core", "publication": "4fb59dac393b977fe17a46a1543b8dc28a1e796956e2c6981716c5acddc6f26b", "publish_error": "JobFailed: [Errno 61] Connection refused", "published_business": {"idle_since": null, "total": 1}, "resume_allowed": true, "revision": 253, "started": null, "starting_facts": 1, "state": "blocked", "token": null, "updated": "2026-11-18T21:21:22.074750+00:00"}
+{"active": true, "attempts": [], "candidate": 0, "conclusion": {"action": "交协调对话处理主循环慢拍", "evidence": "已读角色手册、pm.md及问题记录。显式指定状态目录查status：业务跑着0；watch慢拍告警仍在。运行版本与主检出及成功发版均f72a38c。最近100条慢拍：361—422ms，中位383.0ms；心跳步骤中位347.163ms。beat.py心跳调用activity.snapshot，后者逐个读取jobs及查询轮次结束时间；未逐子调用计时。CLI及PM工具无相应恢复入口。证据和交接留本会话目录；未改业务状态、未发通知。", "reason": "最新版本空闲时仍持续慢拍，现有授权命令无修复入口", "result": "blocked", "schema": "manager/v1", "status_location": "处理不了"}, "config": {"billing": "subscription", "driver": "codex", "effort": "high", "family": "codex", "ignore_rules": true, "ignore_user_config": true, "model": "gpt-6.1-sol", "permission_mode": "never", "prompt": "项目经理只用现有授权命令疏通和记录；禁止修改代码、规则、需求、开单、代答或发消息。", "require_subscription_login": true, "sandbox": "workspace-write", "settings": {"sandbox_workspace_write": {"network_access": true, "writable_roots": ["/Users/kun/.local/state/workshop"]}}, "skip_git_repo_check": true, "transport": "headless", "use": "manager-codex"}, "created": "2026-11-18T16:02:49.962238+00:00", "delivered": 1, "episode": "c2a90cf8-bb0e-4277-9e26-c43ecd2301c3", "executor": "manager-codex", "facts": [{"at": "2026-11-18T16:02:49.962238+00:00", "digest": "775b003a8ac58e3680945f5bba7ce719e459233c387cf55d2c68f01e29c221ac", "value": {"anchor": "2026-11-18T16:00:48.249834+00:00", "confirmed": true, "id": "workshop-watch:d1fd7e837db94f31:2026-11-18:07d297c105d4601eede9f8da", "reported": false, "since": "2026-11-18T16:02:49.962238+00:00", "text": "车间 heartbeat.json 连续三次观测到不同心跳的 tick_ms 超过 100 毫秒，需要你检查主循环，详见 watch.json。"}}], "generation": 1, "id": "system:tick", "last_executor": "manager-codex", "last_session": "d32be13a-5f1e-4323-b917-50f7b259ccdf", "owner": "watch", "publication": "bcf7a9eceab0c8858fe977fc35e0725f8b6c1e5e933846ac1bfb843c82185ff9", "publish_error": "JobFailed: [Errno 61] Connection refused", "published_business": {"idle_since": null, "total": 1}, "resume_allowed": true, "revision": 239, "started": null, "starting_facts": 1, "state": "blocked", "token": null, "updated": "2026-11-18T16:02:49.962238+00:00"}
+
+----- workshop：等待记录（介入点服务） -----
+{
+ "acknowledged": false,
+ "answer": null,
+ "content": {
+  "key": "replay-path",
+  "question": "回放：两条路径先做哪条",
+  "reason": "验证会话回答只恢复这件活，不产生真实授权",
+  "recommend": "A",
+  "stage": "执行",
+  "version": "v1"
+ },
+ "id": "wait:337aa086c146e36dcd42dee09e330b7cf12e6f40e399ab0b89a8f6f17b4255aa",
+ "owner": "workshop:dod-replay",
+ "point": "decision",
+ "started_at": "2026-11-19T07:39:13.159611+00:00",
+ "superseded": false,
+ "token": null
+}
+
+----- workshop：会话回答 -----
+$ <worktree>/.venv/bin/python3 -m workshop.cli --state-dir <回放目录>/converted/state --rules <回放目录>/converted/rules.yaml answer-wait wait:337aa086c146e36dcd42dee09e330b7cf12e6f40e399ab0b89a8f6f17b4255aa A --version v1 --quote 全A --session 10d910bd-0dfd-4785-97d0-dee39ce5883b
+exit=0（0.07 秒）
+{"ref": "wait:337aa086c146e36dcd42dee09e330b7cf12e6f40e399ab0b89a8f6f17b4255aa", "token": "result:4e5aa79811a7a9496ec056bd491df4f815e02944116bc3a12689b4b0e2ffbefb"}
+
+----- workshop：同一回答再登记一次 -----
+$ <worktree>/.venv/bin/python3 -m workshop.cli --state-dir <回放目录>/converted/state --rules <回放目录>/converted/rules.yaml answer-wait wait:337aa086c146e36dcd42dee09e330b7cf12e6f40e399ab0b89a8f6f17b4255aa A --version v1 --quote 全A --session 10d910bd-0dfd-4785-97d0-dee39ce5883b
+exit=0（0.07 秒）
+{"ref": "wait:337aa086c146e36dcd42dee09e330b7cf12e6f40e399ab0b89a8f6f17b4255aa", "token": "result:4e5aa79811a7a9496ec056bd491df4f815e02944116bc3a12689b4b0e2ffbefb"}
+
+----- workshop：旧版本的回答被拒 -----
+$ <worktree>/.venv/bin/python3 -m workshop.cli --state-dir <回放目录>/converted/state --rules <回放目录>/converted/rules.yaml answer-wait wait:337aa086c146e36dcd42dee09e330b7cf12e6f40e399ab0b89a8f6f17b4255aa A --version old --quote 全A --session 10d910bd-0dfd-4785-97d0-dee39ce5883b
+exit=2（0.07 秒）
+车间：回答的问题版本不匹配
+
+----- workshop：授权中心原申请只读核实（流程 after，未新建申请） -----
+{
+ "spec": {
+  "request": "exec-1794989758-293a21",
+  "kind": "exec",
+  "action": "有别人在用的交付对象上线",
+  "provider_action": "argocd/sync_app",
+  "checkpoint": "original-sync",
+  "target": {
+   "instance": "central",
+   "app": "grant-console-centaladmin",
+   "revision": "d3a1765d1a56f8011a81f5db86d47dfc86724d9c"
+  }
+ },
+ "verification": {
+  "request": "exec-1794989758-293a21",
+  "action": "有别人在用的交付对象上线",
+  "target": "{\"app\":\"grant-console-centaladmin\",\"instance\":\"central\",\"revision\":\"d3a1765d1a56f8011a81f5db86d47dfc86724d9c\"}",
+  "result": "approved",
+  "applied": true
+ },
+ "execution": {
+  "instance": "central",
+  "app": "grant-console-centaladmin",
+  "revision": "d3a1765d1a56f8011a81f5db86d47dfc86724d9c",
+  "operation_id": "exec-1794989758-293a21",
+  "operation_matches": true,
+  "operation_phase": "Succeeded",
+  "after": {
+   "revision": "d3a1765d1a56f8011a81f5db86d47dfc86724d9c",
+   "sync": "Synced",
+   "health": "Healthy"
+  }
+ },
+ "status": "completed"
+}
+
+----- workshop：本活各轮（真实 codex 订阅执行者） -----
+[
+ {
+  "token": "07160569-11e2-4930-97b9-ab90b5e053a7",
+  "executor": "codex",
+  "session": null,
+  "status": "ended",
+  "stopped": true,
+  "summary": "隔离验收：登记无卡取舍",
+  "outcome": "nothing"
+ },
+ {
+  "token": "696875c1-417d-4d15-8774-5c2e8f10da0a",
+  "executor": "codex",
+  "session": "44b350a9-2668-44e5-a31a-c2672109a2d9",
+  "status": "ended",
+  "stopped": true,
+  "summary": "已读会话回答；交回授权中心原申请和检查点",
+  "outcome": "nothing"
+ },
+ {
+  "token": "bfa0407e-88b1-4828-9291-b22bdbb8325d",
+  "executor": "codex",
+  "session": "44b350a9-2668-44e5-a31a-c2672109a2d9",
+  "status": "ended",
+  "stopped": true,
+  "summary": "原申请已核实；约好到点再看",
+  "outcome": "nothing"
+ },
+ {
+  "token": "43ecd312-97da-40a0-a360-e994412ef585",
+  "executor": "codex",
+  "session": "44b350a9-2668-44e5-a31a-c2672109a2d9",
+  "status": "ended",
+  "stopped": true,
+  "summary": "到点续跑；再约一天后看",
+  "outcome": "nothing"
+ }
+]
+
+----- workshop：本活定时（到点自动续跑） -----
+[
+ {
+  "id": "workshop:dod-replay:bfa0407e-88b1-4828-9291-b22bdbb8325d:look-again",
+  "at": "2026-11-19T07:39:40.171123+00:00",
+  "about": "隔离验收到点续跑",
+  "kind": "工序",
+  "owner": "车间",
+  "fired": true
+ },
+ {
+  "id": "workshop:dod-replay:43ecd312-97da-40a0-a360-e994412ef585:look-tomorrow",
+  "at": "2026-11-20T07:40:02.929762+00:00",
+  "about": "隔离验收一天后再看",
+  "kind": "工序",
+  "owner": "车间",
+  "fired": false
+ }
+]
+
+----- workshop：why（副本） -----
+活 workshop:dod-replay
+等待记录 {"acknowledged": true, "answer": {"source": {"channel": "session", "quote": "全A", "session": "10d910bd-0dfd-4785-97d0-dee39ce5883b", "version": "v1"}, "value": "A"}, "content": {"key": "replay-path", "question": "回放：两条路径先做哪条", "reason": "验证会话回答只恢复这件活，不产生真实授权", "recommend": "A", "stage": "执行", "version": "v1"}, "id": "wait:337aa086c146e36dcd42dee09e330b7cf12e6f40e399ab0b89a8f6f17b4255aa", "owner": "workshop:dod-replay", "point": "decision", "started_at": "2026-11-19T07:39:13.159611+00:00", "superseded": false, "token": "result:4e5aa79811a7a9496ec056bd491df4f815e02944116bc3a12689b4b0e2ffbefb"}
+2026-11-19T07:39:03.771006+00:00 事件 replay ready：隔离回放
+2026-11-19T07:39:03.775433+00:00 关系快照：没有关系
+2026-11-19T07:39:03.778576+00:00 执行 codex 一轮 07160569-11e2-4930-97b9-ab90b5e053a7 起因：事实 274644 规则模型=gpt-6.1-sol 强度=high 选择理由：按规则顺序选首个获准候选 codex；阶段 执行，第 1 轮
+2026-11-19T07:39:12.765130+00:00 回执 nothing 隔离验收：登记无卡取舍
+2026-11-19T07:39:13.160678+00:00 流程核对 执行：登记无卡取舍等待
+2026-11-19T07:39:13.161029+00:00 轮结束 07160569-11e2-4930-97b9-ab90b5e053a7 结果=nothing 判过=未知 实际模型=gpt-6.1-sol 耗时=9.3825秒 token=17929 / 12160 / 0 / 142 API折合USD=0.038494 计费=subscription
+2026-11-19T07:39:13.460470+00:00 执行 codex 一轮 696875c1-417d-4d15-8774-5c2e8f10da0a 起因：事实 274652 规则模型=gpt-6.1-sol 强度=high 选择理由：按规则顺序选首个获准候选 codex；阶段 执行，第 2 轮
+2026-11-19T07:39:23.623431+00:00 回执 nothing 已读会话回答；交回授权中心原申请和检查点
+2026-11-19T07:39:24.149067+00:00 流程核对 执行：保存原授权申请和检查点
+2026-11-19T07:39:24.149445+00:00 轮结束 696875c1-417d-4d15-8774-5c2e8f10da0a 结果=nothing 判过=未知 实际模型=gpt-6.1-sol 耗时=10.689023秒 token=5496 / 30080 / 0 / 155 API折合USD=0.01555 计费=subscription
+2026-11-19T07:39:24.173875+00:00 执行 codex 一轮 bfa0407e-88b1-4828-9291-b22bdbb8325d 起因：事实 274674 规则模型=gpt-6.1-sol 强度=high 选择理由：按规则顺序选首个获准候选 codex；阶段 执行，第 3 轮
+2026-11-19T07:39:39.171123+00:00 回执 nothing 原申请已核实；约好到点再看
+2026-11-19T07:39:46.713203+00:00 流程核对 执行：执行没做完：找不到带活标记的 PR
+2026-11-19T07:39:46.713527+00:00 轮结束 bfa0407e-88b1-4828-9291-b22bdbb8325d 结果=nothing 判过=未知 实际模型=gpt-6.1-sol 耗时=22.539726秒 token=6152 / 35584 / 0 / 458 API折合USD=0.020442400000000003 计费=subscription
+2026-11-19T07:39:47.794140+00:00 事件 timer update：资料
+2026-11-19T07:39:47.821500+00:00 执行 codex 一轮 43ecd312-97da-40a0-a360-e994412ef585 起因：事实 274695 规则模型=gpt-6.1-sol 强度=high 选择理由：按规则顺序选首个获准候选 codex；阶段 执行，第 4 轮
+2026-11-19T07:40:02.929762+00:00 回执 nothing 到点续跑；再约一天后看
+2026-11-19T07:40:12.632348+00:00 流程核对 执行：执行没做完：找不到带活标记的 PR
+2026-11-19T07:40:12.632659+00:00 轮结束 43ecd312-97da-40a0-a360-e994412ef585 结果=nothing 判过=未知 实际模型=gpt-6.1-sol 耗时=24.811236秒 token=6284 / 41984 / 0 / 458 API折合USD=0.0213464 计费=subscription
+
+----- workshop：派活记录 -----
+[
+ {
+  "item": "workshop:dod-replay",
+  "round": 1
+ },
+ {
+  "item": "workshop:dod-replay",
+  "round": 2
+ },
+ {
+  "item": "workshop:dod-replay",
+  "round": 3
+ },
+ {
+  "item": "workshop:dod-replay",
+  "round": 4
+ }
+]
+
+----- workshop：轮次小结 -----
+{
+ "rounds": 4,
+ "resumed": 1,
+ "authorization": {
+  "request": "exec-1794989758-293a21",
+  "action": "有别人在用的交付对象上线",
+  "target": "{\"app\":\"grant-console-centaladmin\",\"instance\":\"central\",\"revision\":\"d3a1765d1a56f8011a81f5db86d47dfc86724d9c\"}",
+  "result": "approved",
+  "applied": true
+ },
+ "timers_fired": [
+  "workshop:dod-replay:bfa0407e-88b1-4828-9291-b22bdbb8325d:look-again"
+ ],
+ "writes": []
+}
+[8.2-4] 走通
+
+===== [8.3b] 授权原申请：新进程只读查已有申请两次，结果一致，不新建申请 =====
+
+----- workshop：原申请已批准 -----
+$ <worktree>/.venv/bin/python3 <worktree>/scripts/verify_intervention_converted.py --authorization-child <回放目录>/converted/authorization-原申请已批准.json
+exit=0（0.42 秒）
+{"pid": 63177, "item": "workshop:dod-replay", "request": "exec-1794989758-293a21", "action": "有别人在用的交付对象上线", "after": {"aliases": [], "pending": true, "reason": "授权中心 exec-1794989758-293a21：approved；检查点 original-sync-restart", "next": "从持久检查点继续；核实执行记录，不重复已执行动作", "rerun": true, "recheck_after": "+5m", "restart": false, "recovery_id": "", "blocked": "", "wait": null, "wake_on_completed": false}, "record": {"spec": {"request": "exec-1794989758-293a21", "kind": "exec", "action": "有别人在用的交付对象上线", "provider_action": "argocd/sync_app", "checkpoint": "original-sync-restart", "target": {"instance": "central", "app": "grant-console-centaladmin", "revision": "d3a1765d1a56f8011a81f5db86d47dfc86724d9c"}}, "verification": {"request": "exec-1794989758-293a21", "action": "有别人在用的交付对象上线", "target": "{\"app\":\"grant-console-centaladmin\",\"instance\":\"central\",\"revision\":\"d3a1765d1a56f8011a81f5db86d47dfc86724d9c\"}", "result": "approved", "applied": true}, "execution": {"instance": "central", "app": "grant-console-centaladmin", "revision": "d3a1765d1a56f8011a81f5db86d47dfc86724d9c", "operation_id": "exec-1794989758-293a21", "operation_matches": true, "operation_phase": "Succeeded", "after": {"revision": "d3a1765d1a56f8011a81f5db86d47dfc86724d9c", "sync": "Synced", "health": "Healthy"}}, "status": "completed"}, "new_requests": 0}
+
+----- workshop：原申请已批准 -----
+$ <worktree>/.venv/bin/python3 <worktree>/scripts/verify_intervention_converted.py --authorization-child <回放目录>/converted/authorization-原申请已批准.json
+exit=0（0.08 秒）
+{"pid": 63179, "item": "workshop:dod-replay", "request": "exec-1794989758-293a21", "action": "有别人在用的交付对象上线", "after": {"aliases": [], "pending": true, "reason": "原申请已核实生效", "next": "从检查点继续；已代执行的动作不得重做", "rerun": true, "recheck_after": "+5m", "restart": false, "recovery_id": "", "blocked": "", "wait": null, "wake_on_completed": false}, "record": {"spec": {"request": "exec-1794989758-293a21", "kind": "exec", "action": "有别人在用的交付对象上线", "provider_action": "argocd/sync_app", "checkpoint": "original-sync-restart", "target": {"instance": "central", "app": "grant-console-centaladmin", "revision": "d3a1765d1a56f8011a81f5db86d47dfc86724d9c"}}, "verification": {"request": "exec-1794989758-293a21", "action": "有别人在用的交付对象上线", "target": "{\"app\":\"grant-console-centaladmin\",\"instance\":\"central\",\"revision\":\"d3a1765d1a56f8011a81f5db86d47dfc86724d9c\"}", "result": "approved", "applied": true}, "execution": {"instance": "central", "app": "grant-console-centaladmin", "revision": "d3a1765d1a56f8011a81f5db86d47dfc86724d9c", "operation_id": "exec-1794989758-293a21", "operation_matches": true, "operation_phase": "Succeeded", "after": {"revision": "d3a1765d1a56f8011a81f5db86d47dfc86724d9c", "sync": "Synced", "health": "Healthy"}}, "status": "completed"}, "new_requests": 0}
+[8.3b] 走通
+
+===== [8.8] 亲眼看送一次、回复归件 =====
+
+----- workshop：亲眼看约定（真实 issue #176 正文「要不要亲眼看」） -----
+{
+ "contract": "一是转换对账表里取消掉的旧记录（旧问卡、通知、送回），看有没有不该丢的；收尾时车间把对账表里「取消」的那几行送来。二是切换后 grant-console 第一次定时发版的授权中心审批卡：照常批；之后车间不再发自己的授权卡或通知。",
+ "location": "手机飞书。对账表在 Ash 的私聊；审批卡是授权中心发的那张。",
+ "response": "在 Ash 私聊里引用那条送达回「过」，或「不对：哪几行不该取消」。审批卡批了就算，不用另回。"
+}
+
+----- workshop：亲眼看送达两次调用 -----
+{
+ "first": {
+  "aliases": [
+   "local:delivery:be5c5db79ea1eebd50f5eee85ae3eb6d57f93bd3dd2347153e398c409bf705ee"
+  ],
+  "pending": true,
+  "reason": "等待当前交付版本的亲眼看回复",
+  "next": "在 Ash 私聊里引用那条送达回「过」，或「不对：哪几行不该取消」。审批卡批了就算，不用另回。",
+  "rerun": false,
+  "recheck_after": "+5m",
+  "restart": false,
+  "recovery_id": "",
+  "blocked": "",
+  "wait": {
+   "provider": "intervention",
+   "ref": "wait:1d87bbb4aed6d2e98c4a44a04faa069ba0edf627d1cd56a2b26f974e9cf1ef45",
+   "operation": "visual:workshop:dod-replay:29af0b3d1a591be643ad5a1b97e85829722d046c"
+  },
+  "wake_on_completed": false
+ },
+ "second": {
+  "aliases": [
+   "local:delivery:be5c5db79ea1eebd50f5eee85ae3eb6d57f93bd3dd2347153e398c409bf705ee"
+  ],
+  "pending": true,
+  "reason": "等待当前交付版本的亲眼看回复",
+  "next": "在 Ash 私聊里引用那条送达回「过」，或「不对：哪几行不该取消」。审批卡批了就算，不用另回。",
+  "rerun": false,
+  "recheck_after": "+5m",
+  "restart": false,
+  "recovery_id": "",
+  "blocked": "",
+  "wait": {
+   "provider": "intervention",
+   "ref": "wait:1d87bbb4aed6d2e98c4a44a04faa069ba0edf627d1cd56a2b26f974e9cf1ef45",
+   "operation": "visual:workshop:dod-replay:29af0b3d1a591be643ad5a1b97e85829722d046c"
+  },
+  "wake_on_completed": false
+ },
+ "entry": {
+  "contract": {
+   "contract": "一是转换对账表里取消掉的旧记录（旧问卡、通知、送回），看有没有不该丢的；收尾时车间把对账表里「取消」的那几行送来。二是切换后 grant-console 第一次定时发版的授权中心审批卡：照常批；之后车间不再发自己的授权卡或通知。",
+   "location": "手机飞书。对账表在 Ash 的私聊；审批卡是授权中心发的那张。",
+   "response": "在 Ash 私聊里引用那条送达回「过」，或「不对：哪几行不该取消」。审批卡批了就算，不用另回。"
+  },
+  "delivery": "delivery:be5c5db79ea1eebd50f5eee85ae3eb6d57f93bd3dd2347153e398c409bf705ee",
+  "permit": "permit:bee8002fe1f1732ad359a5be2d2b89a9bf3ec6f59d38ca3f888789c7e96bf7d5",
+  "external": "local:delivery:be5c5db79ea1eebd50f5eee85ae3eb6d57f93bd3dd2347153e398c409bf705ee",
+  "wait": "wait:1d87bbb4aed6d2e98c4a44a04faa069ba0edf627d1cd56a2b26f974e9cf1ef45",
+  "answer": null
+ }
+}
+
+----- workshop：点「通过」（同一事件两次） -----
+{
+ "first": {
+  "accepted": true,
+  "answer": "过",
+  "answered": true,
+  "delivery": {
+   "error": null,
+   "external": "local:delivery:11bb043f076659940f9cd09827918eaf1058069eb6d1ea1a34d82897d22e9e1e",
+   "id": "delivery:11bb043f076659940f9cd09827918eaf1058069eb6d1ea1a34d82897d22e9e1e",
+   "payload": {
+    "card": {
+     "body": {
+      "elements": []
+     },
+     "header": {
+      "subtitle": {
+       "content": "亲眼看 · 介入点：存量转换、旧出口停用与逐批真实验收",
+       "tag": "plain_text"
+      },
+      "template": "green",
+      "title": {
+       "content": "已收到：通过",
+       "tag": "plain_text"
+      }
+     },
+     "schema": "2.0"
+    },
+    "kind": "visual_receipt",
+    "wait": "wait:1d87bbb4aed6d2e98c4a44a04faa069ba0edf627d1cd56a2b26f974e9cf1ef45"
+   },
+   "permit": null,
+   "state": "sent"
+  },
+  "external": "local:delivery:11bb043f076659940f9cd09827918eaf1058069eb6d1ea1a34d82897d22e9e1e",
+  "ref": "delivery:11bb043f076659940f9cd09827918eaf1058069eb6d1ea1a34d82897d22e9e1e",
+  "state": "sent"
+ },
+ "again": {
+  "accepted": true,
+  "answer": "过",
+  "answered": true,
+  "delivery": {
+   "error": null,
+   "external": "local:delivery:11bb043f076659940f9cd09827918eaf1058069eb6d1ea1a34d82897d22e9e1e",
+   "id": "delivery:11bb043f076659940f9cd09827918eaf1058069eb6d1ea1a34d82897d22e9e1e",
+   "payload": {
+    "card": {
+     "body": {
+      "elements": []
+     },
+     "header": {
+      "subtitle": {
+       "content": "亲眼看 · 介入点：存量转换、旧出口停用与逐批真实验收",
+       "tag": "plain_text"
+      },
+      "template": "green",
+      "title": {
+       "content": "已收到：通过",
+       "tag": "plain_text"
+      }
+     },
+     "schema": "2.0"
+    },
+    "kind": "visual_receipt",
+    "wait": "wait:1d87bbb4aed6d2e98c4a44a04faa069ba0edf627d1cd56a2b26f974e9cf1ef45"
+   },
+   "permit": null,
+   "state": "sent"
+  },
+  "external": "local:delivery:11bb043f076659940f9cd09827918eaf1058069eb6d1ea1a34d82897d22e9e1e",
+  "ref": "delivery:11bb043f076659940f9cd09827918eaf1058069eb6d1ea1a34d82897d22e9e1e",
+  "state": "sent"
+ }
+}
+
+----- workshop：回复归件到这次等待 -----
+{
+ "after": null,
+ "wait": {
+  "acknowledged": false,
+  "answer": {
+   "source": {
+    "channel": "external",
+    "delivery": "delivery:be5c5db79ea1eebd50f5eee85ae3eb6d57f93bd3dd2347153e398c409bf705ee",
+    "evidence": "{\"chat\":\"oc_9d541419240c15d82e50fabbba2ace4e\",\"choice\":\"pass\",\"event\":\"converted-workshop\",\"message\":\"local:delivery:be5c5db79ea1eebd50f5eee85ae3eb6d57f93bd3dd2347153e398c409bf705ee\",\"operator\":\"ou_43456ed5ae17472375fcbb6ec0fc4661\",\"text\":\"过\"}",
+    "reference": "converted-workshop",
+    "version": "29af0b3d1a591be643ad5a1b97e85829722d046c"
+   },
+   "value": "过"
+  },
+  "content": {
+   "delivery": "delivery:be5c5db79ea1eebd50f5eee85ae3eb6d57f93bd3dd2347153e398c409bf705ee",
+   "key": "visual",
+   "question": "一是转换对账表里取消掉的旧记录（旧问卡、通知、送回），看有没有不该丢的；收尾时车间把对账表里「取消」的那几行送来。二是切换后 grant-console 第一次定时发版的授权中心审批卡：照常批；之后车间不再发自己的授权卡或通知。",
+   "recommend": "按约定查看后回复",
+   "response": "在 Ash 私聊里引用那条送达回「过」，或「不对：哪几行不该取消」。审批卡批了就算，不用另回。",
+   "stage": "收尾",
+   "version": "29af0b3d1a591be643ad5a1b97e85829722d046c"
+  },
+  "id": "wait:1d87bbb4aed6d2e98c4a44a04faa069ba0edf627d1cd56a2b26f974e9cf1ef45",
+  "owner": "workshop:dod-replay",
+  "point": "visual",
+  "started_at": "2026-11-19T07:40:23.889292+00:00",
+  "superseded": false,
+  "token": "result:c909ad953d0f69ca0ed188513e6f6083a22d0d60dacf96475a1c3e2b98c1a254"
+ }
+}
+[8.8] 走通
+
+===== [8.9] 盯更新报告送一次、回复归件 =====
+
+----- workshop：盯更新报告调两次送达 -----
+{
+ "report": "wu-daily-2026-11-18-v2",
+ "artifact": "<回放目录>/converted/state/watch_updates/reports/wu-daily-2026-11-18-v2.html",
+ "inbox_sends": [
+  [
+   "delivery:37d870f8052a21d393afb2a7353fb0b5473cd48ee4db6ab97f7902873e5a5ab5"
+  ]
+ ]
+}
+
+----- workshop：真实私聊反馈回源核验后归件 -----
+{
+ "classification": {
+  "action": "rework",
+  "object_key": "check",
+  "discard": false,
+  "summary": "Kun 的盯更新反馈"
+ },
+ "matched": [
+  {
+   "version": "sentry-5ca4dc7ce841d6397522f086",
+   "instance": "dc2-sentry",
+   "feedback": {
+    "key": "sentry-5ca4dc7ce841d6397522f086",
+    "instance": "dc2-sentry",
+    "decision": "升",
+    "note": "",
+    "target_id": "dc2-sentry",
+    "event_id": "cli:feishu:om_x100b60ec8b5e7ca0dfc5adda0a64553",
+    "quote": "# 盯更新反馈 wu-daily-2026-11-18-v2\n- Sentry self-hosted · dc2 · sentry.trin-tech.net：升\n\n```json\n{\"report\":\"wu-daily-2026-11-18-v2\",\"items\":[{\"id\":\"dc2-sentry\",\"choice\":\"升\",\"note\":\"\"}]}\n```",
+    "channel": "feishu",
+    "message_id": "om_x100b60ec8b5e7ca0dfc5adda0a64553"
+   }
+  }
+ ],
+ "unanswered_is_approval": false,
+ "upgrade_calls": 0
+}
+[8.9] 走通
+
+===== [8.5] 程序作业在跑不算空闲（真实守护进程心跳） =====
+
+----- workshop：起守护进程（第一次） -----
+{
+ "pid": 63695,
+ "state": "<回放目录>/converted/state"
+}
+
+----- workshop：程序作业在跑时的心跳 -----
+{
+ "business": {
+  "agents": 0,
+  "jobs": 1,
+  "total": 1,
+  "round_tokens": [],
+  "job_ids": [
+   "verification"
+  ],
+  "last_activity_at": "2026-11-19T07:40:37.044587+00:00",
+  "idle_since": null
+ },
+ "active": 0
+}
+[8.5] 走通
+
+===== [8.6] 守护进程停了看门接管、不重复起会话（真实项目经理） =====
+
+----- workshop：真实项目经理在跑 -----
+{
+ "record": {
+  "active": true,
+  "attempts": [],
+  "candidate": 0,
+  "config": {
+   "billing": "subscription",
+   "driver": "codex",
+   "effort": "high",
+   "family": "codex",
+   "ignore_rules": true,
+   "ignore_user_config": true,
+   "model": "gpt-6.1-sol",
+   "permission_mode": "never",
+   "prompt": "项目经理只用现有授权命令疏通和记录；禁止修改代码、规则、需求、开单、代答或发消息。 本轮是转换后副本上的隔离验收：只读本轮状态目录和资料；不得运行生产命令，不修改生产状态，不访问远端，不发消息。确认受控事项已核对后交 resolved；不要等待外部条件。",
+   "require_subscription_login": true,
+   "sandbox": "workspace-write",
+   "settings": {
+    "sandbox_workspace_write": {
+     "network_access": true,
+     "writable_roots": [
+      "<回放目录>/converted"
+     ]
+    }
+   },
+   "skip_git_repo_check": true,
+   "transport": "headless",
+   "use": "manager-codex"
+  },
+  "created": "2026-11-19T07:40:37.054882+00:00",
+  "delivered": 1,
+  "episode": "b53ecf03-35c3-4732-b94d-525c6f4c8479",
+  "executor": "manager-codex",
+  "facts": [
+   {
+    "at": "2026-11-19T07:40:37.054882+00:00",
+    "digest": "af0c96b65c9c545333aacf2df15d79eb54f48cf545ae934e9169d10caf28f9c2",
+    "value": {
+     "cause": 274710,
+     "failure_episode": null,
+     "item": "workshop:dod-manager",
+     "next": "隔离诊断，核对后交 resolved",
+     "reason": "隔离验收：核对转换后副本的项目经理接管；核对后可记 resolved",
+     "revision": 1,
+     "title": "核对副本里的项目经理"
+    }
+   }
+  ],
+  "generation": 1,
+  "id": "item:workshop:dod-manager",
+  "last_executor": "manager-codex",
+  "owner": "core",
+  "publication": "d3a944038da19a203419b25bcbc3a7ba503634d3f87123267cdcdc44bc1651d8",
+  "published_business": {
+   "idle_since": null,
+   "total": 1
+  },
+  "resume_allowed": true,
+  "revision": 4,
+  "started": {
+   "handle": "<回放目录>/converted/executors/manager-codex/rounds/c4a38cd81c75991e65e42ad2e2385cd7a8da4ac424f717a6c4e421571d54c7f9",
+   "session": "7a2b323d-8014-426e-a1fb-d77e72c93f1f",
+   "workdir": null
+  },
+  "starting_facts": 1,
+  "state": "running",
+  "token": "5eefd4bd-f414-4bcb-8088-441b18b4697a",
+  "updated": "2026-11-19T07:40:37.054882+00:00"
+ },
+ "heartbeat_business": {
+  "agents": 0,
+  "jobs": 1,
+  "total": 1,
+  "round_tokens": [],
+  "job_ids": [
+   "verification"
+  ],
+  "last_activity_at": "2026-11-19T07:40:37.430557+00:00",
+  "idle_since": null
+ }
+}
+
+----- workshop：守护进程停了，系统 Python 看门接管 -----
+{
+ "argv": [
+  "/usr/bin/python3",
+  "-I",
+  "<worktree>/src/workshop/watch/__init__.py",
+  "--state-dir",
+  "<回放目录>/converted/state",
+  "--manager-command",
+  "[\"<worktree>/.venv/bin/python3\", \"-m\", \"workshop.manager_cli\", \"--state-dir\", \"<回放目录>/converted/state\", \"--rules\", \"<回放目录>/converted/rules.yaml\"]"
+ ],
+ "exit_code": 0,
+ "stdout": "{\"heartbeat\": {\"id\": \"workshop-watch:c566065efdebe051:2026-11-19:6ed27ea07196feed3abb5671\", \"confirmed\": false}}\n",
+ "stderr": "",
+ "record": {
+  "active": true,
+  "attempts": [],
+  "candidate": 0,
+  "config": {
+   "billing": "subscription",
+   "driver": "codex",
+   "effort": "high",
+   "family": "codex",
+   "ignore_rules": true,
+   "ignore_user_config": true,
+   "model": "gpt-6.1-sol",
+   "permission_mode": "never",
+   "prompt": "项目经理只用现有授权命令疏通和记录；禁止修改代码、规则、需求、开单、代答或发消息。 本轮是转换后副本上的隔离验收：只读本轮状态目录和资料；不得运行生产命令，不修改生产状态，不访问远端，不发消息。确认受控事项已核对后交 resolved；不要等待外部条件。",
+   "require_subscription_login": true,
+   "sandbox": "workspace-write",
+   "settings": {
+    "sandbox_workspace_write": {
+     "network_access": true,
+     "writable_roots": [
+      "<回放目录>/converted"
+     ]
+    }
+   },
+   "skip_git_repo_check": true,
+   "transport": "headless",
+   "use": "manager-codex"
+  },
+  "created": "2026-11-19T07:40:37.054882+00:00",
+  "delivered": 1,
+  "episode": "b53ecf03-35c3-4732-b94d-525c6f4c8479",
+  "executor": "manager-codex",
+  "facts": [
+   {
+    "at": "2026-11-19T07:40:37.054882+00:00",
+    "digest": "af0c96b65c9c545333aacf2df15d79eb54f48cf545ae934e9169d10caf28f9c2",
+    "value": {
+     "cause": 274710,
+     "failure_episode": null,
+     "item": "workshop:dod-manager",
+     "next": "隔离诊断，核对后交 resolved",
+     "reason": "隔离验收：核对转换后副本的项目经理接管；核对后可记 resolved",
+     "revision": 1,
+     "title": "核对副本里的项目经理"
+    }
+   }
+  ],
+  "generation": 1,
+  "id": "item:workshop:dod-manager",
+  "last_executor": "manager-codex",
+  "owner": "watch",
+  "publication": "d3a944038da19a203419b25bcbc3a7ba503634d3f87123267cdcdc44bc1651d8",
+  "published_business": {
+   "idle_since": null,
+   "total": 1
+  },
+  "resume_allowed": true,
+  "revision": 5,
+  "started": {
+   "handle": "<回放目录>/converted/executors/manager-codex/rounds/c4a38cd81c75991e65e42ad2e2385cd7a8da4ac424f717a6c4e421571d54c7f9",
+   "session": "7a2b323d-8014-426e-a1fb-d77e72c93f1f",
+   "workdir": null
+  },
+  "starting_facts": 1,
+  "state": "running",
+  "token": "5eefd4bd-f414-4bcb-8088-441b18b4697a",
+  "updated": "2026-11-19T07:40:37.640366+00:00"
+ }
+}
+
+----- workshop：起守护进程（看门接管后重启） -----
+{
+ "pid": 63838,
+ "state": "<回放目录>/converted/state"
+}
+
+----- workshop：项目经理结论（同一会话接着做） -----
+{
+ "active": true,
+ "attempts": [],
+ "candidate": 0,
+ "conclusion": {
+  "evidence": "已读本轮角色手册；只读核对 managers.db 中受控事项 item:workshop:dod-manager，其 episode、token 与本轮一致，状态 running，delivered=1，已关联执行会话；manager-input.json 显示 takeover=true，唯一作业 verification 的资料标明隔离回放。未运行生产命令、修改状态、访问远端或发送通知。",
+  "result": "resolved",
+  "schema": "manager/v1"
+ },
+ "config": {
+  "billing": "subscription",
+  "driver": "codex",
+  "effort": "high",
+  "family": "codex",
+  "ignore_rules": true,
+  "ignore_user_config": true,
+  "model": "gpt-6.1-sol",
+  "permission_mode": "never",
+  "prompt": "项目经理只用现有授权命令疏通和记录；禁止修改代码、规则、需求、开单、代答或发消息。 本轮是转换后副本上的隔离验收：只读本轮状态目录和资料；不得运行生产命令，不修改生产状态，不访问远端，不发消息。确认受控事项已核对后交 resolved；不要等待外部条件。",
+  "require_subscription_login": true,
+  "sandbox": "workspace-write",
+  "settings": {
+   "sandbox_workspace_write": {
+    "network_access": true,
+    "writable_roots": [
+     "<回放目录>/converted"
+    ]
+   }
+  },
+  "skip_git_repo_check": true,
+  "transport": "headless",
+  "use": "manager-codex"
+ },
+ "created": "2026-11-19T07:40:37.054882+00:00",
+ "delivered": 1,
+ "episode": "b53ecf03-35c3-4732-b94d-525c6f4c8479",
+ "executor": "manager-codex",
+ "facts": [
+  {
+   "at": "2026-11-19T07:40:37.054882+00:00",
+   "digest": "af0c96b65c9c545333aacf2df15d79eb54f48cf545ae934e9169d10caf28f9c2",
+   "value": {
+    "cause": 274710,
+    "failure_episode": null,
+    "item": "workshop:dod-manager",
+    "next": "隔离诊断，核对后交 resolved",
+    "reason": "隔离验收：核对转换后副本的项目经理接管；核对后可记 resolved",
+    "revision": 1,
+    "title": "核对副本里的项目经理"
+   }
+  }
+ ],
+ "generation": 1,
+ "id": "item:workshop:dod-manager",
+ "last_executor": "manager-codex",
+ "last_session": "7a2b323d-8014-426e-a1fb-d77e72c93f1f",
+ "owner": "core",
+ "publication": "4ccd1b545b2f5a07dba4cab3c4c8bc1a292d91447f469fce4928581d26fc0c88",
+ "published_business": {
+  "idle_since": null,
+  "total": 1
+ },
+ "resume_allowed": true,
+ "revision": 7,
+ "started": null,
+ "starting_facts": 1,
+ "state": "resolved",
+ "token": null,
+ "updated": "2026-11-19T07:40:37.980564+00:00"
+}
+[8.6] 走通
+
+===== [8.7] 同一段空闲只推一次（真实守护进程、项目经理命令、介入点服务） =====
+
+----- workshop：空闲起点 -----
+{
+ "agents": 0,
+ "jobs": 0,
+ "total": 0,
+ "round_tokens": [],
+ "job_ids": [],
+ "last_activity_at": "2026-11-19T07:41:38.019621+00:00",
+ "idle_since": "2026-11-19T07:41:38.019621+00:00"
+}
+
+----- workshop：空闲 299 秒（假时钟判五分钟） -----
+{
+ "exit_code": 0,
+ "stderr": "",
+ "tick_attempts_until_lock": [
+  0
+ ],
+ "idle_record": {
+  "active": false,
+  "attempts": [],
+  "candidate": 0,
+  "conclusion": {
+   "action": "交协调对话核对亲眼看版本",
+   "evidence": "已读本轮手册、最新共享问题记录及前轮交接。显式state-dir查status/why175：3件活、跑着0、卡住0；175收尾等待仍绑定f72a38c，answer=null、读取无错，最后收尾送达为02:52:47Z；176只等175，检查更新验收等反馈。13:02共享记录载PR255已上线c773e397，但175旧等待未替换、新版亲眼看未自动出现。无Kun新回答或本轮返工原话；未代答、重建等待、改状态或发消息。",
+   "reason": "新版状态页已上线，活仍等待旧版本亲眼看",
+   "result": "blocked",
+   "schema": "manager/v1",
+   "status_location": "处理不了"
+  },
+  "config": {
+   "billing": "subscription",
+   "driver": "codex",
+   "effort": "high",
+   "family": "codex",
+   "ignore_rules": true,
+   "ignore_user_config": true,
+   "model": "gpt-6.1-sol",
+   "permission_mode": "never",
+   "prompt": "项目经理只用现有授权命令疏通和记录；禁止修改代码、规则、需求、开单、代答或发消息。",
+   "require_subscription_login": true,
+   "sandbox": "workspace-write",
+   "settings": {
+    "sandbox_workspace_write": {
+     "network_access": true,
+     "writable_roots": [
+      "/Users/kun/.local/state/workshop"
+     ]
+    }
+   },
+   "skip_git_repo_check": true,
+   "transport": "headless",
+   "use": "manager-codex"
+  },
+  "created": "2026-11-19T05:06:13.502890+00:00",
+  "delivered": 1,
+  "episode": "39100917-1eab-429a-8e89-e09969af9b93",
+  "executor": "manager-codex",
+  "facts": [
+   {
+    "at": "2026-11-19T05:06:13.502890+00:00",
+    "digest": "cad43db62cb66e242f70a683821fea39b856e042e8d4e15305bafca1e02042e5",
+    "value": {
+     "idle_since": "2026-11-19T05:00:58.010230+00:00",
+     "reason": "业务连续五分钟为零"
+    }
+   }
+  ],
+  "generation": 10,
+  "id": "idle",
+  "last_executor": "manager-codex",
+  "last_session": "59833ae6-71e9-4697-9ecd-13b78f8d8cde",
+  "owner": "watch",
+  "publication": "4b83f9bb7085e0fb956802df1ef06e9581f39a026c455a96fb5ba32a43f0e295",
+  "publish_error": "JobFailed: [Errno 61] Connection refused",
+  "published_business": {
+   "idle_since": "2026-11-19T07:41:38.019621+00:00",
+   "total": 0
+  },
+  "resume_allowed": true,
+  "revision": 284,
+  "started": null,
+  "starting_facts": 1,
+  "state": "resolved",
+  "token": null,
+  "updated": "2026-11-19T05:58:37.264942+00:00"
+ },
+ "registered_this_segment": false
+}
+
+----- workshop：空闲 300 秒（假时钟判五分钟） -----
+{
+ "exit_code": 0,
+ "stderr": "",
+ "tick_attempts_until_lock": [
+  0,
+  0
+ ],
+ "idle_record": {
+  "active": true,
+  "attempts": [],
+  "candidate": 0,
+  "conclusion": null,
+  "config": {
+   "billing": "subscription",
+   "driver": "codex",
+   "effort": "high",
+   "family": "codex",
+   "ignore_rules": true,
+   "ignore_user_config": true,
+   "model": "gpt-6.1-sol",
+   "permission_mode": "never",
+   "prompt": "项目经理只用现有授权命令疏通和记录；禁止修改代码、规则、需求、开单、代答或发消息。",
+   "require_subscription_login": true,
+   "sandbox": "workspace-write",
+   "settings": {
+    "sandbox_workspace_write": {
+     "network_access": true,
+     "writable_roots": [
+      "/Users/kun/.local/state/workshop"
+     ]
+    }
+   },
+   "skip_git_repo_check": true,
+   "transport": "headless",
+   "use": "manager-codex"
+  },
+  "created": "2026-11-19T07:46:38.019621+00:00",
+  "delivered": 0,
+  "episode": "944dcc8f-13ee-4175-90d9-5ca46a6ec7a3",
+  "executor": "manager-codex",
+  "facts": [
+   {
+    "at": "2026-11-19T07:46:38.019621+00:00",
+    "digest": "9c051e4218126d60f7bd03e5c3f0c638d12c4eeda092c1ba074c9534de19e6a5",
+    "value": {
+     "idle_since": "2026-11-19T07:41:38.019621+00:00",
+     "reason": "业务连续五分钟为零"
+    }
+   }
+  ],
+  "generation": 10,
+  "id": "idle",
+  "last_executor": "manager-codex",
+  "last_session": "59833ae6-71e9-4697-9ecd-13b78f8d8cde",
+  "owner": "watch",
+  "publication": null,
+  "publish_error": "JobFailed: [Errno 61] Connection refused",
+  "published_business": {
+   "idle_since": "2026-11-19T07:41:38.019621+00:00",
+   "total": 0
+  },
+  "resume_allowed": true,
+  "revision": 285,
+  "started": null,
+  "starting_facts": 1,
+  "state": "queued",
+  "token": null,
+  "updated": "2026-11-19T07:46:38.019621+00:00"
+ },
+ "registered_this_segment": true
+}
+
+----- workshop：同一空闲段登记结论 a -----
+{
+ "ref": "manager:61188d2508eb3fc914a5a0b4eb91dd6fe5c8ca54545f1a5589b111aa084cceb2"
+}
+
+----- workshop：manager_flush -----
+{
+ "deliveries": [
+  {
+   "created_at": "2026-11-19T03:39:57.377806+00:00",
+   "error": null,
+   "external": null,
+   "id": "delivery:74e3494627d4cc647e320fe40ab3cd88d65f43697bc379ecf35e4fcccc96d370",
+   "payload": {
+    "card": {
+     "body": {
+      "elements": [
+       {
+        "tag": "div",
+        "text": {
+         "content": "旧问卡已答且活已完成，残留对账告警无现有清理命令",
+         "tag": "plain_text"
+        }
+       },
+       {
+        "elements": [
+         {
+          "tag": "div",
+          "text": {
+           "content": "交协调对话处理残留问卡：已读角色手册、pm.md、问题记录及PM工具README。status --all --target grant-console确认170已完成，旧requirement-change卡仍待对账；why确认11-15T07:37:53Z已登记Kun原话“170批准”，11:14:45Z完成、11:15:04Z关闭。共享记录11-16 13:36已有同一问题。只读核对CLI、asking.py、holding.py和reask.py：回答不清对账标记，撤问仅处理未运行的等你活；无适用清理入口。未重发、代答或改业务状态。；交协调对话处理主循环慢拍：已读角色手册、pm.md及",
+           "tag": "plain_text"
+          }
+         }
+        ],
+        "expanded": false,
+        "header": {
+         "title": {
+          "content": "项目经理查了什么",
+          "tag": "plain_text"
+         }
+        },
+        "tag": "collapsible_panel"
+       },
+       {
+        "behaviors": [
+         {
+          "type": "callback",
+          "value": {
+           "delivery": "delivery:74e3494627d4cc647e320fe40ab3cd88d65f43697bc379ecf35e4fcccc96d370",
+           "ns": "workshop-status/v1",
+           "section": "处理不了"
+          }
+         }
+        ],
+        "tag": "button",
+        "text": {
+         "content": "处理不了",
+         "tag": "plain_text"
+        },
+        "type": "primary"
+       }
+      ]
+     },
+     "header": {
+      "subtitle": {
+       "content": "项目经理处理不了",
+       "tag": "plain_text"
+      },
+      "template": "orange",
+      "title": {
+       "content": "交协调对话处理残留问卡",
+       "tag": "plain_text"
+      }
+     },
+     "schema": "2.0"
+    },
+    "kind": "manager_help",
+    "members": [
+     "aa0fd24b-1fab-443d-a6bc-e81de8b47ec8",
+     "c2a90cf8-bb0e-4277-9e26-c43ecd2301c3",
+     "2a9703e4-9b48-4750-b7ef-47719de5b992"
+    ],
+    "primary": "aa0fd24b-1fab-443d-a6bc-e81de8b47ec8",
+    "section": "处理不了"
+   },
+   "permit": "permit:ffdcd0ce69f58055f4d60d16f77a4871c7488a19c0a8118bbf34ebbb4ae00529",
+   "state": "uncertain"
+  },
+  {
+   "created_at": "2026-11-19T03:45:00.208667+00:00",
+   "error": null,
+   "external": null,
+   "id": "delivery:1493734f7fd3f0d0d15a06a62e31972d2a289b677d7515f60c97a7504f6c77f1",
+   "payload": {
+    "card": {
+     "body": {
+      "elements": [
+       {
+        "tag": "div",
+        "text": {
+         "content": "旧问卡已答且活已完成，残留对账告警无现有清理命令",
+         "tag": "plain_text"
+        }
+       },
+       {
+        "elements": [
+         {
+          "tag": "div",
+          "text": {
+           "content": "交协调对话处理残留问卡：已读角色手册、pm.md、问题记录及PM工具README。status --all --target grant-console确认170已完成，旧requirement-change卡仍待对账；why确认11-15T07:37:53Z已登记Kun原话“170批准”，11:14:45Z完成、11:15:04Z关闭。共享记录11-16 13:36已有同一问题。只读核对CLI、asking.py、holding.py和reask.py：回答不清对账标记，撤问仅处理未运行的等你活；无适用清理入口。未重发、代答或改业务状态。；交协调对话处理主循环慢拍：已读角色手册、pm.md及",
+           "tag": "plain_text"
+          }
+         }
+        ],
+        "expanded": false,
+        "header": {
+         "title": {
+          "content": "项目经理查了什么",
+          "tag": "plain_text"
+         }
+        },
+        "tag": "collapsible_panel"
+       },
+       {
+        "behaviors": [
+         {
+          "type": "callback",
+          "value": {
+           "delivery": "delivery:1493734f7fd3f0d0d15a06a62e31972d2a289b677d7515f60c97a7504f6c77f1",
+           "ns": "workshop-status/v1",
+           "section": "处理不了"
+          }
+         }
+        ],
+        "tag": "button",
+        "text": {
+         "content": "处理不了",
+         "tag": "plain_text"
+        },
+        "type": "primary"
+       }
+      ]
+     },
+     "header": {
+      "subtitle": {
+       "content": "项目经理处理不了",
+       "tag": "plain_text"
+      },
+      "template": "orange",
+      "title": {
+       "content": "交协调对话处理残留问卡",
+       "tag": "plain_text"
+      }
+     },
+     "schema": "2.0"
+    },
+    "kind": "manager_help",
+    "members": [
+     "aa0fd24b-1fab-443d-a6bc-e81de8b47ec8",
+     "c2a90cf8-bb0e-4277-9e26-c43ecd2301c3",
+     "2a9703e4-9b48-4750-b7ef-47719de5b992"
+    ],
+    "primary": "aa0fd24b-1fab-443d-a6bc-e81de8b47ec8",
+    "section": "处理不了"
+   },
+   "permit": "permit:c6122a658bcbd03d780954d51798a9d60da72846b0f187d477afc88630a29529",
+   "state": "uncertain"
+  },
+  {
+   "created_at": "2026-11-19T07:41:38.746706+00:00",
+   "error": null,
+   "external": "local:delivery:ce36dc47035857c14c9cc014c8de491fde616a5e016d103b0854d83979038fb0",
+   "id": "delivery:ce36dc47035857c14c9cc014c8de491fde616a5e016d103b0854d83979038fb0",
+   "payload": {
+    "card": {
+     "body": {
+      "elements": [
+       {
+        "tag": "div",
+        "text": {
+         "content": "转换后副本上隔离回放：同一空闲段的第二条结论",
+         "tag": "plain_text"
+        }
+       },
+       {
+        "elements": [
+         {
+          "content": "**补一件新需求**\n隔离回放：同一空闲段",
+          "tag": "markdown"
+         }
+        ],
+        "expanded": false,
+        "header": {
+         "icon": {
+          "size": "16px 16px",
+          "tag": "standard_icon",
+          "token": "down-small-ccm_outlined"
+         },
+         "icon_expanded_angle": -180,
+         "icon_position": "right",
+         "title": {
+          "content": "项目经理查了什么",
+          "tag": "plain_text"
+         }
+        },
+        "tag": "collapsible_panel"
+       },
+       {
+        "behaviors": [
+         {
+          "default_url": "http://127.0.0.1:59478/status.html#%E5%A4%84%E7%90%86%E4%B8%8D%E4%BA%86",
+          "type": "open_url"
+         }
+        ],
+        "tag": "button",
+        "text": {
+         "content": "看处理不了栏",
+         "tag": "plain_text"
+        },
+        "type": "primary"
+       }
+      ]
+     },
+     "header": {
+      "subtitle": {
+       "content": "项目经理处理不了",
+       "tag": "plain_text"
+      },
+      "template": "orange",
+      "title": {
+       "content": "补一件新需求",
+       "tag": "plain_text"
+      }
+     },
+     "schema": "2.0"
+    },
+    "kind": "manager_help",
+    "members": [
+     "converted-workshop-a"
+    ],
+    "primary": "converted-workshop-a",
+    "section": "处理不了"
+   },
+   "permit": "permit:89ff733fb93fbff4f11959094e80e68fae81e817ecbcba5c7cd59f7036c45410",
+   "state": "sent"
+  }
+ ],
+ "errors": []
+}
+
+----- workshop：同一空闲段登记结论 b -----
+{
+ "ref": "manager:82cdd519427ad86c563bd8bb699121d12bf7b1fac298d44020e84b4371fe88d0"
+}
+
+----- workshop：manager_flush -----
+{
+ "deliveries": [
+  {
+   "created_at": "2026-11-19T03:39:57.377806+00:00",
+   "error": null,
+   "external": null,
+   "id": "delivery:74e3494627d4cc647e320fe40ab3cd88d65f43697bc379ecf35e4fcccc96d370",
+   "payload": {
+    "card": {
+     "body": {
+      "elements": [
+       {
+        "tag": "div",
+        "text": {
+         "content": "旧问卡已答且活已完成，残留对账告警无现有清理命令",
+         "tag": "plain_text"
+        }
+       },
+       {
+        "elements": [
+         {
+          "tag": "div",
+          "text": {
+           "content": "交协调对话处理残留问卡：已读角色手册、pm.md、问题记录及PM工具README。status --all --target grant-console确认170已完成，旧requirement-change卡仍待对账；why确认11-15T07:37:53Z已登记Kun原话“170批准”，11:14:45Z完成、11:15:04Z关闭。共享记录11-16 13:36已有同一问题。只读核对CLI、asking.py、holding.py和reask.py：回答不清对账标记，撤问仅处理未运行的等你活；无适用清理入口。未重发、代答或改业务状态。；交协调对话处理主循环慢拍：已读角色手册、pm.md及",
+           "tag": "plain_text"
+          }
+         }
+        ],
+        "expanded": false,
+        "header": {
+         "title": {
+          "content": "项目经理查了什么",
+          "tag": "plain_text"
+         }
+        },
+        "tag": "collapsible_panel"
+       },
+       {
+        "behaviors": [
+         {
+          "type": "callback",
+          "value": {
+           "delivery": "delivery:74e3494627d4cc647e320fe40ab3cd88d65f43697bc379ecf35e4fcccc96d370",
+           "ns": "workshop-status/v1",
+           "section": "处理不了"
+          }
+         }
+        ],
+        "tag": "button",
+        "text": {
+         "content": "处理不了",
+         "tag": "plain_text"
+        },
+        "type": "primary"
+       }
+      ]
+     },
+     "header": {
+      "subtitle": {
+       "content": "项目经理处理不了",
+       "tag": "plain_text"
+      },
+      "template": "orange",
+      "title": {
+       "content": "交协调对话处理残留问卡",
+       "tag": "plain_text"
+      }
+     },
+     "schema": "2.0"
+    },
+    "kind": "manager_help",
+    "members": [
+     "aa0fd24b-1fab-443d-a6bc-e81de8b47ec8",
+     "c2a90cf8-bb0e-4277-9e26-c43ecd2301c3",
+     "2a9703e4-9b48-4750-b7ef-47719de5b992"
+    ],
+    "primary": "aa0fd24b-1fab-443d-a6bc-e81de8b47ec8",
+    "section": "处理不了"
+   },
+   "permit": "permit:ffdcd0ce69f58055f4d60d16f77a4871c7488a19c0a8118bbf34ebbb4ae00529",
+   "state": "uncertain"
+  },
+  {
+   "created_at": "2026-11-19T03:45:00.208667+00:00",
+   "error": null,
+   "external": null,
+   "id": "delivery:1493734f7fd3f0d0d15a06a62e31972d2a289b677d7515f60c97a7504f6c77f1",
+   "payload": {
+    "card": {
+     "body": {
+      "elements": [
+       {
+        "tag": "div",
+        "text": {
+         "content": "旧问卡已答且活已完成，残留对账告警无现有清理命令",
+         "tag": "plain_text"
+        }
+       },
+       {
+        "elements": [
+         {
+          "tag": "div",
+          "text": {
+           "content": "交协调对话处理残留问卡：已读角色手册、pm.md、问题记录及PM工具README。status --all --target grant-console确认170已完成，旧requirement-change卡仍待对账；why确认11-15T07:37:53Z已登记Kun原话“170批准”，11:14:45Z完成、11:15:04Z关闭。共享记录11-16 13:36已有同一问题。只读核对CLI、asking.py、holding.py和reask.py：回答不清对账标记，撤问仅处理未运行的等你活；无适用清理入口。未重发、代答或改业务状态。；交协调对话处理主循环慢拍：已读角色手册、pm.md及",
+           "tag": "plain_text"
+          }
+         }
+        ],
+        "expanded": false,
+        "header": {
+         "title": {
+          "content": "项目经理查了什么",
+          "tag": "plain_text"
+         }
+        },
+        "tag": "collapsible_panel"
+       },
+       {
+        "behaviors": [
+         {
+          "type": "callback",
+          "value": {
+           "delivery": "delivery:1493734f7fd3f0d0d15a06a62e31972d2a289b677d7515f60c97a7504f6c77f1",
+           "ns": "workshop-status/v1",
+           "section": "处理不了"
+          }
+         }
+        ],
+        "tag": "button",
+        "text": {
+         "content": "处理不了",
+         "tag": "plain_text"
+        },
+        "type": "primary"
+       }
+      ]
+     },
+     "header": {
+      "subtitle": {
+       "content": "项目经理处理不了",
+       "tag": "plain_text"
+      },
+      "template": "orange",
+      "title": {
+       "content": "交协调对话处理残留问卡",
+       "tag": "plain_text"
+      }
+     },
+     "schema": "2.0"
+    },
+    "kind": "manager_help",
+    "members": [
+     "aa0fd24b-1fab-443d-a6bc-e81de8b47ec8",
+     "c2a90cf8-bb0e-4277-9e26-c43ecd2301c3",
+     "2a9703e4-9b48-4750-b7ef-47719de5b992"
+    ],
+    "primary": "aa0fd24b-1fab-443d-a6bc-e81de8b47ec8",
+    "section": "处理不了"
+   },
+   "permit": "permit:c6122a658bcbd03d780954d51798a9d60da72846b0f187d477afc88630a29529",
+   "state": "uncertain"
+  }
+ ],
+ "errors": []
+}
+
+----- workshop：这一空闲段的求助送达 -----
+{
+ "idle_since": "2026-11-19T07:41:38.019621+00:00",
+ "deliveries": [
+  {
+   "id": "delivery:ce36dc47035857c14c9cc014c8de491fde616a5e016d103b0854d83979038fb0",
+   "state": "sent",
+   "external": "local:delivery:ce36dc47035857c14c9cc014c8de491fde616a5e016d103b0854d83979038fb0"
+  }
+ ],
+ "inbox_manager_help_sends": [
+  "delivery:ce36dc47035857c14c9cc014c8de491fde616a5e016d103b0854d83979038fb0"
+ ]
+}
+[8.7] 走通
+
+----- 全部出口的发送记录：送达命令收件箱（原样） -----
+[
+ {
+  "key": "delivery:be5c5db79ea1eebd50f5eee85ae3eb6d57f93bd3dd2347153e398c409bf705ee",
+  "kind": "visual",
+  "payload": {
+   "card": {
+    "body": {
+     "elements": [
+      {
+       "content": "[issue #176](https://github.com/kun-g/workshop/issues/176)",
+       "tag": "markdown"
+      },
+      {
+       "content": "**看什么**",
+       "tag": "markdown"
+      },
+      {
+       "tag": "div",
+       "text": {
+        "content": "一是转换对账表里取消掉的旧记录（旧问卡、通知、送回），看有没有不该丢的；收尾时车间把对账表里「取消」的那几行送来。二是切换后 grant-console 第一次定时发版的授权中心审批卡：照常批；之后车间不再发自己的授权卡或通知。",
+        "tag": "plain_text"
+       }
+      },
+      {
+       "behaviors": [
+        {
+         "type": "callback",
+         "value": {
+          "choice": "pass",
+          "ns": "workshop-visual/v1",
+          "permit": "permit:bee8002fe1f1732ad359a5be2d2b89a9bf3ec6f59d38ca3f888789c7e96bf7d5",
+          "version": "29af0b3d1a591be643ad5a1b97e85829722d046c"
+         }
+        }
+       ],
+       "tag": "button",
+       "text": {
+        "content": "通过",
+        "tag": "plain_text"
+       },
+       "type": "primary_filled",
+       "width": "fill"
+      },
+      {
+       "elements": [
+        {
+         "input_type": "multiline_text",
+         "max_length": 1000,
+         "name": "reason",
+         "placeholder": {
+          "content": "不通过时写哪里不对",
+          "tag": "plain_text"
+         },
+         "required": true,
+         "tag": "input",
+         "width": "fill"
+        },
+        {
+         "behaviors": [
+          {
+           "type": "callback",
+           "value": {
+            "choice": "fail",
+            "ns": "workshop-visual/v1",
+            "permit": "permit:bee8002fe1f1732ad359a5be2d2b89a9bf3ec6f59d38ca3f888789c7e96bf7d5",
+            "version": "29af0b3d1a591be643ad5a1b97e85829722d046c"
+           }
+          }
+         ],
+         "form_action_type": "submit",
+         "name": "fail",
+         "tag": "button",
+         "text": {
+          "content": "不通过",
+          "tag": "plain_text"
+         },
+         "type": "danger",
+         "width": "fill"
+        }
+       ],
+       "name": "visual",
+       "tag": "form"
+      },
+      {
+       "elements": [
+        {
+         "tag": "div",
+         "text": {
+          "content": "活：workshop:dod-replay\n合并提交：29af0b3d1a591be643ad5a1b97e85829722d046c",
+          "tag": "plain_text"
+         }
+        },
+        {
+         "tag": "div",
+         "text": {
+          "tag": "plain_text",
+          "content": "送达号：delivery:be5c5db79ea1eebd50f5eee85ae3eb6d57f93bd3dd2347153e398c409bf705ee"
+         }
+        }
+       ],
+       "expanded": false,
+       "header": {
+        "title": {
+         "content": "详情",
+         "tag": "plain_text"
+        }
+       },
+       "tag": "collapsible_panel"
+      }
+     ]
+    },
+    "header": {
+     "subtitle": {
+      "content": "亲眼看",
+      "tag": "plain_text"
+     },
+     "template": "blue",
+     "title": {
+      "content": "介入点：存量转换、旧出口停用与逐批真实验收",
+      "tag": "plain_text"
+     }
+    },
+    "schema": "2.0"
+   },
+   "item": "workshop:dod-replay",
+   "kind": "visual",
+   "version": "29af0b3d1a591be643ad5a1b97e85829722d046c"
+  }
+ },
+ {
+  "key": "delivery:11bb043f076659940f9cd09827918eaf1058069eb6d1ea1a34d82897d22e9e1e",
+  "kind": "visual_receipt",
+  "payload": {
+   "card": {
+    "body": {
+     "elements": [
+      {
+       "tag": "collapsible_panel",
+       "expanded": false,
+       "header": {
+        "title": {
+         "tag": "plain_text",
+         "content": "详情"
+        }
+       },
+       "elements": [
+        {
+         "tag": "div",
+         "text": {
+          "tag": "plain_text",
+          "content": "送达号：delivery:11bb043f076659940f9cd09827918eaf1058069eb6d1ea1a34d82897d22e9e1e"
+         }
+        }
+       ]
+      }
+     ]
+    },
+    "header": {
+     "subtitle": {
+      "content": "亲眼看 · 介入点：存量转换、旧出口停用与逐批真实验收",
+      "tag": "plain_text"
+     },
+     "template": "green",
+     "title": {
+      "content": "已收到：通过",
+      "tag": "plain_text"
+     }
+    },
+    "schema": "2.0"
+   },
+   "kind": "visual_receipt",
+   "wait": "wait:1d87bbb4aed6d2e98c4a44a04faa069ba0edf627d1cd56a2b26f974e9cf1ef45"
+  }
+ },
+ {
+  "key": "delivery:37d870f8052a21d393afb2a7353fb0b5473cd48ee4db6ab97f7902873e5a5ab5",
+  "kind": "update_report",
+  "payload": {
+   "artifact": "<回放目录>/converted/state/watch_updates/reports/wu-daily-2026-11-18-v2.html",
+   "idempotency_key": "987abf8b4b06264b9e3ad00b",
+   "kind": "update_report",
+   "report": "wu-daily-2026-11-18-v2",
+   "sha256": "b0ca7905d4a812a1c2baee0da73e0515a5ba094e6158fc8dbb648419f22b8ead"
+  }
+ },
+ {
+  "key": "delivery:ce36dc47035857c14c9cc014c8de491fde616a5e016d103b0854d83979038fb0",
+  "kind": "manager_help",
+  "payload": {
+   "card": {
+    "body": {
+     "elements": [
+      {
+       "tag": "div",
+       "text": {
+        "content": "转换后副本上隔离回放：同一空闲段的第二条结论",
+        "tag": "plain_text"
+       }
+      },
+      {
+       "elements": [
+        {
+         "content": "**补一件新需求**\n隔离回放：同一空闲段",
+         "tag": "markdown"
+        }
+       ],
+       "expanded": false,
+       "header": {
+        "icon": {
+         "size": "16px 16px",
+         "tag": "standard_icon",
+         "token": "down-small-ccm_outlined"
+        },
+        "icon_expanded_angle": -180,
+        "icon_position": "right",
+        "title": {
+         "content": "项目经理查了什么",
+         "tag": "plain_text"
+        }
+       },
+       "tag": "collapsible_panel"
+      },
+      {
+       "behaviors": [
+        {
+         "default_url": "http://127.0.0.1:59478/status.html#%E5%A4%84%E7%90%86%E4%B8%8D%E4%BA%86",
+         "type": "open_url"
+        }
+       ],
+       "tag": "button",
+       "text": {
+        "content": "看处理不了栏",
+        "tag": "plain_text"
+       },
+       "type": "primary"
+      },
+      {
+       "tag": "collapsible_panel",
+       "expanded": false,
+       "header": {
+        "title": {
+         "tag": "plain_text",
+         "content": "详情"
+        }
+       },
+       "elements": [
+        {
+         "tag": "div",
+         "text": {
+          "tag": "plain_text",
+          "content": "送达号：delivery:ce36dc47035857c14c9cc014c8de491fde616a5e016d103b0854d83979038fb0"
+         }
+        }
+       ]
+      }
+     ]
+    },
+    "header": {
+     "subtitle": {
+      "content": "项目经理处理不了",
+      "tag": "plain_text"
+     },
+     "template": "orange",
+     "title": {
+      "content": "补一件新需求",
+      "tag": "plain_text"
+     }
+    },
+    "schema": "2.0"
+   },
+   "kind": "manager_help",
+   "members": [
+    "converted-workshop-a"
+   ],
+   "primary": "converted-workshop-a",
+   "section": "处理不了"
+  }
+ }
+]
+
+----- 全部出口的发送记录：送达命令每次调用（含对账、回复查询） -----
+[
+ {
+  "seq": 1,
+  "action": "send",
+  "key": "delivery:be5c5db79ea1eebd50f5eee85ae3eb6d57f93bd3dd2347153e398c409bf705ee",
+  "kind": "visual"
+ },
+ {
+  "seq": 2,
+  "action": "send",
+  "key": "delivery:11bb043f076659940f9cd09827918eaf1058069eb6d1ea1a34d82897d22e9e1e",
+  "kind": "visual_receipt"
+ },
+ {
+  "seq": 3,
+  "action": "send",
+  "key": "delivery:37d870f8052a21d393afb2a7353fb0b5473cd48ee4db6ab97f7902873e5a5ab5",
+  "kind": "update_report"
+ },
+ {
+  "seq": 4,
+  "action": "reconcile",
+  "key": "delivery:74e3494627d4cc647e320fe40ab3cd88d65f43697bc379ecf35e4fcccc96d370",
+  "kind": "manager_help"
+ },
+ {
+  "seq": 5,
+  "action": "reconcile",
+  "key": "delivery:1493734f7fd3f0d0d15a06a62e31972d2a289b677d7515f60c97a7504f6c77f1",
+  "kind": "manager_help"
+ },
+ {
+  "seq": 6,
+  "action": "reconcile",
+  "key": "delivery:74e3494627d4cc647e320fe40ab3cd88d65f43697bc379ecf35e4fcccc96d370",
+  "kind": "manager_help"
+ },
+ {
+  "seq": 7,
+  "action": "reconcile",
+  "key": "delivery:1493734f7fd3f0d0d15a06a62e31972d2a289b677d7515f60c97a7504f6c77f1",
+  "kind": "manager_help"
+ },
+ {
+  "seq": 8,
+  "action": "reconcile",
+  "key": "delivery:74e3494627d4cc647e320fe40ab3cd88d65f43697bc379ecf35e4fcccc96d370",
+  "kind": "manager_help"
+ },
+ {
+  "seq": 9,
+  "action": "reconcile",
+  "key": "delivery:1493734f7fd3f0d0d15a06a62e31972d2a289b677d7515f60c97a7504f6c77f1",
+  "kind": "manager_help"
+ },
+ {
+  "seq": 10,
+  "action": "send",
+  "key": "delivery:ce36dc47035857c14c9cc014c8de491fde616a5e016d103b0854d83979038fb0",
+  "kind": "manager_help"
+ },
+ {
+  "seq": 11,
+  "action": "reconcile",
+  "key": "delivery:74e3494627d4cc647e320fe40ab3cd88d65f43697bc379ecf35e4fcccc96d370",
+  "kind": "manager_help"
+ },
+ {
+  "seq": 12,
+  "action": "reconcile",
+  "key": "delivery:1493734f7fd3f0d0d15a06a62e31972d2a289b677d7515f60c97a7504f6c77f1",
+  "kind": "manager_help"
+ }
+]
+
+----- 全部出口的发送记录：外部命令替身调用（原样） -----
+lark-cli（只读放行）	--profile tuan api GET /open-apis/im/v1/messages/om_x100b60ec8b5e7ca0dfc5adda0a64553 --as bot
+lark-cli（只读放行）	--profile tuan api GET /open-apis/im/v1/messages/om_x100b60ec8b5e7ca0dfc5adda0a64553 --as bot
+lark-cli（只读放行）	--profile tuan api GET /open-apis/im/v1/messages/om_x100b60ec8b5e7ca0dfc5adda0a64553 --as bot
+
+----- 发送记录小结 -----
+{
+ "sends_by_kind": {
+  "visual": 1,
+  "visual_receipt": 1,
+  "update_report": 1,
+  "manager_help": 1
+ },
+ "not_allowed_sends": 0,
+ "same_key_sent_more_than_once": {},
+ "external_calls_blocked": 0,
+ "external_reads_passed": 3
+}
+
+----- workshop：这一批走完后的发送记录 -----
+{
+ "sends_by_kind": {
+  "visual": 1,
+  "visual_receipt": 1,
+  "update_report": 1,
+  "manager_help": 1
+ },
+ "not_allowed_sends": 0,
+ "same_key_sent_more_than_once": {},
+ "external_calls_blocked": 0,
+ "external_reads_passed": 3
+}
+
+========== 第 8 项门槛：失败 0 条；没走 1 条 ==========
+
+----- grant-console：起一个在跑的程序作业（同一程序，副本状态目录） -----
+{
+ "pid": 65898
+}
+
+========== 第 9 项：grant-console 这一批 ==========
+
+===== [9.1] 写全了的 issue 自动打标签接单、缺省 P1（真实来源） =====
+
+----- grant-console：副本里待归类的现役事件 -----
+[]
+
+----- grant-console：开着的 issue 逐个过真实接单（App 只读；标签写只记账） -----
+[
+ {
+  "issue": 176,
+  "title": "AI 审查只判说法对不对得上：事实由代码算好喂给它，44 张真卡当评测集过线再上线",
+  "author": "kun-g",
+  "labels": [],
+  "item_in_copy": null,
+  "labels_recorded": [],
+  "item_created": false,
+  "priority": null,
+  "classification": [
+   {
+    "kind": "event_discarded",
+    "summary": "未写全：缺「能跑的检查」节或其中的 workshop-checks 代码块；缺「合并前 DoD」节，或节里没有逐项列出的条件；缺「不可逆或对外的动作」节（没有就写「无」）；缺「依据」节",
+    "action": null
+   }
+  ]
+ }
+]
+
+----- grant-console：现役已接单的开着的 issue（副本里的历史，不是本次回放） -----
+[]
+[9.1] 没走：kun-g/grant-console 开着的 issue 里没有「写全了、还没标签、副本里也没有活」的：写全了的都已被现役接单（副本里已有活），没接的都没写全；正向路径要一个新写全的 issue，或改写真实正文（不做）
+
+===== [9.2-4] 无卡等你→会话回答→授权原申请批准后接着做→到点自动续跑（真实 codex 订阅轮次） =====
+
+----- grant-console：等你时 workshop status（副本） -----
+活 5 件 · 跑着 0 · 等你 2 · 卡住 1 · 定时 2
+另有 223 件没列出（已结束；workshop status --all 看全部）
+活	阶段	状态	谁在推	下一步	卡在谁手里	优先级
+workshop:watch_updates:check	验收	暂停	车间	等反馈：92 个版本、6 条需要、7 项新功能	—	P1
+workshop:cutover-inflight	执行	暂停	车间	等回答	—	P1
+workshop:dod-replay	执行	暂停	车间	等约好的时间	—	P1
+workshop:dod-manager	接单	暂停	车间	隔离诊断，核对后交 resolved	隔离验收：核对转换后副本的项目经理接管；核对后可记 resolved	P1
+grant-console:dod-replay	执行	等你	车间	等待外部结果	—	P1
+卡住
+活	阶段	原因	建议动作
+workshop:dod-manager	接单	隔离验收：核对转换后副本的项目经理接管；核对后可记 resolved	隔离诊断，核对后交 resolved
+等你
+隔离回放：切换前在途的活：隔离回放：切换前在等的取舍；推荐：保留
+隔离回放：AI 审查只判说法对不对得上：事实由代码算好喂给它，4：回放：两条路径先做哪条；推荐：A
+详情（等待号、版本、原因、推荐、等了多久）
+详情
+{"attempt": 2, "content": {"key": "inflight", "question": "隔离回放：切换前在等的取舍", "reason": "只用来比较切换前后等待是否保留", "recommend": "保留", "stage": "执行", "version": "v1"}, "error": "", "id": "decision:workshop:cutover-inflight:inflight", "item": "workshop:cutover-inflight", "next_at": "2026-11-19T07:41:38.960639+00:00", "operation": "decision:workshop:cutover-inflight:inflight", "provider": "intervention", "question": "隔离回放：切换前在等的取舍", "reason": "只用来比较切换前后等待是否保留", "recommend": "保留", "record": {"acknowledged": false, "answer": null, "content": {"key": "inflight", "question": "隔离回放：切换前在等的取舍", "reason": "只用来比较切换前后等待是否保留", "recommend": "保留", "stage": "执行", "version": "v1"}, "id": "wait:e066a8a498cabe4bde3a6d8055b0bfd3f666633fd1d9078b8c925ec812748ce5", "owner": "workshop:cutover-inflight", "point": "decision", "started_at": "2026-11-19T07:38:44.779204+00:00", "superseded": false, "token": null}, "ref": "wait:e066a8a498cabe4bde3a6d8055b0bfd3f666633fd1d9078b8c925ec812748ce5", "seconds": 200, "stage": "执行", "state": "waiting", "token": null}
+{"attempt": 0, "content": {"key": "replay-path", "question": "回放：两条路径先做哪条", "reason": "验证会话回答只恢复这件活，不产生真实授权", "recommend": "A", "stage": "执行", "version": "v1"}, "id": "decision:grant-console:dod-replay:after:773bb026-12ce-4a8d-af6a-3ffa77977b0c", "item": "grant-console:dod-replay", "next_at": "2026-11-19T07:42:05.073349+00:00", "operation": "decision:grant-console:dod-replay:after:773bb026-12ce-4a8d-af6a-3ffa77977b0c", "provider": "intervention", "question": "回放：两条路径先做哪条", "reason": "验证会话回答只恢复这件活，不产生真实授权", "recommend": "A", "record": {"acknowledged": false, "answer": null, "content": {"key": "replay-path", "question": "回放：两条路径先做哪条", "reason": "验证会话回答只恢复这件活，不产生真实授权", "recommend": "A", "stage": "执行", "version": "v1"}, "id": "wait:a894d482bca640e88a5482cfe891ab997c1907b08de975632e207d294b78ccfb", "owner": "grant-console:dod-replay", "point": "decision", "started_at": "2026-11-19T07:42:05.071543+00:00", "superseded": false, "token": null}, "ref": "wait:a894d482bca640e88a5482cfe891ab997c1907b08de975632e207d294b78ccfb", "seconds": 0, "stage": "执行", "state": "waiting", "token": null}
+项目经理处理中
+全局空闲：业务连续五分钟为零
+详情
+{"active": true, "attempts": [], "candidate": 0, "conclusion": null, "config": {"billing": "subscription", "driver": "codex", "effort": "high", "family": "codex", "ignore_rules": true, "ignore_user_config": true, "model": "gpt-6.1-sol", "permission_mode": "never", "prompt": "项目经理只用现有授权命令疏通和记录；禁止修改代码、规则、需求、开单、代答或发消息。", "require_subscription_login": true, "sandbox": "workspace-write", "settings": {"sandbox_workspace_write": {"network_access": true, "writable_roots": ["/Users/kun/.local/state/workshop"]}}, "skip_git_repo_check": true, "transport": "headless", "use": "manager-codex"}, "created": "2026-11-19T07:46:38.019621+00:00", "delivered": 0, "episode": "944dcc8f-13ee-4175-90d9-5ca46a6ec7a3", "executor": "manager-codex", "facts": [{"at": "2026-11-19T07:46:38.019621+00:00", "digest": "9c051e4218126d60f7bd03e5c3f0c638d12c4eeda092c1ba074c9534de19e6a5", "value": {"idle_since": "2026-11-19T07:41:38.019621+00:00", "reason": "业务连续五分钟为零"}}], "generation": 10, "id": "idle", "last_executor": "manager-codex", "last_session": "59833ae6-71e9-4697-9ecd-13b78f8d8cde", "owner": "watch", "publication": null, "publish_error": "JobFailed: [Errno 61] Connection refused", "published_business": {"idle_since": "2026-11-19T07:41:38.019621+00:00", "total": 0}, "resume_allowed": true, "revision": 285, "started": null, "starting_facts": 1, "state": "queued", "token": null, "updated": "2026-11-19T07:46:38.019621+00:00"}
+处理不了
+没有
+
+----- grant-console：等待记录（介入点服务） -----
+{
+ "acknowledged": false,
+ "answer": null,
+ "content": {
+  "key": "replay-path",
+  "question": "回放：两条路径先做哪条",
+  "reason": "验证会话回答只恢复这件活，不产生真实授权",
+  "recommend": "A",
+  "stage": "执行",
+  "version": "v1"
+ },
+ "id": "wait:a894d482bca640e88a5482cfe891ab997c1907b08de975632e207d294b78ccfb",
+ "owner": "grant-console:dod-replay",
+ "point": "decision",
+ "started_at": "2026-11-19T07:42:05.071543+00:00",
+ "superseded": false,
+ "token": null
+}
+
+----- grant-console：会话回答 -----
+$ <worktree>/.venv/bin/python3 -m workshop.cli --state-dir <回放目录>/converted/state --rules <回放目录>/converted/rules.yaml answer-wait wait:a894d482bca640e88a5482cfe891ab997c1907b08de975632e207d294b78ccfb A --version v1 --quote 全A --session 10d910bd-0dfd-4785-97d0-dee39ce5883b
+exit=0（0.11 秒）
+{"ref": "wait:a894d482bca640e88a5482cfe891ab997c1907b08de975632e207d294b78ccfb", "token": "result:cb01adde66ce302eea5f9477a51fe7fe06adc4385ec58b4e185d7fedd71d4917"}
+
+----- grant-console：同一回答再登记一次 -----
+$ <worktree>/.venv/bin/python3 -m workshop.cli --state-dir <回放目录>/converted/state --rules <回放目录>/converted/rules.yaml answer-wait wait:a894d482bca640e88a5482cfe891ab997c1907b08de975632e207d294b78ccfb A --version v1 --quote 全A --session 10d910bd-0dfd-4785-97d0-dee39ce5883b
+exit=0（0.09 秒）
+{"ref": "wait:a894d482bca640e88a5482cfe891ab997c1907b08de975632e207d294b78ccfb", "token": "result:cb01adde66ce302eea5f9477a51fe7fe06adc4385ec58b4e185d7fedd71d4917"}
+
+----- grant-console：旧版本的回答被拒 -----
+$ <worktree>/.venv/bin/python3 -m workshop.cli --state-dir <回放目录>/converted/state --rules <回放目录>/converted/rules.yaml answer-wait wait:a894d482bca640e88a5482cfe891ab997c1907b08de975632e207d294b78ccfb A --version old --quote 全A --session 10d910bd-0dfd-4785-97d0-dee39ce5883b
+exit=2（0.09 秒）
+车间：回答的问题版本不匹配
+
+----- grant-console：授权中心原申请只读核实（流程 after，未新建申请） -----
+{
+ "spec": {
+  "request": "exec-1794989758-293a21",
+  "kind": "exec",
+  "action": "有别人在用的交付对象上线",
+  "provider_action": "argocd/sync_app",
+  "checkpoint": "original-sync",
+  "target": {
+   "instance": "central",
+   "app": "grant-console-centaladmin",
+   "revision": "d3a1765d1a56f8011a81f5db86d47dfc86724d9c"
+  }
+ },
+ "verification": {
+  "request": "exec-1794989758-293a21",
+  "action": "有别人在用的交付对象上线",
+  "target": "{\"app\":\"grant-console-centaladmin\",\"instance\":\"central\",\"revision\":\"d3a1765d1a56f8011a81f5db86d47dfc86724d9c\"}",
+  "result": "approved",
+  "applied": true
+ },
+ "execution": {
+  "instance": "central",
+  "app": "grant-console-centaladmin",
+  "revision": "d3a1765d1a56f8011a81f5db86d47dfc86724d9c",
+  "operation_id": "exec-1794989758-293a21",
+  "operation_matches": true,
+  "operation_phase": "Succeeded",
+  "after": {
+   "revision": "d3a1765d1a56f8011a81f5db86d47dfc86724d9c",
+   "sync": "Synced",
+   "health": "Healthy"
+  }
+ },
+ "status": "completed"
+}
+
+----- grant-console：本活各轮（真实 codex 订阅执行者） -----
+[
+ {
+  "token": "773bb026-12ce-4a8d-af6a-3ffa77977b0c",
+  "executor": "codex",
+  "session": null,
+  "status": "ended",
+  "stopped": true,
+  "summary": "隔离验收：登记无卡取舍",
+  "outcome": "nothing"
+ },
+ {
+  "token": "cbb147e6-90b9-4ba9-97fe-70c2351535fc",
+  "executor": "codex",
+  "session": "50f81a72-de55-46e3-aaa4-0bab0116a8c5",
+  "status": "ended",
+  "stopped": true,
+  "summary": "已读会话回答；交回授权中心原申请和检查点",
+  "outcome": "nothing"
+ },
+ {
+  "token": "621d88aa-6f6d-4043-9e43-acd5e661b02b",
+  "executor": "codex",
+  "session": "50f81a72-de55-46e3-aaa4-0bab0116a8c5",
+  "status": "ended",
+  "stopped": true,
+  "summary": "原申请已核实；约好到点再看",
+  "outcome": "nothing"
+ },
+ {
+  "token": "d4054376-325c-4d80-a37c-242d50ea30fc",
+  "executor": "codex",
+  "session": "50f81a72-de55-46e3-aaa4-0bab0116a8c5",
+  "status": "ended",
+  "stopped": true,
+  "summary": "到点续跑；再约一天后看",
+  "outcome": "nothing"
+ }
+]
+
+----- grant-console：本活定时（到点自动续跑） -----
+[
+ {
+  "id": "grant-console:dod-replay:621d88aa-6f6d-4043-9e43-acd5e661b02b:look-again",
+  "at": "2026-11-19T07:42:35.810659+00:00",
+  "about": "隔离验收到点续跑",
+  "kind": "工序",
+  "owner": "车间",
+  "fired": true
+ },
+ {
+  "id": "grant-console:dod-replay:d4054376-325c-4d80-a37c-242d50ea30fc:look-tomorrow",
+  "at": "2026-11-20T07:42:58.506638+00:00",
+  "about": "隔离验收一天后再看",
+  "kind": "工序",
+  "owner": "车间",
+  "fired": false
+ }
+]
+
+----- grant-console：why（副本） -----
+活 grant-console:dod-replay
+等待记录 {"acknowledged": true, "answer": {"source": {"channel": "session", "quote": "全A", "session": "10d910bd-0dfd-4785-97d0-dee39ce5883b", "version": "v1"}, "value": "A"}, "content": {"key": "replay-path", "question": "回放：两条路径先做哪条", "reason": "验证会话回答只恢复这件活，不产生真实授权", "recommend": "A", "stage": "执行", "version": "v1"}, "id": "wait:a894d482bca640e88a5482cfe891ab997c1907b08de975632e207d294b78ccfb", "owner": "grant-console:dod-replay", "point": "decision", "started_at": "2026-11-19T07:42:05.071543+00:00", "superseded": false, "token": "result:cb01adde66ce302eea5f9477a51fe7fe06adc4385ec58b4e185d7fedd71d4917"}
+2026-11-19T07:41:56.062639+00:00 事件 replay ready：隔离回放
+2026-11-19T07:41:56.068408+00:00 关系快照：没有关系
+2026-11-19T07:41:56.071080+00:00 执行 codex 一轮 773bb026-12ce-4a8d-af6a-3ffa77977b0c 起因：事实 274744 规则模型=gpt-6.1-sol 强度=high 选择理由：按规则顺序选首个获准候选 codex；阶段 执行，第 1 轮
+2026-11-19T07:42:04.470450+00:00 回执 nothing 隔离验收：登记无卡取舍
+2026-11-19T07:42:05.073001+00:00 流程核对 执行：登记无卡取舍等待
+2026-11-19T07:42:05.073497+00:00 轮结束 773bb026-12ce-4a8d-af6a-3ffa77977b0c 结果=nothing 判过=未知 实际模型=gpt-6.1-sol 耗时=9.002462秒 token=15120 / 12160 / 0 / 133 API折合USD=0.032786 计费=subscription
+2026-11-19T07:42:05.474700+00:00 执行 codex 一轮 cbb147e6-90b9-4ba9-97fe-70c2351535fc 起因：事实 274750 规则模型=gpt-6.1-sol 强度=high 选择理由：按规则顺序选首个获准候选 codex；阶段 执行，第 2 轮
+2026-11-19T07:42:14.155806+00:00 回执 nothing 已读会话回答；交回授权中心原申请和检查点
+2026-11-19T07:42:14.840678+00:00 流程核对 执行：保存原授权申请和检查点
+2026-11-19T07:42:14.841126+00:00 轮结束 cbb147e6-90b9-4ba9-97fe-70c2351535fc 结果=nothing 判过=未知 实际模型=gpt-6.1-sol 耗时=9.366444秒 token=2674 / 27264 / 0 / 155 API折合USD=0.0096244 计费=subscription
+2026-11-19T07:42:14.875036+00:00 执行 codex 一轮 621d88aa-6f6d-4043-9e43-acd5e661b02b 起因：事实 274771 规则模型=gpt-6.1-sol 强度=high 选择理由：按规则顺序选首个获准候选 codex；阶段 执行，第 3 轮
+2026-11-19T07:42:34.810659+00:00 回执 nothing 原申请已核实；约好到点再看
+2026-11-19T07:42:41.806211+00:00 流程核对 执行：执行没做完：找不到带活标记的 PR
+2026-11-19T07:42:41.806491+00:00 轮结束 621d88aa-6f6d-4043-9e43-acd5e661b02b 结果=nothing 判过=未知 实际模型=gpt-6.1-sol 耗时=26.931556秒 token=3323 / 29952 / 0 / 450 API折合USD=0.014141200000000001 计费=subscription
+2026-11-19T07:42:42.894465+00:00 事件 timer update：资料
+2026-11-19T07:42:42.921060+00:00 执行 codex 一轮 d4054376-325c-4d80-a37c-242d50ea30fc 起因：事实 274792 规则模型=gpt-6.1-sol 强度=high 选择理由：按规则顺序选首个获准候选 codex；阶段 执行，第 4 轮
+2026-11-19T07:42:58.506638+00:00 回执 nothing 到点续跑；再约一天后看
+2026-11-19T07:43:07.594207+00:00 流程核对 执行：执行没做完：找不到带活标记的 PR
+2026-11-19T07:43:07.594447+00:00 轮结束 d4054376-325c-4d80-a37c-242d50ea30fc 结果=nothing 判过=未知 实际模型=gpt-6.1-sol 耗时=24.673448秒 token=13930 / 33536 / 0 / 450 API折合USD=0.0357136 计费=subscription
+
+----- grant-console：派活记录 -----
+[
+ {
+  "item": "grant-console:dod-replay",
+  "round": 1
+ },
+ {
+  "item": "grant-console:dod-replay",
+  "round": 2
+ },
+ {
+  "item": "grant-console:dod-replay",
+  "round": 3
+ },
+ {
+  "item": "grant-console:dod-replay",
+  "round": 4
+ }
+]
+
+----- grant-console：轮次小结 -----
+{
+ "rounds": 4,
+ "resumed": 1,
+ "authorization": {
+  "request": "exec-1794989758-293a21",
+  "action": "有别人在用的交付对象上线",
+  "target": "{\"app\":\"grant-console-centaladmin\",\"instance\":\"central\",\"revision\":\"d3a1765d1a56f8011a81f5db86d47dfc86724d9c\"}",
+  "result": "approved",
+  "applied": true
+ },
+ "timers_fired": [
+  "grant-console:dod-replay:621d88aa-6f6d-4043-9e43-acd5e661b02b:look-again"
+ ],
+ "writes": []
+}
+[9.2-4] 走通
+
+===== [9.3b] 授权原申请：新进程只读查已有申请两次，结果一致，不新建申请 =====
+
+----- grant-console：原申请已批准 -----
+$ <worktree>/.venv/bin/python3 <worktree>/scripts/verify_intervention_converted.py --authorization-child <回放目录>/converted/authorization-原申请已批准.json
+exit=0（0.38 秒）
+{"pid": 69199, "item": "grant-console:dod-replay", "request": "exec-1794989758-293a21", "action": "有别人在用的交付对象上线", "after": {"aliases": [], "pending": true, "reason": "授权中心 exec-1794989758-293a21：approved；检查点 original-sync-restart", "next": "从持久检查点继续；核实执行记录，不重复已执行动作", "rerun": true, "recheck_after": "+5m", "restart": false, "recovery_id": "", "blocked": "", "wait": null, "wake_on_completed": false}, "record": {"spec": {"request": "exec-1794989758-293a21", "kind": "exec", "action": "有别人在用的交付对象上线", "provider_action": "argocd/sync_app", "checkpoint": "original-sync-restart", "target": {"instance": "central", "app": "grant-console-centaladmin", "revision": "d3a1765d1a56f8011a81f5db86d47dfc86724d9c"}}, "verification": {"request": "exec-1794989758-293a21", "action": "有别人在用的交付对象上线", "target": "{\"app\":\"grant-console-centaladmin\",\"instance\":\"central\",\"revision\":\"d3a1765d1a56f8011a81f5db86d47dfc86724d9c\"}", "result": "approved", "applied": true}, "execution": {"instance": "central", "app": "grant-console-centaladmin", "revision": "d3a1765d1a56f8011a81f5db86d47dfc86724d9c", "operation_id": "exec-1794989758-293a21", "operation_matches": true, "operation_phase": "Succeeded", "after": {"revision": "d3a1765d1a56f8011a81f5db86d47dfc86724d9c", "sync": "Synced", "health": "Healthy"}}, "status": "completed"}, "new_requests": 0}
+
+----- grant-console：原申请已批准 -----
+$ <worktree>/.venv/bin/python3 <worktree>/scripts/verify_intervention_converted.py --authorization-child <回放目录>/converted/authorization-原申请已批准.json
+exit=0（0.08 秒）
+{"pid": 69210, "item": "grant-console:dod-replay", "request": "exec-1794989758-293a21", "action": "有别人在用的交付对象上线", "after": {"aliases": [], "pending": true, "reason": "原申请已核实生效", "next": "从检查点继续；已代执行的动作不得重做", "rerun": true, "recheck_after": "+5m", "restart": false, "recovery_id": "", "blocked": "", "wait": null, "wake_on_completed": false}, "record": {"spec": {"request": "exec-1794989758-293a21", "kind": "exec", "action": "有别人在用的交付对象上线", "provider_action": "argocd/sync_app", "checkpoint": "original-sync-restart", "target": {"instance": "central", "app": "grant-console-centaladmin", "revision": "d3a1765d1a56f8011a81f5db86d47dfc86724d9c"}}, "verification": {"request": "exec-1794989758-293a21", "action": "有别人在用的交付对象上线", "target": "{\"app\":\"grant-console-centaladmin\",\"instance\":\"central\",\"revision\":\"d3a1765d1a56f8011a81f5db86d47dfc86724d9c\"}", "result": "approved", "applied": true}, "execution": {"instance": "central", "app": "grant-console-centaladmin", "revision": "d3a1765d1a56f8011a81f5db86d47dfc86724d9c", "operation_id": "exec-1794989758-293a21", "operation_matches": true, "operation_phase": "Succeeded", "after": {"revision": "d3a1765d1a56f8011a81f5db86d47dfc86724d9c", "sync": "Synced", "health": "Healthy"}}, "status": "completed"}, "new_requests": 0}
+[9.3b] 走通
+
+===== [9.8] 亲眼看送一次、回复归件 =====
+[9.8] 没走：kun-g/grant-console 里找不到带可送约定（飞书私聊、按钮或引用回过/不对）的 issue
+
+===== [9.9] 集群同步按原申请续接 =====
+
+----- grant-console：集群同步按原申请续接 -----
+{
+ "batch": "c04fde79f40b8307c0b3a2bd4321d142a0c5ee0e1a7f7f26da4791050bfcad55.json",
+ "original_status": "ok",
+ "request": "exec-1794989758-293a21",
+ "after": {
+  "aliases": [],
+  "pending": false,
+  "reason": "",
+  "next": "",
+  "rerun": false,
+  "recheck_after": "+5m",
+  "restart": false,
+  "recovery_id": "",
+  "blocked": "",
+  "wait": null,
+  "wake_on_completed": false
+ },
+ "status": "ok",
+ "authorization": {
+  "request": "exec-1794989758-293a21",
+  "kind": "exec",
+  "action": "集群同步",
+  "provider_action": "argocd/sync_app",
+  "checkpoint": "<回放目录>/converted/state/grant-console-release/batches/c04fde79f40b8307c0b3a2bd4321d142a0c5ee0e1a7f7f26da4791050bfcad55/deploy",
+  "target": {
+   "instance": "central",
+   "app": "grant-console-centaladmin",
+   "revision": "d3a1765d1a56f8011a81f5db86d47dfc86724d9c"
+  }
+ },
+ "verification": {
+  "request": "exec-1794989758-293a21",
+  "action": "集群同步",
+  "target": "{\"app\":\"grant-console-centaladmin\",\"instance\":\"central\",\"revision\":\"d3a1765d1a56f8011a81f5db86d47dfc86724d9c\"}",
+  "result": "approved",
+  "applied": true
+ },
+ "execution": {
+  "instance": "central",
+  "app": "grant-console-centaladmin",
+  "revision": "d3a1765d1a56f8011a81f5db86d47dfc86724d9c",
+  "operation_id": "exec-1794989758-293a21",
+  "operation_matches": true,
+  "operation_phase": "Succeeded",
+  "after": {
+   "revision": "d3a1765d1a56f8011a81f5db86d47dfc86724d9c",
+   "sync": "Synced",
+   "health": "Healthy"
+  }
+ },
+ "sync_script_calls": 0,
+ "new_requests": 0
+}
+[9.9] 走通
+
+===== [9.10] 缺外部授权类别：对外发消息保持阻断、写明原因 =====
+
+----- grant-console：对外发消息 -----
+$ <worktree>/.venv/bin/python3 <worktree>/scripts/verify_intervention_converted.py --authorization-child <回放目录>/converted/authorization-对外发消息.json
+exit=0（1.44 秒）
+{"pid": 69318, "item": "grant-console:dod-replay", "request": "exec-1794989758-293a21", "action": "对外发消息", "after": {"aliases": [], "pending": false, "reason": "", "next": "补齐对应授权类别；不得借其它动作申请放行", "rerun": false, "recheck_after": "+5m", "restart": false, "recovery_id": "", "blocked": "授权中心核实器缺该动作类别的生效验证能力：对外发消息", "wait": null, "wake_on_completed": false}, "record": {"spec": {"request": "exec-1794989758-293a21", "kind": "exec", "action": "对外发消息", "provider_action": "lark/send_message", "checkpoint": "outbound", "target": {"instance": "central", "app": "grant-console-centaladmin", "revision": "d3a1765d1a56f8011a81f5db86d47dfc86724d9c"}}, "verification": {"request": "exec-1794989758-293a21", "action": "对外发消息", "target": "{\"app\":\"grant-console-centaladmin\",\"instance\":\"central\",\"revision\":\"d3a1765d1a56f8011a81f5db86d47dfc86724d9c\"}", "result": "unknown", "applied": false}, "execution": {"instance": "central", "app": "grant-console-centaladmin", "revision": "d3a1765d1a56f8011a81f5db86d47dfc86724d9c", "operation_id": "exec-1794989758-293a21", "operation_matches": true, "operation_phase": "Succeeded", "after": {"revision": "d3a1765d1a56f8011a81f5db86d47dfc86724d9c", "sync": "Synced", "health": "Healthy"}}, "status": "completed"}, "new_requests": 0}
+
+----- grant-console：对外发消息 -----
+$ <worktree>/.venv/bin/python3 <worktree>/scripts/verify_intervention_converted.py --authorization-child <回放目录>/converted/authorization-对外发消息.json
+exit=0（0.33 秒）
+{"pid": 69335, "item": "grant-console:dod-replay", "request": "exec-1794989758-293a21", "action": "对外发消息", "after": {"aliases": [], "pending": false, "reason": "", "next": "补齐对应授权类别；不得借其它动作申请放行", "rerun": false, "recheck_after": "+5m", "restart": false, "recovery_id": "", "blocked": "授权中心核实器缺该动作类别的生效验证能力：对外发消息", "wait": null, "wake_on_completed": false}, "record": {"spec": {"request": "exec-1794989758-293a21", "kind": "exec", "action": "对外发消息", "provider_action": "lark/send_message", "checkpoint": "outbound", "target": {"instance": "central", "app": "grant-console-centaladmin", "revision": "d3a1765d1a56f8011a81f5db86d47dfc86724d9c"}}, "verification": {"request": "exec-1794989758-293a21", "action": "对外发消息", "target": "{\"app\":\"grant-console-centaladmin\",\"instance\":\"central\",\"revision\":\"d3a1765d1a56f8011a81f5db86d47dfc86724d9c\"}", "result": "unknown", "applied": false}, "execution": {"instance": "central", "app": "grant-console-centaladmin", "revision": "d3a1765d1a56f8011a81f5db86d47dfc86724d9c", "operation_id": "exec-1794989758-293a21", "operation_matches": true, "operation_phase": "Succeeded", "after": {"revision": "d3a1765d1a56f8011a81f5db86d47dfc86724d9c", "sync": "Synced", "health": "Healthy"}}, "status": "completed"}, "new_requests": 0}
+[9.10] 走通
+
+===== [9.11] 缺外部授权类别：按量计费保持阻断、写明原因 =====
+
+----- grant-console：按量计费授权 -----
+$ <worktree>/.venv/bin/python3 <worktree>/scripts/verify_intervention_converted.py --authorization-child <回放目录>/converted/authorization-按量计费授权.json
+exit=0（0.32 秒）
+{"pid": 69358, "item": "grant-console:dod-replay", "request": "exec-1794989758-293a21", "action": "按量计费", "after": {"aliases": [], "pending": false, "reason": "", "next": "补齐对应授权类别；不得借其它动作申请放行", "rerun": false, "recheck_after": "+5m", "restart": false, "recovery_id": "", "blocked": "授权中心核实器缺该动作类别的生效验证能力：按量计费", "wait": null, "wake_on_completed": false}, "record": {"spec": {"request": "exec-1794989758-293a21", "kind": "exec", "action": "按量计费", "provider_action": "billing/metered", "checkpoint": "metered", "target": {"instance": "central", "app": "grant-console-centaladmin", "revision": "d3a1765d1a56f8011a81f5db86d47dfc86724d9c"}}, "verification": {"request": "exec-1794989758-293a21", "action": "按量计费", "target": "{\"app\":\"grant-console-centaladmin\",\"instance\":\"central\",\"revision\":\"d3a1765d1a56f8011a81f5db86d47dfc86724d9c\"}", "result": "unknown", "applied": false}, "execution": {"instance": "central", "app": "grant-console-centaladmin", "revision": "d3a1765d1a56f8011a81f5db86d47dfc86724d9c", "operation_id": "exec-1794989758-293a21", "operation_matches": true, "operation_phase": "Succeeded", "after": {"revision": "d3a1765d1a56f8011a81f5db86d47dfc86724d9c", "sync": "Synced", "health": "Healthy"}}, "status": "completed"}, "new_requests": 0}
+
+----- grant-console：按量计费授权 -----
+$ <worktree>/.venv/bin/python3 <worktree>/scripts/verify_intervention_converted.py --authorization-child <回放目录>/converted/authorization-按量计费授权.json
+exit=0（0.43 秒）
+{"pid": 69365, "item": "grant-console:dod-replay", "request": "exec-1794989758-293a21", "action": "按量计费", "after": {"aliases": [], "pending": false, "reason": "", "next": "补齐对应授权类别；不得借其它动作申请放行", "rerun": false, "recheck_after": "+5m", "restart": false, "recovery_id": "", "blocked": "授权中心核实器缺该动作类别的生效验证能力：按量计费", "wait": null, "wake_on_completed": false}, "record": {"spec": {"request": "exec-1794989758-293a21", "kind": "exec", "action": "按量计费", "provider_action": "billing/metered", "checkpoint": "metered", "target": {"instance": "central", "app": "grant-console-centaladmin", "revision": "d3a1765d1a56f8011a81f5db86d47dfc86724d9c"}}, "verification": {"request": "exec-1794989758-293a21", "action": "按量计费", "target": "{\"app\":\"grant-console-centaladmin\",\"instance\":\"central\",\"revision\":\"d3a1765d1a56f8011a81f5db86d47dfc86724d9c\"}", "result": "unknown", "applied": false}, "execution": {"instance": "central", "app": "grant-console-centaladmin", "revision": "d3a1765d1a56f8011a81f5db86d47dfc86724d9c", "operation_id": "exec-1794989758-293a21", "operation_matches": true, "operation_phase": "Succeeded", "after": {"revision": "d3a1765d1a56f8011a81f5db86d47dfc86724d9c", "sync": "Synced", "health": "Healthy"}}, "status": "completed"}, "new_requests": 0}
+
+----- grant-console：按量计费候选的阻断（副本里的活） -----
+{
+ "id": "grant-console:dod-billing",
+ "stage": "执行",
+ "state": "卡住",
+ "blocked_by": "没有可用的订阅候选；授权中心尚缺按量计费授权类别",
+ "next": "补齐授权中心按量计费能力或恢复订阅候选",
+ "leave": {
+  "kind": "工序",
+  "owner": "项目经理",
+  "at": "2026-11-19T07:43:22.138101+00:00",
+  "about": "没有可用的订阅候选；授权中心尚缺按量计费授权类别"
+ },
+ "rounds_started": 0
+}
+[9.11] 走通
+
+===== [9.5] 程序作业在跑不算空闲（真实守护进程心跳） =====
+
+----- grant-console：起守护进程（第一次） -----
+{
+ "pid": 69368,
+ "state": "<回放目录>/converted/state"
+}
+
+----- grant-console：程序作业在跑时的心跳 -----
+{
+ "business": {
+  "agents": 0,
+  "jobs": 1,
+  "total": 1,
+  "round_tokens": [],
+  "job_ids": [
+   "verification"
+  ],
+  "last_activity_at": "2026-11-19T07:43:22.400960+00:00",
+  "idle_since": null
+ },
+ "active": 0
+}
+[9.5] 走通
+
+===== [9.6] 守护进程停了看门接管、不重复起会话（真实项目经理） =====
+
+----- grant-console：真实项目经理在跑 -----
+{
+ "record": {
+  "active": true,
+  "attempts": [],
+  "candidate": 0,
+  "config": {
+   "billing": "subscription",
+   "driver": "codex",
+   "effort": "high",
+   "family": "codex",
+   "ignore_rules": true,
+   "ignore_user_config": true,
+   "model": "gpt-6.1-sol",
+   "permission_mode": "never",
+   "prompt": "项目经理只用现有授权命令疏通和记录；禁止修改代码、规则、需求、开单、代答或发消息。 本轮是转换后副本上的隔离验收：只读本轮状态目录和资料；不得运行生产命令，不修改生产状态，不访问远端，不发消息。确认受控事项已核对后交 resolved；不要等待外部条件。",
+   "require_subscription_login": true,
+   "sandbox": "workspace-write",
+   "settings": {
+    "sandbox_workspace_write": {
+     "network_access": true,
+     "writable_roots": [
+      "<回放目录>/converted"
+     ]
+    }
+   },
+   "skip_git_repo_check": true,
+   "transport": "headless",
+   "use": "manager-codex"
+  },
+  "created": "2026-11-19T07:43:22.456206+00:00",
+  "delivered": 1,
+  "episode": "82c7bf3b-b240-4d06-ba03-f1dd7eaf982f",
+  "executor": "manager-codex",
+  "facts": [
+   {
+    "at": "2026-11-19T07:43:22.456206+00:00",
+    "digest": "3728a78976ccdd15e75b027cdf4baceb30a9b0613f63f04ae436b79e2ae913a0",
+    "value": {
+     "cause": 274817,
+     "failure_episode": null,
+     "item": "grant-console:dod-manager",
+     "next": "隔离诊断，核对后交 resolved",
+     "reason": "隔离验收：核对转换后副本的项目经理接管；核对后可记 resolved",
+     "revision": 1,
+     "title": "核对副本里的项目经理"
+    }
+   }
+  ],
+  "generation": 1,
+  "id": "item:grant-console:dod-manager",
+  "last_executor": "manager-codex",
+  "owner": "core",
+  "publication": "3014d848c4e36e70ae880f0093436b04d8a45aa6a082dd5a6bde3184edf0ac72",
+  "published_business": {
+   "idle_since": null,
+   "total": 1
+  },
+  "resume_allowed": true,
+  "revision": 4,
+  "started": {
+   "handle": "<回放目录>/converted/executors/manager-codex/rounds/2076e99210575ea7bcbc7bafd2652c71fbce45281107fe42a4f58c27bc2993b5",
+   "session": "d8eb2676-0b52-4f33-9037-034a2853637b",
+   "workdir": null
+  },
+  "starting_facts": 1,
+  "state": "running",
+  "token": "4794b064-ad34-4212-b660-9a0fe76ac402",
+  "updated": "2026-11-19T07:43:22.456206+00:00"
+ },
+ "heartbeat_business": {
+  "agents": 0,
+  "jobs": 1,
+  "total": 1,
+  "round_tokens": [],
+  "job_ids": [
+   "verification"
+  ],
+  "last_activity_at": "2026-11-19T07:43:26.524452+00:00",
+  "idle_since": null
+ }
+}
+
+----- grant-console：守护进程停了，系统 Python 看门接管 -----
+{
+ "argv": [
+  "/usr/bin/python3",
+  "-I",
+  "<worktree>/src/workshop/watch/__init__.py",
+  "--state-dir",
+  "<回放目录>/converted/state",
+  "--manager-command",
+  "[\"<worktree>/.venv/bin/python3\", \"-m\", \"workshop.manager_cli\", \"--state-dir\", \"<回放目录>/converted/state\", \"--rules\", \"<回放目录>/converted/rules.yaml\"]"
+ ],
+ "exit_code": 0,
+ "stdout": "{\"heartbeat\": {\"id\": \"workshop-watch:c566065efdebe051:2026-11-19:ac28db7455e444f0390eb3d1\", \"confirmed\": false}}\n",
+ "stderr": "",
+ "record": {
+  "active": true,
+  "attempts": [],
+  "candidate": 0,
+  "config": {
+   "billing": "subscription",
+   "driver": "codex",
+   "effort": "high",
+   "family": "codex",
+   "ignore_rules": true,
+   "ignore_user_config": true,
+   "model": "gpt-6.1-sol",
+   "permission_mode": "never",
+   "prompt": "项目经理只用现有授权命令疏通和记录；禁止修改代码、规则、需求、开单、代答或发消息。 本轮是转换后副本上的隔离验收：只读本轮状态目录和资料；不得运行生产命令，不修改生产状态，不访问远端，不发消息。确认受控事项已核对后交 resolved；不要等待外部条件。",
+   "require_subscription_login": true,
+   "sandbox": "workspace-write",
+   "settings": {
+    "sandbox_workspace_write": {
+     "network_access": true,
+     "writable_roots": [
+      "<回放目录>/converted"
+     ]
+    }
+   },
+   "skip_git_repo_check": true,
+   "transport": "headless",
+   "use": "manager-codex"
+  },
+  "created": "2026-11-19T07:43:22.456206+00:00",
+  "delivered": 1,
+  "episode": "82c7bf3b-b240-4d06-ba03-f1dd7eaf982f",
+  "executor": "manager-codex",
+  "facts": [
+   {
+    "at": "2026-11-19T07:43:22.456206+00:00",
+    "digest": "3728a78976ccdd15e75b027cdf4baceb30a9b0613f63f04ae436b79e2ae913a0",
+    "value": {
+     "cause": 274817,
+     "failure_episode": null,
+     "item": "grant-console:dod-manager",
+     "next": "隔离诊断，核对后交 resolved",
+     "reason": "隔离验收：核对转换后副本的项目经理接管；核对后可记 resolved",
+     "revision": 1,
+     "title": "核对副本里的项目经理"
+    }
+   }
+  ],
+  "generation": 1,
+  "id": "item:grant-console:dod-manager",
+  "last_executor": "manager-codex",
+  "owner": "watch",
+  "publication": "3014d848c4e36e70ae880f0093436b04d8a45aa6a082dd5a6bde3184edf0ac72",
+  "published_business": {
+   "idle_since": null,
+   "total": 1
+  },
+  "resume_allowed": true,
+  "revision": 5,
+  "started": {
+   "handle": "<回放目录>/converted/executors/manager-codex/rounds/2076e99210575ea7bcbc7bafd2652c71fbce45281107fe42a4f58c27bc2993b5",
+   "session": "d8eb2676-0b52-4f33-9037-034a2853637b",
+   "workdir": null
+  },
+  "starting_facts": 1,
+  "state": "running",
+  "token": "4794b064-ad34-4212-b660-9a0fe76ac402",
+  "updated": "2026-11-19T07:43:26.697739+00:00"
+ }
+}
+
+----- grant-console：起守护进程（看门接管后重启） -----
+{
+ "pid": 69782,
+ "state": "<回放目录>/converted/state"
+}
+
+----- grant-console：项目经理结论（同一会话接着做） -----
+{
+ "active": true,
+ "attempts": [],
+ "candidate": 0,
+ "conclusion": {
+  "evidence": "已读本轮角色手册；只读核对 state/managers.db 的 concerns、history、receipts。事项 item:grant-console:dod-manager 在 revision 4 启动，revision 5 由 watch 接管，revision 6 由 core 认回；episode、token、started.session 均未改变，generation=1、delivered=1、attempts=[]。未执行生产命令、修改状态、访问远端或发送通知。",
+  "result": "resolved",
+  "schema": "manager/v1"
+ },
+ "config": {
+  "billing": "subscription",
+  "driver": "codex",
+  "effort": "high",
+  "family": "codex",
+  "ignore_rules": true,
+  "ignore_user_config": true,
+  "model": "gpt-6.1-sol",
+  "permission_mode": "never",
+  "prompt": "项目经理只用现有授权命令疏通和记录；禁止修改代码、规则、需求、开单、代答或发消息。 本轮是转换后副本上的隔离验收：只读本轮状态目录和资料；不得运行生产命令，不修改生产状态，不访问远端，不发消息。确认受控事项已核对后交 resolved；不要等待外部条件。",
+  "require_subscription_login": true,
+  "sandbox": "workspace-write",
+  "settings": {
+   "sandbox_workspace_write": {
+    "network_access": true,
+    "writable_roots": [
+     "<回放目录>/converted"
+    ]
+   }
+  },
+  "skip_git_repo_check": true,
+  "transport": "headless",
+  "use": "manager-codex"
+ },
+ "created": "2026-11-19T07:43:22.456206+00:00",
+ "delivered": 1,
+ "episode": "82c7bf3b-b240-4d06-ba03-f1dd7eaf982f",
+ "executor": "manager-codex",
+ "facts": [
+  {
+   "at": "2026-11-19T07:43:22.456206+00:00",
+   "digest": "3728a78976ccdd15e75b027cdf4baceb30a9b0613f63f04ae436b79e2ae913a0",
+   "value": {
+    "cause": 274817,
+    "failure_episode": null,
+    "item": "grant-console:dod-manager",
+    "next": "隔离诊断，核对后交 resolved",
+    "reason": "隔离验收：核对转换后副本的项目经理接管；核对后可记 resolved",
+    "revision": 1,
+    "title": "核对副本里的项目经理"
+   }
+  }
+ ],
+ "generation": 1,
+ "id": "item:grant-console:dod-manager",
+ "last_executor": "manager-codex",
+ "last_session": "d8eb2676-0b52-4f33-9037-034a2853637b",
+ "owner": "core",
+ "publication": "400242c061d5646a1560c62d0c1acb606180d05e45bf379e9c5240f913d582b7",
+ "published_business": {
+  "idle_since": null,
+  "total": 1
+ },
+ "resume_allowed": true,
+ "revision": 7,
+ "started": null,
+ "starting_facts": 1,
+ "state": "resolved",
+ "token": null,
+ "updated": "2026-11-19T07:43:27.016549+00:00"
+}
+[9.6] 走通
+
+===== [9.7] 同一段空闲只推一次（真实守护进程、项目经理命令、介入点服务） =====
+
+----- grant-console：空闲起点 -----
+{
+ "agents": 0,
+ "jobs": 0,
+ "total": 0,
+ "round_tokens": [],
+ "job_ids": [],
+ "last_activity_at": "2026-11-19T07:44:27.444785+00:00",
+ "idle_since": "2026-11-19T07:44:27.444785+00:00"
+}
+
+----- grant-console：空闲 299 秒（假时钟判五分钟） -----
+{
+ "exit_code": 0,
+ "stderr": "",
+ "tick_attempts_until_lock": [
+  0,
+  0,
+  0
+ ],
+ "idle_record": {
+  "active": false,
+  "attempts": [],
+  "candidate": 0,
+  "conclusion": null,
+  "config": {
+   "billing": "subscription",
+   "driver": "codex",
+   "effort": "high",
+   "family": "codex",
+   "ignore_rules": true,
+   "ignore_user_config": true,
+   "model": "gpt-6.1-sol",
+   "permission_mode": "never",
+   "prompt": "项目经理只用现有授权命令疏通和记录；禁止修改代码、规则、需求、开单、代答或发消息。 本轮是转换后副本上的隔离验收：只读本轮状态目录和资料；不得运行生产命令，不修改生产状态，不访问远端，不发消息。确认受控事项已核对后交 resolved；不要等待外部条件。",
+   "require_subscription_login": true,
+   "sandbox": "workspace-write",
+   "settings": {
+    "sandbox_workspace_write": {
+     "network_access": true,
+     "writable_roots": [
+      "<回放目录>/converted"
+     ]
+    }
+   },
+   "skip_git_repo_check": true,
+   "transport": "headless",
+   "use": "manager-codex"
+  },
+  "created": "2026-11-19T07:46:38.019621+00:00",
+  "delivered": 0,
+  "episode": "944dcc8f-13ee-4175-90d9-5ca46a6ec7a3",
+  "error": "JobFailed: [Errno 2] No such file or directory: '<回放目录>/converted/executors/manager-codex/sessions/59833ae6-71e9-4697-9ecd-13b78f8d8cde/info.json'",
+  "executor": "manager-codex",
+  "facts": [
+   {
+    "at": "2026-11-19T07:46:38.019621+00:00",
+    "digest": "9c051e4218126d60f7bd03e5c3f0c638d12c4eeda092c1ba074c9534de19e6a5",
+    "value": {
+     "idle_since": "2026-11-19T07:41:38.019621+00:00",
+     "reason": "业务连续五分钟为零"
+    }
+   }
+  ],
+  "generation": 11,
+  "id": "idle",
+  "last_executor": "manager-codex",
+  "last_session": null,
+  "owner": "watch",
+  "publication": "1b37109b4347450a230a47eae8ab6d520be17aee56a853613ee4b01111afdfc8",
+  "publish_error": "JobFailed: [Errno 61] Connection refused",
+  "published_business": {
+   "idle_since": "2026-11-19T07:44:27.444785+00:00",
+   "total": 0
+  },
+  "resume_allowed": true,
+  "revision": 291,
+  "started": null,
+  "starting_facts": 1,
+  "state": "resolved",
+  "token": null,
+  "updated": "2026-11-19T07:43:26.697739+00:00"
+ },
+ "registered_this_segment": false
+}
+
+----- grant-console：空闲 300 秒（假时钟判五分钟） -----
+{
+ "exit_code": 0,
+ "stderr": "",
+ "tick_attempts_until_lock": [
+  0,
+  0,
+  0,
+  0,
+  0,
+  0,
+  0,
+  0
+ ],
+ "idle_record": {
+  "active": true,
+  "attempts": [],
+  "candidate": 0,
+  "conclusion": null,
+  "config": {
+   "billing": "subscription",
+   "driver": "codex",
+   "effort": "high",
+   "family": "codex",
+   "ignore_rules": true,
+   "ignore_user_config": true,
+   "model": "gpt-6.1-sol",
+   "permission_mode": "never",
+   "prompt": "项目经理只用现有授权命令疏通和记录；禁止修改代码、规则、需求、开单、代答或发消息。 本轮是转换后副本上的隔离验收：只读本轮状态目录和资料；不得运行生产命令，不修改生产状态，不访问远端，不发消息。确认受控事项已核对后交 resolved；不要等待外部条件。",
+   "require_subscription_login": true,
+   "sandbox": "workspace-write",
+   "settings": {
+    "sandbox_workspace_write": {
+     "network_access": true,
+     "writable_roots": [
+      "<回放目录>/converted"
+     ]
+    }
+   },
+   "skip_git_repo_check": true,
+   "transport": "headless",
+   "use": "manager-codex"
+  },
+  "created": "2026-11-19T07:49:27.444785+00:00",
+  "delivered": 0,
+  "episode": "03d74627-67fd-4ab1-b280-bc92a4a85302",
+  "error": "JobFailed: [Errno 2] No such file or directory: '<回放目录>/converted/executors/manager-codex/sessions/59833ae6-71e9-4697-9ecd-13b78f8d8cde/info.json'",
+  "executor": "manager-codex",
+  "facts": [
+   {
+    "at": "2026-11-19T07:49:27.444785+00:00",
+    "digest": "acf07f2b738a2044e8da45a54b07b6a5763fef57650fc6e6adc59bcdebf560f6",
+    "value": {
+     "idle_since": "2026-11-19T07:44:27.444785+00:00",
+     "reason": "业务连续五分钟为零"
+    }
+   }
+  ],
+  "generation": 11,
+  "id": "idle",
+  "last_executor": "manager-codex",
+  "last_session": null,
+  "owner": "watch",
+  "publication": null,
+  "publish_error": "JobFailed: [Errno 61] Connection refused",
+  "published_business": {
+   "idle_since": "2026-11-19T07:44:27.444785+00:00",
+   "total": 0
+  },
+  "resume_allowed": true,
+  "revision": 292,
+  "started": null,
+  "starting_facts": 1,
+  "state": "queued",
+  "token": null,
+  "updated": "2026-11-19T07:49:27.444785+00:00"
+ },
+ "registered_this_segment": true
+}
+
+----- grant-console：同一空闲段登记结论 a -----
+{
+ "ref": "manager:adc80a034dace6908ea2893a67968a5e79a561b25556b90e3e75d208dadaccb4"
+}
+
+----- grant-console：manager_flush -----
+{
+ "deliveries": [
+  {
+   "created_at": "2026-11-19T03:39:57.377806+00:00",
+   "error": null,
+   "external": null,
+   "id": "delivery:74e3494627d4cc647e320fe40ab3cd88d65f43697bc379ecf35e4fcccc96d370",
+   "payload": {
+    "card": {
+     "body": {
+      "elements": [
+       {
+        "tag": "div",
+        "text": {
+         "content": "旧问卡已答且活已完成，残留对账告警无现有清理命令",
+         "tag": "plain_text"
+        }
+       },
+       {
+        "elements": [
+         {
+          "tag": "div",
+          "text": {
+           "content": "交协调对话处理残留问卡：已读角色手册、pm.md、问题记录及PM工具README。status --all --target grant-console确认170已完成，旧requirement-change卡仍待对账；why确认11-15T07:37:53Z已登记Kun原话“170批准”，11:14:45Z完成、11:15:04Z关闭。共享记录11-16 13:36已有同一问题。只读核对CLI、asking.py、holding.py和reask.py：回答不清对账标记，撤问仅处理未运行的等你活；无适用清理入口。未重发、代答或改业务状态。；交协调对话处理主循环慢拍：已读角色手册、pm.md及",
+           "tag": "plain_text"
+          }
+         }
+        ],
+        "expanded": false,
+        "header": {
+         "title": {
+          "content": "项目经理查了什么",
+          "tag": "plain_text"
+         }
+        },
+        "tag": "collapsible_panel"
+       },
+       {
+        "behaviors": [
+         {
+          "type": "callback",
+          "value": {
+           "delivery": "delivery:74e3494627d4cc647e320fe40ab3cd88d65f43697bc379ecf35e4fcccc96d370",
+           "ns": "workshop-status/v1",
+           "section": "处理不了"
+          }
+         }
+        ],
+        "tag": "button",
+        "text": {
+         "content": "处理不了",
+         "tag": "plain_text"
+        },
+        "type": "primary"
+       }
+      ]
+     },
+     "header": {
+      "subtitle": {
+       "content": "项目经理处理不了",
+       "tag": "plain_text"
+      },
+      "template": "orange",
+      "title": {
+       "content": "交协调对话处理残留问卡",
+       "tag": "plain_text"
+      }
+     },
+     "schema": "2.0"
+    },
+    "kind": "manager_help",
+    "members": [
+     "aa0fd24b-1fab-443d-a6bc-e81de8b47ec8",
+     "c2a90cf8-bb0e-4277-9e26-c43ecd2301c3",
+     "2a9703e4-9b48-4750-b7ef-47719de5b992"
+    ],
+    "primary": "aa0fd24b-1fab-443d-a6bc-e81de8b47ec8",
+    "section": "处理不了"
+   },
+   "permit": "permit:ffdcd0ce69f58055f4d60d16f77a4871c7488a19c0a8118bbf34ebbb4ae00529",
+   "state": "uncertain"
+  },
+  {
+   "created_at": "2026-11-19T03:45:00.208667+00:00",
+   "error": null,
+   "external": null,
+   "id": "delivery:1493734f7fd3f0d0d15a06a62e31972d2a289b677d7515f60c97a7504f6c77f1",
+   "payload": {
+    "card": {
+     "body": {
+      "elements": [
+       {
+        "tag": "div",
+        "text": {
+         "content": "旧问卡已答且活已完成，残留对账告警无现有清理命令",
+         "tag": "plain_text"
+        }
+       },
+       {
+        "elements": [
+         {
+          "tag": "div",
+          "text": {
+           "content": "交协调对话处理残留问卡：已读角色手册、pm.md、问题记录及PM工具README。status --all --target grant-console确认170已完成，旧requirement-change卡仍待对账；why确认11-15T07:37:53Z已登记Kun原话“170批准”，11:14:45Z完成、11:15:04Z关闭。共享记录11-16 13:36已有同一问题。只读核对CLI、asking.py、holding.py和reask.py：回答不清对账标记，撤问仅处理未运行的等你活；无适用清理入口。未重发、代答或改业务状态。；交协调对话处理主循环慢拍：已读角色手册、pm.md及",
+           "tag": "plain_text"
+          }
+         }
+        ],
+        "expanded": false,
+        "header": {
+         "title": {
+          "content": "项目经理查了什么",
+          "tag": "plain_text"
+         }
+        },
+        "tag": "collapsible_panel"
+       },
+       {
+        "behaviors": [
+         {
+          "type": "callback",
+          "value": {
+           "delivery": "delivery:1493734f7fd3f0d0d15a06a62e31972d2a289b677d7515f60c97a7504f6c77f1",
+           "ns": "workshop-status/v1",
+           "section": "处理不了"
+          }
+         }
+        ],
+        "tag": "button",
+        "text": {
+         "content": "处理不了",
+         "tag": "plain_text"
+        },
+        "type": "primary"
+       }
+      ]
+     },
+     "header": {
+      "subtitle": {
+       "content": "项目经理处理不了",
+       "tag": "plain_text"
+      },
+      "template": "orange",
+      "title": {
+       "content": "交协调对话处理残留问卡",
+       "tag": "plain_text"
+      }
+     },
+     "schema": "2.0"
+    },
+    "kind": "manager_help",
+    "members": [
+     "aa0fd24b-1fab-443d-a6bc-e81de8b47ec8",
+     "c2a90cf8-bb0e-4277-9e26-c43ecd2301c3",
+     "2a9703e4-9b48-4750-b7ef-47719de5b992"
+    ],
+    "primary": "aa0fd24b-1fab-443d-a6bc-e81de8b47ec8",
+    "section": "处理不了"
+   },
+   "permit": "permit:c6122a658bcbd03d780954d51798a9d60da72846b0f187d477afc88630a29529",
+   "state": "uncertain"
+  },
+  {
+   "created_at": "2026-11-19T07:44:30.846035+00:00",
+   "error": null,
+   "external": "local:delivery:fedc3919006069adff5abea65afedfd0a909bd9aee705e8e866f3bd659ced7ca",
+   "id": "delivery:fedc3919006069adff5abea65afedfd0a909bd9aee705e8e866f3bd659ced7ca",
+   "payload": {
+    "card": {
+     "body": {
+      "elements": [
+       {
+        "tag": "div",
+        "text": {
+         "content": "转换后副本上隔离回放：同一空闲段的第二条结论",
+         "tag": "plain_text"
+        }
+       },
+       {
+        "elements": [
+         {
+          "content": "**补一件新需求**\n隔离回放：同一空闲段",
+          "tag": "markdown"
+         }
+        ],
+        "expanded": false,
+        "header": {
+         "icon": {
+          "size": "16px 16px",
+          "tag": "standard_icon",
+          "token": "down-small-ccm_outlined"
+         },
+         "icon_expanded_angle": -180,
+         "icon_position": "right",
+         "title": {
+          "content": "项目经理查了什么",
+          "tag": "plain_text"
+         }
+        },
+        "tag": "collapsible_panel"
+       },
+       {
+        "behaviors": [
+         {
+          "default_url": "http://127.0.0.1:59478/status.html#%E5%A4%84%E7%90%86%E4%B8%8D%E4%BA%86",
+          "type": "open_url"
+         }
+        ],
+        "tag": "button",
+        "text": {
+         "content": "看处理不了栏",
+         "tag": "plain_text"
+        },
+        "type": "primary"
+       }
+      ]
+     },
+     "header": {
+      "subtitle": {
+       "content": "项目经理处理不了",
+       "tag": "plain_text"
+      },
+      "template": "orange",
+      "title": {
+       "content": "补一件新需求",
+       "tag": "plain_text"
+      }
+     },
+     "schema": "2.0"
+    },
+    "kind": "manager_help",
+    "members": [
+     "converted-grant-console-a"
+    ],
+    "primary": "converted-grant-console-a",
+    "section": "处理不了"
+   },
+   "permit": "permit:4e6e2c39f772599d8a83fa37c6757c29d0273660274ffcce1dde703d540c5297",
+   "state": "sent"
+  }
+ ],
+ "errors": []
+}
+
+----- grant-console：同一空闲段登记结论 b -----
+{
+ "ref": "manager:a0e178232a877040194e066ff2bf620dabc21f421f177bf9b48ac7a04634a914"
+}
+
+----- grant-console：manager_flush -----
+{
+ "deliveries": [
+  {
+   "created_at": "2026-11-19T03:39:57.377806+00:00",
+   "error": null,
+   "external": null,
+   "id": "delivery:74e3494627d4cc647e320fe40ab3cd88d65f43697bc379ecf35e4fcccc96d370",
+   "payload": {
+    "card": {
+     "body": {
+      "elements": [
+       {
+        "tag": "div",
+        "text": {
+         "content": "旧问卡已答且活已完成，残留对账告警无现有清理命令",
+         "tag": "plain_text"
+        }
+       },
+       {
+        "elements": [
+         {
+          "tag": "div",
+          "text": {
+           "content": "交协调对话处理残留问卡：已读角色手册、pm.md、问题记录及PM工具README。status --all --target grant-console确认170已完成，旧requirement-change卡仍待对账；why确认11-15T07:37:53Z已登记Kun原话“170批准”，11:14:45Z完成、11:15:04Z关闭。共享记录11-16 13:36已有同一问题。只读核对CLI、asking.py、holding.py和reask.py：回答不清对账标记，撤问仅处理未运行的等你活；无适用清理入口。未重发、代答或改业务状态。；交协调对话处理主循环慢拍：已读角色手册、pm.md及",
+           "tag": "plain_text"
+          }
+         }
+        ],
+        "expanded": false,
+        "header": {
+         "title": {
+          "content": "项目经理查了什么",
+          "tag": "plain_text"
+         }
+        },
+        "tag": "collapsible_panel"
+       },
+       {
+        "behaviors": [
+         {
+          "type": "callback",
+          "value": {
+           "delivery": "delivery:74e3494627d4cc647e320fe40ab3cd88d65f43697bc379ecf35e4fcccc96d370",
+           "ns": "workshop-status/v1",
+           "section": "处理不了"
+          }
+         }
+        ],
+        "tag": "button",
+        "text": {
+         "content": "处理不了",
+         "tag": "plain_text"
+        },
+        "type": "primary"
+       }
+      ]
+     },
+     "header": {
+      "subtitle": {
+       "content": "项目经理处理不了",
+       "tag": "plain_text"
+      },
+      "template": "orange",
+      "title": {
+       "content": "交协调对话处理残留问卡",
+       "tag": "plain_text"
+      }
+     },
+     "schema": "2.0"
+    },
+    "kind": "manager_help",
+    "members": [
+     "aa0fd24b-1fab-443d-a6bc-e81de8b47ec8",
+     "c2a90cf8-bb0e-4277-9e26-c43ecd2301c3",
+     "2a9703e4-9b48-4750-b7ef-47719de5b992"
+    ],
+    "primary": "aa0fd24b-1fab-443d-a6bc-e81de8b47ec8",
+    "section": "处理不了"
+   },
+   "permit": "permit:ffdcd0ce69f58055f4d60d16f77a4871c7488a19c0a8118bbf34ebbb4ae00529",
+   "state": "uncertain"
+  },
+  {
+   "created_at": "2026-11-19T03:45:00.208667+00:00",
+   "error": null,
+   "external": null,
+   "id": "delivery:1493734f7fd3f0d0d15a06a62e31972d2a289b677d7515f60c97a7504f6c77f1",
+   "payload": {
+    "card": {
+     "body": {
+      "elements": [
+       {
+        "tag": "div",
+        "text": {
+         "content": "旧问卡已答且活已完成，残留对账告警无现有清理命令",
+         "tag": "plain_text"
+        }
+       },
+       {
+        "elements": [
+         {
+          "tag": "div",
+          "text": {
+           "content": "交协调对话处理残留问卡：已读角色手册、pm.md、问题记录及PM工具README。status --all --target grant-console确认170已完成，旧requirement-change卡仍待对账；why确认11-15T07:37:53Z已登记Kun原话“170批准”，11:14:45Z完成、11:15:04Z关闭。共享记录11-16 13:36已有同一问题。只读核对CLI、asking.py、holding.py和reask.py：回答不清对账标记，撤问仅处理未运行的等你活；无适用清理入口。未重发、代答或改业务状态。；交协调对话处理主循环慢拍：已读角色手册、pm.md及",
+           "tag": "plain_text"
+          }
+         }
+        ],
+        "expanded": false,
+        "header": {
+         "title": {
+          "content": "项目经理查了什么",
+          "tag": "plain_text"
+         }
+        },
+        "tag": "collapsible_panel"
+       },
+       {
+        "behaviors": [
+         {
+          "type": "callback",
+          "value": {
+           "delivery": "delivery:1493734f7fd3f0d0d15a06a62e31972d2a289b677d7515f60c97a7504f6c77f1",
+           "ns": "workshop-status/v1",
+           "section": "处理不了"
+          }
+         }
+        ],
+        "tag": "button",
+        "text": {
+         "content": "处理不了",
+         "tag": "plain_text"
+        },
+        "type": "primary"
+       }
+      ]
+     },
+     "header": {
+      "subtitle": {
+       "content": "项目经理处理不了",
+       "tag": "plain_text"
+      },
+      "template": "orange",
+      "title": {
+       "content": "交协调对话处理残留问卡",
+       "tag": "plain_text"
+      }
+     },
+     "schema": "2.0"
+    },
+    "kind": "manager_help",
+    "members": [
+     "aa0fd24b-1fab-443d-a6bc-e81de8b47ec8",
+     "c2a90cf8-bb0e-4277-9e26-c43ecd2301c3",
+     "2a9703e4-9b48-4750-b7ef-47719de5b992"
+    ],
+    "primary": "aa0fd24b-1fab-443d-a6bc-e81de8b47ec8",
+    "section": "处理不了"
+   },
+   "permit": "permit:c6122a658bcbd03d780954d51798a9d60da72846b0f187d477afc88630a29529",
+   "state": "uncertain"
+  }
+ ],
+ "errors": []
+}
+
+----- grant-console：这一空闲段的求助送达 -----
+{
+ "idle_since": "2026-11-19T07:44:27.444785+00:00",
+ "deliveries": [
+  {
+   "id": "delivery:fedc3919006069adff5abea65afedfd0a909bd9aee705e8e866f3bd659ced7ca",
+   "state": "sent",
+   "external": "local:delivery:fedc3919006069adff5abea65afedfd0a909bd9aee705e8e866f3bd659ced7ca"
+  }
+ ],
+ "inbox_manager_help_sends": [
+  "delivery:ce36dc47035857c14c9cc014c8de491fde616a5e016d103b0854d83979038fb0",
+  "delivery:fedc3919006069adff5abea65afedfd0a909bd9aee705e8e866f3bd659ced7ca"
+ ]
+}
+[9.7] 走通
+
+----- 全部出口的发送记录：送达命令收件箱（原样） -----
+[
+ {
+  "key": "delivery:be5c5db79ea1eebd50f5eee85ae3eb6d57f93bd3dd2347153e398c409bf705ee",
+  "kind": "visual",
+  "payload": {
+   "card": {
+    "body": {
+     "elements": [
+      {
+       "content": "[issue #176](https://github.com/kun-g/workshop/issues/176)",
+       "tag": "markdown"
+      },
+      {
+       "content": "**看什么**",
+       "tag": "markdown"
+      },
+      {
+       "tag": "div",
+       "text": {
+        "content": "一是转换对账表里取消掉的旧记录（旧问卡、通知、送回），看有没有不该丢的；收尾时车间把对账表里「取消」的那几行送来。二是切换后 grant-console 第一次定时发版的授权中心审批卡：照常批；之后车间不再发自己的授权卡或通知。",
+        "tag": "plain_text"
+       }
+      },
+      {
+       "behaviors": [
+        {
+         "type": "callback",
+         "value": {
+          "choice": "pass",
+          "ns": "workshop-visual/v1",
+          "permit": "permit:bee8002fe1f1732ad359a5be2d2b89a9bf3ec6f59d38ca3f888789c7e96bf7d5",
+          "version": "29af0b3d1a591be643ad5a1b97e85829722d046c"
+         }
+        }
+       ],
+       "tag": "button",
+       "text": {
+        "content": "通过",
+        "tag": "plain_text"
+       },
+       "type": "primary_filled",
+       "width": "fill"
+      },
+      {
+       "elements": [
+        {
+         "input_type": "multiline_text",
+         "max_length": 1000,
+         "name": "reason",
+         "placeholder": {
+          "content": "不通过时写哪里不对",
+          "tag": "plain_text"
+         },
+         "required": true,
+         "tag": "input",
+         "width": "fill"
+        },
+        {
+         "behaviors": [
+          {
+           "type": "callback",
+           "value": {
+            "choice": "fail",
+            "ns": "workshop-visual/v1",
+            "permit": "permit:bee8002fe1f1732ad359a5be2d2b89a9bf3ec6f59d38ca3f888789c7e96bf7d5",
+            "version": "29af0b3d1a591be643ad5a1b97e85829722d046c"
+           }
+          }
+         ],
+         "form_action_type": "submit",
+         "name": "fail",
+         "tag": "button",
+         "text": {
+          "content": "不通过",
+          "tag": "plain_text"
+         },
+         "type": "danger",
+         "width": "fill"
+        }
+       ],
+       "name": "visual",
+       "tag": "form"
+      },
+      {
+       "elements": [
+        {
+         "tag": "div",
+         "text": {
+          "content": "活：workshop:dod-replay\n合并提交：29af0b3d1a591be643ad5a1b97e85829722d046c",
+          "tag": "plain_text"
+         }
+        },
+        {
+         "tag": "div",
+         "text": {
+          "tag": "plain_text",
+          "content": "送达号：delivery:be5c5db79ea1eebd50f5eee85ae3eb6d57f93bd3dd2347153e398c409bf705ee"
+         }
+        }
+       ],
+       "expanded": false,
+       "header": {
+        "title": {
+         "content": "详情",
+         "tag": "plain_text"
+        }
+       },
+       "tag": "collapsible_panel"
+      }
+     ]
+    },
+    "header": {
+     "subtitle": {
+      "content": "亲眼看",
+      "tag": "plain_text"
+     },
+     "template": "blue",
+     "title": {
+      "content": "介入点：存量转换、旧出口停用与逐批真实验收",
+      "tag": "plain_text"
+     }
+    },
+    "schema": "2.0"
+   },
+   "item": "workshop:dod-replay",
+   "kind": "visual",
+   "version": "29af0b3d1a591be643ad5a1b97e85829722d046c"
+  }
+ },
+ {
+  "key": "delivery:11bb043f076659940f9cd09827918eaf1058069eb6d1ea1a34d82897d22e9e1e",
+  "kind": "visual_receipt",
+  "payload": {
+   "card": {
+    "body": {
+     "elements": [
+      {
+       "tag": "collapsible_panel",
+       "expanded": false,
+       "header": {
+        "title": {
+         "tag": "plain_text",
+         "content": "详情"
+        }
+       },
+       "elements": [
+        {
+         "tag": "div",
+         "text": {
+          "tag": "plain_text",
+          "content": "送达号：delivery:11bb043f076659940f9cd09827918eaf1058069eb6d1ea1a34d82897d22e9e1e"
+         }
+        }
+       ]
+      }
+     ]
+    },
+    "header": {
+     "subtitle": {
+      "content": "亲眼看 · 介入点：存量转换、旧出口停用与逐批真实验收",
+      "tag": "plain_text"
+     },
+     "template": "green",
+     "title": {
+      "content": "已收到：通过",
+      "tag": "plain_text"
+     }
+    },
+    "schema": "2.0"
+   },
+   "kind": "visual_receipt",
+   "wait": "wait:1d87bbb4aed6d2e98c4a44a04faa069ba0edf627d1cd56a2b26f974e9cf1ef45"
+  }
+ },
+ {
+  "key": "delivery:37d870f8052a21d393afb2a7353fb0b5473cd48ee4db6ab97f7902873e5a5ab5",
+  "kind": "update_report",
+  "payload": {
+   "artifact": "<回放目录>/converted/state/watch_updates/reports/wu-daily-2026-11-18-v2.html",
+   "idempotency_key": "987abf8b4b06264b9e3ad00b",
+   "kind": "update_report",
+   "report": "wu-daily-2026-11-18-v2",
+   "sha256": "b0ca7905d4a812a1c2baee0da73e0515a5ba094e6158fc8dbb648419f22b8ead"
+  }
+ },
+ {
+  "key": "delivery:ce36dc47035857c14c9cc014c8de491fde616a5e016d103b0854d83979038fb0",
+  "kind": "manager_help",
+  "payload": {
+   "card": {
+    "body": {
+     "elements": [
+      {
+       "tag": "div",
+       "text": {
+        "content": "转换后副本上隔离回放：同一空闲段的第二条结论",
+        "tag": "plain_text"
+       }
+      },
+      {
+       "elements": [
+        {
+         "content": "**补一件新需求**\n隔离回放：同一空闲段",
+         "tag": "markdown"
+        }
+       ],
+       "expanded": false,
+       "header": {
+        "icon": {
+         "size": "16px 16px",
+         "tag": "standard_icon",
+         "token": "down-small-ccm_outlined"
+        },
+        "icon_expanded_angle": -180,
+        "icon_position": "right",
+        "title": {
+         "content": "项目经理查了什么",
+         "tag": "plain_text"
+        }
+       },
+       "tag": "collapsible_panel"
+      },
+      {
+       "behaviors": [
+        {
+         "default_url": "http://127.0.0.1:59478/status.html#%E5%A4%84%E7%90%86%E4%B8%8D%E4%BA%86",
+         "type": "open_url"
+        }
+       ],
+       "tag": "button",
+       "text": {
+        "content": "看处理不了栏",
+        "tag": "plain_text"
+       },
+       "type": "primary"
+      },
+      {
+       "tag": "collapsible_panel",
+       "expanded": false,
+       "header": {
+        "title": {
+         "tag": "plain_text",
+         "content": "详情"
+        }
+       },
+       "elements": [
+        {
+         "tag": "div",
+         "text": {
+          "tag": "plain_text",
+          "content": "送达号：delivery:ce36dc47035857c14c9cc014c8de491fde616a5e016d103b0854d83979038fb0"
+         }
+        }
+       ]
+      }
+     ]
+    },
+    "header": {
+     "subtitle": {
+      "content": "项目经理处理不了",
+      "tag": "plain_text"
+     },
+     "template": "orange",
+     "title": {
+      "content": "补一件新需求",
+      "tag": "plain_text"
+     }
+    },
+    "schema": "2.0"
+   },
+   "kind": "manager_help",
+   "members": [
+    "converted-workshop-a"
+   ],
+   "primary": "converted-workshop-a",
+   "section": "处理不了"
+  }
+ },
+ {
+  "key": "delivery:fedc3919006069adff5abea65afedfd0a909bd9aee705e8e866f3bd659ced7ca",
+  "kind": "manager_help",
+  "payload": {
+   "card": {
+    "body": {
+     "elements": [
+      {
+       "tag": "div",
+       "text": {
+        "content": "转换后副本上隔离回放：同一空闲段的第二条结论",
+        "tag": "plain_text"
+       }
+      },
+      {
+       "elements": [
+        {
+         "content": "**补一件新需求**\n隔离回放：同一空闲段",
+         "tag": "markdown"
+        }
+       ],
+       "expanded": false,
+       "header": {
+        "icon": {
+         "size": "16px 16px",
+         "tag": "standard_icon",
+         "token": "down-small-ccm_outlined"
+        },
+        "icon_expanded_angle": -180,
+        "icon_position": "right",
+        "title": {
+         "content": "项目经理查了什么",
+         "tag": "plain_text"
+        }
+       },
+       "tag": "collapsible_panel"
+      },
+      {
+       "behaviors": [
+        {
+         "default_url": "http://127.0.0.1:59478/status.html#%E5%A4%84%E7%90%86%E4%B8%8D%E4%BA%86",
+         "type": "open_url"
+        }
+       ],
+       "tag": "button",
+       "text": {
+        "content": "看处理不了栏",
+        "tag": "plain_text"
+       },
+       "type": "primary"
+      },
+      {
+       "tag": "collapsible_panel",
+       "expanded": false,
+       "header": {
+        "title": {
+         "tag": "plain_text",
+         "content": "详情"
+        }
+       },
+       "elements": [
+        {
+         "tag": "div",
+         "text": {
+          "tag": "plain_text",
+          "content": "送达号：delivery:fedc3919006069adff5abea65afedfd0a909bd9aee705e8e866f3bd659ced7ca"
+         }
+        }
+       ]
+      }
+     ]
+    },
+    "header": {
+     "subtitle": {
+      "content": "项目经理处理不了",
+      "tag": "plain_text"
+     },
+     "template": "orange",
+     "title": {
+      "content": "补一件新需求",
+      "tag": "plain_text"
+     }
+    },
+    "schema": "2.0"
+   },
+   "kind": "manager_help",
+   "members": [
+    "converted-grant-console-a"
+   ],
+   "primary": "converted-grant-console-a",
+   "section": "处理不了"
+  }
+ }
+]
+
+----- 全部出口的发送记录：送达命令每次调用（含对账、回复查询） -----
+[
+ {
+  "seq": 1,
+  "action": "send",
+  "key": "delivery:be5c5db79ea1eebd50f5eee85ae3eb6d57f93bd3dd2347153e398c409bf705ee",
+  "kind": "visual"
+ },
+ {
+  "seq": 2,
+  "action": "send",
+  "key": "delivery:11bb043f076659940f9cd09827918eaf1058069eb6d1ea1a34d82897d22e9e1e",
+  "kind": "visual_receipt"
+ },
+ {
+  "seq": 3,
+  "action": "send",
+  "key": "delivery:37d870f8052a21d393afb2a7353fb0b5473cd48ee4db6ab97f7902873e5a5ab5",
+  "kind": "update_report"
+ },
+ {
+  "seq": 4,
+  "action": "reconcile",
+  "key": "delivery:74e3494627d4cc647e320fe40ab3cd88d65f43697bc379ecf35e4fcccc96d370",
+  "kind": "manager_help"
+ },
+ {
+  "seq": 5,
+  "action": "reconcile",
+  "key": "delivery:1493734f7fd3f0d0d15a06a62e31972d2a289b677d7515f60c97a7504f6c77f1",
+  "kind": "manager_help"
+ },
+ {
+  "seq": 6,
+  "action": "reconcile",
+  "key": "delivery:74e3494627d4cc647e320fe40ab3cd88d65f43697bc379ecf35e4fcccc96d370",
+  "kind": "manager_help"
+ },
+ {
+  "seq": 7,
+  "action": "reconcile",
+  "key": "delivery:1493734f7fd3f0d0d15a06a62e31972d2a289b677d7515f60c97a7504f6c77f1",
+  "kind": "manager_help"
+ },
+ {
+  "seq": 8,
+  "action": "reconcile",
+  "key": "delivery:74e3494627d4cc647e320fe40ab3cd88d65f43697bc379ecf35e4fcccc96d370",
+  "kind": "manager_help"
+ },
+ {
+  "seq": 9,
+  "action": "reconcile",
+  "key": "delivery:1493734f7fd3f0d0d15a06a62e31972d2a289b677d7515f60c97a7504f6c77f1",
+  "kind": "manager_help"
+ },
+ {
+  "seq": 10,
+  "action": "send",
+  "key": "delivery:ce36dc47035857c14c9cc014c8de491fde616a5e016d103b0854d83979038fb0",
+  "kind": "manager_help"
+ },
+ {
+  "seq": 11,
+  "action": "reconcile",
+  "key": "delivery:74e3494627d4cc647e320fe40ab3cd88d65f43697bc379ecf35e4fcccc96d370",
+  "kind": "manager_help"
+ },
+ {
+  "seq": 12,
+  "action": "reconcile",
+  "key": "delivery:1493734f7fd3f0d0d15a06a62e31972d2a289b677d7515f60c97a7504f6c77f1",
+  "kind": "manager_help"
+ },
+ {
+  "seq": 13,
+  "action": "reconcile",
+  "key": "delivery:74e3494627d4cc647e320fe40ab3cd88d65f43697bc379ecf35e4fcccc96d370",
+  "kind": "manager_help"
+ },
+ {
+  "seq": 14,
+  "action": "reconcile",
+  "key": "delivery:1493734f7fd3f0d0d15a06a62e31972d2a289b677d7515f60c97a7504f6c77f1",
+  "kind": "manager_help"
+ },
+ {
+  "seq": 15,
+  "action": "reconcile",
+  "key": "delivery:74e3494627d4cc647e320fe40ab3cd88d65f43697bc379ecf35e4fcccc96d370",
+  "kind": "manager_help"
+ },
+ {
+  "seq": 16,
+  "action": "reconcile",
+  "key": "delivery:1493734f7fd3f0d0d15a06a62e31972d2a289b677d7515f60c97a7504f6c77f1",
+  "kind": "manager_help"
+ },
+ {
+  "seq": 17,
+  "action": "reconcile",
+  "key": "delivery:74e3494627d4cc647e320fe40ab3cd88d65f43697bc379ecf35e4fcccc96d370",
+  "kind": "manager_help"
+ },
+ {
+  "seq": 18,
+  "action": "reconcile",
+  "key": "delivery:1493734f7fd3f0d0d15a06a62e31972d2a289b677d7515f60c97a7504f6c77f1",
+  "kind": "manager_help"
+ },
+ {
+  "seq": 19,
+  "action": "send",
+  "key": "delivery:fedc3919006069adff5abea65afedfd0a909bd9aee705e8e866f3bd659ced7ca",
+  "kind": "manager_help"
+ },
+ {
+  "seq": 20,
+  "action": "reconcile",
+  "key": "delivery:74e3494627d4cc647e320fe40ab3cd88d65f43697bc379ecf35e4fcccc96d370",
+  "kind": "manager_help"
+ },
+ {
+  "seq": 21,
+  "action": "reconcile",
+  "key": "delivery:1493734f7fd3f0d0d15a06a62e31972d2a289b677d7515f60c97a7504f6c77f1",
+  "kind": "manager_help"
+ }
+]
+
+----- 全部出口的发送记录：外部命令替身调用（原样） -----
+lark-cli（只读放行）	--profile tuan api GET /open-apis/im/v1/messages/om_x100b60ec8b5e7ca0dfc5adda0a64553 --as bot
+lark-cli（只读放行）	--profile tuan api GET /open-apis/im/v1/messages/om_x100b60ec8b5e7ca0dfc5adda0a64553 --as bot
+lark-cli（只读放行）	--profile tuan api GET /open-apis/im/v1/messages/om_x100b60ec8b5e7ca0dfc5adda0a64553 --as bot
+
+----- 发送记录小结 -----
+{
+ "sends_by_kind": {
+  "visual": 1,
+  "visual_receipt": 1,
+  "update_report": 1,
+  "manager_help": 2
+ },
+ "not_allowed_sends": 0,
+ "same_key_sent_more_than_once": {},
+ "external_calls_blocked": 0,
+ "external_reads_passed": 3
+}
+
+----- grant-console：这一批走完后的发送记录 -----
+{
+ "sends_by_kind": {
+  "visual": 1,
+  "visual_receipt": 1,
+  "update_report": 1,
+  "manager_help": 2
+ },
+ "not_allowed_sends": 0,
+ "same_key_sent_more_than_once": {},
+ "external_calls_blocked": 0,
+ "external_reads_passed": 3
+}
+
+----- 收尾：停掉副本里还在跑的进程 -----
+[
+ {
+  "pid": 71700,
+  "command": "<worktree>/.venv/bin/python3 <worktree>/src/workshop/plugins/executors/local/runner.py <回放目录>/converted/executors/manager-codex/rounds/e65ee264a151c38df050e63626d1f9"
+ }
+]
+
+========== 全部出口的发送记录 ==========
+
+----- 全部出口的发送记录：送达命令收件箱（原样） -----
+[
+ {
+  "key": "delivery:be5c5db79ea1eebd50f5eee85ae3eb6d57f93bd3dd2347153e398c409bf705ee",
+  "kind": "visual",
+  "payload": {
+   "card": {
+    "body": {
+     "elements": [
+      {
+       "content": "[issue #176](https://github.com/kun-g/workshop/issues/176)",
+       "tag": "markdown"
+      },
+      {
+       "content": "**看什么**",
+       "tag": "markdown"
+      },
+      {
+       "tag": "div",
+       "text": {
+        "content": "一是转换对账表里取消掉的旧记录（旧问卡、通知、送回），看有没有不该丢的；收尾时车间把对账表里「取消」的那几行送来。二是切换后 grant-console 第一次定时发版的授权中心审批卡：照常批；之后车间不再发自己的授权卡或通知。",
+        "tag": "plain_text"
+       }
+      },
+      {
+       "behaviors": [
+        {
+         "type": "callback",
+         "value": {
+          "choice": "pass",
+          "ns": "workshop-visual/v1",
+          "permit": "permit:bee8002fe1f1732ad359a5be2d2b89a9bf3ec6f59d38ca3f888789c7e96bf7d5",
+          "version": "29af0b3d1a591be643ad5a1b97e85829722d046c"
+         }
+        }
+       ],
+       "tag": "button",
+       "text": {
+        "content": "通过",
+        "tag": "plain_text"
+       },
+       "type": "primary_filled",
+       "width": "fill"
+      },
+      {
+       "elements": [
+        {
+         "input_type": "multiline_text",
+         "max_length": 1000,
+         "name": "reason",
+         "placeholder": {
+          "content": "不通过时写哪里不对",
+          "tag": "plain_text"
+         },
+         "required": true,
+         "tag": "input",
+         "width": "fill"
+        },
+        {
+         "behaviors": [
+          {
+           "type": "callback",
+           "value": {
+            "choice": "fail",
+            "ns": "workshop-visual/v1",
+            "permit": "permit:bee8002fe1f1732ad359a5be2d2b89a9bf3ec6f59d38ca3f888789c7e96bf7d5",
+            "version": "29af0b3d1a591be643ad5a1b97e85829722d046c"
+           }
+          }
+         ],
+         "form_action_type": "submit",
+         "name": "fail",
+         "tag": "button",
+         "text": {
+          "content": "不通过",
+          "tag": "plain_text"
+         },
+         "type": "danger",
+         "width": "fill"
+        }
+       ],
+       "name": "visual",
+       "tag": "form"
+      },
+      {
+       "elements": [
+        {
+         "tag": "div",
+         "text": {
+          "content": "活：workshop:dod-replay\n合并提交：29af0b3d1a591be643ad5a1b97e85829722d046c",
+          "tag": "plain_text"
+         }
+        },
+        {
+         "tag": "div",
+         "text": {
+          "tag": "plain_text",
+          "content": "送达号：delivery:be5c5db79ea1eebd50f5eee85ae3eb6d57f93bd3dd2347153e398c409bf705ee"
+         }
+        }
+       ],
+       "expanded": false,
+       "header": {
+        "title": {
+         "content": "详情",
+         "tag": "plain_text"
+        }
+       },
+       "tag": "collapsible_panel"
+      }
+     ]
+    },
+    "header": {
+     "subtitle": {
+      "content": "亲眼看",
+      "tag": "plain_text"
+     },
+     "template": "blue",
+     "title": {
+      "content": "介入点：存量转换、旧出口停用与逐批真实验收",
+      "tag": "plain_text"
+     }
+    },
+    "schema": "2.0"
+   },
+   "item": "workshop:dod-replay",
+   "kind": "visual",
+   "version": "29af0b3d1a591be643ad5a1b97e85829722d046c"
+  }
+ },
+ {
+  "key": "delivery:11bb043f076659940f9cd09827918eaf1058069eb6d1ea1a34d82897d22e9e1e",
+  "kind": "visual_receipt",
+  "payload": {
+   "card": {
+    "body": {
+     "elements": [
+      {
+       "tag": "collapsible_panel",
+       "expanded": false,
+       "header": {
+        "title": {
+         "tag": "plain_text",
+         "content": "详情"
+        }
+       },
+       "elements": [
+        {
+         "tag": "div",
+         "text": {
+          "tag": "plain_text",
+          "content": "送达号：delivery:11bb043f076659940f9cd09827918eaf1058069eb6d1ea1a34d82897d22e9e1e"
+         }
+        }
+       ]
+      }
+     ]
+    },
+    "header": {
+     "subtitle": {
+      "content": "亲眼看 · 介入点：存量转换、旧出口停用与逐批真实验收",
+      "tag": "plain_text"
+     },
+     "template": "green",
+     "title": {
+      "content": "已收到：通过",
+      "tag": "plain_text"
+     }
+    },
+    "schema": "2.0"
+   },
+   "kind": "visual_receipt",
+   "wait": "wait:1d87bbb4aed6d2e98c4a44a04faa069ba0edf627d1cd56a2b26f974e9cf1ef45"
+  }
+ },
+ {
+  "key": "delivery:37d870f8052a21d393afb2a7353fb0b5473cd48ee4db6ab97f7902873e5a5ab5",
+  "kind": "update_report",
+  "payload": {
+   "artifact": "<回放目录>/converted/state/watch_updates/reports/wu-daily-2026-11-18-v2.html",
+   "idempotency_key": "987abf8b4b06264b9e3ad00b",
+   "kind": "update_report",
+   "report": "wu-daily-2026-11-18-v2",
+   "sha256": "b0ca7905d4a812a1c2baee0da73e0515a5ba094e6158fc8dbb648419f22b8ead"
+  }
+ },
+ {
+  "key": "delivery:ce36dc47035857c14c9cc014c8de491fde616a5e016d103b0854d83979038fb0",
+  "kind": "manager_help",
+  "payload": {
+   "card": {
+    "body": {
+     "elements": [
+      {
+       "tag": "div",
+       "text": {
+        "content": "转换后副本上隔离回放：同一空闲段的第二条结论",
+        "tag": "plain_text"
+       }
+      },
+      {
+       "elements": [
+        {
+         "content": "**补一件新需求**\n隔离回放：同一空闲段",
+         "tag": "markdown"
+        }
+       ],
+       "expanded": false,
+       "header": {
+        "icon": {
+         "size": "16px 16px",
+         "tag": "standard_icon",
+         "token": "down-small-ccm_outlined"
+        },
+        "icon_expanded_angle": -180,
+        "icon_position": "right",
+        "title": {
+         "content": "项目经理查了什么",
+         "tag": "plain_text"
+        }
+       },
+       "tag": "collapsible_panel"
+      },
+      {
+       "behaviors": [
+        {
+         "default_url": "http://127.0.0.1:59478/status.html#%E5%A4%84%E7%90%86%E4%B8%8D%E4%BA%86",
+         "type": "open_url"
+        }
+       ],
+       "tag": "button",
+       "text": {
+        "content": "看处理不了栏",
+        "tag": "plain_text"
+       },
+       "type": "primary"
+      },
+      {
+       "tag": "collapsible_panel",
+       "expanded": false,
+       "header": {
+        "title": {
+         "tag": "plain_text",
+         "content": "详情"
+        }
+       },
+       "elements": [
+        {
+         "tag": "div",
+         "text": {
+          "tag": "plain_text",
+          "content": "送达号：delivery:ce36dc47035857c14c9cc014c8de491fde616a5e016d103b0854d83979038fb0"
+         }
+        }
+       ]
+      }
+     ]
+    },
+    "header": {
+     "subtitle": {
+      "content": "项目经理处理不了",
+      "tag": "plain_text"
+     },
+     "template": "orange",
+     "title": {
+      "content": "补一件新需求",
+      "tag": "plain_text"
+     }
+    },
+    "schema": "2.0"
+   },
+   "kind": "manager_help",
+   "members": [
+    "converted-workshop-a"
+   ],
+   "primary": "converted-workshop-a",
+   "section": "处理不了"
+  }
+ },
+ {
+  "key": "delivery:fedc3919006069adff5abea65afedfd0a909bd9aee705e8e866f3bd659ced7ca",
+  "kind": "manager_help",
+  "payload": {
+   "card": {
+    "body": {
+     "elements": [
+      {
+       "tag": "div",
+       "text": {
+        "content": "转换后副本上隔离回放：同一空闲段的第二条结论",
+        "tag": "plain_text"
+       }
+      },
+      {
+       "elements": [
+        {
+         "content": "**补一件新需求**\n隔离回放：同一空闲段",
+         "tag": "markdown"
+        }
+       ],
+       "expanded": false,
+       "header": {
+        "icon": {
+         "size": "16px 16px",
+         "tag": "standard_icon",
+         "token": "down-small-ccm_outlined"
+        },
+        "icon_expanded_angle": -180,
+        "icon_position": "right",
+        "title": {
+         "content": "项目经理查了什么",
+         "tag": "plain_text"
+        }
+       },
+       "tag": "collapsible_panel"
+      },
+      {
+       "behaviors": [
+        {
+         "default_url": "http://127.0.0.1:59478/status.html#%E5%A4%84%E7%90%86%E4%B8%8D%E4%BA%86",
+         "type": "open_url"
+        }
+       ],
+       "tag": "button",
+       "text": {
+        "content": "看处理不了栏",
+        "tag": "plain_text"
+       },
+       "type": "primary"
+      },
+      {
+       "tag": "collapsible_panel",
+       "expanded": false,
+       "header": {
+        "title": {
+         "tag": "plain_text",
+         "content": "详情"
+        }
+       },
+       "elements": [
+        {
+         "tag": "div",
+         "text": {
+          "tag": "plain_text",
+          "content": "送达号：delivery:fedc3919006069adff5abea65afedfd0a909bd9aee705e8e866f3bd659ced7ca"
+         }
+        }
+       ]
+      }
+     ]
+    },
+    "header": {
+     "subtitle": {
+      "content": "项目经理处理不了",
+      "tag": "plain_text"
+     },
+     "template": "orange",
+     "title": {
+      "content": "补一件新需求",
+      "tag": "plain_text"
+     }
+    },
+    "schema": "2.0"
+   },
+   "kind": "manager_help",
+   "members": [
+    "converted-grant-console-a"
+   ],
+   "primary": "converted-grant-console-a",
+   "section": "处理不了"
+  }
+ }
+]
+
+----- 全部出口的发送记录：送达命令每次调用（含对账、回复查询） -----
+[
+ {
+  "seq": 1,
+  "action": "send",
+  "key": "delivery:be5c5db79ea1eebd50f5eee85ae3eb6d57f93bd3dd2347153e398c409bf705ee",
+  "kind": "visual"
+ },
+ {
+  "seq": 2,
+  "action": "send",
+  "key": "delivery:11bb043f076659940f9cd09827918eaf1058069eb6d1ea1a34d82897d22e9e1e",
+  "kind": "visual_receipt"
+ },
+ {
+  "seq": 3,
+  "action": "send",
+  "key": "delivery:37d870f8052a21d393afb2a7353fb0b5473cd48ee4db6ab97f7902873e5a5ab5",
+  "kind": "update_report"
+ },
+ {
+  "seq": 4,
+  "action": "reconcile",
+  "key": "delivery:74e3494627d4cc647e320fe40ab3cd88d65f43697bc379ecf35e4fcccc96d370",
+  "kind": "manager_help"
+ },
+ {
+  "seq": 5,
+  "action": "reconcile",
+  "key": "delivery:1493734f7fd3f0d0d15a06a62e31972d2a289b677d7515f60c97a7504f6c77f1",
+  "kind": "manager_help"
+ },
+ {
+  "seq": 6,
+  "action": "reconcile",
+  "key": "delivery:74e3494627d4cc647e320fe40ab3cd88d65f43697bc379ecf35e4fcccc96d370",
+  "kind": "manager_help"
+ },
+ {
+  "seq": 7,
+  "action": "reconcile",
+  "key": "delivery:1493734f7fd3f0d0d15a06a62e31972d2a289b677d7515f60c97a7504f6c77f1",
+  "kind": "manager_help"
+ },
+ {
+  "seq": 8,
+  "action": "reconcile",
+  "key": "delivery:74e3494627d4cc647e320fe40ab3cd88d65f43697bc379ecf35e4fcccc96d370",
+  "kind": "manager_help"
+ },
+ {
+  "seq": 9,
+  "action": "reconcile",
+  "key": "delivery:1493734f7fd3f0d0d15a06a62e31972d2a289b677d7515f60c97a7504f6c77f1",
+  "kind": "manager_help"
+ },
+ {
+  "seq": 10,
+  "action": "send",
+  "key": "delivery:ce36dc47035857c14c9cc014c8de491fde616a5e016d103b0854d83979038fb0",
+  "kind": "manager_help"
+ },
+ {
+  "seq": 11,
+  "action": "reconcile",
+  "key": "delivery:74e3494627d4cc647e320fe40ab3cd88d65f43697bc379ecf35e4fcccc96d370",
+  "kind": "manager_help"
+ },
+ {
+  "seq": 12,
+  "action": "reconcile",
+  "key": "delivery:1493734f7fd3f0d0d15a06a62e31972d2a289b677d7515f60c97a7504f6c77f1",
+  "kind": "manager_help"
+ },
+ {
+  "seq": 13,
+  "action": "reconcile",
+  "key": "delivery:74e3494627d4cc647e320fe40ab3cd88d65f43697bc379ecf35e4fcccc96d370",
+  "kind": "manager_help"
+ },
+ {
+  "seq": 14,
+  "action": "reconcile",
+  "key": "delivery:1493734f7fd3f0d0d15a06a62e31972d2a289b677d7515f60c97a7504f6c77f1",
+  "kind": "manager_help"
+ },
+ {
+  "seq": 15,
+  "action": "reconcile",
+  "key": "delivery:74e3494627d4cc647e320fe40ab3cd88d65f43697bc379ecf35e4fcccc96d370",
+  "kind": "manager_help"
+ },
+ {
+  "seq": 16,
+  "action": "reconcile",
+  "key": "delivery:1493734f7fd3f0d0d15a06a62e31972d2a289b677d7515f60c97a7504f6c77f1",
+  "kind": "manager_help"
+ },
+ {
+  "seq": 17,
+  "action": "reconcile",
+  "key": "delivery:74e3494627d4cc647e320fe40ab3cd88d65f43697bc379ecf35e4fcccc96d370",
+  "kind": "manager_help"
+ },
+ {
+  "seq": 18,
+  "action": "reconcile",
+  "key": "delivery:1493734f7fd3f0d0d15a06a62e31972d2a289b677d7515f60c97a7504f6c77f1",
+  "kind": "manager_help"
+ },
+ {
+  "seq": 19,
+  "action": "send",
+  "key": "delivery:fedc3919006069adff5abea65afedfd0a909bd9aee705e8e866f3bd659ced7ca",
+  "kind": "manager_help"
+ },
+ {
+  "seq": 20,
+  "action": "reconcile",
+  "key": "delivery:74e3494627d4cc647e320fe40ab3cd88d65f43697bc379ecf35e4fcccc96d370",
+  "kind": "manager_help"
+ },
+ {
+  "seq": 21,
+  "action": "reconcile",
+  "key": "delivery:1493734f7fd3f0d0d15a06a62e31972d2a289b677d7515f60c97a7504f6c77f1",
+  "kind": "manager_help"
+ }
+]
+
+----- 全部出口的发送记录：外部命令替身调用（原样） -----
+lark-cli（只读放行）	--profile tuan api GET /open-apis/im/v1/messages/om_x100b60ec8b5e7ca0dfc5adda0a64553 --as bot
+lark-cli（只读放行）	--profile tuan api GET /open-apis/im/v1/messages/om_x100b60ec8b5e7ca0dfc5adda0a64553 --as bot
+lark-cli（只读放行）	--profile tuan api GET /open-apis/im/v1/messages/om_x100b60ec8b5e7ca0dfc5adda0a64553 --as bot
+
+----- 发送记录小结 -----
+{
+ "sends_by_kind": {
+  "visual": 1,
+  "visual_receipt": 1,
+  "update_report": 1,
+  "manager_help": 2
+ },
+ "not_allowed_sends": 0,
+ "same_key_sent_more_than_once": {},
+ "external_calls_blocked": 0,
+ "external_reads_passed": 3
+}
+
+========== 结果 ==========
+[8.0]	走通	在跑的轮、程序作业和等待在切换前后都保留
+[8.1]	没走	写全了的 issue 自动打标签接单、缺省 P1（真实来源）	kun-g/workshop 开着的 issue 里没有「写全了、还没标签、副本里也没有活」的：写全了的都已被现役接单（副本里已有活），没接的都没写全；正向路径要一个新写全的 issue，或改写真实正文（不做）
+[8.2-4]	走通	无卡等你→会话回答→授权原申请批准后接着做→到点自动续跑（真实 codex 订阅轮次）
+[8.3b]	走通	授权原申请：新进程只读查已有申请两次，结果一致，不新建申请
+[8.8]	走通	亲眼看送一次、回复归件
+[8.9]	走通	盯更新报告送一次、回复归件
+[8.5]	走通	程序作业在跑不算空闲（真实守护进程心跳）
+[8.6]	走通	守护进程停了看门接管、不重复起会话（真实项目经理）
+[8.7]	走通	同一段空闲只推一次（真实守护进程、项目经理命令、介入点服务）
+[9.1]	没走	写全了的 issue 自动打标签接单、缺省 P1（真实来源）	kun-g/grant-console 开着的 issue 里没有「写全了、还没标签、副本里也没有活」的：写全了的都已被现役接单（副本里已有活），没接的都没写全；正向路径要一个新写全的 issue，或改写真实正文（不做）
+[9.2-4]	走通	无卡等你→会话回答→授权原申请批准后接着做→到点自动续跑（真实 codex 订阅轮次）
+[9.3b]	走通	授权原申请：新进程只读查已有申请两次，结果一致，不新建申请
+[9.8]	没走	亲眼看送一次、回复归件	kun-g/grant-console 里找不到带可送约定（飞书私聊、按钮或引用回过/不对）的 issue
+[9.9]	走通	集群同步按原申请续接
+[9.10]	走通	缺外部授权类别：对外发消息保持阻断、写明原因
+[9.11]	走通	缺外部授权类别：按量计费保持阻断、写明原因
+[9.5]	走通	程序作业在跑不算空闲（真实守护进程心跳）
+[9.6]	走通	守护进程停了看门接管、不重复起会话（真实项目经理）
+[9.7]	走通	同一段空闲只推一次（真实守护进程、项目经理命令、介入点服务）
+发送：不许的 0 条；同一送达号发了不止一次 0 个；按类：{'visual': 1, 'visual_receipt': 1, 'update_report': 1, 'manager_help': 2}；外部命令替身拦下 0 次
+总耗时 354 秒；副本 <回放目录>/converted
+exit=0
