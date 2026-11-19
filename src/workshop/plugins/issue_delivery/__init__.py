@@ -28,6 +28,8 @@ STAGES = ("接单", "执行", "交付", "收尾")
 MOVES = {"说清楚": "接单", "证据": "交付", "审查": "交付"}
 # 合并失败和两段 DoD 退回执行的次数合计上限，同关口连续没过记卡住的次数（core.rounds.gate_retry）。
 RETURN_LIMIT = 3
+# 算进上限的退回（issue交付 R13）：合并失败记在合并前 DoD 下。亲眼看、issue 下回「不对」退回执行不算。
+COUNTED_RETURNS = ("合并前 DoD", "上线后 DoD")
 # GitHub 评论正文上限 65536 字符，原样输出只留结尾。
 COMMENT_OUTPUT = 60000
 
@@ -393,13 +395,22 @@ class IssueDelivery:
         return state.get("returns", 0) if state.get("returns_recovery") == recovery else 0
 
     def _return(self, item, target, checks, segment, reason, output, paths=(), **extra):
-        """DoD 没过：记下原样输出，交接回执行；次数到上限记卡住。"""
+        """DoD 没过：记下原样输出，交接回执行；次数到上限记卡住，原样输出照样留在 PR（或 issue）和交付记录里。"""
+        returned = {"segment": segment, "reason": reason, "output": output, **extra}
         with self.io.locked(item, target) as state:
             if self._returns(item, state) >= RETURN_LIMIT:
-                return Evidence(checks, blocked=f"{segment}没过，退回执行已 {RETURN_LIMIT} 次：{reason}",
-                                next="项目经理核对原样输出后 recover --mode rework 让执行再改，或开单修车间",
-                                reason=reason, paths=list(paths))
-            state["pending_return"] = {"segment": segment, "reason": reason, "output": output, **extra}
+                blocked = f"{segment}没过，退回执行已 {RETURN_LIMIT} 次：{reason}"
+                # 卡住不走 after：评论在这里留，同一次卡住重核时不重复留。
+                key = json.dumps([(item.get("recovery") or {}).get("id"), returned], ensure_ascii=False, sort_keys=True)
+                if state.get("stuck_posted") != key:
+                    self._post_output(item, target, state, returned, stuck=True)
+                    state["stuck_posted"] = key
+                state["last_return"] = returned
+                self.io.save(item, target, state)
+                detail = f"{blocked}。原样输出结尾：{tail(output, 2000)}" if output else blocked
+                return Evidence(checks, blocked=blocked, reason=detail, paths=list(paths),
+                                next="项目经理核对原样输出后 recover --mode rework 让执行再改，或开单修车间")
+            state["pending_return"] = returned
             self.io.save(item, target, state)
         return Evidence(checks, False, reason=f"{segment}没过，退回执行：{reason}", paths=list(paths), handoff="执行")
 
@@ -564,7 +575,8 @@ class IssueDelivery:
         if not runs:
             problems.insert(0, "干净副本里没有跑出任何检查")
         if failed:
-            problems.insert(0, "干净副本重跑检查没过：" + "、".join(" ".join(r["argv"]) for r in failed))
+            problems.insert(0, "干净副本重跑检查没过：" + "、".join(f'{" ".join(r["argv"])}（exit {r["exit_code"]}）'
+                                                         for r in failed))
         output = "\n".join(f'$ {" ".join(r["argv"])}\nexit {r["exit_code"]}\n{r["stdout"]}{r["stderr"]}' for r in runs)
         if problems:
             return self._return(item, target, checks, "合并前 DoD", "；".join(problems), output, paths, head=sha)
@@ -767,7 +779,22 @@ class IssueDelivery:
             state["visual_after"] = max((m.get("seq", 0) for m in item.get("materials", [])), default=0)
         if not returned:
             return
-        text = (f'<!-- workshop-comment: {item["id"]} -->\n车间{returned["segment"]}没过，活退回执行：{returned["reason"]}')
+        self._post_output(item, target, state, returned)
+        if returned["segment"] == "上线后 DoD":
+            # 原合并提交已经上线、不撤回；修复是新的一次执行，从新 PR 起重走交付。
+            state.pop("merge", None)
+            state.pop("post_failure", None)
+            state.pop("post_runs", None)
+        if returned["segment"] in COUNTED_RETURNS:
+            recovery = (item.get("recovery") or {}).get("id")
+            state["returns"] = self._returns(item, state) + 1
+            state["returns_recovery"] = recovery
+        state["last_return"] = returned
+
+    def _post_output(self, item, target, state, returned, stuck=False):
+        """合并前 DoD 没过把 PR 改回 Draft 并在 PR 留原样输出，上线后 DoD 没过在 issue 留原样输出。"""
+        outcome = (f"退回执行已 {RETURN_LIMIT} 次，记卡住，交项目经理" if stuck else "活退回执行")
+        text = (f'<!-- workshop-comment: {item["id"]} -->\n车间{returned["segment"]}没过，{outcome}：{returned["reason"]}')
         if returned.get("output"):
             text += "\n\n```text\n" + returned["output"][-COMMENT_OUTPUT:] + "\n```"
         if returned["segment"] == "合并前 DoD":
@@ -778,14 +805,6 @@ class IssueDelivery:
                 self.io.comment(target, pr["number"], text)
         elif returned["segment"] == "上线后 DoD":
             self.io.comment(target, state["issue"], text + "\n\n已上线的不回滚；修复另开 PR。")
-            # 原合并提交已经上线、不撤回；修复是新的一次执行，从新 PR 起重走交付。
-            state.pop("merge", None)
-            state.pop("post_failure", None)
-            state.pop("post_runs", None)
-        recovery = (item.get("recovery") or {}).get("id")
-        state["returns"] = self._returns(item, state) + 1
-        state["returns_recovery"] = recovery
-        state["last_return"] = returned
 
     def _after(self, item, completed_stage, key, target):
         # assess 登记的等待由核心到点调用；这里不能执行合并、发版或上线。
@@ -904,7 +923,8 @@ class IssueDelivery:
             if failed or not runs:
                 output = "\n".join(f'$ {" ".join(r["argv"])}\nexit {r["exit_code"]}\n{r["stdout"]}{r["stderr"]}' for r in runs)
                 state["post_failure"] = {"merge": merge, "output": output,
-                                         "reason": "上线后检查没过：" + "、".join(" ".join(r["argv"]) for r in failed)}
+                                         "reason": "上线后检查没过：" + "、".join(
+                                             f'{" ".join(r["argv"])}（exit {r["exit_code"]}）' for r in failed)}
                 self.io.save(item, target, state)
                 raise BusinessWait("上线后 DoD 没过，退回执行（不回滚）")
         if merge not in state.setdefault("delivered", []):
