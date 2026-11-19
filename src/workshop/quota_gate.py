@@ -2,6 +2,8 @@
 
 候选上 `quota: {provider, window, min_remaining, label}` 是额度门槛；没写或没写 min_remaining 的候选不看额度。
 交付对象上 `quota_snapshot: {path, max_age_minutes}` 指快照库和过期线。
+个人账号的快照不管谁采的（PERSONAL_SOURCES 里的来源都认），取该家按采集时间最新的一次成功采集；
+团队池（omc）和别的来源不当个人账号的额度读。
 """
 from datetime import datetime, timezone
 from pathlib import Path
@@ -10,6 +12,7 @@ import sqlite3
 
 DEFAULT_PATH = "~/.local/state/ai_quota/quota.db"
 DEFAULT_MAX_AGE_MINUTES = 45
+PERSONAL_SOURCES = ("codexbar", "magpie")
 
 
 class Unreadable(Exception):
@@ -43,26 +46,31 @@ class Snapshot:
         try:
             connection = sqlite3.connect(f"file:{self.path}?mode=ro", uri=True, timeout=5)
             try:
-                payload = connection.execute(
-                    "SELECT id, collected_at FROM payloads WHERE provider = ? AND source = 'codexbar' AND error IS NULL "
-                    "ORDER BY id DESC LIMIT 1", (provider,)).fetchone()
+                # 每个来源各取最近一次成功采集，再按采集时间比谁更新。
+                payloads = [row for source in PERSONAL_SOURCES for row in [connection.execute(
+                    "SELECT id, collected_at FROM payloads WHERE provider = ? AND source = ? AND error IS NULL "
+                    "ORDER BY id DESC LIMIT 1", (provider, source)).fetchone()] if row]
+                payload = max(((_collected_at(row[1]), row[0]) for row in payloads), default=None)
                 readings = connection.execute(
                     "SELECT window_name, used_percent FROM readings WHERE payload_id = ? AND window_name IS NOT NULL",
-                    (payload[0],)).fetchall() if payload else []
+                    (payload[1],)).fetchall() if payload else []
             finally:
                 connection.close()
         except sqlite3.Error as exc:
             raise Unreadable(f"额度快照读不到（{exc}）") from exc
         if not payload:
             raise Unreadable(f"额度快照里没有 {provider} 的成功采集")
-        try:
-            collected = datetime.fromisoformat(payload[1])
-        except ValueError as exc:
-            raise Unreadable(f"额度快照时间无法解析（{payload[1]}）") from exc
-        if collected.tzinfo is None:
-            collected = collected.replace(tzinfo=timezone.utc)
-        return collected, {name: used for name, used in readings}
+        return payload[0], {name: used for name, used in readings}
 
+
+def _collected_at(text):
+    try:
+        collected = datetime.fromisoformat(text)
+    except (TypeError, ValueError) as exc:
+        raise Unreadable(f"额度快照时间无法解析（{text}）") from exc
+    if collected.tzinfo is None:
+        collected = collected.replace(tzinfo=timezone.utc)
+    return collected
 
 def threshold(config):
     quota = config.get("quota")

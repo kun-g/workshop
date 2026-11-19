@@ -9,6 +9,7 @@ from conftest import build, configuration, current, event
 from workshop.reports.report import why
 from workshop.core.rules import Rules
 from workshop.plugins.selectors.quota import QuotaSelector
+from workshop.quota_gate import Snapshot, Unreadable
 from workshop.registry import Registry
 
 NOW = datetime(2026, 11, 13, 12, 30, tzinfo=timezone.utc)
@@ -200,3 +201,52 @@ def test_metered_candidate_is_picked_by_quota_like_subscription(tmp_path):
         assert engine.log.get("items", "alpha:one")["state"] != "卡住"
     finally:
         engine.log.close()
+
+
+def sourced(path, rows):
+    """按 ai_quota 的表结构写快照，rows 是 (来源, 家, 采集时间, 周窗口已用百分比)，按顺序写入。"""
+    snapshot(path, {})
+    connection = sqlite3.connect(path)
+    for source, provider, collected, used in rows:
+        cursor = connection.execute("INSERT INTO payloads VALUES (NULL, 1, ?, ?, ?, NULL, NULL, NULL, '{}')",
+                                    (collected.isoformat(), source, provider))
+        connection.execute("INSERT INTO readings VALUES (NULL, ?, 'Weekly', 10080, ?, NULL, NULL, NULL)", (cursor.lastrowid, used))
+    connection.commit()
+    connection.close()
+    return path
+
+
+def weekly_codex(path):
+    return Snapshot({"path": str(path), "max_age_minutes": 45}, NOW).remaining("codex", "Weekly")
+
+
+EARLIER = NOW - timedelta(minutes=10)
+
+
+@pytest.mark.parametrize("rows, remaining", [
+    ([("codexbar", "codex", NOW, 30.0)], 70.0),
+    ([("magpie", "codex", NOW, 40.0)], 60.0),
+    # 两个来源都有：取采集时间更新的那条，不看写入先后。
+    ([("magpie", "codex", NOW, 40.0), ("codexbar", "codex", EARLIER, 30.0)], 60.0),
+    ([("codexbar", "codex", NOW, 30.0), ("magpie", "codex", EARLIER, 40.0)], 70.0),
+])
+def test_personal_snapshot_reads_codexbar_or_magpie_whichever_newer(tmp_path, rows, remaining):
+    assert weekly_codex(sourced(tmp_path / "quota.db", rows)) == remaining
+
+
+def test_team_pool_and_other_sources_are_not_personal_quota(tmp_path):
+    path = sourced(tmp_path / "quota.db", [(source, "codex", NOW, 0.0) for source in ("omc", "network", "commandcode")])
+    with pytest.raises(Unreadable, match="额度快照里没有 codex 的成功采集"):
+        weekly_codex(path)
+    # 混着团队池时也只读个人账号的那条，团队池更新也不用。
+    mixed = sourced(tmp_path / "mixed.db", [("magpie", "codex", EARLIER, 20.0), ("omc", "codex", NOW, 90.0)])
+    assert weekly_codex(mixed) == 80.0
+
+
+def test_failed_magpie_collection_is_ignored(tmp_path):
+    path = sourced(tmp_path / "quota.db", [("codexbar", "codex", EARLIER, 30.0)])
+    connection = sqlite3.connect(path)
+    connection.execute("INSERT INTO payloads VALUES (NULL, 2, ?, 'magpie', 'codex', NULL, NULL, 'timeout', '{}')", (NOW.isoformat(),))
+    connection.commit()
+    connection.close()
+    assert weekly_codex(path) == 70.0
