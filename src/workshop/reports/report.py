@@ -435,6 +435,11 @@ def usage(log, now=None, since=None):
              summarize("最近 7 天", [r for r in rows if datetime.fromisoformat(r["at"]) >= now - timedelta(days=7)])]
     for item_id in dict.fromkeys(r["item"] for r in rows):
         lines.append(summarize(f"按活 {item_id}", [r for r in rows if r["item"] == item_id]))
+    # 订阅和按量的轮分开算（核心 C4）；计费方式取执行者报的，没报的归「未知」。
+    billing = lambda r: (r.get("usage") or {}).get("billing")
+    for kind in dict.fromkeys(billing(r) for r in rows):
+        label = {"subscription": "订阅", "metered": "按量"}.get(kind, display(kind))
+        lines.append(summarize(f"按计费 {label}", [r for r in rows if billing(r) == kind]))
     lines.append("按实际模型\t轮数\t审查一次过\t验收一次过\t平均秒\t输入/缓存读/缓存写/输出 token\tAPI 折合 USD\t缓存命中率\t未上报")
     for model, stats in model_metrics(log).items():
         def rate(stage):

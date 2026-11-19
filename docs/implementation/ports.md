@@ -124,7 +124,7 @@ pending=true 表示尚未完成这个阶段，须带非空 reason 和 next，不
 
 ## 执行者 Executor
 
-`available(config) -> bool` 仅查现有额度，不自动加购。每个规则候选明写 billing。按量授权类别尚未支持，只有订阅候选进入挑选；没有订阅候选时标卡住，明确缺授权类型，不发计费卡。`Unavailable` 表示无额度且确认没启动，可挑下一候选；`Retryable` 表示暂时启动失败且确认没启动，按退避重试，连续第 3 次隔离。普通启动异常表示结果不确定，保留占位，不能猜没启动而换一家。
+`available(config) -> bool` 仅查现有额度，不自动加购。每个规则候选明写 billing。订阅和按量（metered）的候选一样进入挑选，核心和挑选插件都不按计费方式排除（核心 C4，#288）；计费方式和花费记在每一轮的 usage 里。`Unavailable` 表示无额度且确认没启动，可挑下一候选；`Retryable` 表示暂时启动失败且确认没启动，按退避重试，连续第 3 次隔离。普通启动异常表示结果不确定，保留占位，不能猜没启动而换一家。
 
 `launch(token, brief, item, config, target) -> Started(session, handle, workdir)` 和 `resume(token, session, brief, item, config, target)` 必须按 token 持久幂等。核心启动前记意图，崩溃后重放同 token 须找到同一轮；resume 返回同一个 session。target 包含完整交付规则及上述 runtime。环境中传轮次令牌，结束时用 runtime.command 交回执，提交后不再做业务动作。
 
