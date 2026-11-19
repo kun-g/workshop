@@ -5,7 +5,7 @@ from datetime import datetime
 from html import escape
 from pathlib import Path
 
-from .model import UPGRADE_ORDER, point_link
+from .model import UPGRADE_ORDER, digest, point_link
 from .inventory import blind_records
 from .presentation import software_views, targets
 
@@ -128,8 +128,18 @@ def render(report, versions, needs, now):
 
     def row(identity, target, label=None):
         buttons = ''.join(f'<button type="button" aria-pressed="false">{h(c)}</button>' for c in target['choices'])
-        note = '<input class="note" hidden maxlength="4000" placeholder="想说的话（可不填）" aria-label="补充说明">' if target['kind'] == 'instances' else ''
-        return f'<div class="row" data-feedback="{h(identity)}" data-label="{h(target["label"])}"><span class="where">{label or h(target["label"])}</span><span class="opts">{buttons}</span>{note}</div>'
+        note = drop = ''
+        if target['kind'] == 'instances':
+            note = '<input class="note" data-for="升 判错了" hidden maxlength="4000" placeholder="想说的话（可不填）" aria-label="补充说明">'
+        if target.get('scopes'):
+            # 「不用盯」的范围和原因；默认只排这一行的部署（盯更新 R17）。
+            name = 'scope-' + digest(identity)[:12]
+            options = ''.join(
+                f'<label><input type="radio" name="{name}" value="{h(o["id"])}" data-label="{h(o["label"])}"'
+                f'{" checked" if i == 0 else ""}>{h(o["label"])}</label>' for i, o in enumerate(target['scopes']))
+            drop = (f'<div class="drop" data-for="不用盯" hidden><span class="scopes" role="radiogroup" aria-label="不用盯的范围">'
+                    f'{options}</span><input class="reason" maxlength="4000" placeholder="为什么不用盯（可不填）" aria-label="不用盯的原因"></div>')
+        return f'<div class="row" data-feedback="{h(identity)}" data-label="{h(target["label"])}"><span class="where">{label or h(target["label"])}</span><span class="opts">{buttons}</span>{note}{drop}</div>'
 
     def point(value, releases):
         # 升级顺序是程序补的操作约束，不伪装成某版发布说明的摘录。
