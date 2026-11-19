@@ -15,8 +15,9 @@ from . import manager, visual_click
 class Service:
     def __init__(self, state, rules):
         self.rules = Path(rules)
+        self.state = Path(state)
         self.configuration()
-        self.store = Store(Path(state) / 'intervention.db')
+        self.store = Store(self.state / 'intervention.db')
         # 连接和只读请求并发处理；外部送达保持串行，一次只推进一条，
         # 同一送达不会在两个线程里各发一次。调用方超时重试前仍须先对账。
         self.dispatch_lock = threading.Lock()

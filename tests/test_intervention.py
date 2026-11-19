@@ -395,3 +395,33 @@ def test_flush_stops_at_limit_and_time_budget(service, monkeypatch):
     monkeypatch.setattr(service, 'dispatch', dispatch)
     budget = manager.flush(service, limit=10, seconds=20, clock=clock)
     assert len(budget['deliveries']) == 3 and budget['remaining'] == 2
+
+
+def test_flush_rotates_past_an_uncertain_head(service, monkeypatch):
+    """队头对账用光预算时，下一拍从它的下一条开始，后面的送达不会被永久挡住。"""
+    from workshop.plugins.intervention import manager
+    refs = []
+    for n in range(3):
+        allowed = service.call('permit', {'operation': f'permit:r{n}', 'point': 'manager_help',
+            'scope': f'idle:r{n}', 'owner': 'alpha:one',
+            'basis': {'action': '处理', 'reason': '原因', 'evidence': '事实号', 'status_location': '处理不了'}})['ref']
+        refs.append(service.call('enqueue', {'operation': f'enqueue:r{n}', 'permit': allowed,
+                                            'payload': {'kind': 'manager_help', 'members': [str(n)]}})['ref'])
+    now = [0.0]
+    attempts = []
+    def dispatch(ref):
+        attempts.append(ref)
+        now[0] += 25  # 队头一次对账就吃满这一拍的时间预算，并留下 uncertain。
+        return {'id': ref, 'state': 'uncertain'}
+    monkeypatch.setattr(service, 'dispatch', dispatch)
+    clock = lambda: now[0]
+    first = manager.flush(service, limit=10, seconds=20, clock=clock)
+    assert attempts == refs[:1] and first['remaining'] == 2
+    assert manager.cursor(service) == refs[0]
+    manager.flush(service, limit=10, seconds=20, clock=clock)
+    assert attempts == refs[:2]  # 第一条仍不确定，第二条下一拍照样被 dispatch。
+    assert manager.cursor(service) == refs[1]
+    manager.flush(service, limit=10, seconds=20, clock=clock)
+    assert attempts == refs[:3]
+    manager.flush(service, limit=10, seconds=20, clock=clock)
+    assert attempts == [*refs, refs[0]]  # 走到尾再回头，队头重新获得对账机会。

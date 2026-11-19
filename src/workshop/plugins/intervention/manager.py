@@ -1,5 +1,6 @@
 """项目经理结论与按范围唯一送达；点击读取经配置固定的只读命令。"""
 import json
+import os
 import re
 import subprocess
 import time
@@ -10,6 +11,7 @@ SECTIONS = ('等你', '项目经理处理中', '处理不了')
 # 一次 flush 只推进这么多条、最多花这么久；剩下的下一拍接着发。
 FLUSH_LIMIT = 10
 FLUSH_SECONDS = 20
+FLUSH_CURSOR = 'flush-cursor.json'
 
 
 def plain(text):
@@ -133,6 +135,22 @@ def queue(service, row):
     return {'ref': ref}
 
 
+def cursor(service):
+    """上一拍试到的最后一条送达；下一拍从它的下一条开始，走到尾再回头。"""
+    try:
+        value = json.loads((service.state / FLUSH_CURSOR).read_text())
+    except (OSError, ValueError):
+        return None
+    return value.get('after') if isinstance(value, dict) else None
+
+
+def save_cursor(service, after):
+    path = service.state / FLUSH_CURSOR
+    temporary = path.with_suffix('.tmp')
+    temporary.write_text(json.dumps({'after': after}))
+    os.replace(temporary, path)
+
+
 def flush(service, limit=FLUSH_LIMIT, seconds=FLUSH_SECONDS, clock=time.monotonic):
     errors = []
     for row in service.store.all('manager'):
@@ -144,15 +162,28 @@ def flush(service, limit=FLUSH_LIMIT, seconds=FLUSH_SECONDS, clock=time.monotoni
             errors.append(error)
             with service.store.transaction():
                 service.store.put('manager_error', service.store.identity('manager_error', row['id']), error, 'queue_failed')
-    pending = [r for r in service.store.all('delivery')
-               if r['payload'].get('kind') in ('manager_help', 'status_reply') and r['state'] not in ('sent', 'cancelled')]
+    rows = service.store.all('delivery')
+    def sendable(row):
+        return row['payload'].get('kind') in ('manager_help', 'status_reply') and row['state'] not in ('sent', 'cancelled')
+    pending = [r for r in rows if sendable(r)]
+    # 从持久游标的下一条开始轮转：队头一条一直不确定时，后面的送达下一拍也能轮到。
+    after = cursor(service)
+    start = 0
+    if after is not None:
+        found = next((i for i, r in enumerate(rows) if r['id'] == after), None)
+        start = found + 1 if found is not None else 0
     started = clock()
-    deliveries = []
-    for record in pending:
+    deliveries, last = [], None
+    for record in rows[start:] + rows[:start]:
         # 一条慢送达仍可能用满通道自己的超时，但一次 flush 不会连着跑几分钟。
         if len(deliveries) >= limit or clock() - started >= seconds:
             break
+        if not sendable(record):
+            continue
         deliveries.append(service.dispatch(record['id']))
+        last = record['id']
+    if last is not None:
+        save_cursor(service, last)
     return {'errors': errors, 'deliveries': deliveries, 'remaining': len(pending) - len(deliveries)}
 
 
