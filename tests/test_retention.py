@@ -245,6 +245,29 @@ def test_plan_worktrees_separates_delete_keep_and_orphan(tmp_path):
     assert orphans == []  # 规则里没有 checkout，不扫没有对应活的工作区。
 
 
+def test_plan_worktrees_asks_flow_before_releasing(tmp_path):
+    db = sqlite3.connect(':memory:')
+    db.execute('CREATE TABLE items(body TEXT)')
+    held = {'id': 'alpha:10', 'target': 'alpha', 'state': '完成',
+            'workdir': str(tmp_path / 'ws-dddddddddddddddd'), 'sessions': {'writer': 's1'}}
+    db.execute('INSERT INTO items VALUES (?)', (json.dumps(held),))
+    log = SimpleNamespace(db=db)
+
+    class Flow:
+        def hold_workdir(self, item, target):
+            return 'PR #9 还开着'
+
+    class Executor:
+        def release(self, item, target, dry_run=False):
+            raise AssertionError('流程说留就不该问执行者')
+
+    registry = SimpleNamespace(get=lambda port, name: Flow() if port == 'flow' else Executor())
+    rules = SimpleNamespace(data={'targets': {}}, target=lambda *args: {'plugin': 'issue'})
+    candidates, kept, orphans = prune_module.plan_worktrees(log, rules, registry)
+    assert candidates == [] and orphans == []
+    assert kept == [(Path(held['workdir']), 'PR #9 还开着')]
+
+
 def test_prune_command_cleans_old_rounds_jobs_and_sessions(tmp_path, monkeypatch, capsys):
     state = tmp_path / 'state'
     state.mkdir()

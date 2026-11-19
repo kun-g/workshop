@@ -105,6 +105,24 @@ def plan_worktrees(log, rules, registry):
         except (KeyError, ValueError):
             kept.append((Path(item['workdir']), '交付对象已不在规则里，没删'))
             continue
+        # 和看门一样先问流程：流程说还要留（例如 PR 还开着）就不进入执行者的收回判断。
+        try:
+            flow = registry.get('flow', target['plugin'])
+        except (LookupError, ValueError, KeyError):
+            flow = None
+        hold = getattr(flow, 'hold_workdir', None)
+        if hold:
+            try:
+                reason = hold(item, target)
+            except Retryable as exc:
+                kept.append((Path(item['workdir']), f'流程查不了：{exc}'))
+                continue
+            except Exception as exc:
+                kept.append((Path(item['workdir']), f'流程检查失败：{type(exc).__name__}: {exc}'))
+                continue
+            if reason:
+                kept.append((Path(item['workdir']), reason))
+                continue
         for name in sorted(item.get('sessions') or {}):
             try:
                 executor = registry.get('executor', name)
