@@ -144,3 +144,61 @@ def test_configured_app_identity_is_used(command, world, monkeypatch, capsys, fa
         assert 'App 签发失败' in capsys.readouterr().err
     else:
         assert all(env['GH_TOKEN'] == 'app-token' for argv, env in observed if argv != 'sign')
+
+
+SESSION = '2ba67f64-4e2b-47b0-9213-00c871c6e28c'
+QUOTED = BODY.replace('## Kun 的原话\n检查失败时让错误可见。\n',
+                      f'## Kun 的原话\n2026-11-19，协调对话 `{SESSION}`。Kun：\n> 检查失败时让错误可见。\n')
+
+
+def intake_rules(world, **switch):
+    path = world['root'] / 'rules.yaml'
+    config = yaml.safe_load(path.read_text())
+    config['targets']['alpha'].update(auto_intake=True, intake_app_logins=['lambdatheory-agent[bot]'], **switch)
+    path.write_text(yaml.safe_dump(config, allow_unicode=True))
+
+
+@pytest.mark.parametrize('switch,body,code,reason', [
+    ({}, QUOTED.replace(f'`{SESSION}`', '`<会话号>`'), 1, '引用行以外没写会话号'),
+    ({}, QUOTED.replace('> 检查', '检查'), 1, '没有 > 引用的原话'),
+    ({}, QUOTED, 0, None),
+    ({'intake_require_session': True}, QUOTED.replace(f'`{SESSION}`', '`<会话号>`'), 1, '没写会话号'),
+    ({'intake_require_session': False}, QUOTED.replace(f'`{SESSION}`', '`<会话号>`'), 0, None),
+    ({'intake_require_session': False}, QUOTED.replace('> 检查', '检查'), 1, '没有 > 引用的原话'),
+])
+def test_draft_runs_intake_origin_check(command, world, capsys, switch, body, code, reason):
+    intake_rules(world, **switch)
+    path = world['root'] / 'draft.md'
+    path.write_text(body)
+    assert command('--file', str(path), '--target', 'ws') == code
+    out = capsys.readouterr().out
+    if reason:
+        assert reason in out and '接单核对通过' not in out
+    else:
+        assert '接单核对通过' in out
+
+
+def test_draft_origin_matches_intake(command, world, capsys):
+    """草稿判不可信的，开出来自动接单也丢弃，且理由相同。"""
+    from workshop.core.models import Event
+    intake_rules(world)
+    body = QUOTED.replace(f'`{SESSION}`', '`<会话号>`')
+    path = world['root'] / 'draft.md'
+    path.write_text(body)
+    assert command('--file', str(path), '--target', 'ws') == 1
+    problems = capsys.readouterr().out.strip().splitlines()
+    edit(world, issue={'number': 7, 'body': body, 'state': 'open', 'labels': [],
+                       'user': {'login': 'lambdatheory-agent[bot]'}})
+    target = {**world['target'], 'auto_intake': True, 'intake_app_logins': ['lambdatheory-agent[bot]']}
+    value = world['flow'].classify(Event('github', 'one', 'alpha', '7', '登记', {'kind': 'issue', 'number': '7'}),
+                                   None, target, None)
+    assert value.discard and value.summary == '未开放或开单来源未核实：' + '；'.join(problems)
+
+
+@pytest.mark.parametrize('author,code', [('kun-g', 0), ('lambdatheory-agent[bot]', 1), ('stranger', 1)])
+def test_open_issue_checks_real_author(command, world, capsys, author, code):
+    intake_rules(world)
+    edit(world, issue={'number': 7, 'body': BODY, 'user': {'login': author}})
+    assert command('ws#7') == code
+    out = capsys.readouterr().out
+    assert ('开单来源' in out) == bool(code)

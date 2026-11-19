@@ -6,14 +6,36 @@ from . import dod
 from .requirements import section
 
 
-def trusted(issue, target):
+SESSION = re.compile(r'[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}')
+
+
+def validate(target):
+    """规则装配时调用：开关只收布尔值，写错不当成开或关。"""
+    if type(target.get('intake_require_session', True)) is not bool:
+        raise ValueError(f'{target.get("name", "交付对象")} 的 intake_require_session 必须是布尔值')
+
+
+def origin(issue, target):
+    """开单来源核对（issue交付 R11）；返回认不出的原因，空列表是可信。"""
     author = (issue.get('user') or {}).get('login')
-    if author == target.get('kun_github', 'kun-g'):
-        return True
-    quote = section(issue.get('body') or '', 'Kun 的原话')
-    return (author in target.get('intake_app_logins', []) and
-            bool(re.search(r'^\s*>\s*\S', quote, re.M)) and
-            bool(re.search(r'会话[^\n]*[0-9a-f]{8}-[0-9a-f-]{27,}', quote)))
+    kun = target.get('kun_github', 'kun-g')
+    if author == kun:
+        return []
+    if author not in target.get('intake_app_logins', []):
+        return [f'开单来源：作者 {author or "（无）"} 不是 {kun}，也不在 intake_app_logins']
+    validate(target)
+    lines = section(issue.get('body') or '', 'Kun 的原话').splitlines()
+    problems = []
+    if not any(re.match(r'\s*>\s*\S', line) for line in lines):
+        problems.append('开单来源：「Kun 的原话」节没有 > 引用的原话')
+    if target.get('intake_require_session', True) and not any(
+            SESSION.search(line) for line in lines if not re.match(r'\s*>', line)):
+        problems.append('开单来源：「Kun 的原话」节引用行以外没写会话号（8-4-4-4-12 位 UUID）')
+    return problems
+
+
+def trusted(issue, target):
+    return not origin(issue, target)
 
 
 def inspect(io, event, item, target):
@@ -25,8 +47,9 @@ def inspect(io, event, item, target):
         return Classification(discard=True, summary='回源对象不匹配')
     if item is not None:
         return Classification()  # 已有活仍收到正文更新；接单与关系端口回查内容。
-    if issue.get('state') != 'open' or not trusted(issue, target):
-        return Classification(discard=True, summary='未开放或开单来源未核实')
+    problems = origin(issue, target)
+    if issue.get('state') != 'open' or problems:
+        return Classification(discard=True, summary='未开放或开单来源未核实' + ('：' + '；'.join(problems) if problems else ''))
     label = target.get('label', 'Ready for Agent')
     body = issue.get('body') or ''
     digest = hashlib.sha256(body.encode()).hexdigest()

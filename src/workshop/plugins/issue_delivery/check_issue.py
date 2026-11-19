@@ -3,7 +3,7 @@ import json
 import re
 
 from workshop import github_identity
-from . import dod
+from . import dod, intake
 from .io import IO
 from .requirements import change_documents, changed_requirement, section
 
@@ -45,8 +45,15 @@ def inspect(target, number=None, body=None):
         if issue.get("pull_request"):
             raise ValueError(f"#{number} 是 PR，请给 issue 号")
         body = issue.get("body") or ""
+    else:
+        # 草稿按协调对话用 App 开单核对；没登记 App 身份时作者留空，核对会报出来。
+        logins = target.get("intake_app_logins") or [None]
+        issue = {"user": {"login": logins[0]}, "body": body}
     documents = io.requirement_documents(target)
     problems, checks = dod.registration(body, target, documents)
+    if target.get("auto_intake"):
+        # 和自动接单同一个函数、同一个开关（issue交付 R11）；没开自动接单的交付对象只认人工打标签。
+        problems = problems + intake.origin(issue, target)
     required = None
     basis = section(body, "依据")
     if changed_requirement(basis) is not None:
