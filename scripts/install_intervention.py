@@ -3,6 +3,7 @@
 import argparse
 import fcntl
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -93,6 +94,15 @@ def ready(endpoint, rules, python, timeout=15):
         pause.wait(min(.05, max(0, deadline - time.monotonic())))
 
 
+def search_path():
+    """和 scripts/launch_agents.py 共用一份 PATH：送达命令要找得到 lark-cli（/opt/homebrew/bin）。"""
+    spec = importlib.util.spec_from_file_location('launch_agents', ROOT / 'scripts/launch_agents.py')
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    # 发版在临时 HOME 里跑，PATH 按当前系统用户的家目录算。
+    return module.search_path(Path(pwd.getpwuid(os.getuid()).pw_dir))
+
+
 def activate(state, rules, endpoint, python, label, agents):
     domain = f'gui/{os.getuid()}'
     service = domain + '/' + label
@@ -101,6 +111,7 @@ def activate(state, rules, endpoint, python, label, agents):
     payload = plistlib.dumps({'Label': label,
         'ProgramArguments': [str(python), '-I', '-m', 'workshop.plugins.intervention',
             '--state-dir', str(state), '--rules', str(rules), '--endpoint', str(endpoint), 'serve'],
+        'EnvironmentVariables': {'PATH': search_path()},
         'RunAtLoad': True, 'KeepAlive': True, 'ThrottleInterval': 5,
         'StandardOutPath': str(state / 'service.log'), 'StandardErrorPath': str(state / 'service.log')})
     previous = path.read_bytes() if path.exists() else None

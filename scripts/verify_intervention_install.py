@@ -5,6 +5,8 @@ from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
+import plistlib
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -50,6 +52,11 @@ def verify(output):
         first = json.loads(run(argv).stdout)
         second = json.loads(run(argv).stdout)
         assert second['action'] == 'unchanged' and first['pid'] == second['pid']
+        # #174：生成的 plist 带 PATH，送达命令找得到 lark-cli；原样贴出。
+        plist = (agents / (label + '.plist')).read_text()
+        print(json.dumps({'plist': str(agents / (label + '.plist')), 'content': plist}, ensure_ascii=False), flush=True)
+        path = plistlib.loads(plist.encode())['EnvironmentVariables']['PATH']
+        assert shutil.which('lark-cli', path=path), path
         proof = run([first['python'], '-I', '-c', 'import importlib.util,json; '
             'print(json.dumps({"core_available":importlib.util.find_spec("workshop.core") is not None}))'])
         assert json.loads(proof.stdout)['core_available'] is False and not (root / 'core').exists()

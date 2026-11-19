@@ -43,6 +43,10 @@ def test_install_then_repeat_is_idempotent_and_independent(installer):
     path = Path(loaded[0])
     plist = plistlib.loads(path.read_bytes())
     assert plist['KeepAlive'] and plist['RunAtLoad']
+    # 重装后送达命令要找得到 lark-cli：和车间守护进程共用一份 PATH。
+    agents = runpy.run_path(str(ROOT / 'scripts/launch_agents.py'))
+    assert plist['EnvironmentVariables']['PATH'] == agents['search_path'](Path.home())
+    assert '/opt/homebrew/bin' in plist['EnvironmentVariables']['PATH'].split(':')
     assert plist['ProgramArguments'][:4] == [str(args[3]), '-I', '-m', 'workshop.plugins.intervention']
     assert module['activate'](*args)['action'] == 'unchanged'
     assert len([a for a in calls if a[1] == 'bootstrap']) == 1

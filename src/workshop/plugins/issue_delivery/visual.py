@@ -42,8 +42,12 @@ def after(flow, item, target, services):
                 state.setdefault('visual_deliveries', {})[version] = {'contract': contract, 'delivery': delivery, 'permit': permit}
                 flow.io.save(item, target, state)
         sent = port.invoke('dispatch', {'ref': delivery}, config)
+        if sent['state'] == 'unsent':
+            # 送达命令不存在或起不来：确定没发出，下一拍照原送达号重发。
+            return After(pending=True, reason='亲眼看没发出：' + (sent.get('error') or '送达命令起不来') + '（' + delivery + '）',
+                         next='修好送达命令后照原送达号重发', recheck_after='+5m')
         if sent['state'] != 'sent':
-            return After(pending=True, reason='亲眼看送达结果未确认：' + delivery,
+            return After(pending=True, reason='亲眼看送达结果未确认：' + delivery + ('；' + sent['error'] if sent.get('error') else ''),
                          next='按原送达号对账，不盲目重发', recheck_after='+5m')
         reference = port.create(operation + ':wait', {'point': 'visual', 'owner': item['id'],
             'content': {'key': 'visual', 'stage': '收尾', 'version': version,
@@ -79,11 +83,10 @@ def plain(text):
 
 # 按钮点击经工作台转发到介入点服务；ns 与服务端 visual_click.NS 是同一份契约。
 CLICK_NS = 'workshop-visual/v1'
-FALLBACK = '按钮没反应时，在 Ash 私聊里引用这张卡回「过」，或「不对：哪里不对」。'
 
 
 def card(issue, target, item, version, pr, contract, permit):
-    """首屏只放人要看的：issue 标题和链接、合并它的 PR、三段约定和两个按钮；对账号码进折叠详情。
+    """首屏只放人要看的：issue 标题和链接、合并它的 PR、看什么和两个按钮；对账号码进折叠详情。
 
     飞书卡片标题不支持链接，链接放在标题下第一行。按钮绑定这一次许可（即这一次送达）和版本；
     送达号由送达命令写进详情。
@@ -93,11 +96,10 @@ def card(issue, target, item, version, pr, contract, permit):
     first = '[issue #' + str(number) + '](' + url + ')'
     if pr:
         first += '　版本：[PR #' + str(pr) + '](https://github.com/' + target['repo'] + '/pull/' + str(pr) + ')'
-    response = contract['response'] if '引用' in contract['response'] else contract['response'] + '\n' + FALLBACK
     elements = [{'tag': 'markdown', 'content': first}]
-    for label, text in (('看什么', contract['contract']), ('在哪看', contract['location']), ('怎么回', response)):
-        # 原文的换行和编号照留，不并成一段。
-        elements += [{'tag': 'markdown', 'content': '**' + label + '**'}, {'tag': 'div', 'text': plain(text)}]
+    # 正文只有「看什么」，原文的换行和编号照留。在哪看就是这张卡、怎么回就是按钮，不上卡片；
+    # 按钮没反应时引用回复照旧认，卡上不写。
+    elements += [{'tag': 'markdown', 'content': '**看什么**'}, {'tag': 'div', 'text': plain(contract['contract'])}]
 
     def button(text, kind, choice, **extra):
         return {'tag': 'button', 'text': plain(text), 'type': kind, 'width': 'fill', **extra, 'behaviors': [{'type': 'callback',
