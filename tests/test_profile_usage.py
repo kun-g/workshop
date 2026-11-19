@@ -27,8 +27,8 @@ class Book:
         self.count += 1
         self.log.append(kind, body, item, ext_id=f"{kind}:{self.count}", at=self.tick(minutes))
 
-    def item(self, item):
-        self.fact("event", {"target": "alpha", "object_key": item, "title": item, "depth": 0,
+    def item(self, item, target="alpha"):
+        self.fact("event", {"target": target, "object_key": item, "title": item, "depth": 0,
                             "action": "ready", "body": {}, "ext_id": f"{item}:open"}, item)
 
     def run(self, item, executor, config, minutes, cost=1.0, ended=True, children=True):

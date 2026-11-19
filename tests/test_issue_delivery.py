@@ -733,6 +733,61 @@ def test_scheduled_delivery_merges_once_and_waits_for_deployment_without_tag(wor
     assert not any(c[0] == 'tag-release.sh' for c in calls(world))
 
 
+@pytest.mark.parametrize('files,kind', [
+    ([{'filename': 'docs/a.md', 'additions': 3, 'deletions': 1},
+      {'filename': 'README.md', 'additions': 1, 'deletions': 0}], '只改文档'),
+    ([{'filename': 'tests/test_a.py', 'additions': 2, 'deletions': 0},
+      {'filename': 'docs/a.md', 'additions': 1, 'deletions': 0}], '只改测试和文档'),
+    ([{'filename': 'tests/test_a.py', 'additions': 2, 'deletions': 0}], '只改测试和文档'),
+    ([{'filename': 'src/a.py', 'additions': 2, 'deletions': 0},
+      {'filename': 'docs/a.md', 'additions': 1, 'deletions': 0}], '改了程序'),
+    ([{'filename': 'docs/new.py', 'previous_filename': 'docs/old.py', 'status': 'renamed',
+       'additions': 4, 'deletions': 2}], '只改文档'),
+    ([{'filename': 'src/new.py', 'previous_filename': 'docs/old.py', 'status': 'renamed',
+       'additions': 4, 'deletions': 2}], '改了程序'),
+])
+def test_merge_records_pr_stats_from_the_same_file_list(world, files, kind):
+    target = {**world['target'], 'release': 'none'}
+    data = snapshot(world, '交付')
+    remote = edit(world)
+    remote['pr']['changed_files'] = len(files)
+    edit(world, pr=remote['pr'], files=files)
+    world['io'].save(data, target, {'effects': {}, 'issue': 7, 'dod_head': world['sha']})
+    assert not world['flow'].after(data, '交付', 'stats', target).pending
+    state = world['io'].read(data, target)
+    assert state['pr_stats']['11'] == {
+        'files': len(files),
+        'additions': sum(entry.get('additions', 0) for entry in files),
+        'deletions': sum(entry.get('deletions', 0) for entry in files), 'kind': kind}
+    # 需求文档和 PR 概况共用合并确认时取的那一次文件列表。
+    assert len([c for c in calls(world) if any('/files' in str(a) for a in c)]) == 1
+
+
+def test_pr_stats_unknown_when_changed_files_do_not_match(world):
+    target = {**world['target'], 'release': 'none'}
+    data = snapshot(world, '交付')
+    remote = edit(world)
+    remote['pr']['changed_files'] = 3
+    edit(world, pr=remote['pr'], files=[{'filename': 'docs/a.md', 'additions': 1, 'deletions': 0}])
+    world['io'].save(data, target, {'effects': {}, 'issue': 7, 'dod_head': world['sha']})
+    world['flow'].after(data, '交付', 'stats', target)
+    assert world['io'].read(data, target)['pr_stats']['11'] == {
+        'files': 1, 'additions': 1, 'deletions': 0, 'kind': '未知'}
+
+
+def test_same_pr_recorded_twice_stays_and_two_prs_are_kept_apart(world):
+    state = {}
+    world['flow']._record_pr_stats({'number': 11, 'changed_files': 1}, state,
+                                   [{'filename': 'docs/a.md', 'additions': 1, 'deletions': 0}])
+    first = dict(state['pr_stats']['11'])
+    world['flow']._record_pr_stats({'number': 11, 'changed_files': 1}, state,
+                                   [{'filename': 'src/a.py', 'additions': 9, 'deletions': 9}])
+    assert state['pr_stats']['11'] == first
+    world['flow']._record_pr_stats({'number': 12, 'changed_files': 1}, state,
+                                   [{'filename': 'src/a.py', 'additions': 2, 'deletions': 1}])
+    assert set(state['pr_stats']) == {'11', '12'} and state['pr_stats']['12']['kind'] == '改了程序'
+
+
 @pytest.mark.parametrize('files,changed,wait', [
     ([{'filename': 'docs/guide.txt'}, {'filename': 'README.md'}, {'filename': 'services/api/tests/test_api.py'}], 3, False),
     ([{'filename': 'src/api.py'}, {'filename': 'tests/test_api.py'}], 2, True),
