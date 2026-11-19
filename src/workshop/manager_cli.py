@@ -67,7 +67,7 @@ def main(argv=None):
                     log = Log.readonly(args.state_dir / 'workshop.db')
                     try:
                         observe_items(store, log.open_items(), 'watch', now)
-                        observe_failures(store, log, 'watch', now)
+                        observe_failures(store, log, 'watch', now, rules)
                     finally:
                         log.close()
                 except Exception as exc:

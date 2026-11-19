@@ -19,6 +19,35 @@ def delivery_ok(engine, key):
         engine.fact("control", {"id": f"delivery:{key}", "failed": False})
 
 
+def delivery_retired(rules, key):
+    """送达键对应的通道或交付对象是否已不在现行规则里。
+
+    送达键的形状和它们对应的规则：
+    - channel:<名>：旧规则顶层 channel 指定的通道；现行规则不再收这个条目，等于一个都没有。
+    - <交付对象>:...：旧的逐卡送达以交付对象打头，read: 和 answer: 后面也是卡号。
+    - poll:/finish:<令牌>：轮的令牌归核心状态，不归规则；残留由轮次结算清掉。
+    其余形状现行规则和核心都不产出，按退役处理，免得旧标记永远挂着。
+    """
+    parts = key.split(":")
+    head = parts[0]
+    if head == "channel":
+        channels = rules.data.get("channel")
+        names = {channels} if isinstance(channels, str) else set(channels or ())
+        return len(parts) < 2 or parts[1] not in names
+    if head in ("poll", "finish"):
+        return False
+    name = parts[1] if head in ("read", "answer") and len(parts) > 1 else head
+    return name not in rules.data.get("targets", {})
+
+
+def clear_retired(engine):
+    """规则里已经没有的通道或交付对象留下的送达失败标记载不住了，清掉。"""
+    prefix = "delivery:"
+    for control in engine.log.all("controls", where=("failed", True)):
+        if control["id"].startswith(prefix) and delivery_retired(engine.rules, control["id"][len(prefix):]):
+            engine.delivery_ok(control["id"][len(prefix):])
+
+
 def block(engine, item, reason, plugin=False):
     with engine.log.transaction():
         item = engine.log.get("items", item["id"])
