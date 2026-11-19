@@ -6,6 +6,7 @@ from .models import Event, Receipt, RETIRED_FIELDS, STAGES, Started, due, stamp
 from .ports import Unavailable, Retryable
 from .models import After, Evidence, RoundUsage
 from .jobs import Pending
+from . import ladder
 
 
 def abort(engine, token, reason="人手动结束这一轮"):
@@ -88,11 +89,14 @@ def required_reviews(engine, item, evidence, target):
     return max(item.get("review_required", 1), evidence.reviewers, 2 if matched else 1)
 
 
-def failure_changes(engine, item, row):
+def failure_changes(engine, item, row, takeover=None):
+    """takeover 是事务之前找好的阶梯接手者（ladder.find 的结果）；到上限且有接手者时换人，不记卡住。"""
     failures = item["failures"] + 1
     episode = item.get("failure_episode") if item["failures"] else row["token"]
     changes = {"failures": failures, "failure_episode": episode}
-    if failures >= 10:
+    if failures >= ladder.FAILURE_LIMIT and takeover:
+        changes.update(ladder.handover(engine, item, takeover, "failures", f"连续 {failures} 次没跑成"))
+    elif failures >= ladder.FAILURE_LIMIT:
         changes.update(state="卡住", next="项目经理处理失败原因后恢复", blocked_by="连续 10 次没跑成",
                        leave={"kind": "等你", "about": "连续失败"})
     else:
@@ -103,15 +107,23 @@ def failure_changes(engine, item, row):
     return changes
 
 
-def gate_retry(engine, item, row, reason):
+def gate_count(item, row, reason):
+    """这一次没过关口之后的签名和连续次数。"""
     reason = reason or "请补充阶段结果与下一步"
     signature = f'{item["stage"]}:{row["receipt"].get("advance")}:{reason}'
-    count = item.get("gate_count", 0) + 1 if item.get("gate_signature") == signature else 1
+    return reason, signature, item.get("gate_count", 0) + 1 if item.get("gate_signature") == signature else 1
+
+
+def gate_retry(engine, item, row, reason, takeover=None):
+    """同一关口连续没过：起点执行者 3 次、阶梯接手者 2 次到上限；有接手者（事务之前找好）就换人，否则卡住。"""
+    reason, signature, count = gate_count(item, row, reason)
     changes = dict(gate_signature=signature, gate_count=count, gate_reason=reason,
                    retry_executor=row["executor"], state="空闲", next=reason,
                    leave={"kind": "工序", "owner": "车间", "at": stamp(engine.clock()), "about": reason})
     engine.fact("gate_blocked", {"gate_reason": reason}, item["id"])
-    if count >= 3:
+    if count >= ladder.gate_limit(item) and takeover:
+        changes.update(ladder.handover(engine, item, takeover, "gate", reason))
+    elif count >= ladder.gate_limit(item):
         changes.update(state="卡住", next="项目经理修正关口失败原因后恢复", blocked_by=reason,
                        leave=engine.blocked_leave("修正关口失败原因后恢复"))
     return changes
@@ -210,6 +222,13 @@ def finish(engine, row):
         if advancing or evidence.pause:
             key = f"after:{token}"
             after_result = engine.after({**item, "result": receipt.json()}, row["stage"], key, target)
+        # 这一次会不会到上限，在事务之前判断；会的话先问阶梯上面有没有可用的接手者（可用性检查可能异步）。
+        takeover = None
+        if not program and ladder.levels(engine.rules.data) and ladder.writing(row["stage"]):
+            gate_reason = "停下必须登记工序、送回或等你" if missing_leave else decision.reason
+            if ((receipt.outcome == "failed" and item["failures"] + 1 >= ladder.FAILURE_LIMIT)
+                    or gate_count(item, row, gate_reason)[2] >= ladder.gate_limit(item)):
+                takeover = ladder.find(engine, item, item.get("executor") or row["executor"])
         with engine.log.transaction():
             item = engine.log.get("items", item["id"])
             # 本轮结果写完整原因：交过被拒的回执时，具体字段和合法取值一并记下（代交的摘要里常没有）。
@@ -272,7 +291,7 @@ def finish(engine, row):
                                review_required=1, pending_advance=None, gate_count=0,
                                leave={"kind": "工序", "owner": "车间", "at": stamp(engine.clock()), "about": "修正验收问题"})
             elif receipt.outcome == "failed":
-                changes.update(engine.failure_changes(item, row))
+                changes.update(engine.failure_changes(item, row, takeover))
             elif wait_ready:
                 changes.update(state="卡住", wait_for_ready=True, next="项目经理处理阻塞；要 Kun 取舍时按流程登记等待",
                                blocked_by=receipt.leave["about"], leave=engine.blocked_leave(receipt.leave["about"]))
@@ -304,7 +323,7 @@ def finish(engine, row):
                 changes.update(state="定时", next=at, leave={"kind": "工序", "owner": "车间", "at": at, "about": "稍后再看"})
             else:
                 reason = "停下必须登记工序、送回或等你" if missing_leave else decision.reason
-                changes.update(engine.gate_retry(item, row, reason))
+                changes.update(engine.gate_retry(item, row, reason, takeover))
             if engine.waiting(item) and changes["state"] != "卡住":
                 changes.update(state="等你", next="等回答", blocked_by="Kun", leave={"kind": "等你", "about": "等回答"})
             elif receipt.later and changes["state"] == "空闲":

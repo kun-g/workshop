@@ -14,6 +14,7 @@ from .models import FlowBrief, Usage, RoundUsage
 from .jobs import Pending
 from .records import StoredBrief
 from .stages import serial_stage
+from . import ladder
 
 
 def launch(engine, row):
@@ -54,8 +55,9 @@ def launch(engine, row):
         sessions = dict(item["sessions"])
         sessions[row["executor"]] = started.session
         # 新一轮可能重新开了工作目录；收尾后要重新判断收不收。
+        # 当前由哪个执行者在做（阶梯位置按它查）：一轮启动成功时记，程序阶段不改。
         changes = dict(session=started.session, sessions=sessions, workdir=started.workdir,
-                       workdir_released=None, release_at=None, release_hold="")
+                       workdir_released=None, release_at=None, release_hold="", executor=row["executor"])
         if row["stage"] == "执行":
             changes["writer"] = row["config"]["family"]
         engine.change(item, **changes)
@@ -110,7 +112,10 @@ def reserve(engine, item, unavailable=()):
         # 订阅和按量计费的候选一样进入挑选（核心 C4）；计费方式只记在每一轮里。
         candidates = []
         waiting = None
-        configured = engine.rules.candidates(item["stage"], item["target"], item["writer"], item.get("flow", ""))
+        # 阶梯指定了接手者的活，写代码的轮只交出它，不论它在不在写代码的候选里；审查、验收不受影响。
+        takeover = item.get("takeover") if ladder.writing(item["stage"]) else None
+        configured = ([engine.rules.executor(takeover)] if takeover else
+                      engine.rules.candidates(item["stage"], item["target"], item["writer"], item.get("flow", "")))
         for config in configured:
             if (config["use"] in unavailable or item.get("retry_executor") and config["use"] != item["retry_executor"]
                     or item["stage"] == "审查" and config["family"] in item.get("reviews", [])):
@@ -133,7 +138,8 @@ def reserve(engine, item, unavailable=()):
         history = engine.log.history(item["id"])
         selection_target = {**target, "selection": {"writer": item["writer"], "reviewed": item.get("reviews", []),
                             "retry_executor": item.get("retry_executor"), "excluded": list(unavailable),
-                            "item": item["id"], "rule_candidates": [c["use"] for c in configured]}}
+                            "item": item["id"], "rule_candidates": [c["use"] for c in configured],
+                            "takeover": takeover}}
         selector_name = engine.rules.selector(item["stage"], item["target"], item.get("flow", ""))
         port, name = "selector", selector_name
         engine.plugins.get(port, name)
@@ -155,6 +161,12 @@ def reserve(engine, item, unavailable=()):
             why_none = choice.reason.strip() if choice is not None and isinstance(choice.reason, str) else ""
             if why_none:
                 engine.fact("selection_none", {"reason": why_none, "selector": selector_name}, item["id"])
+            # 被指定的接手者没挑上（额度门槛没过或报不可用）：先问阶梯上面还有没有可换的，到顶才卡住。
+            found = ladder.find(engine, item, takeover, unavailable) if takeover else None
+            if found:
+                engine.change(item, **ladder.handover(engine, item, found, "quota", why_none or "执行者不可用"))
+                engine.reserve(engine.log.get("items", item["id"]), unavailable)
+                return
             engine.change(item, state="卡住", next="项目经理核对执行者和订阅恢复后重试",
                         blocked_by="执行者不可用" + (f"：{why_none}" if why_none else ""),
                         leave=engine.blocked_leave("核对执行者和订阅后恢复"))

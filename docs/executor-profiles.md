@@ -95,11 +95,17 @@ quota:
 ```
 
 ```yaml
-# deployment.yaml，两项都可以不写
+# deployment.yaml，三项都可以不写
 orca: true                   # 不写按 true；false 时这个部署的执行者全部在后台跑
 roles:                       # 写了哪个角色，这个角色的候选和顺序就以它为准；没写的沿用仓库的
   writer: [orca-codex, claude-review]
   managers: [manager-codex]  # managers 只换项目经理的候选名单
+ladder:                      # 执行者阶梯，从弱到强；不写就没有阶梯，做不下来照旧直接卡住
+  - members: [ollama-deepseek, commandcode-deepseek]
+  - members: [ollama-deepseek-pro, claude-sonnet]
+  - members: [claude-base, claude-review, claude-tdd]
+    takeover: [claude-base]  # 接手只用它；不写就是 members 全部
+  - members: [claude-fable]  # 只在这里接手，不在写代码的候选里
 ```
 
 规则：
@@ -107,9 +113,26 @@ roles:                       # 写了哪个角色，这个角色的候选和顺�
 - `executors/` 下每个带 `executor.yaml` 的子目录是一个配置档。和仓库里同名的，整个替换仓库那一套（字段不合并）。
 - `roles` 只认 `writer`、`reviewer`、`acceptor`、`managers`，每项是执行者名列表；点到的执行者必须在仓库规则或部署目录里有定义。项目经理候选必须是订阅计费。
 - 目录里有 `settings.json` 或 `rules.md` 时，按执行者目录隔离启动（不读本机个人配置，只读这个目录和活所在仓库的 `AGENTS.md`），两个都没有时不隔离。`executor.yaml` 里不许写 `executor_dir`（就是这个目录）；有这两个文件时不许再写 `config_dir`；Codex、Cursor 的壳不支持隔离，目录里放了这两个文件加载时报错。
+- `ladder` 是列表，每级有 `members` 和可选的 `takeover`（不写就是 `members`）。点到的执行者必须在仓库规则或部署目录里有定义；一个执行者不能出现在两级里；`takeover` 必须是本级 `members` 的子集。接手的执行者不要求在写代码的候选里。错误写明是第几级、哪个执行者。
 - 以上任何一处不对，加载时报错，错误里有执行者名和文件名；车间不启动任何会话。
 
 执行环境（`transport`）不写按 `orca`（Orca 的终端），仓库规则和部署目录都一样；写了 `headless` 的在后台跑。`deployment.yaml` 写 `orca: false` 时，所有执行环境是 Orca 的配置档（包括仓库里的）一律改按后台启动，启动命令不经过 Orca。注意后台启动沿用现在后台执行者的规矩：清部署凭据、不开工作区，所以 issue 交付的写代码阶段在 `orca: false` 的部署里起不来，只适合审查、验收和读资料的执行者。
+
+### 执行者阶梯
+
+阶梯只管写代码的轮（审查、验收以外的阶段）。活从哪一级开始仍由挑选逻辑决定（核心 R24），车间记下每件活当前由哪个执行者在做（一轮启动成功时记），阶梯位置按它查。
+
+| 做不下来的情况 | 起点执行者的上限 | 接手的执行者的上限 |
+|---|---|---|
+| 一轮连续跑不成 | 10 次 | 10 次 |
+| 同一个关口连续没过 | 3 次 | 2 次 |
+
+- 到上限时，当前执行者在第 i 级：从第 i+1 级往上，取第一个 `takeover` 里有可用执行者的级，把活指定给它的第一个可用的接手者；两种计数归零，记下这是第几次换人。「可用」只看可用性检查和最近启动时报过不可用的记录。
+- 之后写代码的轮只派给被指定的执行者，三种挑法的挑选理由都写明「阶梯指定的接手者」。它用同一个工作区和分支，开新会话，不接回原执行者的会话。指定保留到这件活结束，每一轮结束、返工、`recover` 都不清掉；`recover` 后计数照原规则重新数。
+- 被指定的执行者在挑选时没挑上（额度门槛没过或报不可用），改指定给再上一级的接手者再挑一次。
+- 找不到接手者（当前执行者不在阶梯里、已在最高级、上面都不可用）时照原来的方式记卡住，交项目经理。等 Kun 回答、等授权、插件或环境故障、来源缺资料不算做不下来，不换人。合并前、上线后 DoD 退回到上限的情形还没接上阶梯，照旧记卡住。
+- 每次换人记一条事实 `executor_handover`，字段 `from`、`from_level`、`to`、`to_level`、`cause`（`failures`、`gate`、`quota`）、`reason`、`skipped`；`workshop why` 里是「阶梯换人 甲（第 1 级）→ 乙（第 2 级），原因 …；跳过：…」一行。`workshop status` 的「谁在推」在没有在跑的轮时写「车间（阶梯指定 乙）」。
+- `workshop executors check` 在配了阶梯时最后多打印一段「阶梯（级号、成员、接手者）」，每级一行，制表符分隔，成员和接手者用逗号连。
 
 ### 加一个执行者
 

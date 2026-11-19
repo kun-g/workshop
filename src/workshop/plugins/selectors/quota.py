@@ -25,6 +25,10 @@ class QuotaSelector:
         writer = target.get("selection", {}).get("writer")
         ordered = sorted(candidates, key=lambda c: writer is None or writer not in c["config"].get("first_when_writer", []))
         notes = []
+        takeover = target.get("selection", {}).get("takeover")
+        if takeover:
+            # 阶梯指定了接手者：核心只交来它一个，额度门槛照样看（ws#301）。
+            notes.append(f"阶梯指定的接手者 {takeover}，只交它")
         if writer is not None and ordered[0] is not candidates[0] and writer in ordered[0]["config"].get("first_when_writer", []):
             notes.append(f'写代码的是 {writer} 家，{ordered[0]["config"]["use"]} 排第一')
         snapshot = None
