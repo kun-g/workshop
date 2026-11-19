@@ -33,7 +33,7 @@ def command(world, monkeypatch):
 @pytest.mark.parametrize('reference', ['ws#7', 'alpha:7'])
 def test_complete_issue(command, world, capsys, reference):
     assert command(reference) == 0
-    assert capsys.readouterr().out == '接单核对通过，能跑的检查：\n["scripts/check.sh"]\n'
+    assert capsys.readouterr().out == '接单核对通过，要跑的检查（交付对象规则登记）：\n["scripts/check.sh"]\n'
     endpoints = [call[2] for call in calls(world)]
     assert 'repos/kun-g/workshop/issues/7' in endpoints
     assert any('/contents/' in endpoint and '?ref=' not in endpoint for endpoint in endpoints)
@@ -41,10 +41,9 @@ def test_complete_issue(command, world, capsys, reference):
 
 @pytest.mark.parametrize('body', [
     '',
-    BODY.replace('## 依据\n核心 R14\n', ''),
-    BODY.replace('核心 R14', 'R14'),
-    BODY.replace('核心 R14', '核心 R99'),
-    BODY.replace('核心 R14', '需求变更：在 docs/requirements/核心.md 新增：只通知一次。')
+    BODY.replace('## 约束\n无\n', ''),
+    BODY.replace('## 约束\n无\n', '## 约束\n写这张单特有的限制\n'),
+    BODY.replace('（核心 R14）。\n', '（核心 R14）。\n\n需求变更：在 docs/requirements/核心.md 新增：只通知一次。\n')
         .replace('检查失败时让错误可见。', '来源：运行现象'),
 ])
 def test_missing_items_match_intake_next(command, world, capsys, body):
@@ -60,7 +59,7 @@ def test_missing_items_match_intake_next(command, world, capsys, body):
 
 @pytest.mark.parametrize('draft', [False, True])
 def test_requirement_changes_show_gate_documents_only(command, world, capsys, draft):
-    from workshop.plugins.issue_delivery.requirements import change_documents, section
+    from workshop.plugins.issue_delivery.requirements import change_documents, requirement_basis
 
     documents = {'docs/requirements/核心.md': '**R14 要求。**',
                  'docs/requirements/交付.md': '**R6 要求。**'}
@@ -68,19 +67,19 @@ def test_requirement_changes_show_gate_documents_only(command, world, capsys, dr
     config = yaml.safe_load(path.read_text())
     config['targets']['alpha']['requirement_docs'] = ['docs/requirements/']
     path.write_text(yaml.safe_dump(config))
-    body = BODY.replace('核心 R14', '需求变更：在 核心.md 新增：失败后只通知一次。\n\n参见交付 R6。')
+    body = BODY.replace('（核心 R14）。\n', '（核心 R14）。\n\n需求变更：在 核心.md 新增：失败后只通知一次。\n\n参见交付 R6。\n')
     edit(world, requirement_contents=documents, issue={'number': 7, 'body': body})
     draft_path = world['root'] / 'draft.md'
     draft_path.write_text(body)
     args = ['--file', str(draft_path), '--target', 'ws'] if draft else ['ws#7']
     assert command(*args) == 0
-    required = change_documents(section(body, '依据'), documents, config['targets']['alpha'])
+    required = change_documents(requirement_basis(body), documents, config['targets']['alpha'])
     assert required == {'docs/requirements/核心.md'}
     assert capsys.readouterr().out == ('进交付时要求 PR 改的需求文档：' + '、'.join(sorted(required))
-                                    + '\n接单核对通过，能跑的检查：\n["scripts/check.sh"]\n')
+                                    + '\n接单核对通过，要跑的检查（交付对象规则登记）：\n["scripts/check.sh"]\n')
 
 
-@pytest.mark.parametrize('body,code', [(BODY, 0), (BODY.replace('核心 R14', 'R14'), 1)])
+@pytest.mark.parametrize('body,code', [(BODY, 0), (BODY.replace('## 约束\n无\n', ''), 1)])
 def test_draft(command, world, capsys, body, code):
     path = world['root'] / 'draft.md'
     path.write_text(body)
@@ -102,9 +101,11 @@ def test_flow_configuration_and_nested_default_branch_docs(command, world, monke
         requirement_docs=['docs/spec/'], required_checks=[['project-check', '--all']])
     path.write_text(yaml.safe_dump(config))
     edit(world, requirement_contents={'docs/spec/nested/项目.md': '**R9 项目要求。**'},
-         issue={'body': BODY.replace('核心 R14', '项目 R9').replace('[["scripts/check.sh"]]', '[["project-check", "--all"]]')})
+         issue={'body': BODY.replace('核心 R14', '项目 R9')})
     assert command('ws#7') == 0
-    assert '["project-check", "--all"]' in capsys.readouterr().out
+    # 检查只取交付对象规则，issue 里不用写。
+    out = capsys.readouterr().out
+    assert '["project-check", "--all"]' in out and 'scripts/check.sh"]' not in out
 
 
 @pytest.mark.parametrize('args', [[], ['ws#0'], ['ws#abc'], ['unknown#7'], ['ws#7', '--target', 'ws'],

@@ -7,6 +7,9 @@ from .requirements import section
 
 
 DRAFT = '【Draft】'
+# 接单核对规则的版本，记在每版正文的核对结论里。升级后同一版正文按新规则重新核对一次；
+# 没有这个字段的是「约束」节改版（ws#286）以前记下的结论，不沿用。
+RULES = 2
 SESSION = re.compile(r'[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}')
 
 
@@ -73,13 +76,16 @@ def inspect(io, event, item, target):
         return Classification(discard=True, summary='已带标签，交标签事件接单')
     with io.locked(identity, target) as state:
         previous = state.get('intake_versions', {}).get(digest)
+        if previous and not previous.get('labeled') and previous.get('rules') != RULES:
+            previous = None  # 旧规则下的结论不沿用，按现在的规则再核对一次。
         if previous and previous.get('labeled'):
             return Classification(discard=True, summary='同版正文已补过标签；移除标签后不自动重打')
         if previous is not None and not previous.get('eligible'):
             return Classification(discard=True, summary='同版正文已核对：' + '；'.join(previous['problems']))
         if previous is None:
             problems, _ = dod.registration(body, target, io.requirement_documents(target))
-            state.setdefault('intake_versions', {})[digest] = {'eligible': not problems, 'problems': problems}
+            state.setdefault('intake_versions', {})[digest] = {'eligible': not problems, 'problems': problems,
+                                                               'rules': RULES}
             io.save(identity, target, state)
             if problems:
                 return Classification(discard=True, summary='未写全：' + '；'.join(problems))

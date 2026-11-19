@@ -7,13 +7,14 @@ import base64
 import json
 from pathlib import Path
 import re
+import shlex
 from urllib.parse import quote
 
 from workshop.core.models import After, Classification, Evidence, FlowBrief, OUTCOMES, Receipt
 from .io import IO, executable, failure, run, tail
 from . import dod, decisions, intake, authorization, visual
 from . import relations as relation_source
-from .requirements import changed_requirement, missing_documents, section, updated_documents
+from .requirements import changed_requirement, missing_documents, requirement_basis, updated_documents
 from workshop.core.ports import Retryable
 from workshop.github_identity import scoped as github_scope
 from workshop.path_policy import only_ignored_paths
@@ -43,15 +44,6 @@ def report(receipt):
         if isinstance(value, dict) and value.get("schema") == "issue-delivery/v1":
             return value
     return {}
-
-
-def checks_from(body):
-    """「能跑的检查」节的检查；没有这一节时退回全文第一个 workshop-checks 代码块（旧 issue）。"""
-    runnable = section(body or "", "能跑的检查")
-    if runnable:
-        return dod.checks_in(runnable)
-    match = re.search(r"```workshop-checks\s*\n(.*?)\n```", body or "", re.S)
-    return dod.checks_in(match[0]) if match else []
 
 
 def spoken(text, limit=80):
@@ -107,6 +99,7 @@ class IssueDelivery:
     @staticmethod
     def validate(target):
         intake.validate(target)
+        dod.required_checks(target)  # required_checks 格式不对，规则加载时就报错。
 
     @github_scope
     def hold_workdir(self, item, target):
@@ -292,8 +285,13 @@ class IssueDelivery:
             "项下附证据——登记的检查名（反引号写出 argv，如 `scripts/check.sh`）或原样输出代码块；"
             "真实路径（真身份、真数据、和生产同样的进程环境）的项附原样输出。车间进交付时在干净副本重跑登记检查，"
             "并逐项核对这一节；少一项或缺证据，车间把 PR 改回 Draft、在 PR 上留原样输出，活退回执行。\n"
-            "evidence 那条 JSON 给 pr、head、runs；runs 每项 argv/exit_code/stdout/stderr。\n"
-            "守边界：只改本 issue 要的东西，只做 issue「不可逆或对外的动作」节列出的动作。遇到车间流程或环境的问题"
+            "这件活要跑的检查（交付对象规则登记的，完整命令，在 worktree 根目录跑）：\n"
+            + "".join(f"- {shlex.join(argv)}\n" for argv in dod.required_checks(target))
+            + "evidence 那条 JSON 给 pr、head、runs；runs 每项 argv/exit_code/stdout/stderr。\n"
+            "约束：issue「约束」节是这件活必须遵守的限制；只做「约束」节里列出的不可逆或对外的动作，没列就是没有"
+            "（兼容旧写法：issue 没有「约束」节时看「不可逆或对外的动作」节）。发现约束和 DoD 做不到一起时，"
+            "登记带推荐的取舍等待（decision），不自行放宽约束，不自行改 issue 正文。申请授权的流程照上面不变。\n"
+            "守边界：只改本 issue 要的东西。遇到车间流程或环境的问题"
             "（检查在车间里跑不起来、关口不认等），交 outcome=nothing，summary 写清原因，evidence JSON 写 "
             "blocked={reason:原因,next:建议动作}；只有要 Kun 判断时才登记带推荐的 decision。"
             f'不改车间自己的流程代码（本 issue 要改的除外），不动主检出 {target.get("checkout", "")} 和车间正在跑的代码，不重启车间。'
@@ -390,7 +388,8 @@ class IssueDelivery:
     @github_scope
     def assess(self, item, receipt, target):
         data, stage = report(receipt), item["stage"]
-        checks = item.get("checks", [])
+        # 检查一律按交付对象规则（核心 R2）；活上以前从 issue 存下的检查不再用。
+        checks = dod.required_checks(target)
         try:
             if stage == '执行' and data.get('authorization') is not None:
                 self.validate_receipt(item, receipt, target)
@@ -450,7 +449,7 @@ class IssueDelivery:
         with self.io.locked(item, target) as state:
             state.update(visual=dod.visual(body), registered=True)
             self.io.save(item, target, state)
-        return Evidence(checks, True, reason="接单核对：能跑的检查、合并前 DoD、不可逆或对外的动作、依据都在")
+        return Evidence(checks, True, reason="接单核对：合并前 DoD、约束都在，检查按交付对象规则")
 
     def _assess_execution(self, item, target, checks):
         """执行交接（issue交付 R13）：以 PR 去掉 Draft 为准，不看回执的 advance。"""
@@ -503,7 +502,7 @@ class IssueDelivery:
         if blocked:
             return self._return(item, target, checks, "合并前 DoD", blocked, self._merge_status(pr), paths, head=sha)
         problems = dod.evidence_problems(pr.get("body") or "", body, checks)
-        basis = section(body, "依据")
+        basis = requirement_basis(body)
         if changed_requirement(basis) is not None:
             # issue交付 R10：修复 PR 沿用本活已合入的需求文档；新加的文档仍须改。
             missing = missing_documents(basis, self.io.requirement_documents(target), target, files, state)

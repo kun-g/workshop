@@ -5,10 +5,13 @@
 import json
 import re
 
-from .requirements import change_documents, changed_requirement, check_references, section
+from .requirements import change_documents, changed_requirement, requirement_basis, section
 
 UNCLEAR = re.compile(r"待定|TODO|待补充")
 FENCE = re.compile(r"^\s*(```|~~~)")
+DEFAULT_CHECKS = [["scripts/check.sh"]]
+# workshop status、why 和 check-issue 报同一句。
+CONSTRAINT = "「约束」节须单写「无」或至少列一条"
 
 
 def _validate(value):
@@ -16,6 +19,26 @@ def _validate(value):
             isinstance(argv, list) and argv and all(isinstance(v, str) and v.strip() for v in argv) for argv in value):
         raise ValueError("检查须为非空 argv 列表")
     return value
+
+
+def required_checks(target):
+    """这件活要跑的检查：交付对象规则的 required_checks，没登记按 scripts/check.sh。
+
+    不从 issue 里读，也不用活上以前存下的检查；规则加载时已核对格式（validate）。
+    """
+    value = target.get("required_checks")
+    if value is None:
+        return [list(argv) for argv in DEFAULT_CHECKS]
+    try:
+        return [list(argv) for argv in _validate(value)]
+    except ValueError as exc:
+        raise ValueError(f'{target.get("name", "交付对象")} 的 required_checks 格式不对：{exc}') from None
+
+
+def constraint_written(body):
+    """「约束」节去掉空行后第一行单独是「无」，或者节里至少有一条列表项。"""
+    text = section(body or "", "约束")
+    return _first_line(text) == "无" or bool(items(text))
 
 
 def checks_in(text):
@@ -54,32 +77,24 @@ def _quote(text):
 
 
 def registration(body, target, documents=None):
-    """接单核对：返回 (缺的项, 能跑的检查)。documents 为 None 时不核对依据里的编号（调用方另取文档）。"""
+    """接单核对（核心 R2、R3，issue交付 R2、R10）：返回 (缺的项, 这件活要跑的检查)。
+
+    只看合并前 DoD、约束、要不要亲眼看、上线后 DoD 和需求变更；旧写法的「依据」「能跑的检查」
+    「不可逆或对外的动作」三节不再要求（兼容：写了也不报错，「能跑的检查」不生效）。
+    documents 为 None 时不核对需求变更指明的文档（调用方另取文档）。
+    """
     body = body or ""
     problems = []
-    checks = []
-    runnable = section(body, "能跑的检查")
-    try:
-        checks = checks_in(runnable)
-    except (ValueError, TypeError) as exc:
-        problems.append(f"「能跑的检查」格式不对：{exc}")
-    if not checks and not problems:
-        problems.append("缺「能跑的检查」节或其中的 workshop-checks 代码块")
-    required = target.get("required_checks", [["scripts/check.sh"]])
-    missing = [argv for argv in required if checks and argv not in checks]
-    if missing:
-        problems.append("「能跑的检查」缺规则要求的 " + "、".join(" ".join(a) for a in missing))
     dod = section(body, "合并前 DoD")
     if not items(dod):
         problems.append("缺「合并前 DoD」节，或节里没有逐项列出的条件")
     elif UNCLEAR.search(dod):
         problems.append("「合并前 DoD」还有待定项")
-    actions = section(body, "不可逆或对外的动作")
-    if not actions:
-        problems.append("缺「不可逆或对外的动作」节（没有就写「无」）")
+    if not constraint_written(body):
+        problems.append(CONSTRAINT)
     visual = section(body, "要不要亲眼看")
     if visual and not re.match(r"(?:是|否)(?:\s|$)", visual):
-        # 没写这一节按「否」：核心 R2、R3 只要求检查、DoD 和不可逆动作三节。
+        # 没写这一节按「否」。
         problems.append("「要不要亲眼看」第一行须写「是」或「否」")
     if _first_line(visual) == '是':
         for name, value in visual_contract(body).items():
@@ -95,12 +110,11 @@ def registration(body, target, documents=None):
                 problems.append("「上线后 DoD」须给每项写 workshop-checks 代码块")
         except (ValueError, TypeError) as exc:
             problems.append(f"「上线后 DoD」的检查格式不对：{exc}")
-    basis = section(body, "依据")
-    if not basis:
-        problems.append("缺「依据」节")
-    elif changed_requirement(basis) is not None:
+    # 只列已有需求编号的不核对编号存不存在；需求变更要有原文、原话和登记的文档。
+    basis = requirement_basis(body)
+    if changed_requirement(basis) is not None:
         if not changed_requirement(basis):
-            problems.append("依据：需求变更没写需求原文")
+            problems.append("需求变更没写需求原文")
         elif not _quote(section(body, "Kun 的原话")):
             problems.append("需求变更：「Kun 的原话」节里没有原话")
         elif documents is not None:
@@ -108,12 +122,7 @@ def registration(body, target, documents=None):
                 change_documents(basis, documents, target)
             except ValueError as exc:
                 problems.append(str(exc))
-    elif documents is not None:
-        try:
-            check_references(basis, documents)
-        except ValueError as exc:
-            problems.append(str(exc))
-    return problems, checks
+    return problems, required_checks(target)
 
 
 def post_checks(body):

@@ -1,4 +1,4 @@
-"""接单核对登记（核心 R2、R3，issue交付 R2、R10）：依据能回查，需求变更有原话；交付时同一个 PR 改了需求文档。"""
+"""接单核对登记（核心 R2、R3，issue交付 R2、R10）：约束节写法，需求变更在背景里认、有原话；交付时同一个 PR 改了需求文档。"""
 import pytest
 
 from workshop.core.models import Receipt
@@ -12,8 +12,18 @@ CHANGE = '需求变更：在 docs/requirements/核心.md 新增：失败后只�
 PROGRAM = Receipt('done', '程序完成', advance='执行')
 
 
-def body_with(world, basis):
-    body = BODY.replace('核心 R14', basis)
+def with_change(change, body=BODY):
+    """在「背景和目标」里另起一段写需求变更（新写法）。"""
+    return body.replace('（核心 R14）。\n', '（核心 R14）。\n\n' + change + '\n')
+
+
+def legacy(basis, body=BODY):
+    """兼容：旧写法的「依据」节。"""
+    return body + '## 依据\n' + basis + '\n'
+
+
+def body_with(world, change, write=with_change):
+    body = write(change)
     edit(world, issue={'number': 7, 'state': 'open', 'body': body})
     return body
 
@@ -32,43 +42,42 @@ def test_complete_registration_passes_with_checks(world):
     assert evidence.passed and evidence.checks == [['scripts/check.sh']]
 
 
-@pytest.mark.parametrize('basis,reason', [('', '依据'), ('核心 R99', 'R99'), ('R14', 'R14'),
-                                        ('不存在 R14', 'R14'), ('只是一个建议', '依据')])
-def test_missing_or_invalid_basis_waits_for_update(world, basis, reason):
-    body_with(world, basis)
-    evidence = intake(world)
-    evidence.validate()
-    assert not evidence.passed and evidence.awaits_update and reason in evidence.reason
+@pytest.mark.parametrize('basis', ['核心 R99', 'R14', '不存在 R14', '只是一个建议'])
+def test_listed_requirement_numbers_are_not_checked(world, basis):
+    """只列已有需求编号的不再核对编号存不存在；旧「依据」节写什么都不拦（兼容）。"""
+    body_with(world, basis, legacy)
+    assert intake(world).passed
 
 
-def test_missing_heading_fails(world):
-    edit(world, issue={'number': 7, 'body': BODY.replace('## 依据\n核心 R14\n', '')})
+def test_old_sections_are_not_required(world):
+    """没有「依据」「能跑的检查」「不可逆或对外的动作」三节照样接单。"""
+    assert all(f'## {name}' not in BODY for name in ('依据', '能跑的检查', '不可逆或对外的动作'))
     evidence = intake(world)
-    assert not evidence.passed and evidence.awaits_update and '依据' in evidence.reason
+    assert evidence.passed and evidence.checks == [['scripts/check.sh']]
 
 
 def test_directory_registration_reads_nested_docs_and_real_entries_only(world):
     world['target']['repo'] = 'another/project'
     world['target']['requirement_docs'] = ['docs/requirements/']
-    edit(world, requirement_contents={'docs/requirements/nested/核心.md': '**R14 真实需求。**\n提到了 **R99 假的**\n',
+    edit(world, requirement_contents={'docs/requirements/nested/核心.md': '**R14 真实需求。**\n',
                                       'docs/requirements/约束.md': '**C1 约束。**\n'})
-    body_with(world, '`核心 R14`、`约束 C1`')
+    body_with(world, '需求变更：在 `核心` 新增：失败后只通知一次。')
     assert intake(world).passed
-    body_with(world, '核心 R99')
-    evidence = intake(world)
-    assert not evidence.passed and 'R99' in evidence.reason
+    edit(world, files=[{'filename': 'docs/requirements/核心.md', 'status': 'modified'}])
+    assert not deliver(world).passed
+    edit(world, files=[{'filename': 'docs/requirements/nested/核心.md', 'status': 'modified'}])
+    assert deliver(world).passed
 
 
-def test_ids_are_scoped_to_document_and_duplicate_stems_need_full_path(world):
+def test_duplicate_stems_need_full_path(world):
     world['target']['requirement_docs'] = ['docs/requirements/']
     edit(world, requirement_contents={'docs/requirements/a/核心.md': '**R14 需求。**\n',
                                       'docs/requirements/b/核心.md': '**R2 另一条。**\n'})
-    body_with(world, '核心 R14')
-    assert not intake(world).passed
-    body_with(world, 'docs/requirements/a/核心.md R14')
+    body_with(world, '需求变更：在 核心 新增：失败后只通知一次。')
+    evidence = intake(world)
+    assert not evidence.passed and '不唯一' in evidence.reason
+    body_with(world, '需求变更：在 docs/requirements/a/核心.md 新增：失败后只通知一次。')
     assert intake(world).passed
-    body_with(world, 'docs/requirements/b/核心.md R14')
-    assert not intake(world).passed
 
 
 def test_change_needs_kun_quote_not_only_runtime_source(world):
@@ -148,7 +157,10 @@ def test_documents_only_cited_before_change_are_not_required(world):
     world['target']['requirement_docs'] = ['docs/requirements/']
     edit(world, requirement_contents={'docs/requirements/核心.md': '**R14 需求。**',
                                       'docs/requirements/交付.md': '**R6 验收。**'})
-    body_with(world, '已有需求：`docs/requirements/交付.md` R6；交付 R6。' + CHANGE)
+    # 兼容：旧「依据」节里段落中间的需求变更照旧认，变更前引用的文档不要求改。
+    body_with(world, '已有需求：`docs/requirements/交付.md` R6；交付 R6。' + CHANGE, legacy)
+    edit(world, files=[{'filename': 'docs/requirements/交付.md', 'status': 'modified'}])
+    assert not deliver(world).passed
     edit(world, files=[{'filename': 'docs/requirements/核心.md', 'status': 'modified'}])
     assert deliver(world).passed
 
@@ -237,14 +249,84 @@ TARGET = {'name': 'alpha'}
 
 @pytest.mark.parametrize('change,reason', [
     (('- 错误输出和非零退出码保留：`scripts/check.sh` 通过。', '- 待定'), '待定'),
-    (('[["scripts/check.sh"]]', '[["echo", "pass"]]'), 'scripts/check.sh'),
-    (('[["scripts/check.sh"]]', '[["scripts/check.sh"], []]'), '格式'),
     (('## 要不要亲眼看\n否', '## 要不要亲眼看\n再说'), '亲眼看'),
-    (('## 不可逆或对外的动作\n无\n', ''), '不可逆或对外的动作'),
+    (('## 约束\n无\n', ''), dod.CONSTRAINT),
 ])
 def test_registration_names_problems(change, reason):
     problems, _ = dod.registration(BODY.replace(*change), TARGET)
     assert any(reason in p for p in problems), problems
+
+
+@pytest.mark.parametrize('constraint,ok', [
+    (None, False),                                  # 缺约束
+    ('无', True),                                   # 写「无」
+    ('\n无\n', True),                               # 去掉空行后第一行单独是「无」
+    ('- 不改 `src/workshop/core/`（核心 R22）\n- 允许在交付后打 tag', True),  # 列了条目
+    ('1. 只改插件', True),
+    ('写这张单特有的限制和允许的动作', False),          # 只有占位文字
+    ('待补充：没有就写「无」', False),
+    ('无，但不许改核心', False),                       # 「无」后面还跟着别的字
+    ('无。', False),
+    ('```\n- 代码块里的不算\n```', False),
+])
+def test_constraint_section(constraint, ok):
+    body = BODY.replace('## 约束\n无\n', '' if constraint is None else f'## 约束\n{constraint}\n')
+    problems, _ = dod.registration(body, TARGET)
+    assert (dod.CONSTRAINT in problems) is (not ok), problems
+    assert (problems == []) is ok
+
+
+def test_constraint_problem_sentence():
+    assert dod.CONSTRAINT == '「约束」节须单写「无」或至少列一条'
+
+
+def test_old_runnable_section_is_ignored_and_checks_come_from_rules():
+    """兼容：issue 里留着旧「能跑的检查」节不报错也不生效，多写的、写坏的都被忽略。"""
+    old = ('## 能跑的检查\n```workshop-checks\n[["scripts/check.sh"], ["echo", "extra"]]\n```\n'
+           '## 不可逆或对外的动作\n无\n## 依据\n核心 R99\n')
+    assert dod.registration(BODY + old, TARGET) == ([], [['scripts/check.sh']])
+    broken = '## 能跑的检查\n```workshop-checks\n[[]]\n```\n'
+    assert dod.registration(BODY + broken, TARGET) == ([], [['scripts/check.sh']])
+    rule = {**TARGET, 'required_checks': [['project-check', '--all'], ['lint']]}
+    assert dod.registration(BODY + old, rule) == ([], [['project-check', '--all'], ['lint']])
+
+
+@pytest.mark.parametrize('value', [[], [[]], [['']], 'scripts/check.sh', [['ok'], 'bad'], [[1]]])
+def test_bad_required_checks_fail_at_rule_load(value):
+    from workshop.plugins.issue_delivery import IssueDelivery
+    with pytest.raises(ValueError, match='required_checks'):
+        IssueDelivery.validate({**TARGET, 'required_checks': value})
+    IssueDelivery.validate({**TARGET, 'required_checks': [['scripts/check.sh']]})
+    IssueDelivery.validate(TARGET)
+
+
+def test_checks_from_is_gone():
+    import workshop.plugins.issue_delivery as plugin
+    assert not hasattr(plugin, 'checks_from')
+
+
+@pytest.mark.parametrize('body,expected', [
+    # 背景段首的需求变更
+    (with_change('需求变更：在 docs/requirements/核心.md 新增：只通知一次。'),
+     '需求变更：在 docs/requirements/核心.md 新增：只通知一次。'),
+    # 背景里只在句中提到「需求变更：」不算
+    (with_change('这张单不是需求变更：只改实现。'), None),
+    # 兼容：旧「依据」节里的需求变更
+    (legacy('需求变更：在 docs/requirements/交付.md 新增：保留原文。'), '在 docs/requirements/交付.md 新增：保留原文。'),
+    # 两处都有，以背景为准
+    (legacy('需求变更：在 docs/requirements/交付.md 新增：保留原文。',
+            with_change('需求变更：在 docs/requirements/核心.md 新增：只通知一次。')),
+     '在 docs/requirements/核心.md 新增：只通知一次。'),
+    # 都没有
+    (legacy('核心 R14'), None),
+])
+def test_where_requirement_change_is_read(body, expected):
+    from workshop.plugins.issue_delivery.requirements import changed_requirement, requirement_basis
+    change = changed_requirement(requirement_basis(body))
+    if expected is None:
+        assert change is None
+    else:
+        assert change == expected.removeprefix('需求变更：')
 
 
 def test_registration_accepts_ordered_items_and_missing_visual_section_means_no():
@@ -259,7 +341,7 @@ def test_post_release_section_needs_checks():
     body = BODY + '## 上线后 DoD\n- 线上：\n```workshop-checks\n[["scripts/post.sh"]]\n```\n'
     assert dod.registration(body, TARGET)[0] == []
     assert dod.post_checks(body) == [['scripts/post.sh']]
-    # 能跑的检查只取自己那一节，不混进上线后的检查。
+    # 要跑的检查只按规则，不混进上线后的检查。
     assert dod.registration(body, TARGET)[1] == [['scripts/check.sh']]
 
 
@@ -279,3 +361,19 @@ def test_issue_without_merge_items_relies_on_rerun_checks():
     """在途旧写法 issue 没有合并前 DoD 项：只靠干净副本重跑检查，不要求 PR 这一节。"""
     old = BODY.replace('## 合并前 DoD\n- 错误输出和非零退出码保留：`scripts/check.sh` 通过。\n', '')
     assert dod.evidence_problems('没有这一节', old, [['scripts/check.sh']]) == []
+
+
+def test_rule_load_rejects_bad_required_checks(tmp_path):
+    import yaml
+    from conftest import configuration
+    from workshop.registry import load_rules
+    config = configuration()
+    config['targets']['alpha'] = {'plugin': 'issue_delivery', 'repo': 'kun-g/workshop', 'sources': [],
+                                   'required_checks': ['scripts/check.sh']}
+    path = tmp_path / 'rules.yaml'
+    path.write_text(yaml.safe_dump(config, allow_unicode=True))
+    with pytest.raises(ValueError, match='required_checks 格式不对'):
+        load_rules(path)
+    config['targets']['alpha']['required_checks'] = [['scripts/check.sh', '--fast']]
+    path.write_text(yaml.safe_dump(config, allow_unicode=True))
+    assert load_rules(path).target('alpha')['required_checks'] == [['scripts/check.sh', '--fast']]

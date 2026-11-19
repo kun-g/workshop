@@ -80,7 +80,7 @@ def test_auto_intake_rechecks_only_changed_body_and_uses_app(world, monkeypatch)
     configure(world, monkeypatch)
     target = {**world['target'], 'auto_intake': True, 'intake_app_logins': ['lambdatheory-agent[bot]']}
     issue = remote(world)['issue']
-    issue.update(user={'login': 'kun-g'}, labels=[], body=BODY.replace('## 不可逆或对外的动作\n无\n', ''))
+    issue.update(user={'login': 'kun-g'}, labels=[], body=BODY.replace('## 约束\n无\n', ''))
     edit(world, issue=issue)
     flow = world['flow']
     def source(ext):
@@ -98,10 +98,10 @@ def test_auto_intake_rechecks_only_changed_body_and_uses_app(world, monkeypatch)
     assert len([c for c in calls(world) if '/issues/7/labels' in str(c)]) == 1
 
 
-@pytest.mark.parametrize('body,author', [(BODY.replace('核心 R14', '核心 R999'), 'kun-g'),
-    (BODY.replace('核心 R14', '需求变更：核心.md 改 R14').replace('检查失败时让错误可见。', ''), 'kun-g'),
+@pytest.mark.parametrize('body,author', [(BODY.replace('## 约束\n无\n', ''), 'kun-g'),
+    (BODY.replace('（核心 R14）。\n', '（核心 R14）。\n\n需求变更：核心.md 改 R14\n').replace('检查失败时让错误可见。', ''), 'kun-g'),
     (BODY, 'stranger'), (BODY, 'lambdatheory-agent[bot]')])
-def test_auto_intake_rejects_invalid_basis_missing_quote_or_origin(world, monkeypatch, body, author):
+def test_auto_intake_rejects_missing_constraint_quote_or_origin(world, monkeypatch, body, author):
     configure(world, monkeypatch)
     issue = remote(world)['issue']
     issue.update(body=body, labels=[], user={'login': author})
@@ -232,7 +232,7 @@ def test_auto_intake_engine_creates_only_complete_issue(world, monkeypatch):
         'stages': ['接单', '执行', '交付', '收尾']}}, 'auto_intake': True}
     engine = engine_for(world, 'automatic', **cfg)
     issue = remote(world)['issue']
-    issue.update(user={'login': 'kun-g'}, labels=[], body=BODY.replace('## 不可逆或对外的动作\n无\n', ''))
+    issue.update(user={'login': 'kun-g'}, labels=[], body=BODY.replace('## 约束\n无\n', ''))
     edit(world, issue=issue)
     for key, body in [('missing', issue['body']), ('complete', BODY)]:
         issue['body'] = body

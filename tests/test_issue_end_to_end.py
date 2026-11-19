@@ -10,6 +10,7 @@ import subprocess
 import pytest
 
 from workshop.core.models import Event, Receipt
+from workshop.plugins.issue_delivery.dod import CONSTRAINT
 from workshop.reports.report import status, why
 from conftest import build, configuration, current, finish, item
 from test_issue_delivery import BODY, PR_BODY, world, edit, calls, result, snapshot  # noqa: F401
@@ -93,19 +94,19 @@ def set_pr(world, **changes):
 
 def test_intake_waits_for_missing_section_without_rounds_or_cards(world):
     """接单核对（核心 R2、R3）：缺一节停在接单「等资料」，不派轮、不发卡；issue 补齐后来一条更新，下一拍接单。"""
-    set_body(world, BODY.replace('## 不可逆或对外的动作\n无\n', ''))
+    set_body(world, BODY.replace('## 约束\n无\n', ''))
     engine = engine_for(world, 'intake')
     start(engine)
     waiting = item(engine, '7')
     assert waiting['stage'] == '接单' and waiting['state'] == '等资料'
-    assert '不可逆或对外的动作' in waiting['next']
+    assert CONSTRAINT in waiting['next']
     for _ in range(3):
         engine.clock.now += timedelta(hours=1)
         engine.tick()
     assert item(engine, '7')['state'] == '等资料'
     assert not engine.log.all('rounds') and not engine.log.all('cards')
-    assert '等资料 1' in status(engine.log) and '不可逆或对外的动作' in status(engine.log)
-    assert '不可逆或对外的动作' in why(engine.log, 'alpha:7')
+    assert '等资料 1' in status(engine.log) and CONSTRAINT in status(engine.log)
+    assert CONSTRAINT in why(engine.log, 'alpha:7')
     set_body(world, BODY)
     engine.ingest(Event('github', 'issue-edited', 'alpha', '7', 'test', {'kind': 'issue', 'number': 7}))
     engine.tick()
@@ -116,7 +117,7 @@ def test_intake_waits_for_missing_section_without_rounds_or_cards(world):
 
 @pytest.mark.parametrize('missing,reason', [
     ('## 合并前 DoD\n- 错误输出和非零退出码保留：`scripts/check.sh` 通过。\n', '合并前 DoD'),
-    ('```workshop-checks\n[["scripts/check.sh"]]\n```\n', '能跑的检查'),
+    ('## 约束\n无\n', '约束'),
 ])
 def test_intake_names_each_missing_item(world, missing, reason):
     set_body(world, BODY.replace(missing, ''))

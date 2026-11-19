@@ -5,7 +5,7 @@ import re
 from workshop import github_identity
 from . import dod, intake
 from .io import IO
-from .requirements import change_documents, changed_requirement, section
+from .requirements import change_documents, changed_requirement, requirement_basis
 
 
 def check_issue(args, rules):
@@ -31,7 +31,7 @@ def check_issue(args, rules):
     if problems:
         print("\n".join(problems))
         return 1
-    print("接单核对通过，能跑的检查：")
+    print("接单核对通过，要跑的检查（交付对象规则登记）：")
     for argv in checks:
         print(json.dumps(argv, ensure_ascii=False))
     return 0
@@ -55,7 +55,7 @@ def inspect(target, number=None, body=None):
         # 和自动接单同一个函数、同一个开关（issue交付 R11）；没开自动接单的交付对象只认人工打标签。
         problems = problems + intake.origin(issue, target)
     required = None
-    basis = section(body, "依据")
+    basis = requirement_basis(body)
     if changed_requirement(basis) is not None:
         try:
             required = change_documents(basis, documents, target)

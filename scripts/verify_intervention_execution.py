@@ -176,8 +176,9 @@ def replay(args):
     try:
         # 同一真实来源的三个隔离正文版本；不声称这些改动存在于远端。
         import re
-        full = original_issue['body']
-        variants = [('missing', re.sub(r'## 不可逆或对外的动作\n.*?(?=\n## |\Z)', '', full, flags=re.S)),
+        # 原正文是改版（ws#286）前的旧写法；写全的那份加上「约束」节，缺项那份删掉它。
+        full = original_issue['body'].rstrip('\n') + '\n\n## 约束\n无\n'
+        variants = [('missing', re.sub(r'## 约束\n.*?(?=\n## |\Z)', '', full, flags=re.S)),
                     ('missing-quote', re.sub(r'## Kun 的原话\n.*?(?=\n## |\Z)', '## Kun 的原话\n', full, flags=re.S)),
                     ('complete', full)]
         for n, (name, body) in enumerate(variants):
