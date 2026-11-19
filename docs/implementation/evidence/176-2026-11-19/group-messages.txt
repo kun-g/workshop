@@ -1,0 +1,6 @@
+来源	消息号	群	交付对象	当时处理	活	活的现状	去向
+车间	om_x100b605b50fe8d34c1d1208bb24ae9e	oc_b518118e43fc373572b6efb5e1887e2b	grant-console	update	grant-console:om_x100b605b531ebca0c01f55c807a3fcc	接单/放弃	已结束，不再处理
+车间	om_x100b605b63930ca8de3bfd65fb0131f	oc_b518118e43fc373572b6efb5e1887e2b	grant-console	rework	grant-console:109	收尾/完成	已结束，不再处理
+接线台	om_x100b605b50fe8d34c1d1208bb24ae9e	oc_b518118e43fc373572b6efb5e1887e2b	—	车间投递 done	—	—	已投完
+接线台	om_x100b605b63930ca8de3bfd65fb0131f	oc_b518118e43fc373572b6efb5e1887e2b	—	车间投递 done	—	—	已投完
+车间收下的群消息 2 条；接线台未完成的车间投递 0 条

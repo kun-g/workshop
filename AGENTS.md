@@ -9,7 +9,7 @@
 ## 加东西放哪
 
 - `src/workshop/core/`：只认事件、活、阶段、关口。不许 import `workshop.plugins`；不许出现只属于某一类活的词（PR、issue、merge、视频、周报），检查脚本会拦（核心 R22）。
-- `src/workshop/plugins/`：来源、执行者、等待服务、工单、流程插件。插件之间不互相引用，只经核心的端口。插件只 import 核心的 `models` 和 `ports`。
+- `src/workshop/plugins/`：来源、执行者、等待服务、工单、流程插件；给 Kun 的消息只经介入点服务的送达命令。插件之间不互相引用，只经核心的端口。插件只 import 核心的 `models` 和 `ports`。
 - `github_identity`、`path_policy`、`running` 是共用库：插件可以用，共用库不引用插件。
 - `src/workshop/reports/`：只读给人看的（status、why、usage、metrics、状态网页、观察检查），不进核心。
 - `rules/workshop.yaml`：唯一一份规则（核心 R16）。换执行者、加交付对象只改这里。
