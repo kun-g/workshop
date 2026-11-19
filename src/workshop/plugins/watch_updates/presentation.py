@@ -1,5 +1,6 @@
 """报告中的软件、部署组和反馈目标，统一来自生成时的快照。"""
 from .model import digest, tag_version
+from .inventory import cluster, machine
 
 
 def software_views(report, versions):
@@ -29,6 +30,18 @@ def software_views(report, versions):
     return views
 
 
+def drop_scopes(view, places):
+    """「不用盯」可选的范围，只列这一行实际涉及的；第一项是默认的「只这一处」。"""
+    options = [{'id': 'here', 'kind': 'instance', 'label': '只这一处', 'software': view['id'],
+                'instances': [p['id'] for p in places]},
+               {'id': 'software', 'kind': 'software', 'label': '整个 ' + view['name'], 'software': view['id']}]
+    for name in dict.fromkeys(machine(p) for p in places if machine(p)):
+        options.append({'id': 'host:' + name, 'kind': 'host', 'value': name, 'label': '机器 ' + name})
+    for name in dict.fromkeys(cluster(p) for p in places if cluster(p)):
+        options.append({'id': 'cluster:' + name, 'kind': 'cluster', 'value': name, 'label': '集群 ' + name})
+    return options
+
+
 def targets(report, versions, needs):
     """id 对应的成员固定入报告；反馈时不按最新清单重新组队。"""
     result = {}
@@ -52,12 +65,12 @@ def targets(report, versions, needs):
             label = view['name'] + ' · ' + place['host'] + ' · ' + place['service']
             add(identity, {'kind': 'instances', 'software': view['id'], 'label': label,
                            'members': members({place['id']}), 'role': 'server', 'place': place,
-                           'choices': ['升', '没问题', '判错了', '不用盯']})
+                           'choices': ['升', '没问题', '判错了', '不用盯'], 'scopes': drop_scopes(view, [place])})
         if view['agents']:
             add(view['id'] + '-agents', {'kind': 'instances', 'software': view['id'], 'role': 'agent',
                 'label': view['name'] + ' · agent（全部）', 'places': view['agents'],
                 'members': members({p['id'] for p in view['agents']}),
-                'choices': ['升', '没问题', '判错了', '不用盯']})
+                'choices': ['升', '没问题', '判错了', '不用盯'], 'scopes': drop_scopes(view, view['agents'])})
         for key, value in view['entries']:
             shown = set()
             for judge in value['judgment']['instances']:

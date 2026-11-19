@@ -208,7 +208,8 @@ def send_feedback(world, item, report, rows, mid='om_feedback', needs=None):
     for row in rows:
         for identity, target_row in report['feedback_targets'].items():
             if target_row['kind'] == 'instances' and row.get('decision') and {'key': row['key'], 'instance': row['instance']} in target_row['members']:
-                selected.append({'id': identity, 'choice': row['decision'], 'note': row.get('note', '')})
+                selected.append({'id': identity, 'choice': row['decision'], 'note': row.get('note', ''),
+                                 **({'scope': row['scope']} if 'scope' in row else {})})
             if target_row['kind'] == 'feature' and target_row['key'] == row['key'] and target_row['instance'] == row['instance']:
                 selected.extend({'id': identity, 'choice': f['choice']} for f in row.get('features', []) if f['id'] == target_row['feature'])
     selected.extend({'id': 'need-' + n['id'], 'choice': n['choice']} for n in needs or [])
@@ -251,7 +252,8 @@ def test_correction_rejudges_and_suppression_persists_no_command_execution(world
     advance(flow, item, target, '执行', {'judgment': judgment()})
     assert io.state(target)['versions'][item['object_key']]['needs_judgment'] is False
     assert not (tmp_path/'should-not-exist').exists()
-    send_feedback(world, item, io.sent[0], [{'key': item['object_key'], 'instance': 'one', 'decision': '不用盯'}], 'om_drop')
+    send_feedback(world, item, io.sent[0], [{'key': item['object_key'], 'instance': 'one', 'decision': '不用盯',
+                                          'scope': 'software'}], 'om_drop')
     assert io.watchlist(target)['software'] == []
     assert 'n8n' in io.watchlist(target)['excluded']
     assert not advance(flow, item, target, '验收').pending

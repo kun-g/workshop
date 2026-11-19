@@ -135,12 +135,15 @@ class Flow(Entries):
                 if choice['decision'] != '升':
                     continue
                 software = current['software']['id']
+                instance = next((p for p in current['software']['instances'] if p['id'] == place), None)
+                if instance is None:
+                    continue  # 这处后来选了不用盯，已移出清单。
                 code = 'upgrade-' + digest([key, place, choice])
                 state['outbox'].setdefault(code, {
                     'kind': 'upgrade', 'object_key': 'upgrade:' + software,
                     'title': current['software']['name'] + ' 待升级', 'software': software,
                     'version_key': key, 'version': current['releases'][-1]['tag_name'],
-                    'instance': deepcopy(next(p for p in current['software']['instances'] if p['id'] == place)),
+                    'instance': deepcopy(instance),
                     'choice': deepcopy(choice), 'check': current['check']})
             if not current.get('needs_judgment'):
                 expected = {p['id'] for p in current['software']['instances']}

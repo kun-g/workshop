@@ -8,15 +8,24 @@ from .model import SCHEMA, eligible, required, validate_software
 VERSION_KINDS = {'local', 'deployment_repo', 'dokploy', 'upgrade_record', 'history'}
 
 
+SCOPE_KINDS = ('cluster', 'host', 'instance')
+
+
+def scope_key(row):
+    return row['kind'], row.get('software', ''), row['value']
+
+
 def scopes(value):
     if not isinstance(value, list):
         raise ValueError('excluded_scopes 须是列表')
     seen = set()
     for row in value:
         required(row, ('kind', 'value', 'reason'))
-        if row['kind'] not in ('cluster', 'host') or (row['kind'], row['value']) in seen:
-            raise ValueError('排除范围须为不重复的 cluster/host')
-        seen.add((row['kind'], row['value']))
+        if row.get('kind') == 'instance':
+            required(row, ('software',))
+        if row['kind'] not in SCOPE_KINDS or scope_key(row) in seen:
+            raise ValueError('排除范围须为不重复的 cluster/host/instance')
+        seen.add(scope_key(row))
     return value
 
 
@@ -28,16 +37,29 @@ def cluster(place):
     return match[1] if match else None
 
 
-def excluded(place, rules):
-    return any((cluster(place) == r['value'] if r['kind'] == 'cluster'
-                else place['host'] == r['value']) for r in rules)
+def machine(place):
+    """部署所在的机器名；k8s 集群里的部署没有可排除的机器，返回 None。"""
+    if re.match(r'^k8s\s', place['host']):
+        return None
+    return re.split(r'\s*/', place['host'], maxsplit=1)[0].strip() or None
+
+
+def excluded(place, rules, software=None):
+    for rule in rules:
+        if rule['kind'] == 'cluster' and cluster(place) == rule['value']:
+            return True
+        if rule['kind'] == 'host' and rule['value'] in (place['host'], machine(place)):
+            return True
+        if rule['kind'] == 'instance' and (rule['software'], rule['value']) == (software, place['id']):
+            return True
+    return False
 
 
 def with_scopes(watchlist, configured=()):
     value = deepcopy(watchlist)
-    merged = {(r['kind'], r['value']): r for r in scopes(value.get('excluded_scopes', []))}
+    merged = {scope_key(r): r for r in scopes(value.get('excluded_scopes', []))}
     for row in scopes(list(configured)):
-        merged[row['kind'], row['value']] = row
+        merged[scope_key(row)] = row
     value['excluded_scopes'] = list(merged.values())
     return value
 
@@ -48,7 +70,7 @@ def filter_scopes(watchlist):
     for software in value['software']:
         if software['id'] in value.get('excluded', {}):
             continue
-        software['instances'] = [p for p in software['instances'] if not excluded(p, value['excluded_scopes'])]
+        software['instances'] = [p for p in software['instances'] if not excluded(p, value['excluded_scopes'], software['id'])]
         if software['instances']:
             kept.append(software)
     value['software'] = kept
@@ -171,7 +193,7 @@ def reconcile(previous, proposal, now, *, strict=False, upgrades=()):
         observed = set()
         for place in row['instances']:
             observed.add(place['id'])
-            if excluded(place, previous['excluded_scopes']):
+            if excluded(place, previous['excluded_scopes'], row['id']):
                 places.pop(place['id'], None)
                 continue
             places[place['id']] = merge_place(places.get(place['id']), place, now, strict)
