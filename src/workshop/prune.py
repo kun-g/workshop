@@ -120,6 +120,9 @@ def plan_worktrees(log, rules, registry):
             except Exception as exc:
                 kept.append((Path(item['workdir']), f'流程检查失败：{type(exc).__name__}: {exc}'))
                 continue
+            if reason and not isinstance(reason, str):
+                kept.append((Path(item['workdir']), '流程留工作目录的原因不是字符串，没删'))
+                continue
             if reason:
                 kept.append((Path(item['workdir']), reason))
                 continue
