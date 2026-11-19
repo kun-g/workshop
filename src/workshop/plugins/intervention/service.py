@@ -5,6 +5,7 @@ import os
 import sys
 from pathlib import Path
 import subprocess
+import threading
 import yaml
 from datetime import datetime, timezone
 from .store import Store, encode, required
@@ -16,6 +17,9 @@ class Service:
         self.rules = Path(rules)
         self.configuration()
         self.store = Store(Path(state) / 'intervention.db')
+        # 连接和只读请求并发处理；外部送达保持串行，一次只推进一条，
+        # 同一送达不会在两个线程里各发一次。调用方超时重试前仍须先对账。
+        self.dispatch_lock = threading.Lock()
 
     def configuration(self):
         document = yaml.safe_load(self.rules.read_text())
@@ -130,10 +134,8 @@ class Service:
             return self.dispatch(data['ref'])
         handlers = {'create': self.create, 'answer': self.answer, 'ack': self.ack,
                     'permit': self.permit, 'enqueue': self.enqueue, 'cancel': self.cancel,
-                    'manager_update': lambda key, data: manager.update(self, key, data),
-                    'status_click': lambda key, data: (visual_click.click if ((data['event'].get('event') or {}).get('action') or {})
-                                                       .get('value', {}).get('ns') == visual_click.NS else manager.click)(self, key, data)}
-        if action not in handlers:
+                    'manager_update': lambda key, data: manager.update(self, key, data)}
+        if action not in handlers and action != 'status_click':
             raise ValueError('未知操作')
         if action == 'status_click':
             context = data['event'].get('event', {})
@@ -143,7 +145,18 @@ class Service:
                 return {'state': 'rejected', 'accepted': False, 'reason': '只接受指定本人私聊点击'}
         key = required(data.get('operation'), 'operation')
         payload = {k: v for k, v in data.items() if k != 'operation'}
-        result = self.store.operation(key, action, payload, lambda: handlers[action](key, payload))
+        ns = (((data.get('event') or {}).get('event') or {}).get('action') or {}).get('value', {}).get('ns') if action == 'status_click' else None
+        if action == 'status_click' and ns != visual_click.NS:
+            # 状态回卡的只读命令在事务外跑；重复点击直接返回原结果，不再跑命令。
+            result = self.store.result(key, action, payload)
+            if result is None:
+                prepared = manager.prepare(self, payload)
+                result = self.store.operation(key, action, payload,
+                                              lambda: manager.click(self, key, payload, prepared))
+        elif action == 'status_click':
+            result = self.store.operation(key, action, payload, lambda: visual_click.click(self, key, payload))
+        else:
+            result = self.store.operation(key, action, payload, lambda: handlers[action](key, payload))
         if action == 'status_click' and result.get('accepted'):
             delivery = self.dispatch(result['ref'])
             result = {**result, 'delivery': delivery, 'state': delivery['state'], 'external': delivery.get('external')}
@@ -318,6 +331,10 @@ class Service:
         return value
 
     def dispatch(self, ref):
+        with self.dispatch_lock:
+            return self._dispatch(ref)
+
+    def _dispatch(self, ref):
         record = self.store.get(ref, 'delivery')
         if record['state'] in ('sent', 'cancelled'):
             return record

@@ -14,7 +14,7 @@ import sys
 import pytest
 
 from watch_helpers import fake, setup_watch, calls, configure, NOW, manager_command, delegated  # noqa: F401  fake 是夹具
-from workshop.watch import Watch
+from workshop.watch import WAIT_SERVICE_FAILURES, Watch, launch_label
 
 
 def test_fresh_heartbeat_is_quiet(fake, tmp_path):
@@ -285,6 +285,99 @@ def test_tick_heartbeat_written_after_watch_started_still_counts(fake, tmp_path)
     assert state["tick_observation"]["count"] == 3 and "tick" in state["active"]
     write_tick(watch, NOW + timedelta(minutes=10), 8)
     assert "tick_observation" not in watch.run(NOW + timedelta(minutes=4))
+
+
+def wait_service_rules(watch, endpoint='/tmp/service.sock'):
+    """看门从核心的规则快照里取等待端口，不从别处另读一份。"""
+    with sqlite3.connect(watch.directory / 'workshop.db') as db:
+        db.execute('CREATE TABLE IF NOT EXISTS controls(id TEXT, body TEXT)')
+        db.execute("INSERT OR REPLACE INTO controls VALUES ('@rules', ?)",
+                   (json.dumps({'data': {'limits': {'round_timeout_seconds': 7200},
+                                         'wait_services': {'intervention': {'endpoint': endpoint}}}}),))
+
+
+def beat(watch, at):
+    """心跳跟着测试的假时钟走；探活用例只关心等待端口，不制造心跳故障。"""
+    (watch.directory / 'heartbeat.json').write_text(json.dumps({'last_ok_at': at.isoformat()}))
+
+
+def test_wait_service_restarts_once_then_reports_only_if_still_down(fake, tmp_path):
+    watch = setup_watch(fake, tmp_path)
+    wait_service_rules(watch)
+    down, restarts = {'value': True}, []
+    def probe(endpoint):
+        if down['value']:
+            raise TimeoutError('探活超时')
+        return {'protocol': 1}
+    def restart(endpoint):
+        restarts.append(endpoint)
+        return 'com.kun.workshop-intervention'
+    watch.probe, watch.restart = probe, restart
+    at = NOW
+    for n in range(WAIT_SERVICE_FAILURES):
+        at = NOW + timedelta(minutes=n)
+        beat(watch, at)
+        state = watch.run(at)
+    assert restarts == ['/tmp/service.sock'] and not delegated(fake)
+    failure = state['wait_services']['intervention']
+    assert failure['failures'] == WAIT_SERVICE_FAILURES and failure['restart_label'] == 'com.kun.workshop-intervention'
+    # 重启刚发出的一拍不报；下一拍仍不通才登记给项目经理。
+    at += timedelta(minutes=1)
+    beat(watch, at)
+    state = watch.run(at)
+    assert len(delegated(fake)) == 1 and delegated(fake)[0]['text'].startswith('等待端口 intervention')
+    first_id = state['active']['service:intervention']['id']
+    at += timedelta(minutes=1)
+    beat(watch, at)
+    assert watch.run(at)['active']['service:intervention']['id'] == first_id
+    down['value'] = False
+    at += timedelta(minutes=1)
+    beat(watch, at)
+    state = watch.run(at)
+    assert state['active'] == {} and state['wait_services']['intervention']['failures'] == 0
+    assert 'restarted_at' not in state['wait_services']['intervention']
+    # 恢复后再次连续失败，是新的一段：重新自动重启，事项也重新登记。
+    down['value'] = True
+    for _ in range(WAIT_SERVICE_FAILURES):
+        at += timedelta(minutes=1)
+        beat(watch, at)
+        state = watch.run(at)
+    assert restarts == ['/tmp/service.sock', '/tmp/service.sock']
+    at += timedelta(minutes=1)
+    beat(watch, at)
+    state = watch.run(at)
+    assert state['active']['service:intervention']['id'] != first_id
+
+
+def test_wait_service_failed_restart_is_reported_with_reason(fake, tmp_path):
+    watch = setup_watch(fake, tmp_path)
+    wait_service_rules(watch, '/tmp/other.sock')
+    def probe(endpoint):
+        raise ConnectionRefusedError('拒绝连接')
+    def restart(endpoint):
+        raise RuntimeError('找不到指向等待端口的 launchd 定义')
+    watch.probe, watch.restart = probe, restart
+    for n in range(WAIT_SERVICE_FAILURES + 1):
+        at = NOW + timedelta(minutes=n)
+        beat(watch, at)
+        state = watch.run(at)
+    record = state['wait_services']['intervention']
+    assert record['restart_error'] == '找不到指向等待端口的 launchd 定义'
+    assert record['last_error'] == '拒绝连接'
+    assert len(delegated(fake)) == 1
+
+
+def test_launch_label_matches_endpoint_never_guesses(tmp_path):
+    agents = tmp_path / 'agents'
+    agents.mkdir()
+    endpoint = tmp_path / 'run/service.sock'
+    (agents / 'other.plist').write_bytes(plistlib.dumps(
+        {'Label': 'other', 'ProgramArguments': ['x', '--endpoint', '/elsewhere/service.sock']}))
+    (agents / 'one.plist').write_bytes(plistlib.dumps(
+        {'Label': 'com.kun.workshop-intervention',
+         'ProgramArguments': ['python', '-m', 'workshop.plugins.intervention', '--endpoint', str(endpoint), 'serve']}))
+    assert launch_label(endpoint, agents) == 'com.kun.workshop-intervention'
+    assert launch_label(tmp_path / 'missing.sock', agents) is None
 
 
 def test_tick_incident_survives_manager_entry_failure(fake, tmp_path):

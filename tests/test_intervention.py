@@ -7,6 +7,8 @@ import select
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 
 import pytest
 
@@ -319,3 +321,77 @@ def test_cancel_after_lost_send_still_records_confirmed_delivery(service, monkey
     monkeypatch.setattr(service, 'transport', transport)
     assert service.dispatch(ref)['external'] == 'already-sent'
     assert calls == ['reconcile']
+
+
+def test_slow_dispatch_does_not_block_ping(service, tmp_path, monkeypatch):
+    """一个连接卡在送达里，另一个连接的 ping 仍按自己的线程立即返回。"""
+    from workshop.plugins.intervention.server import Handler, Server
+    ref = delivery(service)
+    entered, release = threading.Event(), threading.Event()
+    def transport(config, action, record):
+        entered.set()
+        release.wait(10)
+        return {'state': 'absent'}
+    monkeypatch.setattr(service, 'transport', transport)
+    # macOS 的 AF_UNIX 路径上限很短；socket 放短临时目录，状态库留在 tmp_path。
+    with tempfile.TemporaryDirectory(prefix='ws-', dir='/tmp') as directory:
+        endpoint = Path(directory) / 'threaded.sock'
+        with Server(str(endpoint), Handler) as server:
+            server.service, server.changed = service, endpoint.with_suffix('.changed')
+            serving = threading.Thread(target=server.serve_forever, daemon=True)
+            serving.start()
+            dispatches = []
+            dispatch = threading.Thread(target=lambda: dispatches.append(
+                request(endpoint, 'dispatch', {'ref': ref}, timeout=10)), daemon=True)
+            try:
+                dispatch.start()
+                assert entered.wait(5)
+                began = time.monotonic()
+                assert request(endpoint, 'ping', {}, timeout=2)['protocol'] == 1
+                assert time.monotonic() - began < 1
+                assert dispatch.is_alive()
+                release.set()
+                dispatch.join(10)
+                assert not dispatch.is_alive()
+                assert dispatches[0]['state'] == 'unsent'
+            finally:
+                release.set()
+                server.shutdown()
+                server.server_close()
+
+
+def test_flush_stops_at_limit_and_time_budget(service, monkeypatch):
+    from workshop.plugins.intervention import manager
+    for n in range(12):
+        allowed = service.call('permit', {'operation': f'permit:{n}', 'point': 'manager_help',
+            'scope': f'idle:{n}', 'owner': 'alpha:one',
+            'basis': {'action': '处理', 'reason': '原因', 'evidence': '事实号', 'status_location': '处理不了'}})['ref']
+        service.call('enqueue', {'operation': f'enqueue:{n}', 'permit': allowed,
+                                 'payload': {'kind': 'manager_help', 'members': [str(n)]}})
+    sent = []
+    def transport(config, action, record):
+        sent.append(record['id'])
+        return {'state': 'sent', 'external': 'm:' + record['id']}
+    monkeypatch.setattr(service, 'transport', transport)
+    first = manager.flush(service, limit=5)
+    assert len(sent) == 5 and first['remaining'] == 7
+    second = manager.flush(service, limit=5)
+    assert len(sent) == 10 and second['remaining'] == 2
+    third = manager.flush(service, limit=5)
+    assert len(sent) == 12 and third['remaining'] == 0
+    # 次数没到上限时，时间预算同样会让这一拍停下，剩下的下一拍再发。
+    for n in range(12, 17):
+        allowed = service.call('permit', {'operation': f'permit:{n}', 'point': 'manager_help',
+            'scope': f'idle:{n}', 'owner': 'alpha:one',
+            'basis': {'action': '处理', 'reason': '原因', 'evidence': '事实号', 'status_location': '处理不了'}})['ref']
+        service.call('enqueue', {'operation': f'enqueue:{n}', 'permit': allowed,
+                                 'payload': {'kind': 'manager_help', 'members': [str(n)]}})
+    now = [0.0]
+    def clock():
+        return now[0]
+    def dispatch(ref):
+        now[0] += 8
+        return {'id': ref, 'state': 'sent'}
+    monkeypatch.setattr(service, 'dispatch', dispatch)
+    budget = manager.flush(service, limit=10, seconds=20, clock=clock)
+    assert len(budget['deliveries']) == 3 and budget['remaining'] == 2

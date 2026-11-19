@@ -7,11 +7,17 @@ import json
 import math
 import os
 from pathlib import Path
+import plistlib
 import re
+import socket
 import sqlite3
 import subprocess
 import sys
 import tempfile
+
+# 等待端口连续几次探活失败才自动重启；重启后仍不通才登记给项目经理。
+WAIT_SERVICE_FAILURES = 3
+WAIT_SERVICE_TIMEOUT = 2
 
 
 
@@ -22,6 +28,71 @@ def timestamp(value):
     if parsed.tzinfo is None:
         raise ValueError("时间缺时区")
     return parsed
+
+
+def wait_service_probe(endpoint, timeout=WAIT_SERVICE_TIMEOUT):
+    """用等待端口自己的 ping 探活；连不上、超时、拒绝或响应不合协议都算不通。"""
+    payload = (json.dumps({"action": "ping", "data": {}}) + "\n").encode()
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
+        connection.settimeout(timeout)
+        connection.connect(str(Path(endpoint).expanduser()))
+        connection.sendall(payload)
+        with connection.makefile("rb") as stream:
+            raw = stream.readline(65536)
+    if not raw.endswith(b"\n"):
+        raise ValueError("等待端口探活没有完整响应")
+    value = json.loads(raw)
+    result = value.get("result") if isinstance(value, dict) and value.get("ok") is True else None
+    if not isinstance(result, dict) or result.get("protocol") != 1:
+        raise ValueError("等待端口探活响应无效")
+    return result
+
+
+def launch_definition(endpoint, agents=None):
+    """按 endpoint 找安装器写下的 launchd 定义；不猜 label，也不重写 plist（重写会丢 PATH）。"""
+    target = str(Path(endpoint).expanduser())
+    agents = Path(agents) if agents else Path(os.environ.get("HOME", "~")).expanduser() / "Library/LaunchAgents"
+    try:
+        paths = sorted(agents.glob("*.plist"))
+    except OSError:
+        return None
+    for path in paths:
+        try:
+            definition = plistlib.loads(path.read_bytes())
+        except (OSError, plistlib.InvalidFileException, ValueError):
+            continue
+        arguments = definition.get("ProgramArguments") if isinstance(definition, dict) else None
+        if not isinstance(arguments, list):
+            continue
+        for index, argument in enumerate(arguments[:-1]):
+            if argument == "--endpoint" and str(Path(arguments[index + 1]).expanduser()) == target:
+                return definition.get("Label"), path
+    return None
+
+
+def launch_label(endpoint, agents=None):
+    definition = launch_definition(endpoint, agents)
+    return definition[0] if definition else None
+
+
+def wait_service_restart(endpoint):
+    """重启已加载的任务；没加载就从原 plist 装载。都不重写 plist，PATH 原样保留，送达命令仍找得到 lark-cli。"""
+    definition = launch_definition(endpoint)
+    if not definition:
+        raise RuntimeError("找不到指向等待端口的 launchd 定义")
+    label, path = definition
+    domain = f"gui/{os.getuid()}"
+    result = subprocess.run(["/bin/launchctl", "kickstart", "-k", f"{domain}/{label}"],
+                            capture_output=True, text=True, timeout=15)
+    if not result.returncode:
+        return label
+    # kickstart 找不到服务，说明任务没加载；用安装器留下的 plist 装载，不生成第二份定义。
+    boot = subprocess.run(["/bin/launchctl", "bootstrap", domain, str(path)],
+                          capture_output=True, text=True, timeout=15)
+    if boot.returncode:
+        error = (result.stderr or result.stdout).strip() + "；" + (boot.stderr or boot.stdout).strip()
+        raise RuntimeError(error.strip("；")[:300] or "launchctl 重启失败")
+    return label
 
 
 def save_json(path, value):
@@ -197,7 +268,7 @@ class ReleaseRollback:
 
 
 class Watch:
-    def __init__(self, state_dir, *, manager_command=None, timeout=30):
+    def __init__(self, state_dir, *, manager_command=None, timeout=30, probe=None, restart=None):
         self.directory = Path(state_dir).expanduser().resolve()
         repository = Path(__file__).resolve().parents[3]
         self.manager_command = manager_command or [str(repository / '.venv/bin/python'), '-m',
@@ -206,6 +277,7 @@ class Watch:
             raise ValueError('manager-command 必须为非空 argv')
         self.timeout, self.changed = timeout, False
         self.scope = hashlib.sha256(str(self.directory).encode()).hexdigest()[:16]
+        self.probe, self.restart = probe or wait_service_probe, restart or wait_service_restart
 
     def faults(self, now):
         faults = {}
@@ -255,6 +327,61 @@ class Watch:
                         print(f"车间看门：跳过损坏的轮次记录 {rid}", file=sys.stderr)
         except sqlite3.Error:
             faults["database"] = {"anchor": "unreadable", "text": "车间 workshop.db 无法读取，请看 heartbeat.json 和守护进程日志，需要你检查状态目录。"}
+        return faults
+
+    def services(self):
+        """规则快照里的等待端口；读不到快照就不探活，不从别处补第二份端点。"""
+        try:
+            with closing(sqlite3.connect((self.directory / "workshop.db").as_uri() + "?mode=ro", uri=True, timeout=5)) as db:
+                if not db.execute("SELECT 1 FROM sqlite_master WHERE name='controls'").fetchone():
+                    return {}
+                saved = db.execute("SELECT body FROM controls WHERE id='@rules'").fetchone()
+                data = json.loads(saved[0]).get("data") if saved else {}
+                services = data.get("wait_services", {}) if isinstance(data, dict) else {}
+                return {name: config["endpoint"] for name, config in services.items()
+                        if isinstance(config, dict) and isinstance(config.get("endpoint"), str)
+                        and config["endpoint"].strip()}
+        except (OSError, sqlite3.Error, ValueError, TypeError, AttributeError):
+            return {}
+
+    def service_faults(self, now, state):
+        """连续探活失败到阈值就重启一次；重启后仍不通才交项目经理。
+
+        失败次数、错误和重启结果留在 watch.json；交给项目经理的事项只有一条、
+        anchor 取这段失败开始的时间，反复观测不会变成一串新事项。
+        """
+        records = state.setdefault("wait_services", {})
+        faults = {}
+        for name, endpoint in self.services().items():
+            record = records.setdefault(name, {})
+            record["endpoint"] = endpoint
+            try:
+                self.probe(endpoint)
+            except (OSError, ValueError, TypeError, RuntimeError, subprocess.SubprocessError) as exc:
+                record["failures"] = record.get("failures", 0) + 1
+                record.setdefault("since", now.isoformat())
+                record["last_failure_at"] = now.isoformat()
+                record["last_error"] = str(exc)[:300]
+                if record["failures"] < WAIT_SERVICE_FAILURES:
+                    continue
+                if "restarted_at" not in record:
+                    record["restarted_at"] = now.isoformat()
+                    try:
+                        record["restart_label"] = self.restart(endpoint)
+                        record.pop("restart_error", None)
+                    except (OSError, RuntimeError, subprocess.SubprocessError, ValueError) as restart_error:
+                        record["restart_error"] = str(restart_error)[:300]
+                    continue  # 刚发出重启：下一拍再探，给进程重新监听的时间。
+                faults["service:" + name] = {
+                    "anchor": record["since"],
+                    "text": f"等待端口 {name} 连续探活失败，自动重启没有恢复，需要你检查服务。"}
+            else:
+                if record.get("failures"):
+                    record["failures"] = 0
+                    record["recovered_at"] = now.isoformat()
+                    record.pop("since", None)
+                record.pop("restarted_at", None)
+                record.pop("restart_error", None)
         return faults
 
     def tick_fault(self, state, now, awake):
@@ -323,6 +450,7 @@ class Watch:
             awake = previous is not None and 0 <= (now - timestamp(previous)).total_seconds() <= 90
             state["last_run"] = now.isoformat()
             faults = self.faults(now)
+            faults.update(self.service_faults(now, state))
             release_faults = ReleaseRollback(self.directory).run(now)
             faults.update(release_faults if release_faults is not None else
                           {k: v for k, v in state["active"].items() if k.startswith("release:")})

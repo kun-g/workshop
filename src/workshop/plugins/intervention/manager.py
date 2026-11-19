@@ -2,10 +2,14 @@
 import json
 import re
 import subprocess
+import time
 from urllib.parse import quote
 from .store import required
 
 SECTIONS = ('等你', '项目经理处理中', '处理不了')
+# 一次 flush 只推进这么多条、最多花这么久；剩下的下一拍接着发。
+FLUSH_LIMIT = 10
+FLUSH_SECONDS = 20
 
 
 def plain(text):
@@ -129,7 +133,7 @@ def queue(service, row):
     return {'ref': ref}
 
 
-def flush(service):
+def flush(service, limit=FLUSH_LIMIT, seconds=FLUSH_SECONDS, clock=time.monotonic):
     errors = []
     for row in service.store.all('manager'):
         try:
@@ -140,8 +144,16 @@ def flush(service):
             errors.append(error)
             with service.store.transaction():
                 service.store.put('manager_error', service.store.identity('manager_error', row['id']), error, 'queue_failed')
-    return {'errors': errors, 'deliveries': [service.dispatch(r['id']) for r in service.store.all('delivery')
-                          if r['payload'].get('kind') in ('manager_help', 'status_reply') and r['state'] not in ('sent', 'cancelled')]}
+    pending = [r for r in service.store.all('delivery')
+               if r['payload'].get('kind') in ('manager_help', 'status_reply') and r['state'] not in ('sent', 'cancelled')]
+    started = clock()
+    deliveries = []
+    for record in pending:
+        # 一条慢送达仍可能用满通道自己的超时，但一次 flush 不会连着跑几分钟。
+        if len(deliveries) >= limit or clock() - started >= seconds:
+            break
+        deliveries.append(service.dispatch(record['id']))
+    return {'errors': errors, 'deliveries': deliveries, 'remaining': len(pending) - len(deliveries)}
 
 
 def reply_card(snapshot, key):
@@ -150,23 +162,37 @@ def reply_card(snapshot, key):
                                  detail('详情', '\n'.join(snapshot.get('details', [])) + '\n[送达 ' + key + ']')]}}
 
 
-def click(service, key, data):
+def rejected(reason):
+    return {'state': 'rejected', 'accepted': False, 'reason': reason}
+
+
+def bound(service, data):
+    """核对按钮绑定的原送达；合格返回 (value, delivery)，不合格返回 (None, 拒绝结果)。"""
     config = service.configuration().get('status', {})
     event = data['event']['event']
     if event.get('operator', {}).get('open_id') != config.get('recipient') or event.get('context', {}).get('open_chat_id') != config.get('chat'):
-        return {'state': 'rejected', 'accepted': False, 'reason': '只接受指定本人私聊点击'}
+        return None, rejected('只接受指定本人私聊点击')
     action = event.get('action', {})
     value = action.get('value', {})
     if action.get('tag') != 'button' or value.get('ns') != 'workshop-status/v1' or value.get('section') not in SECTIONS:
-        return {'state': 'rejected', 'accepted': False, 'reason': '按钮无效'}
+        return None, rejected('按钮无效')
     try:
         original = service.store.get(value.get('delivery'), 'delivery')
     except ValueError:
-        return {'state': 'rejected', 'accepted': False, 'reason': '原送达不存在'}
+        return None, rejected('原送达不存在')
     if (original['state'] != 'sent' or original['payload'].get('kind') != 'manager_help'
             or original['payload']['section'] != value['section']
             or original['external'] != event.get('context', {}).get('open_message_id')):
-        return {'state': 'rejected', 'accepted': False, 'reason': '按钮未绑定原送达'}
+        return None, rejected('按钮未绑定原送达')
+    return value, original
+
+
+def prepare(service, data):
+    """在操作事务之外跑只读状态命令；慢命令不占着写锁，重复点击直接取原结果。"""
+    config = service.configuration().get('status', {})
+    value, original = bound(service, data)
+    if value is None:
+        return {'rejected': original}
     try:
         result = subprocess.run(config['command'], input=json.dumps({'section': value['section'], 'waits': service.store.all('wait')}),
                                 capture_output=True, text=True, timeout=15)
@@ -179,6 +205,16 @@ def click(service, key, data):
         reason = '状态读取命令超时' if isinstance(exc, subprocess.TimeoutExpired) else '状态读取命令未能完成'
         snapshot = {'section': value['section'], 'lines': ['读不到车间状态：' + reason],
                     'details': [type(exc).__name__ + ': ' + str(exc)]}
+    return {'snapshot': snapshot}
+
+
+def click(service, key, data, prepared):
+    value, original = bound(service, data)
+    if value is None:
+        return original
+    if prepared.get('rejected'):
+        return prepared['rejected']
+    snapshot = prepared['snapshot']
     ref = service.store.identity('delivery', key)
     # 用户主动读取的响应不创建求助许可，不消耗自动推送额度。
     service.store.put('delivery', ref, {'id': ref, 'permit': None, 'state': 'queued', 'external': None,
