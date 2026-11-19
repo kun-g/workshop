@@ -109,8 +109,9 @@ def test_rule_file_points_writers_at_their_directories_and_leaves_other_profiles
     profiles = rules.data['executor_profiles']
     repo = RULE_PATH.parents[1]
     assert profiles['orca-claude']['executor_dir'] == str(repo / 'rules/executors/orca-claude')
-    for name in ('orca-claude', 'orca-codex'):
-        assert (repo / 'rules/executors' / name / 'rules.md').read_text() == ''
+    assert (repo / 'rules/executors/orca-claude/rules.md').read_text() == ''
+    # Codex 在它的 CLI 支持之前例外（#283 Kun 选 C）：配置档不变，不指向目录。
+    assert 'executor_dir' not in profiles['orca-codex']
     # 不读用户设置后，bypassPermissions 交互启动会停在确认框（#283 真实启动实测），这项只能写在执行者目录里。
     settings = json.loads((repo / 'rules/executors/orca-claude/settings.json').read_text())
     assert settings['skipDangerousModePermissionPrompt'] is True

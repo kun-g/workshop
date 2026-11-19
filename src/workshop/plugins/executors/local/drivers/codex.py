@@ -85,7 +85,7 @@ class Driver(Base):
                     raise ValueError(f'配置档 {name} 的 {field}：交互启动必须写明')
         if 'executor_dir' in config:
             # 核心 R25：沿用本机登录时 Codex 关不掉个人配置。交互启动没有 --ignore-user-config；
-            # codex exec 加了它也照样加载 ~/.codex/skills 和 ~/.agents/skills。不绕过，等 Kun 定办法（#283）。
+            # codex exec 加了它也照样加载 ~/.codex/skills 和 ~/.agents/skills。Kun 11-19 定（#283）：CLI 支持之前 Codex 例外，不绕过、不另外登录。
             raise ValueError(f'配置档 {name} 的 executor_dir：Codex 沿用本机登录时关不掉个人配置，暂不支持')
         if config['transport'] == 'orca' and (config.get('ignore_rules') or config.get('ignore_user_config')):
             raise ValueError(f'配置档 {name} 的 ignore_rules/ignore_user_config：当前 CLI 只支持 headless')
