@@ -582,34 +582,6 @@ def authorization_check(replay, data, target_name, item, spec, name):
     return outputs
 
 
-def billing_block(replay, data, execution, target_name):
-    """按量计费：只有按量候选时，挑执行者照常阻断、写明原因（核心 picking），不起轮。"""
-    from workshop.registry import Registry
-    registry = Registry()
-    flow = converted_flow(execution, replay, data, target_name)
-    registry.register('flow', 'issue_delivery', flow)
-    variant = deepcopy(data)
-    variant['executor_profiles']['codex-metered'] = {**variant['executor_profiles']['codex'], 'billing': 'metered'}
-    variant['targets'][target_name]['flows']['issue_delivery']['stage_executors'] = {'执行': [{'use': 'codex-metered'}]}
-    other = [n for n in data['targets'] if n != target_name]
-    engine, log, _ = engine_for(replay, variant, registry, target_name, paused=other)
-    try:
-        item_id = seed_item(replay, target_name, 'dod-billing', '隔离回放：只有按量计费候选', '只看挑执行者是否阻断')
-        engine.change(log.get('items', item_id), stage='执行', checks=[['scripts/check.sh']], paths=[])
-        flow.brief = lambda item, stage, target: __import__('workshop.core.models', fromlist=['FlowBrief']).FlowBrief(
-            '隔离回放：只看挑执行者，不应起轮', workdir=str(ROOT), readonly=True)
-        until(lambda: (engine.tick(), log.get('items', item_id)['state'] == '卡住')[1], 60, '按量计费阻断')
-        item = log.get('items', item_id)
-        started = [r for r in log.all('rounds') if r['item'] == item_id]
-        emit(f'{target_name}：按量计费候选的阻断（副本里的活）', {k: item.get(k) for k in ('id', 'stage', 'state', 'blocked_by', 'next', 'leave')}
-             | {'rounds_started': len(started)})
-        assert '按量计费' in item['blocked_by'] and not started
-        # 看完就放弃这件，免得接下来的项目经理路径多起一个会话。
-        engine.abandon(item_id, '隔离回放：只看按量计费阻断')
-    finally:
-        log.close()
-
-
 def pause_all(replay, data):
     from workshop.core.log import Log
     log = Log(replay.state / 'workshop.db')
@@ -1028,7 +1000,6 @@ def main():
                         out = authorization_check(replay, data, 'grant-console', 'grant-console:dod-replay',
                                                   {**approved, 'action': '按量计费', 'provider_action': 'billing/metered', 'checkpoint': 'metered'}, '按量计费授权')
                         assert all(o['after']['blocked'] and '按量计费' in o['after']['blocked'] for o in out)
-                        billing_block(replay, data, execution, 'grant-console')
                 pause_all(replay, data)
                 manager_path(replay, data, target_name, program, paths, code)
                 program = None

@@ -90,14 +90,14 @@ def test_quota_gate_like_quota_selector(tmp_path):
     assert choice.config["use"] == "claude" and "本该分给 codex，额度快照读不到" in choice.reason
 
 
-def test_metered_or_unavailable_intended_is_replaced_with_reason():
+def test_unavailable_intended_is_replaced_with_reason():
     rule = ["a", "b", "c"]
     work = find(rule, "b")
-    # 核心不把不可用和按量计费的候选交来，只交规则名单。
+    # 核心不把不可用的候选交来，只交规则名单。
     choice = choose(work, [plain("a"), plain("c")], rule=rule)
     assert choice.config["use"] in ("a", "c")
     assert "规则候选 3 个，可用 2 个" in choice.reason
-    assert f'本该分给 b，它报不可用或按量计费，核心没交来，改分给 {choice.config["use"]}' in choice.reason
+    assert f'本该分给 b，它报不可用，核心没交来，改分给 {choice.config["use"]}' in choice.reason
     choice = choose(work, [plain("a"), plain("c")], rule=rule, excluded=["b"])
     assert "本该分给 b，它最近启动时报不可用" in choice.reason
     choice = choose(work, [plain("c")], rule=rule, retry_executor="c")
@@ -118,9 +118,10 @@ def test_nothing_usable_returns_none_with_reason(tmp_path):
     assert choose("x:1", []) is None
 
 
-def engine_with_experiment(tmp_path, **extra):
+def engine_with_experiment(tmp_path, billing="subscription", **extra):
     config = {**configuration(), "selector": "ordered", "stage_selectors": {"执行": "experiment"}}
-    config["executors"]["writer"] = [plain("writer") | {"family": "a"}, plain("acceptor") | {"family": "c"}]
+    config["executors"]["writer"] = [plain("writer") | {"family": "a", "billing": billing},
+                                     plain("acceptor") | {"family": "c", "billing": billing}]
     for key, value in extra.items():
         config["targets"]["alpha"][key] = value
     engine = build(tmp_path / "state", config)
@@ -177,5 +178,18 @@ def test_engine_blocks_like_quota_when_nothing_usable(tmp_path):
         assert "Codex 周额度剩 5%，低于门槛 15%" in state["blocked_by"]
         assert engine.log.all("cards") == []
         assert "挑选逻辑没选出执行者 实验分配" in why(engine.log, "alpha:one")
+    finally:
+        engine.log.close()
+
+
+def test_engine_assigns_metered_candidates_like_subscription(tmp_path):
+    """核心 C4：按量候选也交给 experiment 挑法，照活号分配，不因计费方式换人或卡住。"""
+    engine = engine_with_experiment(tmp_path, billing="metered")
+    try:
+        intended = ["writer", "acceptor"][bucket("alpha:one", 2)]
+        reach(engine, "执行")
+        row = current(engine)
+        assert row["stage"] == "执行" and row["executor"] == intended and row["config"]["billing"] == "metered"
+        assert row["selection_reason"] == f"实验分配：alpha:one 分给 {intended}，规则候选 2 个，可用 2 个；阶段 执行，第 3 轮"
     finally:
         engine.log.close()

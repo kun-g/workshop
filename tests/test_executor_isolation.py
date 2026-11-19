@@ -41,3 +41,13 @@ def test_terminal_environment_is_the_base_and_spec_contains_only_additions(tmp_p
     assert result['HOME']=='/real/home' and result['WORKSHOP_ITEM']=='alpha:one'
     assert 'CLAUDECODE' not in result and 'WORKSHOP_RULES' not in result and 'ANTHROPIC_API_KEY' not in result
     assert spec['env']=={'WORKSHOP_ITEM':'alpha:one','WORKSHOP_ROUND_TOKEN':'round'}
+
+
+def test_metered_keeps_api_keys_and_subscription_drops_them():
+    """固定现有行为：按量的执行者保留进程环境里的 API 密钥，订阅的清掉；配置档自己声明的照加回。"""
+    base={'HOME':'/h','PATH':'/bin','ANTHROPIC_API_KEY':'a','ANTHROPIC_AUTH_TOKEN':'t','OPENAI_API_KEY':'o','CURSOR_API_KEY':'c'}
+    keys=('ANTHROPIC_API_KEY','ANTHROPIC_AUTH_TOKEN','OPENAI_API_KEY','CURSOR_API_KEY')
+    metered=session_environment({'readonly':False,'billing':'metered','env':{}},base)
+    assert {k:metered.get(k) for k in keys}=={k:base[k] for k in keys}
+    subscription=session_environment({'readonly':False,'billing':'subscription','env':{'ANTHROPIC_AUTH_TOKEN':'gateway'}},base)
+    assert [k for k in keys if k in subscription]==['ANTHROPIC_AUTH_TOKEN'] and subscription['ANTHROPIC_AUTH_TOKEN']=='gateway'

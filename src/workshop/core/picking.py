@@ -107,8 +107,8 @@ def reserve(engine, item, unavailable=()):
                 or content.workdir is not None and not Path(content.workdir).is_absolute()):
             raise ValueError("派活说明或目录无效")
         instructions = content.instructions
+        # 订阅和按量计费的候选一样进入挑选（核心 C4）；计费方式只记在每一轮里。
         candidates = []
-        metered = []
         waiting = None
         configured = engine.rules.candidates(item["stage"], item["target"], item["writer"], item.get("flow", ""))
         for config in configured:
@@ -127,17 +127,9 @@ def reserve(engine, item, unavailable=()):
                 continue
             if not available:
                 continue
-            if config["billing"] == "metered":
-                metered.append(config)
-                continue
             candidates.append({"config": config, "available": True})
         if waiting:
             raise waiting
-        if not candidates and metered:
-            reason = "没有可用的订阅候选；授权中心尚缺按量计费授权类别"
-            engine.change(item, state="卡住", next="补齐授权中心按量计费能力或恢复订阅候选",
-                          blocked_by=reason, leave=engine.blocked_leave(reason))
-            return
         history = engine.log.history(item["id"])
         selection_target = {**target, "selection": {"writer": item["writer"], "reviewed": item.get("reviews", []),
                             "retry_executor": item.get("retry_executor"), "excluded": list(unavailable),
@@ -159,7 +151,7 @@ def reserve(engine, item, unavailable=()):
                 engine.fact("selection_failed", {"reason": reason, "selector": selector_name}, item["id"])
                 raise Retryable(reason)
         if chosen is None:
-            # 没有候选属于操作阻塞；按量计费缺能力已在前面阻断。
+            # 没有候选属于操作阻塞。
             why_none = choice.reason.strip() if choice is not None and isinstance(choice.reason, str) else ""
             if why_none:
                 engine.fact("selection_none", {"reason": why_none, "selector": selector_name}, item["id"])

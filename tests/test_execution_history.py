@@ -219,18 +219,21 @@ def test_core_filters_writer_family_and_no_quota_before_selector(engine):
     assert seen == ["acceptor"]
 
 
-def test_metered_executor_missing_authorization_type_blocks(engine):
+def test_metered_only_candidate_starts_a_round(engine):
+    """核心 C4：只剩按量候选可用时照常派出，不再记卡住。"""
     config = deepcopy(engine.rules.data)
     config["executors"]["writer"]["billing"] = "metered"
     engine.rules = Rules.validate(config)
     engine.ingest(event())
     engine.tick()
-    assert item(engine)["state"] == "卡住" and not engine.active()
-    assert "按量计费" in item(engine)["next"] + item(engine)["blocked_by"]
+    row = current(engine)
+    assert row["executor"] == "writer" and row["config"]["billing"] == "metered"
+    assert item(engine)["state"] != "卡住" and not item(engine)["blocked_by"]
     assert not engine.log.all("cards")
 
 
-def test_subscription_candidate_avoids_unneeded_metered_question(engine):
+def test_metered_first_in_rule_order_is_selected(engine):
+    """ordered 挑法：按量排在前面就选按量，不再绕去订阅。"""
     config = deepcopy(engine.rules.data)
     config["executors"]["writer"] = [
         {"use": "writer", "family": "a", "billing": "metered"},
@@ -238,17 +241,27 @@ def test_subscription_candidate_avoids_unneeded_metered_question(engine):
     engine.rules = Rules.validate(config)
     engine.ingest(event())
     engine.tick()
-    assert current(engine)["executor"] == "reviewer"
+    row = current(engine)
+    assert row["executor"] == "writer" and row["config"]["billing"] == "metered"
+    assert row["selection_reason"].startswith("按规则顺序选首个获准候选 writer")
     assert not engine.log.all("cards")
 
 
-def test_legacy_metered_approval_does_not_select(engine):
+def test_metered_round_is_recorded_and_split_in_usage(engine):
+    """每一轮的计费方式和花费照记；usage 里订阅和按量的轮分得出。"""
     config = deepcopy(engine.rules.data)
     config["executors"]["writer"]["billing"] = "metered"
     engine.rules = Rules.validate(config)
-    engine.ingest(event())
-    engine.fact('item_changed', {'billing_approved': ['writer']}, 'alpha:one')
-    engine.tick()
-    engine.tick()
-    assert not engine.active() and item(engine)['state'] == '卡住'
-    assert not engine.log.all('cards')
+    executor = engine.plugins.get("executor", "writer")
+    executor.usage_value = Usage("api-model", 100, 0, 0, 20, 0.5, "metered")
+    reach(engine, "说清楚")
+    engine.clock.now += timedelta(seconds=10)
+    executor.usage_value = Usage("sub-model", 200, 0, 0, 40, 0.25, "subscription")
+    finish(engine, "执行")
+    rows = [r for r in engine.log.all("rounds") if r["status"] == "ended"]
+    assert [r["usage"]["billing"] for r in rows] == ["metered", "subscription"]
+    assert rows[0]["config"]["billing"] == "metered" and rows[0]["usage"]["cost_usd"] == 0.5
+    text = usage(engine.log, engine.clock())
+    assert "按计费 按量\t1\t100 / 0 / 0 / 20\t$0.5000" in text
+    assert "按计费 订阅\t1\t200 / 0 / 0 / 40\t$0.2500" in text
+    assert "计费=metered" in why(engine.log, "alpha:one")

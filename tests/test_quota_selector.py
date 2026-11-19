@@ -178,3 +178,25 @@ def test_reason_kept_when_every_candidate_is_skipped(tmp_path):
         assert engine.log.get("items", "alpha:one")["state"] == "卡住"
     finally:
         engine.log.close()
+
+
+def test_metered_candidate_is_picked_by_quota_like_subscription(tmp_path):
+    """核心 C4：按量候选也交给 quota 挑法；排在前面、额度够就选它。"""
+    path = snapshot(tmp_path / "quota.db", {"codex": {"Weekly": 30.0}}, datetime.now(timezone.utc))
+    config = {**configuration(), "selector": "quota"}
+    config["targets"]["alpha"]["quota_snapshot"] = {"path": str(path), "max_age_minutes": 45}
+    config["executors"]["writer"] = [
+        {"use": "writer", "family": "a", "billing": "metered",
+         "quota": {"provider": "codex", "window": "Weekly", "min_remaining": 15, "label": "Codex 周额度"}},
+        {"use": "acceptor", "family": "c", "billing": "subscription"}]
+    engine = build(tmp_path / "state", config)
+    try:
+        engine.plugins.register("selector", "quota", QuotaSelector())
+        engine.ingest(event())
+        engine.tick()
+        row = current(engine)
+        assert row["executor"] == "writer" and row["config"]["billing"] == "metered"
+        assert row["selection_reason"].startswith("Codex 周额度剩 70%（门槛 15%），选 writer")
+        assert engine.log.get("items", "alpha:one")["state"] != "卡住"
+    finally:
+        engine.log.close()
