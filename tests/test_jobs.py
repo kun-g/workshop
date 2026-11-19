@@ -288,8 +288,9 @@ def test_check_timeout_in_job_records_check_failed(tmp_path, monkeypatch):
     jobs = Jobs(tmp_path / "jobs", [sys.executable, RUNNER, str(tmp_path)])
     Log(tmp_path / "workshop.db").close()
     hang = [sys.executable, "-c", "import signal; signal.pause()"]
-    stage_item = {"id": "alpha:7", "object_key": "7", "stage": "交付", "checks": [hang], "materials": []}
-    target = {"name": "alpha", "plugin": "flow", "repo": "owner/repo", "check_timeout": 0.05}
+    # 检查按交付对象规则的 required_checks 取（ws#286），活上存的检查不用。
+    stage_item = {"id": "alpha:7", "object_key": "7", "stage": "交付", "checks": [], "materials": []}
+    target = {"name": "alpha", "plugin": "flow", "repo": "owner/repo", "check_timeout": 0.05, "required_checks": [hang]}
     args = (stage_item, Receipt("done", "程序完成", advance="收尾"), target)
     deadline = time.monotonic() + 30
     while True:

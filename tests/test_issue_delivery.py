@@ -19,17 +19,15 @@ from source_routing import RoutedGitHubSource as GitHubSource
 from conftest import build, configuration, current, finish, in_process_commands, item
 
 
+# 新写法（ws#286）：背景和目标、合并前 DoD、约束、要不要亲眼看、原话；检查按交付对象规则。
+BACKGROUND = '## 背景和目标\n失败输出要原样留下（核心 R14）。\n'
 BODY = '''## Kun 的原话
 检查失败时让错误可见。
-## 依据
-核心 R14
+## 背景和目标
+失败输出要原样留下（核心 R14）。
 ## 合并前 DoD
 - 错误输出和非零退出码保留：`scripts/check.sh` 通过。
-## 能跑的检查
-```workshop-checks
-[["scripts/check.sh"]]
-```
-## 不可逆或对外的动作
+## 约束
 无
 ## 要不要亲眼看
 否

@@ -177,11 +177,11 @@ class IO:
             value = self.api(f'repos/{target["repo"]}/contents/{quote(path, safe="/")}')
             if directory:
                 if not isinstance(value, list):
-                    raise ValueError(f"依据：需求目录 {path} 不是目录")
+                    raise ValueError(f"需求目录 {path} 不是目录")
                 for entry in value:
                     child = entry.get("path", "")
                     if not child.startswith(path.rstrip("/") + "/") or "/../" in child:
-                        raise ValueError(f"依据：需求目录 {path} 返回了无效路径")
+                        raise ValueError(f"需求目录 {path} 返回了无效路径")
                     if entry.get("type") == "dir":
                         read(child, True)
                     elif entry.get("type") == "file" and child.endswith(".md"):
@@ -189,11 +189,11 @@ class IO:
                 return
             if (not isinstance(value, dict) or value.get("type") != "file"
                     or value.get("encoding") != "base64" or value.get("submodule_git_url")):
-                raise ValueError(f"依据：需求文档 {path} 不是可读取的普通文件")
+                raise ValueError(f"需求文档 {path} 不是可读取的普通文件")
             try:
                 documents[path] = base64.b64decode(value["content"]).decode("utf-8")
             except (ValueError, KeyError, UnicodeError) as exc:
-                raise ValueError(f"依据：需求文档 {path} 无法解码") from exc
+                raise ValueError(f"需求文档 {path} 无法解码") from exc
 
         for path in registered_paths(target):
             read(path.rstrip("/"), path.endswith("/"))
