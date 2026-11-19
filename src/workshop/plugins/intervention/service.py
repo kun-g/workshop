@@ -8,7 +8,7 @@ import subprocess
 import yaml
 from datetime import datetime, timezone
 from .store import Store, encode, required
-from . import manager
+from . import manager, visual_click
 
 
 class Service:
@@ -95,7 +95,8 @@ class Service:
         handlers = {'create': self.create, 'answer': self.answer, 'ack': self.ack,
                     'permit': self.permit, 'enqueue': self.enqueue, 'cancel': self.cancel,
                     'manager_update': lambda key, data: manager.update(self, key, data),
-                    'status_click': lambda key, data: manager.click(self, key, data)}
+                    'status_click': lambda key, data: (visual_click.click if ((data['event'].get('event') or {}).get('action') or {})
+                                                       .get('value', {}).get('ns') == visual_click.NS else manager.click)(self, key, data)}
         if action not in handlers:
             raise ValueError('未知操作')
         if action == 'status_click':
@@ -279,7 +280,7 @@ class Service:
         record = self.store.get(ref, 'delivery')
         if record['state'] in ('sent', 'cancelled'):
             return record
-        if record['payload'].get('kind') == 'status_reply':
+        if record['payload'].get('kind') in ('status_reply', 'visual_receipt'):
             permit, policy, config = {'cancelled': False}, {'send': True}, self.configuration()
         else:
             permit = self.store.get(record['permit'], 'permit')

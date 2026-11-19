@@ -226,3 +226,194 @@ def test_unsupported_visual_contract_blocks_before_sending(tmp_path, service):
         _issue=lambda *a:{'body':'## 要不要亲眼看\n是\n看什么：页面\n在哪看：GitHub PR\n怎么回：评论确认\n'})
     result=after(flow,item,{},lambda name:(Port(service),{}))
     assert result.blocked and not service.store.all('delivery')
+
+
+VISUAL_BODY = ('## 要不要亲眼看\n是\n\n看什么：本单的亲眼看。\n1. 收尾送来的卡。\n2. 上线后的审批卡。\n\n'
+               '在哪看：手机飞书，Ash 私聊。\n\n怎么回：在 Ash 私聊里引用那条送达回「过」，或「不对：哪里不对」。\n')
+MERGE = 'c' * 40
+
+
+def visual_world(tmp_path, service, monkeypatch, messages):
+    """真实介入点服务 + 真实送达命令逻辑；飞书命令换成本地记录，回复从 messages 读。"""
+    from workshop.plugins.issue_delivery.io import IO as IssueIO
+    from workshop.plugins.intervention import service as service_module
+    io = IssueIO(state_dir=tmp_path / 'issue')
+    item, target = {'id': 'workshop:174'}, {'repo': 'kun-g/workshop'}
+    io.save(item, target, {'visual': True, 'merge': MERGE, 'pr': 247})
+    issue = {'number': 174, 'title': '介入点：授权原申请续接与约定业务送达',
+             'html_url': 'https://github.com/kun-g/workshop/issues/174', 'body': VISUAL_BODY}
+    flow = SimpleNamespace(io=io, _delivery_done=lambda *a: True, _issue=lambda *a: issue)
+    args = SimpleNamespace(state_dir=str(tmp_path / 'transport'), profile='test', lark='lark', chat_id='chat',
+                           recipient='kun', app_id='app')
+    sent = []
+    def command(args, argv, **kwargs):
+        if '+messages-send' in argv:
+            sent.append(json.loads(argv[argv.index('--content') + 1]))
+            return {'data': {'message_id': 'om_card'}}
+        return {'data': {'messages': messages}}
+    monkeypatch.setattr(transport, 'command', command)
+    def run(argv, input, **kwargs):
+        return subprocess.CompletedProcess(argv, 0, json.dumps(transport.deliver(args, json.loads(input))), '')
+    monkeypatch.setattr(service_module.subprocess, 'run', run)
+    return flow, item, target, sent
+
+
+def visible(node):
+    """人在首屏看得到的文字：不含折叠详情，也不含按钮回传值。"""
+    if isinstance(node, list):
+        return ''.join(visible(n) for n in node)
+    if not isinstance(node, dict) or node.get('tag') == 'collapsible_panel':
+        return ''
+    return ''.join(v if k == 'content' and isinstance(v, str) else visible(v)
+                   for k, v in node.items() if k != 'behaviors')
+
+
+def front(card):
+    return visible([card['header'], *card['body']['elements']])
+
+
+KUN, CHAT = 'ou_43456ed5ae17472375fcbb6ec0fc4661', 'oc_9d541419240c15d82e50fabbba2ace4e'
+
+
+def click_event(card, choice, reason=None, who=KUN, message='om_card', event_id='ev-1'):
+    """按契约：工作台把 card.action.trigger 原样包进 status_click 写进介入点 socket。"""
+    buttons = [b for e in card['body']['elements'] for b in ([e] + e.get('elements', [])) if b.get('tag') == 'button']
+    [button] = [b for b in buttons if b['behaviors'][0]['value']['choice'] == choice]
+    action = {'tag': 'button', 'value': button['behaviors'][0]['value']}
+    if reason is not None:
+        action['form_value'] = {'reason': reason}
+    return {'operation': 'workshop-click:' + event_id, 'event': {'header': {'event_id': event_id}, 'event': {
+        'operator': {'open_id': who}, 'context': {'open_chat_id': CHAT, 'open_message_id': message}, 'action': action}}}
+
+
+def test_visual_card_shows_issue_and_pr_and_folds_debug_numbers(tmp_path, service, monkeypatch):
+    from workshop.plugins.issue_delivery.visual import after
+    flow, item, target, sent = visual_world(tmp_path, service, monkeypatch, [])
+    result = after(flow, item, target, lambda name: (Port(service), {}))
+    assert result.wait and len(sent) == 1
+    card = sent[0]
+    delivery = flow.io.read(item, target)['visual_deliveries'][MERGE]['delivery']
+    assert card['header']['title']['content'] == '介入点：授权原申请续接与约定业务送达'
+    first = card['body']['elements'][0]['content']
+    assert '[issue #174](https://github.com/kun-g/workshop/issues/174)' in first
+    assert '[PR #247](https://github.com/kun-g/workshop/pull/247)' in first
+    shown = front(card)
+    assert MERGE not in shown and 'delivery:' not in shown and 'permit:' not in shown and 'workshop:174' not in shown
+    assert '通过' in shown and '不通过' in shown and '不通过时写哪里不对' in shown
+    blocks = [e.get('text', {}).get('content') for e in card['body']['elements']]
+    assert '本单的亲眼看。\n1. 收尾送来的卡。\n2. 上线后的审批卡。' in blocks
+    assert [e['content'] for e in card['body']['elements'] if e['tag'] == 'markdown'][1:] == ['**看什么**', '**在哪看**', '**怎么回**']
+    # issue 的怎么回只写了引用回复，照写；按钮在卡底。
+    assert any('引用那条送达' in (b or '') for b in blocks)
+    panel = card['body']['elements'][-1]
+    assert panel['tag'] == 'collapsible_panel' and panel['expanded'] is False
+    assert panel['header']['title']['content'] == '详情'
+    folded = json.dumps(panel, ensure_ascii=False)
+    assert MERGE in folded and delivery in folded
+    # 同一版本再走一拍不重发；标题后来改了也按原送达号推进，不换内容。
+    issue = {**flow._issue(), 'title': '改过的标题'}
+    flow._issue = lambda *a: issue
+    assert after(flow, item, target, lambda name: (Port(service), {})).wait == result.wait
+    assert len(sent) == 1
+
+
+@pytest.mark.parametrize('text,passed', [('过', True), ('不对：标题不对', False)])
+def test_quoted_reply_to_visual_card_is_recognized(tmp_path, service, monkeypatch, text, passed):
+    from workshop.plugins.issue_delivery.visual import after
+    messages = []
+    flow, item, target, sent = visual_world(tmp_path, service, monkeypatch, messages)
+    services = lambda name: (Port(service), {})
+    wait = after(flow, item, target, services).wait
+    messages.append({'reply_to': 'om_card', 'chat_id': 'chat', 'message_id': 'om_reply', 'msg_type': 'text',
+                     'content': text, 'sender': {'sender_type': 'user', 'id': 'kun', 'id_type': 'open_id'}})
+    assert Port(service).poll(wait['ref'], {})['ready']
+    result = after(flow, item, target, services)
+    assert (result is None) if passed else (result.rerun and result.reason == '亲眼看未通过')
+
+
+def test_uncertain_card_send_reconciles_by_folded_delivery_key(tmp_path, monkeypatch):
+    args = SimpleNamespace(state_dir=str(tmp_path), profile='test', lark='lark', chat_id='chat', recipient='kun', app_id='app')
+    card = {'schema': '2.0', 'header': {'title': {'tag': 'plain_text', 'content': '标题'}},
+            'body': {'elements': [{'tag': 'collapsible_panel', 'expanded': False,
+                                   'header': {'title': {'tag': 'plain_text', 'content': '详情'}}, 'elements': []}]}}
+    sent = []
+    def command(args, argv, **kwargs):
+        if '+messages-send' in argv:
+            sent.append(json.loads(argv[argv.index('--content') + 1]))
+            raise ValueError('响应丢失')
+        # lark-cli 列出卡片时，折叠面板的正文照样在 content 里。
+        return {'data': {'messages': [{'chat_id': 'chat', 'sender': {'sender_type': 'app', 'id': 'app'},
+                'content': '<card title="标题">\n▶ 详情\n    送达号：delivery:stable\n▲\n</card>',
+                'message_id': 'om_card', 'msg_type': 'interactive'}]}}
+    monkeypatch.setattr(transport, 'command', command)
+    request = {'action': 'send', 'key': 'delivery:stable', 'payload': {'kind': 'visual', 'card': card}}
+    with pytest.raises(ValueError):
+        transport.deliver(args, request)
+    assert '送达号：delivery:stable' in json.dumps(sent[0]['body']['elements'][-1], ensure_ascii=False)
+    assert transport.deliver(args, {**request, 'action': 'reconcile'}) == {'state': 'sent', 'external': 'om_card'}
+    assert transport.deliver(args, request)['external'] == 'om_card'
+    assert len(sent) == 1
+
+
+def visual_body(response):
+    return VISUAL_BODY.replace('怎么回：在 Ash 私聊里引用那条送达回「过」，或「不对：哪里不对」。', '怎么回：' + response)
+
+
+BUTTONS = '点卡片上的「通过」；不通过就在卡片输入框写哪里不对，再点「不通过」。'
+
+
+@pytest.mark.parametrize('choice,reason,answer,passed', [
+    ('pass', None, '过', True), ('fail', '  标题看不懂  ', '不对：标题看不懂', False)])
+def test_visual_buttons_answer_this_delivery(tmp_path, service, monkeypatch, choice, reason, answer, passed):
+    from workshop.plugins.issue_delivery.visual import after
+    flow, item, target, sent = visual_world(tmp_path, service, monkeypatch, [])
+    flow._issue()['body'] = visual_body(BUTTONS)
+    services = lambda name: (Port(service), {})
+    wait = after(flow, item, target, services).wait
+    card = sent[0]
+    assert any('按钮没反应时' in visible(e) for e in card['body']['elements'])
+    result = service.call('status_click', click_event(card, choice, reason))
+    assert result['accepted'] and result['answer'] == answer and result['state'] == 'sent'
+    assert len(sent) == 2 and sent[1]['header']['title']['content'] == '已收到：' + ('通过' if passed else '不通过')
+    record = service.store.get(wait['ref'], 'wait')
+    assert record['answer']['value'] == answer
+    assert record['answer']['source']['delivery'] == flow.io.read(item, target)['visual_deliveries'][MERGE]['delivery']
+    # 重复点击（新事件）不重复作答，也不再回第二条已收到。
+    again = service.call('status_click', click_event(card, choice, reason, event_id='ev-2'))
+    assert again['accepted'] and not again['answered'] and len(sent) == 2
+    other = 'fail' if passed else 'pass'
+    assert not service.call('status_click', click_event(card, other, '改主意', event_id='ev-3'))['accepted']
+    result = after(flow, item, target, services)
+    assert (result is None) if passed else (result.rerun and result.reason == '亲眼看未通过')
+
+
+@pytest.mark.parametrize('case,reason', [
+    ('empty', '不通过要在输入框写哪里不对'), ('other', '只接受指定本人私聊点击'),
+    ('message', '按钮未绑定原送达'), ('old', '这张卡的版本已过期')])
+def test_visual_button_rejections(tmp_path, service, monkeypatch, case, reason):
+    from workshop.plugins.issue_delivery.visual import after
+    flow, item, target, sent = visual_world(tmp_path, service, monkeypatch, [])
+    flow._issue()['body'] = visual_body(BUTTONS)
+    services = lambda name: (Port(service), {})
+    wait = after(flow, item, target, services).wait
+    card = sent[0]
+    event = {'empty': lambda: click_event(card, 'fail', '   '),
+             'other': lambda: click_event(card, 'pass', who='ou_other'),
+             'message': lambda: click_event(card, 'pass', message='om_other'),
+             'old': lambda: click_event(card, 'pass')}[case]
+    if case == 'old':
+        # 新版本合并后，旧卡上的按钮不放行新版本。
+        state = flow.io.read(item, target); state['merge'] = 'd' * 40; flow.io.save(item, target, state)
+        after(flow, item, target, services)
+        assert len(sent) == 2
+    result = service.call('status_click', event())
+    assert not result['accepted'] and result['reason'] == reason
+    assert all(w['answer'] is None for w in service.store.all('wait'))
+
+
+def test_unsupported_reply_channel_still_blocks():
+    from workshop.plugins.issue_delivery.visual import supported
+    assert supported({'location': '手机飞书，Ash 私聊', 'response': BUTTONS})
+    assert supported({'location': '手机飞书，Ash 私聊', 'response': '引用那条送达回「过」，或「不对：哪里不对」'})
+    assert not supported({'location': 'GitHub PR', 'response': BUTTONS})
+    assert not supported({'location': '飞书私聊', 'response': '评论确认'})

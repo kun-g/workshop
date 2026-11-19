@@ -382,6 +382,23 @@ def test_visual_no_returns_to_execution(world):
     brief = ensure_round(engine)['brief']
     assert '亲眼看' in brief['instructions']
     assert '不对：错误提示看不到' in json.dumps(brief['materials'], ensure_ascii=False)
+    assert '上次退回执行的原因（亲眼看' in brief['instructions']
+    assert 'Kun 的原文：不对：错误提示看不到' in brief['instructions']
+    engine.log.close()
+
+
+def test_visual_fail_button_text_reaches_rework_brief(world):
+    from test_intervention_business import click_event
+    engine, service, wait = visual_until_card(world, 'visual-button')
+    [delivery] = service.store.all('delivery')
+    result = service.call('status_click', click_event(delivery['payload']['card'], 'fail', '状态页错误提示被遮住',
+                                                      message=delivery['external']))
+    assert result['accepted'] and result['answer'] == '不对：状态页错误提示被遮住'
+    for _ in range(4):
+        engine.clock.now += timedelta(seconds=60)
+        engine.tick()
+    assert item(engine, '7')['stage'] == '执行'
+    assert 'Kun 的原文：不对：状态页错误提示被遮住' in ensure_round(engine)['brief']['instructions']
     engine.log.close()
 
 

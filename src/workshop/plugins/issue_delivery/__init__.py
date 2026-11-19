@@ -760,7 +760,10 @@ class IssueDelivery:
         """退回执行时由程序做的事：合并前没过把 PR 改回 Draft 并留原样输出，上线后没过在 issue 留原样输出。"""
         returned = state.pop("pending_return", None)
         if completed_stage == "收尾":
-            returned = {"segment": "亲眼看", "reason": "Kun 亲眼看没通过", "output": ""}
+            # Kun 写的原文（按钮输入框或引用回复）原样带进下一轮说明。
+            said = visual.answer(state)
+            returned = {"segment": "亲眼看", "reason": "Kun 亲眼看没通过",
+                        "output": "Kun 的原文：" + said if said else ""}
             state["visual_after"] = max((m.get("seq", 0) for m in item.get("materials", [])), default=0)
         if not returned:
             return
