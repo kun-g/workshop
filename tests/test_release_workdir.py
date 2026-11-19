@@ -42,6 +42,32 @@ else:
     print(json.dumps({'ok': True, 'result': {'handle': 'term-1'}}))
 '''
 
+# gh 替身：按 --head 过滤本地的 PR 清单；只读，不建 PR。
+GH = r'''
+import json, pathlib, sys
+args = sys.argv[1:]
+root = pathlib.Path(sys.argv[0]).parent
+with (root / 'gh-calls').open('a') as f:
+    f.write(json.dumps(args) + '\n')
+if (root / 'gh-down').exists():
+    print('gh 没开', file=sys.stderr); sys.exit(1)
+records = json.loads((root / 'prs.json').read_text()) if (root / 'prs.json').exists() else []
+head = args[args.index('--head') + 1] if '--head' in args else None
+print(json.dumps([p for p in records if head is None or p.get('headRefName') == head]))
+'''
+
+
+def set_prs(local, *prs):
+    records = [{'headRefName': local['branch'].removeprefix('refs/heads/'), 'url': 'https://example/pr/1',
+                'mergedAt': '2026-11-18T00:00:00Z', **pr} for pr in prs]
+    (local['root'] / 'prs.json').write_text(json.dumps(records))
+
+
+def merged(local, number=1, **extra):
+    # 默认 PR 的 head 就是工作区当前提交；要模拟本地又多了提交，显式传 headRefOid。
+    extra.setdefault('headRefOid', git(local['workdir'], 'rev-parse', 'HEAD'))
+    set_prs(local, {'number': number, 'state': 'MERGED', **extra})
+
 
 def git(repo, *args):
     return subprocess.run([GIT, '-C', str(repo), *args], check=True, capture_output=True, text=True).stdout.strip()
@@ -56,7 +82,7 @@ def commit(repo, name='file.txt', text='x\n', message='change'):
 
 @pytest.fixture
 def local(tmp_path):
-    """主检出 + 远端裸库 + 车间按活 id 开的 worktree。"""
+    """主检出 + 远端裸库 + 车间按活 id 开的 worktree + App/gh 替身。"""
     remote = tmp_path / 'remote.git'
     subprocess.run([GIT, 'init', '-q', '--bare', '-b', 'main', str(remote)], check=True)
     repo = tmp_path / 'checkout'
@@ -67,26 +93,30 @@ def local(tmp_path):
     orca = tmp_path / 'orca'
     orca.write_text('#!' + sys.executable + '\n' + ORCA)
     orca.chmod(0o755)
-    executor = Executor('orca-claude', state_dir=tmp_path / 'state', commands={'orca': str(orca), 'git': GIT}, home=tmp_path)
+    gh = tmp_path / 'gh'
+    gh.write_text('#!' + sys.executable + '\n' + GH)
+    gh.chmod(0o755)
+    executor = Executor('orca-claude', state_dir=tmp_path / 'state',
+                        commands={'orca': str(orca), 'git': GIT, 'gh': str(gh)}, home=tmp_path)
     data = {'id': 'alpha:7', 'target': 'alpha', 'object_key': '7'}
     slug = executor.slug(data)
     workdir = tmp_path / 'worktrees' / slug
     git(repo, 'worktree', 'add', '-q', '-b', 'ws/' + slug, str(workdir), 'HEAD')
     data['workdir'] = str(workdir)
     return dict(repo=repo, executor=executor, item=data, workdir=workdir, branch='ws/' + slug,
-                target={'name': 'alpha', 'checkout': str(repo)}, root=tmp_path)
+                target={'name': 'alpha', 'checkout': str(repo), 'repo': 'alpha/repo'}, root=tmp_path)
 
 
 def branches(repo):
     return git(repo, 'branch', '--format=%(refname:short)').split()
 
 
-def test_pushed_work_is_released_worktree_and_branch_deleted(local):
-    # E1：分支上的提交都在远端，worktree 和本地分支都删；主检出自己的分支不动。
+def test_merged_pr_releases_worktree_and_branch_even_without_pushed_commits(local):
+    # 仓库用压缩合并：分支提交不在 main、也不在远端，PR 已合并就能收回。
     commit(local['workdir'], message='work')
-    git(local['workdir'], 'push', '-q', 'origin', local['branch'])
+    merged(local, 12)
     assert local['executor'].release(local['item'], local['target'], dry_run=True) == Release(
-        True, f"删 {local['workdir']}，删分支 {local['branch']}")
+        True, f"删 {local['workdir']}，删分支 {local['branch']}（PR #12 已合并）")
     assert local['workdir'].exists()
     assert local['executor'].release(local['item'], local['target']) == Release(True)
     assert not local['workdir'].exists()
@@ -94,17 +124,93 @@ def test_pushed_work_is_released_worktree_and_branch_deleted(local):
     assert branches(local['repo']) == ['main']
 
 
+def test_merged_pr_releases_after_origin_main_moves_on(local):
+    # PR head 就是工作区 tip；之后主干又前进。压缩合并的 main 提交不在 PR head 里，
+    # 但它已经在远端，不算「本地多出来」的提交。
+    head = commit(local['workdir'], 'pr.txt', 'pr\n', 'pr work')
+    merged(local, 23, headRefOid=head)
+    commit(local['repo'], 'main.txt', 'main\n', 'main moves on')
+    git(local['repo'], 'push', '-q', 'origin', 'main')
+    # 确认远端主干真的前进了，且这个提交不在 PR head 里；旧参数会把它计入「本地多出」。
+    assert git(local['repo'], 'rev-parse', 'origin/main') != head
+    assert git(local['repo'], 'rev-list', '--count', 'origin/main', '--not', head) == '1'
+    assert local['executor'].release(local['item'], local['target'], dry_run=True) == Release(
+        True, f"删 {local['workdir']}，删分支 {local['branch']}（PR #23 已合并）")
+    assert local['executor'].release(local['item'], local['target']) == Release(True)
+    assert not local['workdir'].exists() and local['branch'] not in branches(local['repo'])
+
+
+def test_merged_pr_keeps_worktree_when_tip_has_commit_outside_pr_head(local):
+    # PR 合并的是 head；工作区后来又多了一次本地提交，远端也没有，删分支就丢了。
+    head = commit(local['workdir'], 'pr.txt', 'pr\n', 'pr work')
+    merged(local, 20, headRefOid=head)
+    commit(local['workdir'], 'local.txt', 'local\n', 'local only')
+    result = local['executor'].release(local['item'], local['target'], dry_run=True)
+    assert not result.released and '不在 PR #20 的 head 里' in result.reason
+    assert local['workdir'].exists() and local['branch'] in branches(local['repo'])
+    assert not local['executor'].release(local['item'], local['target']).released
+    assert local['workdir'].exists() and local['branch'] in branches(local['repo'])
+
+
+def test_detached_head_commit_outside_pr_head_is_kept(local):
+    # detached HEAD 上的新提交同样不在 PR head 里，不能只删工作区了事。
+    head = commit(local['workdir'], 'pr.txt', 'pr\n', 'pr work')
+    merged(local, 21, headRefOid=head)
+    git(local['workdir'], 'checkout', '-q', '--detach')
+    commit(local['workdir'], 'detached.txt', 'local\n', 'detached only')
+    result = local['executor'].release(local['item'], local['target'])
+    assert not result.released and '不在 PR #21 的 head 里' in result.reason
+    assert local['workdir'].exists() and local['branch'] in branches(local['repo'])
+
+
+def test_detached_head_at_pr_head_does_not_hide_branch_commits(local):
+    # HEAD 停在 PR head，分支 ref 却另有没推送的提交；两个 ref 都要查，删分支不能丢提交。
+    head = commit(local['workdir'], 'pr.txt', 'pr\n', 'pr work')
+    merged(local, 22, headRefOid=head)
+    commit(local['workdir'], 'branch.txt', 'branch\n', 'branch only')
+    git(local['workdir'], 'checkout', '-q', '--detach', head)
+    result = local['executor'].release(local['item'], local['target'])
+    assert not result.released and '不在 PR #22 的 head 里' in result.reason
+    assert local['workdir'].exists() and local['branch'] in branches(local['repo'])
+
+
+def test_ancestor_fallback_checks_head_as_well_as_branch(local):
+    # 分支就是 main 上的提交，但 detached HEAD 上另有未推送提交；只查分支会删掉工作区。
+    git(local['workdir'], 'checkout', '-q', '--detach')
+    commit(local['workdir'], 'detached.txt', 'local\n', 'detached only')
+    result = local['executor'].release(local['item'], local['target'])
+    assert not result.released and 'HEAD' in result.reason and '找不到已合并的 PR' in result.reason
+    assert local['workdir'].exists() and local['branch'] in branches(local['repo'])
+
+
 def test_orca_codex_releases_the_same_way(local):
     # orca-codex 也按活 id 开同名 worktree，收回规则相同。
     codex = Executor('orca-codex', state_dir=local['root'] / 'state-codex',
-                     commands={'orca': local['executor'].commands['orca'], 'git': GIT}, home=local['root'])
-    git(local['workdir'], 'push', '-q', 'origin', local['branch'])
+                     commands={'orca': local['executor'].commands['orca'], 'git': GIT,
+                               'gh': local['executor'].commands['gh']}, home=local['root'])
+    merged(local)
     assert codex.release(local['item'], local['target']) == Release(True)
     assert not local['workdir'].exists() and branches(local['repo']) == ['main']
 
 
+def test_orca_suffix_is_the_same_worktree(local):
+    # Orca 重名时会给目录加 -2 后缀；分支也跟着变，仍按活 id 认回来。
+    slug = local['executor'].slug(local['item'])
+    suffixed = local['root'] / 'worktrees' / (slug + '-2')
+    git(local['repo'], 'worktree', 'add', '-q', '-b', 'ws/' + slug + '-2', str(suffixed), 'HEAD')
+    (local['root'] / 'prs.json').write_text(json.dumps([
+        {'number': 13, 'state': 'MERGED', 'headRefName': 'ws/' + slug + '-2',
+         'headRefOid': git(suffixed, 'rev-parse', 'HEAD'),
+         'mergedAt': '2026-11-18T00:00:00Z', 'url': 'https://example/pr/13'}]))
+    item = dict(local['item'], workdir=str(suffixed))
+    assert local['executor'].release(item, local['target']) == Release(True)
+    assert not suffixed.exists()
+    assert 'ws/' + slug + '-2' not in branches(local['repo'])
+
+
 def test_dirty_worktree_is_kept_with_reason(local):
-    # E3：有未提交改动不删。
+    # E3：有未提交改动不删，哪怕 PR 已合并。
+    merged(local)
     (local['workdir'] / 'README').write_text('edited\n')
     (local['workdir'] / 'new.txt').write_text('new\n')
     result = local['executor'].release(local['item'], local['target'])
@@ -117,18 +223,73 @@ def test_ignored_files_do_not_count_as_changes(local):
     (local['workdir'] / '.gitignore').write_text('.venv/\n')
     git(local['workdir'], 'add', '.gitignore')
     git(local['workdir'], '-c', 'user.name=T', '-c', 'user.email=t@l', 'commit', '-qm', 'ignore')
-    git(local['workdir'], 'push', '-q', 'origin', local['branch'])
+    merged(local)
     (local['workdir'] / '.venv').mkdir()
     (local['workdir'] / '.venv/x').write_text('x')
     assert local['executor'].release(local['item'], local['target']) == Release(True)
 
 
-def test_unpushed_commits_are_kept_with_reason(local):
-    # E3：本地分支有远端没有的提交，不删。
-    commit(local['workdir'], message='local only')
+def test_nested_probe_worktrees_are_removed_inside_out(local):
+    merged(local)
+    nested = local['workdir'] / '.local' / 'probe-core'
+    git(local['repo'], 'worktree', 'add', '-q', '--detach', str(nested), 'HEAD')
+    assert local['executor'].release(local['item'], local['target']) == Release(True)
+    assert not nested.exists() and not local['workdir'].exists()
+    calls = [json.loads(line) for line in (local['root'] / 'orca-calls').read_text().splitlines()]
+    removals = [call[call.index('--worktree') + 1].removeprefix('path:')
+                for call in calls if call[:2] == ['worktree', 'rm']]
+    assert removals == [str(nested), str(local['workdir'])]
+    assert branches(local['repo']) == ['main']
+
+
+def test_dirty_nested_worktree_keeps_everything(local):
+    merged(local)
+    nested = local['workdir'] / '.local' / 'probe-core'
+    git(local['repo'], 'worktree', 'add', '-q', '--detach', str(nested), 'HEAD')
+    (nested / 'probe.txt').write_text('unsaved\n')
     result = local['executor'].release(local['item'], local['target'])
-    assert not result.released and '1 个提交不在远端' in result.reason
+    assert not result.released and str(nested) in result.reason and '1 处未提交改动' in result.reason
+    assert nested.exists() and local['workdir'].exists()
+
+
+def test_dirty_nested_clone_keeps_everything(local):
+    merged(local)
+    clone = local['workdir'] / '.local' / 'clone'
+    subprocess.run([GIT, 'clone', '-q', str(local['repo']), str(clone)], check=True)
+    (clone / 'README').write_text('unsaved clone change\n')
+    result = local['executor'].release(local['item'], local['target'])
+    assert not result.released and str(clone) in result.reason and '1 处未提交改动' in result.reason
+    assert clone.exists() and local['workdir'].exists()
+
+
+def test_open_pr_is_kept(local):
+    set_prs(local, {'number': 3, 'state': 'OPEN'})
+    result = local['executor'].release(local['item'], local['target'])
+    assert not result.released and 'PR #3 还开着' in result.reason
     assert local['workdir'].exists() and local['branch'] in branches(local['repo'])
+
+
+def test_closed_unmerged_pr_is_kept(local):
+    commit(local['workdir'], message='unmerged work')
+    set_prs(local, {'number': 4, 'state': 'CLOSED'})
+    result = local['executor'].release(local['item'], local['target'])
+    assert not result.released and 'PR #4 已关闭但没合并' in result.reason
+    assert local['workdir'].exists() and local['branch'] in branches(local['repo'])
+
+
+def test_missing_pr_is_kept(local):
+    commit(local['workdir'], message='unmerged work')
+    result = local['executor'].release(local['item'], local['target'])
+    assert not result.released and '找不到已合并的 PR' in result.reason
+    assert local['workdir'].exists() and local['branch'] in branches(local['repo'])
+
+
+def test_branch_already_in_main_is_released_without_pr(local):
+    # 没有 PR，但分支头就是 origin/main 上的提交；删工作区和分支不会丢东西。
+    assert '分支已并入 main' in local['executor'].release(
+        local['item'], local['target'], dry_run=True).reason
+    assert local['executor'].release(local['item'], local['target']) == Release(True)
+    assert not local['workdir'].exists() and local['branch'] not in branches(local['repo'])
 
 
 def test_directories_not_opened_for_this_item_are_left_alone(local):
@@ -142,23 +303,42 @@ def test_directories_not_opened_for_this_item_are_left_alone(local):
     assert Executor('codex', state_dir=local['root'] / 's2', commands={'git': GIT}).release(local['item'], local['target']) is None
 
 
-def test_already_removed_directory_still_drops_pushed_branch(local):
+def test_already_removed_directory_still_drops_merged_branch(local):
+    merged(local)
     git(local['repo'], 'worktree', 'remove', str(local['workdir']))
     assert local['executor'].release(local['item'], local['target']) == Release(True)
     assert branches(local['repo']) == ['main']
 
 
 def test_orca_failure_is_retryable_and_nothing_is_lost(local):
+    merged(local)
     (local['root'] / 'orca-down').write_text('')
     with pytest.raises(Retryable):
         local['executor'].release(local['item'], local['target'])
     assert local['workdir'].exists() and local['branch'] in branches(local['repo'])
 
 
+def test_gh_failure_is_retryable_and_nothing_is_lost(local):
+    merged(local)
+    (local['root'] / 'gh-down').write_text('')
+    with pytest.raises(Retryable):
+        local['executor'].release(local['item'], local['target'])
+    assert local['workdir'].exists() and local['branch'] in branches(local['repo'])
+
+
+def test_missing_gh_keeps_worktree_with_reason(local):
+    executor = Executor('orca-claude', state_dir=local['root'] / 'state-nogh',
+                        commands={'orca': local['executor'].commands['orca'], 'git': GIT, 'gh': None},
+                        home=local['root'])
+    result = executor.release(local['item'], local['target'])
+    assert not result.released and '找不到 gh' in result.reason
+    assert local['workdir'].exists()
+
+
 def test_rework_after_release_recreates_same_worktree(local, monkeypatch):
     # E4：收回后返工，launch 和 resume 都按同一个名字重新开 worktree。
     executor, data = local['executor'], local['item']
-    git(local['workdir'], 'push', '-q', 'origin', local['branch'])
+    merged(local)
     assert executor.release(data, local['target']) == Release(True)
     monkeypatch.setattr(Executor, '_started', lambda self, directory, spec: Started(spec['session'], 'term-1', spec['public_workdir']))
     target = {**local['target'], 'runtime': {'command': ['/usr/bin/true'], 'env': {}}}
@@ -267,6 +447,18 @@ def test_engine_kept_workdir_records_reason_once(engine):
     assert item(engine)['workdir'] == '/fake/workdir'
 
 
+def test_kept_workdir_query_only_returns_directories_still_there(engine, tmp_path):
+    # 目录已不在（手工删了、存量命令收回了）就不再登记项目经理事项。
+    wire(engine, Flow(), Release(False, '/w/ws-1 有 1 处未提交改动，没删'))
+    complete(engine)
+    engine.tick()
+    assert engine.log.kept_workdirs() == []
+    real = tmp_path / 'ws-real'
+    real.mkdir()
+    engine.change(item(engine), workdir=str(real))
+    assert [row['id'] for row in engine.log.kept_workdirs()] == ['alpha:one']
+
+
 def test_engine_executor_retry_keeps_workdir_and_target_healthy(engine):
     releaser = wire(engine, Flow(), Retryable('Orca 没开'))
     complete(engine)
@@ -284,6 +476,20 @@ def test_engine_does_not_release_unfinished_or_running_items(engine):
     reach(engine, '验收')
     engine.tick()
     assert releaser.calls == []
+
+
+def test_engine_releases_abandoned_item_once(engine):
+    # 活结束包括完成和放弃；放弃后工作目录按同一规则收回。
+    releaser = wire(engine, Flow(), Release(True))
+    reach(engine, '验收')
+    row = item(engine)
+    abandoned = {**row, 'id': 'alpha:abandoned', 'state': '放弃', 'workdir': '/fake/workdir',
+                 'workdir_released': None, 'release_at': None}
+    engine.log.db.execute('INSERT INTO items VALUES (?,?)',
+                          (abandoned['id'], json.dumps(abandoned, ensure_ascii=False, default=str)))
+    engine.tick()
+    assert releaser.calls == ['alpha:abandoned']
+    assert releaser.calls == ['alpha:abandoned'] and item(engine)['state'] == '跑着'
 
 
 def test_engine_rework_after_release_resets_marker(engine):

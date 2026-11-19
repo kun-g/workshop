@@ -6,9 +6,10 @@ from pathlib import Path
 import sqlite3
 import sys
 
-from .core.jobs import Jobs, execute
+from .core.jobs import Jobs, SWEEP_SECONDS, execute
 from .core.log import Log
-from .core.managers import Store, Coordinator, classify_idle, observe_items, observe_failures
+from .core.managers import (MANAGER_JOBS_KEEP_SECONDS, Store, Coordinator, classify_idle,
+                            observe_items, observe_workdirs, observe_failures, maybe_sweep_sessions)
 from .core.rules import Rules
 from .registry import Registry
 
@@ -56,14 +57,36 @@ def main(argv=None):
     if not rules.data.get('managers'):
         raise ValueError('项目经理未配置')
     command = [sys.executable, '-m', 'workshop.manager_cli', '--state-dir', str(args.state_dir), '--rules', str(args.rules)]
-    jobs = Jobs(args.state_dir / 'manager-jobs', [*command, 'job'])
+    jobs = Jobs(args.state_dir / 'manager-jobs', [*command, 'job'],
+                keep_seconds=MANAGER_JOBS_KEEP_SECONDS)
     store = Store(args.state_dir)
     try:
         with store.lock() as acquired:
             if not acquired:
                 return 0
+            # 看门这条路径也要清；不另起线程，进程退出前就能删完。作业结果留一小时，
+            # 存量由 workshop prune 先清掉，这里十分钟最多扫一次。
+            stamp = args.state_dir / 'manager-jobs.swept'
+            try:
+                due = jobs.clock() - stamp.stat().st_mtime >= SWEEP_SECONDS
+            except OSError:
+                due = True
+            if due:
+                try:
+                    stamp.touch()
+                except OSError:
+                    pass
+                jobs.sweep(jobs.clock())
             message = json.loads(args.file.read_text())
             now = message['at']
+            # 会话目录按小时扫一次；正在进行的事项及其工作目录一直保留。看门是独立进程，
+            # 不占核心的一拍（核心 R27）。
+            protected = {row.get('episode') for row in store.all()
+                         if row.get('episode') and (row.get('active') or row.get('token'))}
+            try:
+                maybe_sweep_sessions(args.state_dir, now, protected)
+            except Exception:
+                pass  # 清理是后台维护，不能挡住这一拍的事项处理。
             for key, fault in message.get('faults', {}).items():
                 store.observe('system:' + key, fault, 'watch', now)
             for row in store.all():
@@ -91,11 +114,23 @@ def main(argv=None):
                     log = Log.readonly(args.state_dir / 'workshop.db')
                     try:
                         observe_items(store, log.open_items(), 'watch', now)
+                        observe_workdirs(store, log.kept_workdirs(), 'watch', now)
                         observe_failures(store, log, 'watch', now, rules)
                     finally:
                         log.close()
                 except Exception as exc:
                     store.observe('system:database', {'reason': str(exc)}, 'watch', now)
+            else:
+                # 收尾时不能收的工作目录也要让项目经理看见；这条查询在 2G 级状态库上约几十毫秒，
+                # 放在看门进程里，不占核心的一拍（核心 R27）。
+                try:
+                    log = Log.readonly(args.state_dir / 'workshop.db')
+                    try:
+                        observe_workdirs(store, log.kept_workdirs(), 'watch', now)
+                    finally:
+                        log.close()
+                except Exception:
+                    pass
             # 同一个作业目录和令牌供双方认回，不会再启动一次。
             coordinator = Coordinator(store, rules, registry, jobs, command, now)
             coordinator.run(business)
