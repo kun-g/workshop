@@ -4,7 +4,7 @@
 项目经理会话目录留 7 天；执行者的工作区只在活已结束、PR 已合并且没有未提交改动时收回。
 默认先列再删；`--dry-run` 只列不删。规则细节见 docs/implementation/执行者.md。
 """
-from contextlib import contextmanager
+from contextlib import contextmanager, ExitStack
 import fcntl
 import json
 import os
@@ -15,7 +15,7 @@ import sqlite3
 import sys
 import time
 
-from .core.jobs import KEEP_SECONDS, sweep_directory
+from .core.jobs import KEEP_SECONDS, digest, sweep_directory, write
 from .core.managers import MANAGER_JOBS_KEEP_SECONDS, MANAGER_SESSION_KEEP_SECONDS, sweep_sessions
 from .core.ports import Retryable
 
@@ -25,12 +25,41 @@ WORKTREE = re.compile(r'ws-[0-9a-f]{16}(?:-\d+)?')
 @contextmanager
 def locked(directory):
     """和守护进程的一拍用同一把锁；持锁期间活不会变，删除不会撞上返工。"""
-    with (Path(directory) / 'workshop.db.lock').open('a') as handle:
+    with (Path(directory) / 'workshop.lock').open('a') as handle:
         fcntl.flock(handle, fcntl.LOCK_EX)
         try:
             yield
         finally:
             fcntl.flock(handle, fcntl.LOCK_UN)
+
+
+def release_identity(item):
+    """和 core/workdirs.release_workdirs 调执行者时用的身份一致。"""
+    return [item['id'], item.get('pending_episode', 0), item['workdir'], item.get('release_at')]
+
+
+@contextmanager
+def placeholder(jobs_dir, item, name, deadline):
+    """登记一个「正在收回」的作业占位，让看门这一拍不返工、也不重复起收回作业。
+
+    占位持有作业锁并写 pid=-1，和 Jobs.start 的启动窗口一样；放锁后才跑网络和
+    Orca，不把守护进程的一拍拖在 gh 上。
+    """
+    path = Path(jobs_dir) / digest('executor', name, 'release', release_identity(item))
+    if path.exists():
+        raise FileExistsError(str(path))
+    path.mkdir(parents=True)
+    handle = os.open(path / 'lock', os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        write(path / 'spec.json', {'port': 'executor', 'name': name, 'method': 'release',
+                                   'identity': release_identity(item), 'deadline': deadline,
+                                   'placeholder': True})
+        write(path / 'pid', -1)
+        yield path
+    finally:
+        os.close(handle)
+        shutil.rmtree(path, ignore_errors=True)
 
 
 def human(size):
@@ -221,6 +250,31 @@ def skip_reason(log, item_id, path, active):
     return ''
 
 
+def prepare(candidate, log, state_dir):
+    """持锁重读一件活并登记收回占位；返回 (活, 跳过原因, 占位栈)。
+
+    锁里只读库和写占位，网络和 Orca 交给调用方在放锁后跑（核心 R27）。
+    """
+    with locked(state_dir):
+        active = unfinished_round_workdirs(log)
+        why = skip_reason(log, candidate['item']['id'], candidate['path'], active)
+        if why:
+            return None, why, None
+        item = log.get('items', candidate['item']['id'])
+        stack = ExitStack()
+        try:
+            for name in sorted(item.get('sessions') or {}):
+                stack.enter_context(placeholder(Path(state_dir) / 'jobs', item, name,
+                                                time.time() + 3600))
+        except FileExistsError:
+            stack.close()
+            return None, '执行者那里已经有同一收回作业，没删', None
+        except Exception as exc:
+            stack.close()
+            return None, f'登记收回占位失败：{type(exc).__name__}: {exc}', None
+        return item, '', stack
+
+
 def _sweep_rounds(executor_root, now, dry_run):
     from .plugins.executors.local.retention import sweep_rounds
     orca = shutil.which('orca')
@@ -313,24 +367,24 @@ def prune(args, log, rules, registry):
                      + len(removed_sessions))
     print(f'已删除 {removed_count} 个目录，共 {human(removed_size)}；开始删工作区。')
     if candidates:
-        # 计划是只读快照；真删前和守护进程抢同一把锁，按 id 重读，避免把刚返工、
-        # 正在原工作区开轮的那件活的工作区删掉。
-        with locked(args.state_dir):
-            active = unfinished_round_workdirs(log)
-            for candidate in candidates:
-                path = candidate['path']
-                why = skip_reason(log, candidate['item']['id'], path, active)
-                if why:
-                    print(f'  {path}：跳过（{why}）')
-                    continue
-                item = log.get('items', candidate['item']['id'])
-                try:
-                    result = candidate['executor'].release(item, candidate['target'])
-                except Exception as exc:
-                    print(f'  {path}：没删成：{type(exc).__name__}: {exc}', file=sys.stderr)
-                    continue
-                if result is not None and not result.released:
-                    print(f'  {path}：改主意没删：{result.reason}')
-                else:
-                    print(f'  {path}：删了')
+        # 计划是只读快照。真删前和守护进程抢同一把 workshop.lock，按 id 重读活和
+        # 未结束的轮，并登记同 identity 的收回占位，让看门这一拍不返工；放锁后才跑
+        # gh 和 Orca，网络不能包在守护进程的一拍里（核心 R27）。
+        for candidate in candidates:
+            path = candidate['path']
+            item, why, places = prepare(candidate, log, args.state_dir)
+            if why:
+                print(f'  {path}：跳过（{why}）')
+                continue
+            try:
+                result = candidate['executor'].release(item, candidate['target'])
+            except Exception as exc:
+                print(f'  {path}：没删成：{type(exc).__name__}: {exc}', file=sys.stderr)
+                continue
+            finally:
+                places.close()
+            if result is not None and not result.released:
+                print(f'  {path}：改主意没删：{result.reason}')
+            else:
+                print(f'  {path}：删了')
     return 0

@@ -12,7 +12,7 @@ from types import SimpleNamespace
 import pytest
 
 from workshop import prune as prune_module
-from workshop.core.jobs import sweep_directory
+from workshop.core.jobs import Jobs, Pending, sweep_directory
 from workshop.core.models import Release
 from workshop.core.managers import maybe_sweep_sessions, sweep_sessions
 from workshop.plugins.executors.local import retention
@@ -325,11 +325,14 @@ def test_prune_rechecks_item_and_rounds_before_deleting_worktree(tmp_path, monke
     class Executor:
         def __init__(self):
             self.actual = 0
+            self.specs = []
 
         def release(self, item, target, dry_run=False):
             if dry_run:
                 return Release(True, '删')
             self.actual += 1
+            self.specs = [json.loads((path / 'spec.json').read_text())
+                          for path in sorted((state / 'jobs').iterdir())]
             return Release(True)
 
     executor = Executor()
@@ -354,3 +357,34 @@ def test_prune_rechecks_item_and_rounds_before_deleting_worktree(tmp_path, monke
     rounds.clear()
     assert prune_module.prune(args, log, rules, registry) == 0
     assert '删了' in capsys.readouterr().out and executor.actual == 1
+    # 锁的是守护进程实际用的那把；占位和 release_workdirs 的 identity 一样，删完就撤。
+    assert (state / 'workshop.lock').exists()
+    assert not (state / 'workshop.db.lock').exists()
+    assert len(executor.specs) == 1
+    spec = executor.specs[0]
+    assert (spec['port'], spec['name'], spec['method']) == ('executor', 'writer', 'release')
+    assert spec['identity'] == [ended['id'], 0, str(workdir), None]
+    assert spec['placeholder'] is True
+    assert not list((state / 'jobs').iterdir())
+
+
+def test_prune_placeholder_blocks_rework_and_uses_the_engine_lock(tmp_path):
+    state = tmp_path / 'state'
+    state.mkdir()
+    item = {'id': 'alpha:7', 'workdir': str(tmp_path / 'ws-aaaaaaaaaaaaaaaa'),
+            'sessions': {'writer': 's1'}}
+    identity = prune_module.release_identity(item)
+    jobs = Jobs(state / 'jobs', ['/bin/true'], clock=lambda: NOW)
+    with prune_module.locked(state):
+        assert (state / 'workshop.lock').exists()
+        with prune_module.placeholder(state / 'jobs', item, 'writer', NOW + 3600) as path:
+            assert jobs.path('executor', 'writer', 'release', identity) == path
+            assert jobs.exists('executor', 'writer', 'release', identity)
+            assert (path / 'pid').read_text() == '-1'
+            # 看门看到同 identity 的收回作业就不返工；直接调也只会 Pending，不会另起一轮。
+            with pytest.raises(Pending):
+                jobs.call('executor', 'writer', 'release', [item], identity=identity)
+        assert not path.exists()
+        assert not jobs.exists('executor', 'writer', 'release', identity)
+    assert (state / 'workshop.lock').exists()
+    assert not (state / 'workshop.db.lock').exists()

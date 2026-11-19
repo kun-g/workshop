@@ -311,14 +311,29 @@ class Executor:
 
     def _outside(self, path, ref, head):
         """ref 上有多少提交既不在 PR 的 head 里，也不在任何远端；查不了返回 None。"""
-        result = self._git('-C', str(path), 'rev-list', '--count', ref,
-                           '--not', head, '--not', '--remotes', check=False)
+        try:
+            result = self._git('-C', str(path), 'rev-list', '--count', ref,
+                               '--not', head, '--not', '--remotes', check=False)
+        except Retryable:
+            return None
         if result.returncode:
             return None
         try:
             return int(result.stdout.strip())
         except ValueError:
             return None
+
+    def _ancestor(self, path, ref, base='refs/remotes/origin/main'):
+        """ref 是不是 base 的祖先；是 True，不是 False，查不了 None。"""
+        try:
+            result = self._git('-C', str(path), 'merge-base', '--is-ancestor', ref, base, check=False)
+        except Retryable:
+            return None
+        if result.returncode == 0:
+            return True
+        if result.returncode == 1:
+            return False
+        return None
 
     def _remove_worktree(self, path):
         try:
@@ -333,9 +348,11 @@ class Executor:
         """活收尾后收回本执行者为它开的 Orca worktree 和本地分支。
 
         只认 _start 按活 id 开的那个目录（Orca 可能给同名目录加 -2 后缀）。分支上的提交
-        已随 PR 压缩合并进 main，所以不能看分支是否已在远端：要 PR 状态为已合并，且本地
-        tip 上没有 PR head 之外、远端也没有的提交，外层和嵌套工作区也都没有未提交改动。
-        有 PR 开着、没合并、查不到 PR、或本地多出提交时留着并说明原因。dry_run 只给判断，不删。
+        已随 PR 压缩合并进 main，所以不能看分支是否已在远端：要 PR 状态为已合并，且每个
+        要删的 ref（工作区的 HEAD、分支 ref）上都没有 PR head 之外、远端也没有的提交，
+        外层和嵌套工作区也都没有未提交改动。没有已合并 PR 时，同样要 HEAD 和分支 ref
+        都已在 origin/main 里。有 PR 开着、没合并、查不到 PR、本地多出提交或查不了时
+        留着并说明原因。dry_run 只给判断，不删。
         """
         if not self.interactive or not item.get('workdir') or not target.get('checkout'):
             return None
@@ -382,15 +399,28 @@ class Executor:
         if opened:
             return Release(False, f'{workdir} 的 PR #{opened[0]["number"]} 还开着，没删')
         merged = [pr for pr in prs if pr.get('state') == 'MERGED']
+        # 要删的每个 ref 都查一遍：工作区还在就有 HEAD，分支 ref 还在就有那个分支。
+        # 只看其中一个会在 detached HEAD 或分支另有提交时丢掉另一个 ref 上的提交。
+        targets = []
+        if entry is not None and workdir.exists():
+            targets.append(('HEAD', workdir))
+        if exists:
+            targets.append((short, checkout))
         if not merged:
             # 另一条安全的合并证据：分支已经在 origin/main 里（例如工作区只是从 main
             # 快进出来的，没有自己的 PR）。压缩合并的分支不会命中这一条，所以仍以 PR 为主。
-            ancestor = self._git('-C', checkout, 'merge-base', '--is-ancestor', branch,
-                                 'refs/remotes/origin/main', check=False).returncode == 0
-            if not ancestor:
+            unsafe = None
+            for ref, path in targets:
+                safe = self._ancestor(path, ref)
+                if safe is not True:
+                    unsafe = ref, safe
+                    break
+            if unsafe:
+                ref, safe = unsafe
                 closed = [pr['number'] for pr in prs if pr.get('state') == 'CLOSED']
                 why = f'PR #{closed[0]} 已关闭但没合并' if closed else '找不到已合并的 PR'
-                return Release(False, f'{workdir} 的 {why}，没删')
+                detail = '查不了是不是已并入 main' if safe is None else '有不在 main 的提交'
+                return Release(False, f'{workdir} 的 {ref} {detail}（{why}），没删')
             evidence = '分支已并入 main'
         else:
             pr = merged[0]
@@ -398,17 +428,22 @@ class Executor:
             if not isinstance(head, str) or not re.fullmatch(r'[0-9a-f]{40}', head):
                 return Release(False, f'{workdir} 的 PR #{pr["number"]} 没给出 head 提交号，'
                                       '无法确认本地提交都随它合并了，没删')
-            # 已合并只说明 PR 的 head 进了主干；本地可能又提交或改写过。只有相对
-            # PR head 多出来、远端也没有的提交为空，删分支才不丢东西。
-            if entry is not None and workdir.exists():
-                outside = self._outside(workdir, 'HEAD', head)
-            else:
-                outside = self._outside(checkout, branch, head) if exists else 0
-            if outside is None:
-                return Release(False, f'{workdir} 查不了本地提交是否都在 PR #{pr["number"]} 的 head 里，没删')
+            # 已合并只说明 PR 的 head 进了主干；本地可能又提交或改写过。只有每个要删的
+            # ref 相对 PR head 多出来、远端也没有的提交都为空，删分支才不丢东西。
+            outside, unknown = [], []
+            for ref, path in targets:
+                count = self._outside(path, ref, head)
+                if count is None:
+                    unknown.append(ref)
+                elif count:
+                    outside.append((ref, count))
+            if unknown:
+                return Release(False, f'{workdir} 查不了 {", ".join(unknown)} 的提交是否都在 '
+                                      f'PR #{pr["number"]} 的 head 里，没删')
             if outside:
-                return Release(False, f'{workdir} 有 {outside} 个提交不在 PR #{pr["number"]} 的 head 里，'
-                                      '也没在远端，没删')
+                ref, count = outside[0]
+                return Release(False, f'{workdir} 的 {ref} 有 {count} 个提交不在 '
+                                      f'PR #{pr["number"]} 的 head 里，也没在远端，没删')
             evidence = f'PR #{pr["number"]} 已合并'
         if dry_run:
             action = f'删 {workdir if entry is not None else "（目录已不在）"}'

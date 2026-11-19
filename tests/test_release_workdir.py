@@ -147,6 +147,26 @@ def test_detached_head_commit_outside_pr_head_is_kept(local):
     assert local['workdir'].exists() and local['branch'] in branches(local['repo'])
 
 
+def test_detached_head_at_pr_head_does_not_hide_branch_commits(local):
+    # HEAD 停在 PR head，分支 ref 却另有没推送的提交；两个 ref 都要查，删分支不能丢提交。
+    head = commit(local['workdir'], 'pr.txt', 'pr\n', 'pr work')
+    merged(local, 22, headRefOid=head)
+    commit(local['workdir'], 'branch.txt', 'branch\n', 'branch only')
+    git(local['workdir'], 'checkout', '-q', '--detach', head)
+    result = local['executor'].release(local['item'], local['target'])
+    assert not result.released and '不在 PR #22 的 head 里' in result.reason
+    assert local['workdir'].exists() and local['branch'] in branches(local['repo'])
+
+
+def test_ancestor_fallback_checks_head_as_well_as_branch(local):
+    # 分支就是 main 上的提交，但 detached HEAD 上另有未推送提交；只查分支会删掉工作区。
+    git(local['workdir'], 'checkout', '-q', '--detach')
+    commit(local['workdir'], 'detached.txt', 'local\n', 'detached only')
+    result = local['executor'].release(local['item'], local['target'])
+    assert not result.released and 'HEAD' in result.reason and '找不到已合并的 PR' in result.reason
+    assert local['workdir'].exists() and local['branch'] in branches(local['repo'])
+
+
 def test_orca_codex_releases_the_same_way(local):
     # orca-codex 也按活 id 开同名 worktree，收回规则相同。
     codex = Executor('orca-codex', state_dir=local['root'] / 'state-codex',
