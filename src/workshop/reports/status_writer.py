@@ -1,6 +1,7 @@
 """装配层启动的状态网页线程；不持有核心的连接或拍锁。"""
 from datetime import timedelta
 from pathlib import Path
+import json
 import sys
 import tempfile
 import threading
@@ -39,6 +40,11 @@ class StatusWriter:
         self.clock = clock
         self.plugins = plugins
         self.last = None
+        self.cache_path = self.database.parent / 'status_waits.json'
+        try:
+            self.cache = json.loads(self.cache_path.read_text(encoding='utf-8'))
+        except (OSError, ValueError):
+            self.cache = {}  # 没有或读坏了就当没有旧数据
         self.seq = 0
         self._wake = threading.Event()
         self._stop = threading.Event()
@@ -54,10 +60,11 @@ class StatusWriter:
                 changes = log.selected_facts(PAGE_KINDS, ('state',), after=self.seq)
                 if self.last is not None and not changes and now - self.last < PAGE_MAX_AGE:
                     return
-                content = page(overview(log, plugins=self.plugins), now.astimezone())
+                content = page(overview(log, plugins=self.plugins, wait_cache=self.cache), now.astimezone())
                 seq = changes[-1]['seq'] if changes else self.seq
             # 排版和写文件不占核心连接；失败不消费游标，下次仍重试。
             write_page(self.database.parent / 'status.html', content)
+            write_page(self.cache_path, json.dumps(self.cache, ensure_ascii=False))
             self.seq, self.last = seq, now
         finally:
             log.close()

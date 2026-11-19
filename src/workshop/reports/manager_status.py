@@ -19,19 +19,55 @@ def read_managers(directory):
         return [json.loads(r[0]) for r in db.execute('SELECT body FROM concerns ORDER BY rowid')]
 
 
+def heading_of(ident):
+    """没有标题的事项，按 id 的形状给前缀：交付送达看对象和编号，主循环单列，认不出的显示 id 本身。"""
+    parts = str(ident).split(':')
+    if ident == 'idle':
+        return '全局空闲'
+    if ident == 'system:tick':
+        return '主循环'
+    if parts[:2] == ['fault', 'delivery'] and len(parts) >= 5:
+        return parts[2] + ':' + parts[3] + ' 送达'
+    return str(ident)
+
+
+STATES = {'blocked': '处理不了', 'unavailable': '项目经理起不来', 'active': '处理中'}
+
+
+def stale_time(text):
+    """旧数据是什么时候读到的，本机时区，写到分钟。"""
+    return datetime.fromisoformat(text).astimezone().strftime('%m-%d %H:%M')
+
+
+def readable(record):
+    """详情给人看：每项一行「名称：内容」，空的不显示；不出原始 JSON。等你的记录和项目经理事项各取各的字段。"""
+    if 'question' in record:
+        content = record.get('content') or {}
+        pairs = [('等什么', record.get('question')), ('原因', record.get('reason')), ('推荐', record.get('recommend')),
+                 ('版本', content.get('version')), ('旧数据', record.get('stale') and stale_time(record['stale']) + ' 读到；现在读不到：' + record.get('stale_error', '')), ('等待号', record.get('ref')), ('活', record.get('item'))]
+    else:
+        conclusion = record.get('conclusion') or {}
+        fact = record['facts'][-1]['value'] if record.get('facts') else {}
+        pairs = [('原因', conclusion.get('reason') or fact.get('reason') or fact.get('text')), ('要做的', conclusion.get('action')),
+                 ('项目经理查了什么', conclusion.get('evidence')), ('状态', STATES.get(record.get('state'), record.get('state'))),
+                 ('尝试次数', len(record.get('attempts') or []) or None), ('事项', record.get('id'))]
+    return [(k, str(v)) for k, v in pairs if v]
+
+
 def sections(view):
     result = {h: {'section': h, 'lines': [], 'details': []} for h in HEADINGS}
     names = {r['id']: r['title'][:32] for r in view['rows']}
     for wait in view.get('waits', []):
         row = result['等你']
-        row['lines'].append(names.get(wait['item'], '待处理事项') + '：' + wait['question'] + '；推荐：' + wait['recommend'])
+        old = '（读不到，显示的是 ' + stale_time(wait['stale']) + ' 的旧数据）' if wait.get('stale') else ''
+        row['lines'].append(names.get(wait['item'], '待处理事项') + '：' + wait['question'] + '；推荐：' + wait['recommend'] + old)
         row['details'].append(json.dumps(wait, ensure_ascii=False, sort_keys=True))
     for m in view.get('managers', []):
         if not m['active'] or m['state'] == 'resolved':
             continue
         heading = '处理不了' if m['state'] in ('blocked', 'unavailable') else '项目经理处理中'
         fact = m['facts'][-1]['value'] if m['facts'] else {}
-        title = fact.get('title') or ('全局空闲' if m['id'] == 'idle' else '车间运行故障')
+        title = fact.get('title') or heading_of(m['id'])
         conclusion = m.get('conclusion') or {}
         reason = conclusion.get('reason') or fact.get('reason') or fact.get('text') or '正在核对原因'
         action = conclusion.get('action')

@@ -2,6 +2,7 @@
 import json
 import re
 import subprocess
+from urllib.parse import quote
 from .store import required
 
 SECTIONS = ('等你', '项目经理处理中', '处理不了')
@@ -16,7 +17,29 @@ def detail(title, text):
             'header': {'title': plain(title)}, 'elements': [{'tag': 'div', 'text': plain(text)}]}
 
 
-def help_card(conclusion, delivery):
+def clip(text, limit):
+    """超长时在句子边界截断，没有边界才硬截并加省略号；不留半句。"""
+    if len(text) <= limit:
+        return text
+    cut = text[:limit - 1]
+    stop = max(cut.rfind('。'), cut.rfind('；'))
+    return cut[:stop + 1] if stop >= limit // 2 else cut + '…'
+
+
+def evidence_panel(evidence):
+    """每件事一段：事项名加粗，查到的写在下面；折叠头带箭头，看得出能点开。"""
+    blocks = []
+    for line in evidence.split('\n'):
+        name, _, text = line.partition('：')
+        blocks.append({'tag': 'markdown', 'content': f'**{name}**\n{text}' if text else line})
+    return {'tag': 'collapsible_panel', 'expanded': False,
+            'header': {'title': plain('项目经理查了什么'), 'icon': {'tag': 'standard_icon', 'token': 'down-small-ccm_outlined', 'size': '16px 16px'},
+                       'icon_position': 'right', 'icon_expanded_angle': -180},
+            'elements': blocks}
+
+
+def help_card(conclusion, delivery, page=None):
+    """page 是本机状态页地址：有就让按钮在电脑上直接打开对应的栏；没有才退回回调按钮。"""
     limits = {'action': 20, 'reason': 50, 'evidence': 300}
     for key, limit in limits.items():
         text = required(conclusion.get(key), key)
@@ -33,9 +56,10 @@ def help_card(conclusion, delivery):
             'subtitle': plain('车间程序：项目经理起不来' if conclusion.get('unavailable') else '项目经理处理不了'),
             'template': 'orange'}, 'body': {'elements': [
                 {'tag': 'div', 'text': plain(conclusion['reason'])},
-                detail('项目经理查了什么', conclusion['evidence']),
-                {'tag': 'button', 'text': plain(section), 'type': 'primary',
-                 'behaviors': [{'type': 'callback', 'value': {'ns': 'workshop-status/v1',
+                evidence_panel(conclusion['evidence']),
+                {'tag': 'button', 'text': plain('看' + section + '栏'), 'type': 'primary',
+                 'behaviors': [{'type': 'open_url', 'default_url': page + '#' + quote(section)} if page else
+                               {'type': 'callback', 'value': {'ns': 'workshop-status/v1',
                                   'delivery': delivery, 'section': section}}]}]}}
 
 
@@ -76,11 +100,14 @@ def queue(service, row):
     delivery_id = service.store.identity('delivery', permit['ref'])
     if any(r['id'] == delivery_id for r in service.store.all('delivery')) or permit['cancelled']:
         return {'ref': ref}  # 同范围后续结论只更新状态。
+    # 同一张卡只并同一栏的事项：等你的活在「等你」栏，不混进「处理不了」的卡。
     known = [r for r in service.store.all('manager') if r['active'] and r['state'] in ('blocked', 'unavailable')
+             and (r.get('conclusion') or {}).get('status_location') == conclusion.get('status_location')
              and (scope.startswith('idle:') and r.get('business', {}).get('idle_since') == business.get('idle_since') or r['episode'] == row['episode'])]
     combined = dict(conclusion)
-    combined['evidence'] = '；'.join((r.get('conclusion') or {}).get('action', '') + '：' + (r.get('conclusion') or {}).get('evidence', '') for r in known)[:300]
-    card = help_card(combined, delivery_id)
+    lines = [(r.get('conclusion') or {}).get('action', '') + '：' + (r.get('conclusion') or {}).get('evidence', '') for r in known]
+    combined['evidence'] = '\n'.join(clip(line, (300 - len(lines) + 1) // len(lines)) for line in lines)
+    card = help_card(combined, delivery_id, service.status_page())
     service.enqueue(key, {'permit': permit['ref'], 'payload': {'kind': 'manager_help', 'card': card,
                           'section': combined['status_location'], 'primary': row['episode'], 'members': [r['episode'] for r in known]}})
     return {'ref': ref}

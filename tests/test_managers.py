@@ -431,3 +431,11 @@ def test_new_click_reads_new_content_and_read_failure_folds_path(service):
     s.rules.write_text(yaml.safe_dump(config,allow_unicode=True))
     failed=s.call('status_click',{'operation':'failed-read','event':event(delivery)})['snapshot']
     assert '/' not in failed['lines'][0] and '/missing/private' in failed['details'][0]
+
+
+def test_help_card_button_opens_status_page_on_this_computer():
+    c = {'action': '回答 2 件等你的活', 'reason': '没有能接着做的活', 'evidence': '等你 2 件', 'status_location': '等你'}
+    button = help_card(c, 'delivery:test', 'http://127.0.0.1:8765/status.html')['body']['elements'][-1]
+    assert button['text']['content'] == '看等你栏'
+    assert button['behaviors'] == [{'type': 'open_url', 'default_url': 'http://127.0.0.1:8765/status.html#%E7%AD%89%E4%BD%A0'}]
+    assert help_card(c, 'delivery:test')['body']['elements'][-1]['behaviors'][0]['type'] == 'callback'  # 没配地址退回回调
