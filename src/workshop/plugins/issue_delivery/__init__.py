@@ -439,6 +439,9 @@ class IssueDelivery:
             # 飞书群入口已停：不再从群消息开 issue，没有 issue 的活没有可信的接单来源。
             return Evidence(reason="没有可信的接单来源：飞书群入口已停，需求在协调对话里说")
         issue = self._issue(item, target)
+        if intake.drafted(issue):
+            # 介入点 R4：手工打了 Ready for Agent 也不开工；改标题来一条更新，下一拍重核。
+            return Evidence(reason=f"标题带{intake.DRAFT}，去掉标记后自动接单", awaits_update=True)
         body = issue.get("body") or ""
         documents = self.io.requirement_documents(target)
         problems, checks = dod.registration(body, target, documents)

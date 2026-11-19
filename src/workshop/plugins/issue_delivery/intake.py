@@ -6,6 +6,7 @@ from . import dod
 from .requirements import section
 
 
+DRAFT = '【Draft】'
 SESSION = re.compile(r'[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}')
 
 
@@ -34,6 +35,11 @@ def origin(issue, target):
     return problems
 
 
+def drafted(issue):
+    """介入点 R3、R4：标题原样含【Draft】（全角括号、D 大写）的 issue 不核对、不接单、不开工；正文里的不算。"""
+    return DRAFT in (issue.get('title') or '')
+
+
 def trusted(issue, target):
     return not origin(issue, target)
 
@@ -47,6 +53,9 @@ def inspect(io, event, item, target):
         return Classification(discard=True, summary='回源对象不匹配')
     if item is not None:
         return Classification()  # 已有活仍收到正文更新；接单与关系端口回查内容。
+    if drafted(issue):
+        # 不记核对版本：去掉标记后同一版正文仍要核对一次。
+        return Classification(discard=True, summary=f'标题带{DRAFT}，不核对、不接单')
     problems = origin(issue, target)
     if issue.get('state') != 'open' or problems:
         return Classification(discard=True, summary='未开放或开单来源未核实' + ('：' + '；'.join(problems) if problems else ''))
