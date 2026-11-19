@@ -82,6 +82,42 @@ SWEEP_SECONDS = 600
 SPAWNS_PER_TICK = 4
 
 
+def sweep_directory(directory, now, keep_seconds=KEEP_SECONDS, dry_run=False, measure=False):
+    """清掉 keep_seconds 内没人取的结果，和超过 60 秒还没启动成的目录。
+
+    只删没有作业进程持有的目录：有结果看结果时间，没结果但也没有 pid 的才算登记失败。
+    调用方决定在哪跑（守护进程放在单独线程，命令直接调用），不另起定时任务。
+    dry_run 只返回会删哪些、占多大，不动文件。
+    """
+    path = Path(directory)
+    removed = []
+    if not path.is_dir():
+        return removed
+    for entry in path.iterdir():
+        try:
+            if entry.is_symlink() or not entry.is_dir():
+                continue
+            result = entry / "result.json"
+            due = (now - result.stat().st_mtime > keep_seconds) if result.exists() else (
+                not (entry / "pid").exists() and now - entry.stat().st_mtime > 60)
+            if not due:
+                continue
+            size = 0
+            if dry_run or measure:
+                for root, _, files in os.walk(entry):
+                    for name in files:
+                        try:
+                            size += (Path(root) / name).lstat().st_size
+                        except OSError:
+                            pass
+            if not dry_run:
+                shutil.rmtree(entry, ignore_errors=True)
+            removed.append({'path': entry, 'bytes': size})
+        except OSError:
+            continue
+    return removed
+
+
 def encode(value):
     if is_dataclass(value) and not isinstance(value, type):
         return {"__dataclass__": type(value).__name__,
@@ -167,11 +203,12 @@ def running(directory):
 class Jobs:
     """command 是启动作业进程的 argv 前缀，后面接作业目录；进程里调用 execute。"""
 
-    def __init__(self, directory, command, *, deadline=7200, clock=time.time):
+    def __init__(self, directory, command, *, deadline=7200, clock=time.time, keep_seconds=KEEP_SECONDS):
         self.directory = Path(directory)
         self.command = list(command)
         self.deadline = deadline
         self.clock = clock
+        self.keep_seconds = keep_seconds
         self.children = {}
         self.spawned = 0
         self.swept = 0.0
@@ -355,18 +392,9 @@ class Jobs:
             self.sweeper.start()
 
     def sweep(self, now):
-        """清掉一天没人取的结果和没启动成的目录。和主线程并发也安全：
+        """清掉 keep_seconds 内没人取的结果和没启动成的目录。和主线程并发也安全：
         主线程刚取用的旧结果被删，下次只是重跑；新登记的目录不满 60 秒且有结果或 pid，不会被删。"""
-        for path in self.directory.iterdir():
-            try:
-                result = path / "result.json"
-                if result.exists():
-                    if now - result.stat().st_mtime > KEEP_SECONDS:
-                        shutil.rmtree(path, ignore_errors=True)
-                elif not (path / "pid").exists() and now - path.stat().st_mtime > 60:
-                    shutil.rmtree(path, ignore_errors=True)
-            except OSError:
-                continue
+        sweep_directory(self.directory, now, self.keep_seconds)
 
 
 def execute(path, plugins: Plugins, lookup=None):

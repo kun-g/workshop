@@ -1,12 +1,14 @@
 """修理会话独立于业务轮；核心和看门共用事项、令牌和调用栅栏。"""
 from contextlib import contextmanager
 from dataclasses import asdict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import fcntl
 import hashlib
 import json
+import os
 import re
 from pathlib import Path
+import shutil
 import sqlite3
 import sys
 import uuid
@@ -18,6 +20,11 @@ from .ports import InputBlocked, Unavailable
 
 
 HISTORY = 2  # history 的行格式：事件加变化部分（format 1 是旧的全量快照，压缩时转换）
+# 项目经理的作业结果几分钟内就取走；留一小时够重查，不用占一天。
+MANAGER_JOBS_KEEP_SECONDS = 3600
+MANAGER_SESSION_KEEP_SECONDS = 7 * 86400
+MANAGER_SESSION_SWEEP_SECONDS = 3600
+SESSION_NAME = re.compile(r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}')
 
 
 def encoded(value):
@@ -46,6 +53,84 @@ def applied(state, body):
     for name, items in (body.get('append') or {}).items():
         state[name] = [*(state.get(name) or []), *items]
     return state
+
+
+def _moment(value):
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, (int, float)):
+        return datetime.fromtimestamp(value, timezone.utc)
+    return datetime.fromisoformat(value)
+
+
+def _directory_size(path):
+    total = 0
+    for root, directories, files in os.walk(path):
+        for name in files:
+            try:
+                total += (Path(root) / name).lstat().st_size
+            except OSError:
+                pass
+    return total
+
+
+def _session_age(path):
+    """目录里最近一次写入；只看顶层，够判断会话是否还在用。"""
+    times = [path.stat().st_mtime]
+    try:
+        times.extend((path / name).stat().st_mtime for name in os.listdir(path))
+    except OSError:
+        pass
+    return max(times)
+
+
+def sweep_sessions(directory, now, *, keep_seconds=MANAGER_SESSION_KEEP_SECONDS,
+                   protected=(), dry_run=False):
+    """清掉过期且不是当前事项工作目录的项目经理会话目录。
+
+    当前事项（active 或还持有令牌）的工作目录一律保留；其余按最后一次写入超过
+    keep_seconds 删。只动 managers/ 下名字是 UUID 的真实目录，别的一律不碰。
+    """
+    root = Path(directory) / 'managers'
+    if not root.is_dir():
+        return []
+    now = _moment(now)
+    kept = set(protected)
+    removed = []
+    for path in root.iterdir():
+        try:
+            if path.is_symlink() or not path.is_dir() or not SESSION_NAME.fullmatch(path.name):
+                continue
+            if path.name in kept:
+                continue
+            if (now.timestamp() - _session_age(path)) <= keep_seconds:
+                continue
+            size = _directory_size(path)
+            if not dry_run:
+                shutil.rmtree(path)
+            removed.append({'path': path, 'bytes': size})
+        except OSError:
+            continue
+    return removed
+
+
+def maybe_sweep_sessions(directory, now, protected=(), *, keep_seconds=MANAGER_SESSION_KEEP_SECONDS):
+    """每个小时最多扫一次；时间点记在 managers/.swept，守护进程和看门各跑各的进程也认。"""
+    root = Path(directory) / 'managers'
+    marker = root / '.swept'
+    now = _moment(now)
+    try:
+        previous = datetime.fromisoformat(marker.read_text().strip())
+    except (OSError, ValueError):
+        previous = None
+    if previous and now - previous < timedelta(seconds=MANAGER_SESSION_SWEEP_SECONDS):
+        return []
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+        marker.write_text(now.isoformat())
+    except OSError:
+        pass
+    return sweep_sessions(directory, now, keep_seconds=keep_seconds, protected=protected)
 
 
 class Store:
@@ -539,6 +624,20 @@ def observe_items(store, items, owner, now):
             store.resolve(row, now)
 
 
+def observe_workdirs(store, items, owner, now):
+    """收尾时执行者说不能收的工作目录：每条一个事项，留给项目经理看。"""
+    active = set()
+    for item in items:
+        key = 'workdir:' + item['id']
+        active.add(key)
+        store.observe(key, {'item': item['id'], 'title': item.get('title'),
+                            'path': item.get('workdir'), 'reason': item.get('workdir_released'),
+                            'target': item.get('target')}, owner, now)
+    for row in store.all():
+        if row['id'].startswith('workdir:') and row['id'] not in active:
+            store.resolve(row, now)
+
+
 def observe_failures(store, log, owner, now, rules):
     active = set()
     for control in log.all('controls'):
@@ -579,7 +678,8 @@ def tick(engine):
                        '--rules', engine.rules.path]
             jobs = getattr(engine, 'manager_jobs', None)
             if jobs is None:
-                jobs = Jobs(store.directory / 'manager-jobs', [*command, 'job'])
+                jobs = Jobs(store.directory / 'manager-jobs', [*command, 'job'],
+                            keep_seconds=MANAGER_JOBS_KEEP_SECONDS)
                 engine.manager_jobs = jobs
             jobs.reap()
             Coordinator(store, engine.rules, engine.plugins, jobs, command, now).run(business)

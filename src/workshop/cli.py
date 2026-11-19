@@ -77,6 +77,11 @@ def parser():
     release.add_argument('--session', required=True, help='Kun 说这句话的会话号')
     commands.add_parser("release-now", help="不等下个周期，立刻比较在跑的版本与远端；有新合并就走同一发版流程").add_argument(
         "target", nargs="?", default="workshop", help="交付对象，默认 workshop")
+    prune = commands.add_parser("prune", help="按保留规则清一次执行者轮次、经理作业与会话、已结束活的工作区")
+    prune.add_argument("--dry-run", action="store_true", help="只列出会删什么，不动文件")
+    prune.add_argument("--verbose", action="store_true", help="逐个列出目录")
+    prune.add_argument("--executor-state-dir", type=Path,
+                       help="执行者状态目录；默认 WORKSHOP_EXECUTOR_STATE_DIR 或 ~/.local/state/workshop-executors")
     commands.add_parser("pause").add_argument("target")
     resume = commands.add_parser("resume")
     resume.add_argument("target")
@@ -173,6 +178,25 @@ def main(argv=None):
             return 2
     if args.command in ("status", "why", "usage"):
         return read_command(args)
+    if args.command == "prune":
+        from .prune import prune
+        try:
+            log = Log.readonly(args.state_dir / 'workshop.db')
+        except (OSError, sqlite3.Error, ValueError) as exc:
+            print(f'车间：{exc}', file=sys.stderr)
+            return 2
+        try:
+            rules = current_rules(args, log.get('controls', '@rules'))
+            if args.executor_state_dir:
+                os.environ['WORKSHOP_EXECUTOR_STATE_DIR'] = str(args.executor_state_dir.expanduser().resolve())
+            registry = Registry()
+            rules = registry.configure(rules)
+            return prune(args, log, rules, registry)
+        except (ValueError, KeyError, OSError, sqlite3.Error) as exc:
+            print(f'车间：{exc}', file=sys.stderr)
+            return 2
+        finally:
+            log.close()
     log = Log(args.state_dir / "workshop.db")
     jobs = None
     try:

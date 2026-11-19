@@ -11,7 +11,7 @@ import sys
 import uuid
 
 from workshop.core.models import Release, Started
-from workshop.core.ports import Retryable, Unavailable
+from workshop.core.ports import Retryable, TargetBlocked, Unavailable
 from workshop.github_identity import configuration as identity_configuration
 from workshop.github_identity import run as identity_run, scoped
 from .storage import alive, identity, lock, read, write
@@ -20,6 +20,7 @@ from .processes import stop_round
 from .briefs import prepare as prepare_brief
 from .drivers import for_spec
 from .isolation import environment
+from .retention import git_roots, maybe_sweep, nested_worktrees
 
 
 def recorded_model(spec_path):
@@ -45,7 +46,7 @@ class Executor:
         self.driver = driver or load(self.profile['driver'])
         self.interactive = self.profile['transport'] == 'orca'
         self.root = Path(state_dir or os.environ.get('WORKSHOP_EXECUTOR_STATE_DIR', '~/.local/state/workshop-executors')).expanduser().resolve() / kind
-        self.commands = {name: executable(name) for name in ('orca', 'git', self.driver.binary)}
+        self.commands = {name: executable(name) for name in ('orca', 'git', 'gh', self.driver.binary)}
         self.commands.update(commands or {})
         self.home = Path(home or Path.home())
         self.stop_timeout = stop_timeout
@@ -273,16 +274,62 @@ class Executor:
             raise Retryable('git 失败: ' + ' '.join(args[:3]) + ': ' + result.stderr.strip()[-300:])
         return result
 
+    def _changes(self, path, exclude=()):
+        # 嵌套工作区在外层看来是一堆未跟踪文件；它们单独查，别算成外层的改动。
+        result = self._git('-C', str(path), 'status', '--porcelain', '-z', '-uall', '--no-renames', check=False)
+        if result.returncode:
+            raise Retryable('git 查未提交改动失败：' + result.stderr.strip()[-300:])
+        bases = [Path(item).resolve() for item in exclude]
+        changes = []
+        for record in filter(None, result.stdout.split('\0')):
+            full = Path(path) / record[3:]
+            if any(full.resolve() == base or full.resolve().is_relative_to(base) for base in bases):
+                continue
+            changes.append(record)
+        return changes
+
+    def _prs(self, repo, branch):
+        gh = self.commands.get('gh')
+        if not gh:
+            raise Retryable('找不到 gh，无法确认 PR 是否已合并')
+        try:
+            result = identity_run([gh, 'pr', 'list', '--repo', repo, '--head', branch,
+                                   '--state', 'all', '--limit', '20',
+                                   '--json', 'number,state,mergedAt,url'],
+                                  capture_output=True, text=True, timeout=60)
+        except TargetBlocked as exc:
+            raise Retryable(str(exc)) from exc
+        if result.returncode:
+            raise Retryable('查询 PR 状态失败：' + (result.stderr or result.stdout).strip()[-300:])
+        try:
+            value = json.loads(result.stdout)
+        except ValueError:
+            raise Retryable('gh 返回的 PR 状态不是 JSON')
+        if not isinstance(value, list):
+            raise Retryable('gh 返回的 PR 状态不是列表')
+        return value
+
+    def _remove_worktree(self, path):
+        try:
+            self._orca('worktree', 'rm', '--worktree', 'path:' + str(path))
+        except (RuntimeError, OSError, subprocess.TimeoutExpired, ValueError) as exc:
+            raise Retryable('Orca 删除工作区结果不确定') from exc
+        if Path(path).exists():
+            raise Retryable('Orca 返回成功但工作区还在')
+
+    @scoped
     def release(self, item, target, dry_run=False):
         """活收尾后收回本执行者为它开的 Orca worktree 和本地分支。
 
-        只认 _start 按活 id 开的那个目录；有未提交改动、或分支上有远端没有的提交时留着并说明原因。
+        只认 _start 按活 id 开的那个目录（Orca 可能给同名目录加 -2 后缀）。分支上的提交
+        已随 PR 压缩合并进 main，所以不能看分支是否已在远端：要 PR 状态为已合并，且外层和
+        嵌套工作区都没有未提交改动。有 PR 开着、没合并、或查不到 PR 时留着并说明原因。
         dry_run 只给判断，不删。
         """
         if not self.interactive or not item.get('workdir') or not target.get('checkout'):
             return None
         workdir = Path(item['workdir'])
-        if workdir.name != self.slug(item):
+        if not re.fullmatch(re.escape(self.slug(item)) + r'(-\d+)?', workdir.name):
             return None
         checkout = str(Path(target['checkout']).expanduser().resolve())
         resolved = str(workdir.resolve()) if workdir.exists() else str(workdir)
@@ -293,27 +340,62 @@ class Executor:
                 entry = fields
         if workdir.exists() and entry is None:
             return None  # 目录在，但不是这个主检出上的 worktree：不是自己开的，不碰。
-        branch = (entry or {}).get('branch', 'refs/heads/ws/' + self.slug(item))
-        if entry is not None:
-            changes = self._git('-C', str(workdir), 'status', '--porcelain').stdout.splitlines()
+        branch = (entry or {}).get('branch', 'refs/heads/ws/' + workdir.name)
+        short = branch.removeprefix('refs/heads/')
+        # 探针工作区常开在活的工作区里面；里面脏了也不能删外层。克隆和链接工作区都查。
+        nested = nested_worktrees(workdir) if workdir.exists() else []
+        roots = git_roots(workdir) if workdir.exists() else []
+        if entry is not None and workdir.exists():
+            changes = self._changes(workdir, exclude=roots)
             if changes:
                 return Release(False, f'{workdir} 有 {len(changes)} 处未提交改动，没删')
-        exists = self._git('-C', checkout, 'rev-parse', '--verify', '-q', branch, check=False).returncode == 0
-        if exists:
-            ahead = int(self._git('-C', checkout, 'rev-list', '--count', branch, '--not', '--remotes').stdout.strip() or 0)
-            if ahead:
-                return Release(False, f'{workdir} 的分支 {branch.removeprefix("refs/heads/")} 有 {ahead} 个提交不在远端，没删')
-        if dry_run:
-            return Release(True, f'删 {workdir if entry is not None else "（目录已不在）"}' + (f'，删分支 {branch.removeprefix("refs/heads/")}' if exists else ''))
-        if entry is not None:
+        for path in roots:
+            if not Path(path).exists():
+                continue
             try:
-                self._orca('worktree', 'rm', '--worktree', 'path:' + resolved)
-            except (RuntimeError, OSError, subprocess.TimeoutExpired, ValueError) as exc:
-                raise Retryable('Orca 删除工作区结果不确定') from exc
-            if Path(resolved).exists():
-                raise Retryable('Orca 返回成功但工作区还在')
+                changes = self._changes(path)
+            except Retryable as exc:
+                return Release(False, f'{path} 查不了未提交改动（{exc}），没删')
+            if changes:
+                return Release(False, f'{path} 有 {len(changes)} 处未提交改动，没删')
+        exists = self._git('-C', checkout, 'rev-parse', '--verify', '-q', branch, check=False).returncode == 0
+        if entry is None and not exists:
+            return Release(True)  # 工作区和分支都不在了，没有可收的。
+        repo = target.get('repo')
+        if not repo:
+            return Release(False, f'{workdir} 的交付对象没配置仓库，无法确认 PR 已合并，没删')
+        if not self.commands.get('gh'):
+            return Release(False, f'{workdir} 找不到 gh，无法确认 PR 已合并，没删')
+        prs = self._prs(repo, short)
+        opened = [pr for pr in prs if pr.get('state') == 'OPEN']
+        if opened:
+            return Release(False, f'{workdir} 的 PR #{opened[0]["number"]} 还开着，没删')
+        merged = [pr for pr in prs if pr.get('state') == 'MERGED']
+        if not merged:
+            # 另一条安全的合并证据：分支已经在 origin/main 里（例如工作区只是从 main
+            # 快进出来的，没有自己的 PR）。压缩合并的分支不会命中这一条，所以仍以 PR 为主。
+            ancestor = self._git('-C', checkout, 'merge-base', '--is-ancestor', branch,
+                                 'refs/remotes/origin/main', check=False).returncode == 0
+            if not ancestor:
+                closed = [pr['number'] for pr in prs if pr.get('state') == 'CLOSED']
+                why = f'PR #{closed[0]} 已关闭但没合并' if closed else '找不到已合并的 PR'
+                return Release(False, f'{workdir} 的 {why}，没删')
+            evidence = '分支已并入 main'
+        else:
+            evidence = f'PR #{merged[0]["number"]} 已合并'
+        if dry_run:
+            action = f'删 {workdir if entry is not None else "（目录已不在）"}'
+            if exists:
+                action += f'，删分支 {short}'
+            return Release(True, action + f'（{evidence}）')
+        if entry is not None:
+            # 先删里面的探针工作区，外层才删得干净。
+            for path in nested:
+                self._remove_worktree(path)
+            self._remove_worktree(resolved)
         if exists:
-            self._git('-C', checkout, 'branch', '-D', branch.removeprefix('refs/heads/'))
+            self._git('-C', checkout, 'branch', '-D', short)
+        maybe_sweep(self.root)
         return Release(True)
 
     def poll(self, token, started):
@@ -339,6 +421,8 @@ class Executor:
             if spec.get('interactive', self.interactive) and handle:
                 self._orca('terminal', 'close', '--terminal', handle)
         stop_round(directory, close_terminal, self.stop_timeout)
+        # 停稳后顺手清一次过期的轮次；正在停的这一轮由 protect 留住。
+        maybe_sweep(self.root, protect=(directory.name,))
 
     def usage(self, token, started, since):
         directory = self.directory(token)

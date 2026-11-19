@@ -12,7 +12,7 @@ import threading
 import pytest
 import yaml
 
-from workshop.core.managers import Store, Coordinator, observe_items, observe_failures, instructions
+from workshop.core.managers import Store, Coordinator, observe_items, observe_workdirs, observe_failures, instructions
 from workshop.core.models import Started
 from workshop.core.ports import InputBlocked, Retryable
 from workshop.core.activity import snapshot
@@ -75,6 +75,22 @@ def observe(c, key='item:a', number=1):
 def drive(c):
     for row in c.store.all():
         c.drive(row)
+
+
+def test_kept_workdir_is_registered_and_resolved(tmp_path):
+    # 收尾时执行者说不能收的工作目录，项目经理能看到；目录收回后事项自己消失。
+    store = Store(tmp_path)
+    item = {'id': 'alpha:7', 'title': '修一下', 'workdir': '/w/ws-1', 'target': 'alpha',
+            'workdir_released': '留着：/w/ws-1 有 1 处未提交改动，没删'}
+    try:
+        observe_workdirs(store, [item], 'core', NOW)
+        row = store.all()[0]
+        assert row['id'] == 'workdir:alpha:7' and row['active']
+        assert row['facts'][0]['value']['path'] == '/w/ws-1'
+        observe_workdirs(store, [], 'core', NOW)
+        assert store.all()[0]['active'] is False
+    finally:
+        store.close()
 
 
 def conclusion(c, row, result='resolved'):

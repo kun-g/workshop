@@ -36,7 +36,7 @@ def release_workdirs(engine):
     running = {r["item"] for r in engine.active()}
     now = stamp(engine.clock())
     for item in engine.log.release_items():
-        if (item["state"] != "完成" or not item.get("workdir") or item.get("workdir_released")
+        if (item["state"] not in ("完成", "放弃") or not item.get("workdir") or item.get("workdir_released")
                 or item["id"] in running or (item.get("release_at") or "") > now):
             continue
         control = engine.control(item["target"])

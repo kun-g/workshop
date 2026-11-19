@@ -15,7 +15,7 @@ OPEN_ITEMS = ("(json_extract(body, '$.state') NOT IN ('完成','放弃') "
               "OR json_extract(body, '$.pending_rework') = 1 OR json_extract(body, '$.program') IS NOT NULL "
               "OR json_extract(body, '$.after_wait') IS NOT NULL OR json_extract(body, '$.pending_advance') IS NOT NULL)")
 
-RELEASE_ITEMS = ("(json_extract(body, '$.state') = '完成' AND coalesce(json_extract(body, '$.workdir'), '') != '' "
+RELEASE_ITEMS = ("(json_extract(body, '$.state') IN ('完成', '放弃') AND coalesce(json_extract(body, '$.workdir'), '') != '' "
                  "AND (coalesce(json_extract(body, '$.workdir_released'), '') = '' "
                  "OR json_extract(body, '$.workdir_released') = 0))")
 
@@ -245,6 +245,13 @@ class Log:
     def release_items(self):
         return [json.loads(row[0]) for row in self.db.execute(
             f"SELECT body FROM items WHERE {RELEASE_ITEMS} = 1 ORDER BY rowid")]
+
+    def kept_workdirs(self):
+        """收尾时执行者说不能收的工作目录；原因记在活上，项目经理要看见。"""
+        return [json.loads(row[0]) for row in self.db.execute(
+            "SELECT body FROM items WHERE json_extract(body, '$.state') IN ('完成', '放弃') "
+            "AND coalesce(json_extract(body, '$.workdir'), '') != '' "
+            "AND coalesce(json_extract(body, '$.workdir_released'), '') LIKE '留着：%' ORDER BY rowid")]
 
     def program_items(self):
         return [json.loads(row[0]) for row in self.db.execute(
