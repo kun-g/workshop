@@ -58,10 +58,15 @@
         "claude-opus-5-5",
         "--effort",
         "high",
+        "--setting-sources",
+        "project",
         "--settings",
         "<round>/hooks.json",
         "--permission-mode",
-        "bypassPermissions"
+        "bypassPermissions",
+        "--strict-mcp-config",
+        "--mcp-config",
+        "{\"mcpServers\":{}}"
       ],
       "resume": [
         "/cli/claude",
@@ -71,10 +76,15 @@
         "claude-opus-5-5",
         "--effort",
         "high",
+        "--setting-sources",
+        "project",
         "--settings",
         "<round>/hooks.json",
         "--permission-mode",
-        "bypassPermissions"
+        "bypassPermissions",
+        "--strict-mcp-config",
+        "--mcp-config",
+        "{\"mcpServers\":{}}"
       ]
     },
     "codex": {
@@ -177,5 +187,8 @@
         "{\"mcpServers\":{}}"
       ]
     }
+  },
+  "changes": {
+    "orca-claude": "#283 核心 R25：执行者目录模式，不读用户级设置、hook、全局指令和自动记忆，MCP 只用配置档给的"
   }
 }

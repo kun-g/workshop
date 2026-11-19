@@ -294,6 +294,8 @@ executor_profiles:
     model: claude-opus-5-5
     effort: high
     permission_mode: bypassPermissions
+    # 核心 R25：不读本机个人配置，只读这个目录的 settings.json、rules.md 和活所在仓库的 AGENTS.md；登录沿用本机订阅。
+    executor_dir: rules/executors/orca-claude
   # 只读审查：沿用旧 use 名，以便在途会话照常接回。
   codex:
     driver: codex
