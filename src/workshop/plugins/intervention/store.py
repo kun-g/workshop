@@ -59,10 +59,14 @@ class Store:
         return [json.loads(r[0]) for r in self.db.execute('SELECT body FROM records WHERE kind=? ORDER BY rowid', (kind,))]
 
     def put(self, kind, key, body, event):
+        text = encode(body)
+        old = self.db.execute('SELECT body FROM records WHERE id=?', (key,)).fetchone()
+        if old and old[0] == text:
+            return  # 内容没变就不是一次变化；journal 只追加真实变化，不重复记。
         self.db.execute('INSERT INTO records VALUES (?,?,?) ON CONFLICT(id) DO UPDATE SET body=excluded.body',
-                        (key, kind, encode(body)))
+                        (key, kind, text))
         self.db.execute('INSERT INTO journal(kind,id,body,at) VALUES (?,?,?,?)',
-                        (event, key, encode(body), datetime.now(timezone.utc).isoformat()))
+                        (event, key, text, datetime.now(timezone.utc).isoformat()))
 
     def operation(self, key, action, data, apply):
         required(key, 'operation')

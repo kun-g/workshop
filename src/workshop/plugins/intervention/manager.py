@@ -99,7 +99,10 @@ def queue(service, row):
     conclusion = row.get('conclusion') or {}
     if not row['active'] or row['state'] not in ('blocked', 'unavailable') or conclusion.get('result') != 'blocked':
         return {'ref': ref}
-    business = row.get('business', {})
+    business = service.business()
+    shared = business is not None
+    if not shared:
+        business = row.get('business', {})
     if business.get('total') is None:
         return {'ref': ref}  # 没有可信业务快照，不能选择额度归属。
     done = pushed(service)
@@ -107,10 +110,12 @@ def queue(service, row):
         return {'ref': ref}  # 推过的事后来的结论只更新状态。
     scope = 'incident:' + row['episode'] if business['total'] > 0 else 'idle:' + required(business.get('idle_since'), 'idle_since')
     # 同一张卡只并同一栏、没推过的事项：等你的活在「等你」栏，不混进「处理不了」的卡。
+    # 全局业务状态是当下这一刻的空闲段，所有事项都在同一段里；旧记录没有全局状态时才逐条比。
     known = [r for r in service.store.all('manager') if r['active'] and r['state'] in ('blocked', 'unavailable')
              and r['episode'] not in done
              and (r.get('conclusion') or {}).get('status_location') == conclusion.get('status_location')
-             and (scope.startswith('idle:') and r.get('business', {}).get('idle_since') == business.get('idle_since') or r['episode'] == row['episode'])]
+             and (scope.startswith('idle:') and (shared or r.get('business', {}).get('idle_since') == business.get('idle_since'))
+                  or r['episode'] == row['episode'])]
     permit = service.permit(key, {'point': 'manager_help', 'scope': scope, 'owner': row['id'], 'basis': conclusion})
     delivery_id = service.store.identity('delivery', permit['ref'])
     if any(r['id'] == delivery_id for r in service.store.all('delivery')) or permit['cancelled']:

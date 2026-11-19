@@ -4,8 +4,10 @@ from datetime import datetime, timedelta, timezone
 import json
 import os
 from pathlib import Path
+import sqlite3
 from types import SimpleNamespace
 import sys
+import threading
 
 import pytest
 import yaml
@@ -251,6 +253,37 @@ def test_pushed_concerns_are_not_pushed_again_across_idle_segments(service):
     assert [p['members'] for _, _, p in sent[2:]] == [['d']]
 
 
+def test_global_business_one_record_drives_all_idle_and_incident_cards(service):
+    """车间只发一份全局业务状态：同一空闲段的事项并一张卡，忙时按事项各一次。"""
+    s, sent = service
+    for name in ('a', 'b'):
+        update(s, record(name, total=None))
+    s.call('manager_flush', {'business': {'total': None, 'idle_since': None}})
+    assert sent == []  # 没有可信业务快照，不选额度归属。
+    s.call('manager_flush', {'business': {'total': 0, 'idle_since': NOW}})
+    assert [p['members'] for _, _, p in sent] == [['a', 'b']]
+    update(s, record('c', total=None))
+    s.call('manager_flush', {'business': {'total': 0, 'idle_since': NOW}})
+    assert len(sent) == 1  # 同一空闲段不再推已推过的，也不为新结论另开一张。
+    s.call('manager_flush', {'business': {'total': 0, 'idle_since': '2026-11-19T00:00:00+00:00'}})
+    assert [p['members'] for _, _, p in sent[1:]] == [['c']]  # 新空闲段只有没推过的事。
+    update(s, record('d', total=None))
+    s.call('manager_flush', {'business': {'total': 1, 'idle_since': None}})
+    assert [p['members'] for _, _, p in sent[2:]] == [['d']]
+    # 业务状态只存一条，状态不变不增 journal。
+    before = s.store.db.execute('SELECT count(*) FROM journal').fetchone()[0]
+    s.call('manager_flush', {'business': {'total': 1, 'idle_since': None}})
+    assert s.store.db.execute('SELECT count(*) FROM journal').fetchone()[0] == before
+
+
+def test_unchanged_record_is_not_appended_to_journal(service):
+    s, _ = service
+    s.store.put('delivery', 'delivery:same', {'id': 'delivery:same', 'state': 'uncertain'}, 'uncertain')
+    before = s.store.db.execute('SELECT count(*) FROM journal').fetchone()[0]
+    s.store.put('delivery', 'delivery:same', {'id': 'delivery:same', 'state': 'uncertain'}, 'uncertain')
+    assert s.store.db.execute('SELECT count(*) FROM journal').fetchone()[0] == before
+
+
 def test_resolve_cancels_queued_and_stale_update_cannot_reopen(service):
     s, sent = service
     update(s, record())
@@ -312,13 +345,52 @@ def test_resolved_primary_cancels_merged_card_even_with_other_blocked(service):
 def test_business_transition_publishes_a_new_version(coordinator):
     c, ex = coordinator
     row = observe(c)
+    row['publication'] = 'old-format'
+    c.store.save(row, 'published')
+    revision = row['revision']
     calls = []
     c.jobs = SimpleNamespace(call=lambda *a, **kw: calls.append(a) or {'ref': 'saved'})
-    for business in ({'total': 1}, {'total': 0, 'idle_since': NOW}, {'total': 0, 'idle_since': NOW}):
-        c.publish(row, business)
-    assert len(calls) == 2
-    records = [a[3][1]['record'] for a in calls]
-    assert records[0]['revision'] < records[1]['revision']
+    c.publish(row)
+    assert len(calls) == 1
+    record = calls[0][3][1]['record']
+    # 发布格式变了而记录没动过：抬一版，介入点才会收下；之后再发同一内容不再重复。
+    assert record['revision'] == revision + 1 and 'business' not in record
+    assert row['published_revision'] == row['revision']
+    c.publish(row)
+    assert len(calls) == 1
+    assert [json.loads(r[0])['event'] for r in c.store.db.execute('SELECT body FROM history ORDER BY seq')].count('renewed') == 1
+
+
+def test_idle_changes_do_not_republish_or_snapshot_each_concern(coordinator):
+    c, ex = coordinator
+    for name in ('a', 'b', 'c'):
+        observe(c, 'item:' + name)
+    calls = []
+    def call(port, name, method, args, **kw):
+        calls.append((port, name, method, args))
+        return {'ref': 'saved'} if port == 'wait' else getattr(ex[name], method)(*args)
+    c.jobs = SimpleNamespace(call=call)
+    c.run({'total': 0, 'idle_since': NOW})
+    updates = lambda: [a for a in calls if a[2] == 'invoke' and a[3][0] == 'manager_update']
+    assert len(updates()) == 3
+    history = c.store.db.execute('SELECT count(*) FROM history').fetchone()[0]
+    for minute in range(1, 6):
+        c.run({'total': 0, 'idle_since': f'2026-11-18T00:0{minute}:00+00:00'})
+    # 空闲段号变了 5 次，3 条事项不再各存快照、各重发一次。
+    assert len(updates()) == 3
+    assert c.store.db.execute('SELECT count(*) FROM history').fetchone()[0] == history
+    flushes = [a for a in calls if a[2] == 'invoke' and a[3][0] == 'manager_flush']
+    assert len(flushes) == 6
+    assert flushes[-1][3][1] == {'business': {'total': 0, 'idle_since': '2026-11-18T00:05:00+00:00'}}
+    # 结论有实质变化时照旧存快照（变化部分）并发布。
+    observe(c, number=2)
+    c.run({'total': 0, 'idle_since': '2026-11-18T00:06:00+00:00'})
+    assert len(updates()) == 4
+    assert c.store.db.execute('SELECT count(*) FROM history').fetchone()[0] > history
+    observed = json.loads(c.store.db.execute(
+        "SELECT body FROM history WHERE json_extract(body,'$.event')='observed' ORDER BY seq DESC LIMIT 1").fetchone()[0])
+    assert observed['format'] == 2 and 'record' not in observed
+    assert [fact['value']['reason'] for fact in observed['append']['facts']] == ['2']
 
 
 def test_inform_acceptance_and_uncertainty_never_types_twice(tmp_path, monkeypatch):
@@ -579,3 +651,96 @@ def test_help_card_button_opens_status_page_on_this_computer():
     assert button['text']['content'] == '看等你栏'
     assert button['behaviors'] == [{'type': 'open_url', 'default_url': 'http://127.0.0.1:8765/status.html#%E7%AD%89%E4%BD%A0'}]
     assert help_card(c, 'delivery:test')['body']['elements'][-1]['behaviors'][0]['type'] == 'callback'  # 没配地址退回回调
+
+
+def build_history(tmp_path):
+    """按旧版格式造 history：每行都是整条记录的快照。"""
+    from workshop.core.managers import applied
+    store = Store(tmp_path)
+    for number in range(1, 6):
+        row = store.observe('item:a', {'title': '交付检查', 'reason': str(number)}, 'core', NOW)
+    row.update(state='blocked')
+    store.save(row, 'observed')
+    store.close()
+    with sqlite3.connect(tmp_path / 'managers.db') as db:
+        states, rows = {}, []
+        for seq, ident, body in db.execute('SELECT seq,id,body FROM history ORDER BY seq').fetchall():
+            value = json.loads(body)
+            states[ident] = applied(states.get(ident), value)
+            rows.append((seq, ident, json.dumps({'event': value['event'], 'record': states[ident]},
+                                               ensure_ascii=False, sort_keys=True)))
+        db.execute('DELETE FROM history')
+        db.executemany('INSERT INTO history VALUES (?,?,?)', rows)
+    return row
+
+
+def test_compact_managers_rewrites_history_to_changes_and_keeps_records(tmp_path):
+    from workshop.core.managers import compact, applied, HISTORY
+    build_history(tmp_path)
+    with sqlite3.connect(tmp_path / 'managers.db') as db:
+        old = db.execute('SELECT count(*) FROM history').fetchone()[0]
+        before_bytes = db.execute('SELECT sum(length(body)) FROM history').fetchone()[0]
+    result = compact(tmp_path, now=datetime.fromisoformat(NOW))
+    assert Path(result['backup']).exists() and result['rewritten'] == old
+    assert result['after']['history_bytes'] < before_bytes
+    with sqlite3.connect(tmp_path / 'managers.db') as db:
+        bodies = [json.loads(r[0]) for r in db.execute('SELECT body FROM history ORDER BY seq')]
+        assert all(b['format'] == HISTORY and 'record' not in b for b in bodies)
+        # 变化记录按顺序接回去，和 concerns 里的当前记录完全一致。
+        state = None
+        for body in bodies:
+            state = applied(state, body)
+        concern = json.loads(db.execute("SELECT body FROM concerns WHERE id='item:a'").fetchone()[0])
+        assert state == concern
+    # 再跑一次是空的转换，事项照常能读能写。
+    again = compact(tmp_path, now=datetime.fromisoformat(NOW))
+    assert again['rewritten'] == 0 and again['after']['file_bytes'] <= result['after']['file_bytes']
+    store = Store(tmp_path)
+    try:
+        assert [r['id'] for r in store.all()] == ['item:a']
+        store.save(store.all()[0], 'observed')
+    finally:
+        store.close()
+
+
+def test_compact_managers_waits_for_store_lock(tmp_path, monkeypatch):
+    from workshop.core import managers as managers_module
+    build_history(tmp_path)
+    held = Store(tmp_path)
+    entered, release = threading.Event(), threading.Event()
+    def hold():
+        with held.lock() as acquired:
+            assert acquired
+            entered.set()
+            release.wait(10)
+    holder = threading.Thread(target=hold)
+    holder.start()
+    assert entered.wait(5)
+    real = managers_module.fcntl.flock
+    reached = threading.Event()
+    def traced(descriptor, operation):
+        reached.set()
+        return real(descriptor, operation)
+    monkeypatch.setattr(managers_module.fcntl, 'flock', traced)
+    result = {}
+    worker = threading.Thread(target=lambda: result.update(managers_module.compact(tmp_path, now=datetime.fromisoformat(NOW))))
+    worker.start()
+    assert reached.wait(5)
+    assert worker.is_alive() and result == {}  # 守护进程持锁时不并发写
+    release.set()
+    holder.join(5)
+    worker.join(10)
+    assert Path(result['backup']).exists()
+    held.close()
+
+
+def test_compact_managers_cli_reports_sizes_and_missing(tmp_path, capsys):
+    from workshop.cli import main
+    build_history(tmp_path)
+    assert main(['--state-dir', str(tmp_path), 'compact-managers']) == 0
+    output = capsys.readouterr().out
+    assert '已备份' in output and 'managers.db：' in output and 'history：' in output
+    empty = tmp_path / 'empty'
+    empty.mkdir()
+    assert main(['--state-dir', str(empty), 'compact-managers']) == 0
+    assert '没有 managers.db' in capsys.readouterr().out
