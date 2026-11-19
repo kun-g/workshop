@@ -17,24 +17,30 @@ def after(flow, item, target, services):
     operation = 'visual:' + item['id'] + ':' + version
     try:
         saved = state.get('visual_deliveries', {}).get(version)
+        issue = None
         if saved:
             contract = saved['contract']
         else:
-            contract = dod.visual_contract(flow._issue(item, target).get('body') or '')
+            issue = flow._issue(item, target)
+            contract = dod.visual_contract(issue.get('body') or '')
         if not all(contract.values()):
             return After(blocked='存量亲眼看约定缺看什么、在哪看或怎么回', next='在原 issue 补齐送达约定')
-        if ('飞书' not in contract['location'] or '私聊' not in contract['location']
-                or not all(word in contract['response'] for word in ('引用', '过', '不对'))):
+        if not supported(contract):
             return After(blocked='亲眼看约定尚无对应通道支持',
-                         next='实现约定的地点与回法后续接；当前只支持飞书私聊引用回复过或不对')
-        permit = port.invoke('permit', {'operation': operation + ':permit', 'point': 'visual',
-            'owner': item['id'], 'scope': 'contract:' + item['id'] + ':' + version, 'basis': contract}, config)['ref']
-        payload = {'kind': 'visual', 'item': item['id'], 'version': version,
-                   'text': f"{item['id']} · 合并提交 {version}\n看什么：{contract['contract']}\n在哪看：{contract['location']}\n怎么回：{contract['response']}"}
-        delivery = port.invoke('enqueue', {'operation': operation + ':enqueue', 'permit': permit, 'payload': payload}, config)['ref']
-        with flow.io.locked(item, target) as state:
-            state.setdefault('visual_deliveries', {})[version] = {'contract': contract, 'delivery': delivery, 'permit': permit}
-            flow.io.save(item, target, state)
+                         next='实现约定的地点与回法后续接；当前只支持飞书私聊点卡片上的通过或不通过，或引用回复过或不对')
+        if saved and saved.get('delivery'):
+            # 已排队的送达只按原号推进；标题等后来变了也不换内容。
+            delivery = saved['delivery']
+        else:
+            permit = port.invoke('permit', {'operation': operation + ':permit', 'point': 'visual',
+                'owner': item['id'], 'scope': 'contract:' + item['id'] + ':' + version, 'basis': contract}, config)['ref']
+            issue = issue or flow._issue(item, target)
+            payload = {'kind': 'visual', 'item': item['id'], 'version': version,
+                       'card': card(issue, target, item['id'], version, state.get('pr'), contract, permit)}
+            delivery = port.invoke('enqueue', {'operation': operation + ':enqueue', 'permit': permit, 'payload': payload}, config)['ref']
+            with flow.io.locked(item, target) as state:
+                state.setdefault('visual_deliveries', {})[version] = {'contract': contract, 'delivery': delivery, 'permit': permit}
+                flow.io.save(item, target, state)
         sent = port.invoke('dispatch', {'ref': delivery}, config)
         if sent['state'] != 'sent':
             return After(pending=True, reason='亲眼看送达结果未确认：' + delivery,
@@ -58,6 +64,52 @@ def after(flow, item, target, services):
         return After(pending=True, reason=str(exc), next='按原送达号回查介入点服务', recheck_after='+1m')
     except WaitRejected as exc:
         return After(blocked=str(exc), next='核对当前交付版本的送达约定')
+
+
+def supported(contract):
+    """飞书私聊里点卡片按钮，或引用卡片回过或不对。"""
+    response = contract['response']
+    return ('飞书' in contract['location'] and '私聊' in contract['location']
+            and ('通过' in response and '不通过' in response or all(w in response for w in ('引用', '过', '不对'))))
+
+
+def plain(text):
+    return {'tag': 'plain_text', 'content': str(text)}
+
+
+# 按钮点击经工作台转发到介入点服务；ns 与服务端 visual_click.NS 是同一份契约。
+CLICK_NS = 'workshop-visual/v1'
+FALLBACK = '按钮没反应时，在 Ash 私聊里引用这张卡回「过」，或「不对：哪里不对」。'
+
+
+def card(issue, target, item, version, pr, contract, permit):
+    """首屏只放人要看的：issue 标题和链接、合并它的 PR、三段约定和两个按钮；对账号码进折叠详情。
+
+    飞书卡片标题不支持链接，链接放在标题下第一行。按钮绑定这一次许可（即这一次送达）和版本；
+    送达号由送达命令写进详情。
+    """
+    number = issue.get('number')
+    url = issue.get('html_url') or 'https://github.com/' + target['repo'] + '/issues/' + str(number)
+    first = '[issue #' + str(number) + '](' + url + ')'
+    if pr:
+        first += '　版本：[PR #' + str(pr) + '](https://github.com/' + target['repo'] + '/pull/' + str(pr) + ')'
+    response = contract['response'] if '引用' in contract['response'] else contract['response'] + '\n' + FALLBACK
+    elements = [{'tag': 'markdown', 'content': first}]
+    for label, text in (('看什么', contract['contract']), ('在哪看', contract['location']), ('怎么回', response)):
+        # 原文的换行和编号照留，不并成一段。
+        elements += [{'tag': 'markdown', 'content': '**' + label + '**'}, {'tag': 'div', 'text': plain(text)}]
+
+    def button(text, kind, choice, **extra):
+        return {'tag': 'button', 'text': plain(text), 'type': kind, **extra, 'behaviors': [{'type': 'callback',
+                'value': {'ns': CLICK_NS, 'permit': permit, 'version': version, 'choice': choice}}]}
+    elements += [button('通过', 'primary', 'pass'),
+                 {'tag': 'form', 'name': 'visual', 'elements': [
+                     {'tag': 'input', 'name': 'reason', 'placeholder': plain('不通过时写哪里不对'), 'max_length': 1000},
+                     button('不通过', 'danger', 'fail', name='fail', form_action_type='submit')]},
+                 {'tag': 'collapsible_panel', 'expanded': False, 'header': {'title': plain('详情')},
+                  'elements': [{'tag': 'div', 'text': plain('活：' + item + '\n合并提交：' + version)}]}]
+    return {'schema': '2.0', 'header': {'title': plain(issue.get('title') or item), 'subtitle': plain('亲眼看'),
+            'template': 'blue'}, 'body': {'elements': elements}}
 
 
 def answer(state):

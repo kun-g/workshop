@@ -35,7 +35,12 @@ with sqlite3.connect(root/'inbox.db') as db:
  db.execute('CREATE TABLE IF NOT EXISTS inbox (key TEXT PRIMARY KEY, payload TEXT)')
  db.execute('INSERT INTO calls VALUES (?,?,?)',(m['action'],m['key'],json.dumps(m['payload'])))
  if m['action']=='send':
-  db.execute('INSERT INTO inbox VALUES (?,?)',(m['key'],json.dumps(m['payload'])))
+  sent=dict(m['payload'])
+  if 'card' in sent:
+   # 卡片照真实送达命令补送达号，收件箱存的就是会发出去的那张。
+   from workshop.plugins.intervention.transport import with_key
+   sent['card']=with_key(sent['card'],m['key'])
+  db.execute('INSERT INTO inbox VALUES (?,?)',(m['key'],json.dumps(sent,ensure_ascii=False)))
   state='unknown' if m['payload']['kind']=='visual' else 'sent'
  else:
   assert db.execute('SELECT 1 FROM inbox WHERE key=?',(m['key'],)).fetchone()
@@ -149,15 +154,14 @@ def verify(args):
         # The business flow uses the same after hook and service as production; no external send.
         from types import SimpleNamespace
         issue_io = IssueIO(state_dir=root/'visual-state')
-        materials = json.loads(args.materials.read_text())
-        issue = next(v['body'] for v in reversed(materials) if v.get('source') == 'github' and isinstance(v.get('body'),dict)
-                     and v['body'].get('text', '').find('## 合并前 DoD') >= 0)
-        issue_body = issue['text']
+        # `gh issue view <号> --json number,title,url,body` 的原样输出：卡片用本单真实标题、链接和正文。
+        view = json.loads(args.issue.read_text())
+        issue = {'number':view['number'], 'title':view['title'], 'html_url':view['url'], 'body':view['body']}
         item = {'id':'workshop:174','stage':'收尾'}
         version = subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip()
-        flow = SimpleNamespace(io=issue_io, _delivery_done=lambda *a: True, _issue=lambda *a: {'body':issue_body})
-        target_visual = {'name':'workshop'}
-        issue_io.save(item,target_visual,{'effects':{},'visual':True,'merge':version,'delivered':[version]})
+        flow = SimpleNamespace(io=issue_io, _delivery_done=lambda *a: True, _issue=lambda *a: issue)
+        target_visual = {'name':'workshop','repo':'kun-g/workshop'}
+        issue_io.save(item,target_visual,{'effects':{},'visual':True,'merge':version,'delivered':[version],'pr':args.pr})
         first = visual.after(flow,item,target_visual,services)
         assert first.pending and first.wait is None
         second = visual.after(flow,item,target_visual,services)
@@ -165,11 +169,31 @@ def verify(args):
         assert second.wait == third.wait
         entry = issue_io.read(item,target_visual)['visual_deliveries'][version]
         emit('visual_uncertain_reconciled', {'version':version,'delivery':entry['delivery'],'wait':entry['wait']})
-        newer = version + '-replay-new-version'
-        state = issue_io.read(item,target_visual); state.update(merge=newer,delivered=[newer]); issue_io.save(item,target_visual,state)
-        visual.after(flow,item,target_visual,services)
-        visual.after(flow,item,target_visual,services)
-        current = issue_io.read(item,target_visual)['visual_deliveries'][newer]
+        def card_of(entry):
+            with sqlite3.connect(root/'inbox.db') as db:
+                return json.loads(db.execute('SELECT payload FROM inbox WHERE key=?',(entry['delivery'],)).fetchone()[0])['card']
+        def click(entry, choice, reason=None, event_id=None, who=None):
+            # 按契约：工作台把 card.action.trigger 原样包进 status_click，一行写进介入点 socket。
+            card = card_of(entry)
+            buttons = [b for e in card['body']['elements'] for b in ([e] + e.get('elements', [])) if b.get('tag') == 'button']
+            value = next(b['behaviors'][0]['value'] for b in buttons if b['behaviors'][0]['value']['choice'] == choice)
+            action = {'tag':'button','value':value, **({'form_value':{'reason':reason}} if reason is not None else {})}
+            event_id = event_id or 'replay-' + choice + '-' + entry['delivery'][-8:]
+            data = {'operation':'workshop-click:' + event_id, 'event':{'header':{'event_id':event_id}, 'event':{
+                'operator':{'open_id':who or rules['intervention']['status']['recipient']},
+                'context':{'open_chat_id':rules['intervention']['status']['chat'],'open_message_id':entry['external']},
+                'action':action}}}
+            result = request(endpoint,'status_click',data)
+            emit('click', {'choice':choice,'form_value':action.get('form_value'),'version':value['version'],'result':result})
+            return result
+        def next_version(name):
+            state = issue_io.read(item,target_visual); state.update(merge=name,delivered=[name]); issue_io.save(item,target_visual,state)
+            visual.after(flow,item,target_visual,services)
+            assert visual.after(flow,item,target_visual,services).wait
+            return issue_io.read(item,target_visual)['visual_deliveries'][name]
+
+        newer = version + '-replay-fail'
+        current = next_version(newer)
         reply = {'operation':'old-reply','ref':current['wait'],'value':'过',
             'source':{'channel':'external','reference':'local-reply','evidence':'隔离回放，不冒充 Kun 真实回答',
                       'version':version,'delivery':entry['delivery']}}
@@ -179,10 +203,24 @@ def verify(args):
             emit('old_reply_rejected', {'reason':str(exc)})
         else:
             raise AssertionError('旧版本回复被接受')
-        reply['source'].update(version=newer,delivery=current['delivery'])
-        port.invoke('answer',{**reply,'operation':'current-reply'},config)
+        assert click(entry,'pass')['state'] == 'rejected'          # 旧版本卡上的按钮
+        assert click(current,'fail','   ')['state'] == 'rejected'   # 不通过空输入
+        assert click(current,'pass',who='ou_replay_other')['state'] == 'rejected'
+        failed = click(current,'fail','隔离回放：标题看不懂')
+        assert failed['accepted'] and failed['answered'] and failed['state'] == 'sent'
+        again = click(current,'fail','隔离回放：标题看不懂',event_id='replay-fail-again')
+        assert again['accepted'] and not again['answered']
+        returned = visual.after(flow,item,target_visual,services)
+        assert returned.rerun and returned.reason == '亲眼看未通过'
+        emit('fail_click_returns', {'version':newer,'after':asdict(returned),
+                                    'answer':visual.answer(issue_io.read(item,target_visual))})
+
+        newest = version + '-replay-pass'
+        current = next_version(newest)
+        passed = click(current,'pass')
+        assert passed['accepted'] and passed['answered'] and passed['answer'] == '过'
         assert visual.after(flow,item,target_visual,services) is None
-        emit('current_reply', {'version':newer,'delivery':current['delivery'],'allowed':True})
+        emit('pass_click_closes', {'version':newest,'delivery':current['delivery'],'allowed':True})
 
         watch = {**rules['targets']['workshop'],'name':'workshop'}
         settings = dict(watch['watch_updates']); watch['watch_updates'] = settings
@@ -223,13 +261,25 @@ def verify(args):
         with sqlite3.connect(root/'inbox.db') as db:
             calls = db.execute('SELECT action,key,payload FROM calls').fetchall()
             inbox = db.execute('SELECT key,payload FROM inbox').fetchall()
-        assert len(inbox)==3
+        # 三版亲眼看卡、两张「已收到」、一份报告。
+        assert sorted(json.loads(p)['kind'] for _,p in inbox) == ['update_report','visual','visual','visual','visual_receipt','visual_receipt']
         for key,payload in inbox:
             sent = [c for c in calls if c[0]=='send' and c[1]==key]
             assert len(sent)==1
             data=json.loads(payload)
             if data['kind']=='update_report':
                 assert data['artifact'].endswith('.html') and 'summary' not in data and 'text' not in data
+            if data['kind']=='visual':
+                card = data['card']
+                shown = json.dumps([card['header'], *(e for e in card['body']['elements'] if e['tag']!='collapsible_panel')],
+                                   ensure_ascii=False)
+                folded = json.dumps(card['body']['elements'][-1], ensure_ascii=False)
+                assert 'text' not in data and data['version'] not in shown and key not in shown
+                assert card['body']['elements'][-1]['expanded'] is False and data['version'] in folded and key in folded
+                if data['version'] == version:
+                    emit('visual_card', {'key':key, 'version':data['version'], 'card':card})
+            if data['kind']=='visual_receipt':
+                emit('visual_receipt', {'key':key, 'card':data['card']})
         emit('inbox', {'records':[{'key':k,'payload':json.loads(p)} for k,p in inbox],
             'calls':[{'action':a,'key':k} for a,k,_ in calls], 'real_feishu_sends':0, 'new_requests':0})
     finally:
@@ -246,7 +296,8 @@ def main():
     parser.add_argument('--batch',type=Path)
     parser.add_argument('--grant-client',type=Path)
     parser.add_argument('--service-python',type=Path)
-    parser.add_argument('--materials',type=Path)
+    parser.add_argument('--issue',type=Path)
+    parser.add_argument('--pr',type=int)
     parser.add_argument('--report',default='wu-daily-2026-11-18-v2')
     parser.add_argument('--feedback',default='om_x100b60ec8b5e7ca0dfc5adda0a64553')
     parser.add_argument('--denied',default='req-1794980414-3d32bd')

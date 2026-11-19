@@ -37,6 +37,22 @@ def attachment_name(content):
         return None
 
 
+def with_key(card, key):
+    """送达号是对账用的，只进默认折叠的「详情」，不占首屏。"""
+    if key in json.dumps(card, ensure_ascii=False):
+        return card
+    card = json.loads(json.dumps(card))
+    elements = card.setdefault('body', {}).setdefault('elements', [])
+    panel = next((e for e in elements if e.get('tag') == 'collapsible_panel'
+                  and e.get('header', {}).get('title', {}).get('content') == '详情'), None)
+    if panel is None:
+        panel = {'tag': 'collapsible_panel', 'expanded': False,
+                 'header': {'title': {'tag': 'plain_text', 'content': '详情'}}, 'elements': []}
+        elements.append(panel)
+    panel['elements'].append({'tag': 'div', 'text': {'tag': 'plain_text', 'content': '送达号：' + key}})
+    return card
+
+
 def deliver(args, message):
     if message.get('action') == 'reply':
         payload = message['payload']
@@ -55,7 +71,7 @@ def deliver(args, message):
     if message.get('action') not in ('send', 'reconcile') or not isinstance(message.get('key'), str):
         raise ValueError('送达操作无效')
     key, payload = message['key'], message['payload']
-    if payload.get('kind') not in ('visual', 'update_report', 'manager_help', 'status_reply'):
+    if payload.get('kind') not in ('visual', 'visual_receipt', 'update_report', 'manager_help', 'status_reply'):
         raise ValueError('未知送达种类')
     root = Path(args.state_dir).expanduser()
     root.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -105,7 +121,8 @@ def deliver(args, message):
         if file:
             value = command(args, [*argv, '--file', file.name], cwd=file.parent)
         elif payload.get('card'):
-            value = command(args, [*argv, '--msg-type', 'interactive', '--content', json.dumps(payload['card'], ensure_ascii=False)])
+            value = command(args, [*argv, '--msg-type', 'interactive',
+                                   '--content', json.dumps(with_key(payload['card'], key), ensure_ascii=False)])
         else:
             value = command(args, [*argv, '--text', payload['text'] + '\n' + marker])
         external = value.get('data', {}).get('message_id')
