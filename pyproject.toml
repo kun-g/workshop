@@ -15,6 +15,7 @@ workshop = "workshop.cli:main"
 [project.entry-points."workshop.selector"]
 ordered = "workshop.plugins.selectors.ordered:make_selector"
 quota = "workshop.plugins.selectors.quota:make_selector"
+experiment = "workshop.plugins.selectors.experiment:make_selector"
 
 [project.entry-points."workshop.flow"]
 issue_delivery = "workshop.plugins.issue_delivery:make_flow"

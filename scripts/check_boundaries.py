@@ -91,6 +91,7 @@ source_modules =
     workshop.github_identity
     workshop.path_policy
     workshop.running
+    workshop.quota_gate
 forbidden_modules = workshop.plugins
 """
 (root / ".local").mkdir(exist_ok=True)
