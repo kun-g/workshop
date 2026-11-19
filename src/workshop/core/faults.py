@@ -241,15 +241,23 @@ def restore_items(engine, target, plugin=None, failure_key=None):
                       plugin_failure_key=None, plugin_retry_at=None)
 
 
-def clear_broken(engine, key, control):
-    """解除一段插件隔离并恢复被它卡住的活；手动 resume 和到点自动重试走同一条路。"""
+def clear_broken(engine, key, control, *, wake=False):
+    """解除一段插件隔离并恢复被它卡住的活；手动 resume 和到点自动重试走同一条路。
+
+    解锁、恢复活和到点事实在同一个事务里：中途失败整笔回滚，下一拍仍能看到
+    auto_retry 再试，不会留下「已解除隔离但活还卡着」的中间状态。
+    """
     with engine.log.transaction():
+        if wake:
+            engine.fact("plugin_retry_wake", {"id": key, "target": control.get("target"),
+                                              "plugin": control.get("plugin"),
+                                              "retry_at": control.get("retry_at"),
+                                              "count": control.get("retry_count")})
         engine.fact("control", {"id": key, "broken": False, "action_blocked": False,
                                 "auto_retry": False, "retry_at": None})
-    target = control.get("target")
-    if not target:
-        return
-    restore_items(engine, target, control.get("plugin"), failure_key=key)
+        target = control.get("target")
+        if target:
+            restore_items(engine, target, control.get("plugin"), failure_key=key)
 
 
 def wake_broken(engine):
@@ -262,9 +270,6 @@ def wake_broken(engine):
     for control in engine.log.all("controls", where=("auto_retry", True)):
         if not control.get("broken") or not control.get("retry_at") or control["retry_at"] > now:
             continue
-        engine.fact("plugin_retry_wake", {"id": control["id"], "target": control.get("target"),
-                                          "plugin": control.get("plugin"), "retry_at": control["retry_at"],
-                                          "count": control.get("retry_count")})
-        clear_broken(engine, control["id"], control)
+        clear_broken(engine, control["id"], control, wake=True)
         woke = True
     return woke

@@ -12,12 +12,13 @@ import threading
 import pytest
 import yaml
 
-from workshop.core.managers import Store, Coordinator, observe_items, instructions
+from workshop.core.managers import Store, Coordinator, observe_items, observe_failures, instructions
 from workshop.core.models import Started
-from workshop.core.ports import InputBlocked
+from workshop.core.ports import InputBlocked, Retryable
 from workshop.core.activity import snapshot
 from workshop.plugins.intervention.service import Service
 from workshop.plugins.intervention.manager import help_card
+from conftest import event as make_event, item
 
 NOW = '2026-11-18T00:00:00+00:00'
 ROOT = Path(__file__).resolve().parents[1]
@@ -744,3 +745,44 @@ def test_compact_managers_cli_reports_sizes_and_missing(tmp_path, capsys):
     empty.mkdir()
     assert main(['--state-dir', str(empty), 'compact-managers']) == 0
     assert '没有 managers.db' in capsys.readouterr().out
+
+
+def test_auto_retry_isolation_does_not_observe_or_start_manager(engine, coordinator):
+    c, executors = coordinator
+    engine.ingest(make_event())
+    engine.tick()
+    engine.broken('alpha', 'flow', 'flow', Retryable('暂时不通'),
+                  retry={'at': NOW, 'count': 3, 'key': 'start:alpha:flow'})
+    assert item(engine)['plugin_blocked'] and item(engine)['plugin_retry_at']
+    observe_items(c.store, engine.log.open_items(), 'core', NOW)
+    observe_failures(c.store, engine.log, 'core', NOW, engine.rules)
+    assert c.store.all() == []
+    drive(c)
+    assert all(not executor.calls for executor in executors.values())
+
+
+def test_permanent_isolation_still_observes_and_starts_manager(engine, coordinator):
+    c, executors = coordinator
+    engine.ingest(make_event())
+    engine.tick()
+    engine.broken('alpha', 'flow', 'flow', TypeError('bad code'))
+    observe_items(c.store, engine.log.open_items(), 'core', NOW)
+    observe_failures(c.store, engine.log, 'core', NOW, engine.rules)
+    assert {row['id'] for row in c.store.all()} == {'fault:alpha', 'item:alpha:one'}
+    drive(c)
+    assert len([call for call in executors['one'].calls if call[0] == 'launch']) == 2
+
+
+def test_item_concern_is_resolved_when_it_enters_auto_retry(engine, coordinator):
+    c, _ = coordinator
+    engine.ingest(make_event())
+    engine.tick()
+    current = engine.log.get('items', 'alpha:one')
+    engine.change(current, state='卡住', next='等项目经理', blocked_by='别的原因',
+                  leave={'kind': '工序', 'owner': '项目经理', 'about': '等项目经理'})
+    observe_items(c.store, engine.log.open_items(), 'core', NOW)
+    assert c.store.all()[0]['id'] == 'item:alpha:one' and c.store.all()[0]['active']
+    engine.broken('alpha', 'flow', 'flow', Retryable('暂时不通'),
+                  retry={'at': NOW, 'count': 3, 'key': 'start:alpha:flow'})
+    observe_items(c.store, engine.log.open_items(), 'core', NOW)
+    assert c.store.all()[0]['active'] is False

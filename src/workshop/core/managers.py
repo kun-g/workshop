@@ -442,7 +442,8 @@ class Coordinator:
 def observe_items(store, items, owner, now):
     active = set()
     for item in items:
-        if item['state'] == '卡住':
+        # 自动重试的插件隔离由车间到点自己恢复，不登记事项、不占项目经理会话。
+        if item['state'] == '卡住' and not item.get('plugin_retry_at'):
             key = 'item:' + item['id']
             active.add(key)
             store.observe(key, {'item': item['id'], 'title': item.get('title'),
@@ -461,7 +462,10 @@ def observe_failures(store, log, owner, now, rules):
         delivery = ident.startswith('delivery:')
         if delivery and control.get('failed') and delivery_retired(rules, ident[len('delivery:'):]):
             continue
-        if control.get('broken') or delivery and control.get('failed'):
+        # 自动重试的插件隔离由车间到点自己恢复；只有代码错误（没有 auto_retry）
+        # 才登记事项、起项目经理会话。已登记的事项会在下面的循环里解除。
+        if ((control.get('broken') and not control.get('auto_retry'))
+                or (delivery and control.get('failed'))):
             key = 'fault:' + ident
             active.add(key)
             store.observe(key, {'reason': '插件需要恢复', 'control': control}, owner, now)

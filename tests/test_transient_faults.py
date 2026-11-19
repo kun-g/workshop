@@ -4,6 +4,7 @@ from datetime import datetime, timedelta
 import pytest
 
 from conftest import build, configuration, event, item
+from workshop.core import faults
 from workshop.core.ports import Retryable, WaitUnavailable
 from workshop.github_identity import IdentityError
 from workshop.reports.manager_status import sections
@@ -130,6 +131,36 @@ def test_woken_cleanup_is_retried_in_the_same_process(engine):
     assert not engine.control('alpha').get('broken')
     assert calls == ['alpha']
     assert not engine.control('retry:cleanup:alpha:flow').get('count')
+
+
+def test_wake_is_all_or_nothing_when_restoring_an_item_fails(engine):
+    engine.ingest(event())
+    engine.ingest(event(key='two', ext_id='2'))
+    engine.tick()
+    at = (engine.clock() + timedelta(hours=1)).isoformat()
+    engine.broken('alpha', 'flow', 'flow', Retryable('暂时不通'),
+                  retry={'at': at, 'count': 3, 'key': 'start:alpha:flow'})
+    assert item(engine, key='one')['plugin_blocked'] and item(engine, key='two')['plugin_blocked']
+    engine.clock.now = datetime.fromisoformat(at)
+    original = engine.change
+    def interrupted(target, *args, **kwargs):
+        if target['id'] == 'alpha:two':
+            raise RuntimeError('写恢复事实时进程被打断')
+        return original(target, *args, **kwargs)
+    engine.change = interrupted
+    with pytest.raises(RuntimeError):
+        faults.wake_broken(engine)
+    engine.change = original
+    # 清控制和逐件恢复在同一事务里：失败整笔回滚，控制仍是自动重试，活仍卡着。
+    control = engine.control('alpha')
+    assert control['broken'] and control['auto_retry'] and control['retry_at'] == at
+    assert item(engine, key='one')['plugin_blocked'] and item(engine, key='two')['plugin_blocked']
+    assert not [fact for fact in engine.log.facts() if fact['kind'] == 'plugin_retry_wake']
+    # 下一拍还看得到这条自动重试；这次恢复成功，两件活都回到原状。
+    assert faults.wake_broken(engine) is True
+    assert not engine.control('alpha').get('broken')
+    assert not item(engine, key='one').get('plugin_blocked')
+    assert not item(engine, key='two').get('plugin_blocked')
 
 
 def test_status_and_manager_item_show_auto_retry_time(engine):
