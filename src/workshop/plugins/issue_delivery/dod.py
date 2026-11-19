@@ -85,6 +85,9 @@ def registration(body, target, documents=None):
         for name, value in visual_contract(body).items():
             if not value:
                 problems.append('亲眼看缺「' + {'contract': '看什么：', 'location': '在哪看：', 'response': '怎么回：'}[name] + '」段')
+        if not visual_confirmed(body):
+            # 介入点 R9、issue交付 R7：要 Kun 验收的，开单前和他确认过，原话带会话号留在这里。
+            problems.append('亲眼看缺「Kun 确认：」段（Kun 对看什么的原话，> 引用，带会话号）')
     after = section(body, "上线后 DoD")
     if after:
         try:
@@ -150,6 +153,16 @@ def visual_contract(body):
     text = section(body, '要不要亲眼看')
     result = {}
     for key, label in (('contract', '看什么'), ('location', '在哪看'), ('response', '怎么回')):
-        match = re.search(r'^' + label + r'：(.*?)(?=^(?:看什么|在哪看|怎么回)：|\Z)', text, re.M | re.S)
+        match = re.search(r'^' + label + r'：(.*?)(?=^(?:看什么|在哪看|怎么回|Kun 确认)：|\Z)', text, re.M | re.S)
         result[key] = match[1].strip() if match else ''
     return result
+
+
+def visual_confirmed(body):
+    """「Kun 确认：」段里至少一行 > 引用的原话，并写明出自哪个会话（会话号）。"""
+    text = section(body, '要不要亲眼看')
+    match = re.search(r'^Kun 确认：(.*?)(?=^(?:看什么|在哪看|怎么回)：|\Z)', text, re.M | re.S)
+    if not match:
+        return False
+    return (bool(re.search(r'^\s*>\s*\S', match[1], re.M))
+            and bool(re.search(r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}', match[1])))

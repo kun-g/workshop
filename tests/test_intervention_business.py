@@ -84,12 +84,28 @@ def test_execution_result_does_not_accept_another_original_request():
     assert not verify(spec(), record)['applied']
 
 
+CONFIRM = 'Kun 确认：2026-11-19，会话 `2ba67f64-4e2b-47b0-9213-00c871c6e28c`：\n> 看版本就行\n'
+
+
 def test_visual_registration_requires_each_contract_paragraph():
-    body = '## 要不要亲眼看\n是\n看什么：版本\n在哪看：手机飞书\n怎么回：引用回复过或不对\n'
+    body = '## 要不要亲眼看\n是\n看什么：版本\n在哪看：手机飞书\n怎么回：引用回复过或不对\n' + CONFIRM
     assert all(dod.visual_contract(body).values())
+    assert dod.visual_contract(body)['response'] == '引用回复过或不对'
+    assert not any('亲眼看' in s for s in dod.registration(body, {})[0])
     for label in ('看什么', '在哪看', '怎么回'):
         missing = '\n'.join(line for line in body.splitlines() if not line.startswith(label + '：'))
         assert any(label in s for s in dod.registration(missing, {})[0])
+
+
+def test_visual_registration_requires_kun_confirmation_with_quote_and_session():
+    base = '## 要不要亲眼看\n是\n看什么：版本\n在哪看：手机飞书\n怎么回：引用回复过或不对\n'
+    for body in (base,
+                 base + 'Kun 确认：会话 `2ba67f64-4e2b-47b0-9213-00c871c6e28c`，Kun 说可以\n',
+                 base + 'Kun 确认：\n> 看版本就行\n'):
+        assert any('Kun 确认' in s for s in dod.registration(body, {})[0])
+    assert not any('Kun 确认' in s for s in dod.registration(base + CONFIRM, {})[0])
+    no = '## 要不要亲眼看\n否\n'
+    assert not any('Kun 确认' in s for s in dod.registration(no, {})[0])
 
 
 def test_report_uses_service_preserves_key_and_reconciles_uncertain(service, tmp_path):
