@@ -1,4 +1,4 @@
-"""仅本机用户可访问；一个服务串行提交请求，独立安装可启动。"""
+"""仅本机用户可访问；连接并发处理，外部送达仍串行，独立安装可启动。"""
 import fcntl
 import json
 import os
@@ -8,6 +8,13 @@ import stat
 from .client import MAX_BYTES
 from .service import Service
 from .store import encode
+
+
+class Server(socketserver.ThreadingUnixStreamServer):
+    """一条慢请求只占自己的线程；共享数据库由 Store 的锁守住。"""
+    daemon_threads = True
+    # 突发连接不再因为默认 backlog 只有 5 而 ECONNREFUSED。
+    request_queue_size = 64
 
 
 class Handler(socketserver.StreamRequestHandler):
@@ -46,7 +53,7 @@ def serve(state, rules, endpoint, ready_fd=None):
         endpoint.unlink(missing_ok=True)
         service = Service(state, rules)
         try:
-            with socketserver.UnixStreamServer(str(endpoint), Handler) as server:
+            with Server(str(endpoint), Handler) as server:
                 endpoint.chmod(0o600)
                 server.service = service
                 server.changed = endpoint.with_suffix(".changed")

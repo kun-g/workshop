@@ -5,6 +5,7 @@ import os
 import sys
 from pathlib import Path
 import subprocess
+import threading
 import yaml
 from datetime import datetime, timezone
 from .store import Store, encode, required
@@ -14,8 +15,12 @@ from . import manager, visual_click
 class Service:
     def __init__(self, state, rules):
         self.rules = Path(rules)
+        self.state = Path(state)
         self.configuration()
-        self.store = Store(Path(state) / 'intervention.db')
+        self.store = Store(self.state / 'intervention.db')
+        # 连接和只读请求并发处理；外部送达保持串行，一次只推进一条，
+        # 同一送达不会在两个线程里各发一次。调用方超时重试前仍须先对账。
+        self.dispatch_lock = threading.Lock()
 
     def configuration(self):
         document = yaml.safe_load(self.rules.read_text())
@@ -130,10 +135,8 @@ class Service:
             return self.dispatch(data['ref'])
         handlers = {'create': self.create, 'answer': self.answer, 'ack': self.ack,
                     'permit': self.permit, 'enqueue': self.enqueue, 'cancel': self.cancel,
-                    'manager_update': lambda key, data: manager.update(self, key, data),
-                    'status_click': lambda key, data: (visual_click.click if ((data['event'].get('event') or {}).get('action') or {})
-                                                       .get('value', {}).get('ns') == visual_click.NS else manager.click)(self, key, data)}
-        if action not in handlers:
+                    'manager_update': lambda key, data: manager.update(self, key, data)}
+        if action not in handlers and action != 'status_click':
             raise ValueError('未知操作')
         if action == 'status_click':
             context = data['event'].get('event', {})
@@ -143,7 +146,18 @@ class Service:
                 return {'state': 'rejected', 'accepted': False, 'reason': '只接受指定本人私聊点击'}
         key = required(data.get('operation'), 'operation')
         payload = {k: v for k, v in data.items() if k != 'operation'}
-        result = self.store.operation(key, action, payload, lambda: handlers[action](key, payload))
+        ns = (((data.get('event') or {}).get('event') or {}).get('action') or {}).get('value', {}).get('ns') if action == 'status_click' else None
+        if action == 'status_click' and ns != visual_click.NS:
+            # 状态回卡的只读命令在事务外跑；重复点击直接返回原结果，不再跑命令。
+            result = self.store.result(key, action, payload)
+            if result is None:
+                prepared = manager.prepare(self, payload)
+                result = self.store.operation(key, action, payload,
+                                              lambda: manager.click(self, key, payload, prepared))
+        elif action == 'status_click':
+            result = self.store.operation(key, action, payload, lambda: visual_click.click(self, key, payload))
+        else:
+            result = self.store.operation(key, action, payload, lambda: handlers[action](key, payload))
         if action == 'status_click' and result.get('accepted'):
             delivery = self.dispatch(result['ref'])
             result = {**result, 'delivery': delivery, 'state': delivery['state'], 'external': delivery.get('external')}
@@ -318,14 +332,35 @@ class Service:
         return value
 
     def dispatch(self, ref):
+        with self.dispatch_lock:
+            return self._dispatch(ref)
+
+    def _begin_send(self, ref):
+        """写发送意图的同一事务里重读送达和许可：这期间被取消或规则不再允许，就不发。"""
+        with self.store.transaction():
+            record = self.store.get(ref, 'delivery')
+            if record['state'] in ('sent', 'cancelled'):
+                return record
+            if record['payload'].get('kind') not in ('status_reply', 'visual_receipt'):
+                permit = self.store.get(record['permit'], 'permit')
+                policy, _ = self.policy(permit['point'])
+                if permit['cancelled'] or policy.get('send') is not True:
+                    cancelled = {**record, 'state': 'cancelled', 'external': None, 'error': None}
+                    self.store.put('delivery', ref, cancelled, 'cancelled')
+                    return cancelled
+            sending = {**record, 'state': 'sending', 'external': None, 'error': None}
+            self.store.put('delivery', ref, sending, 'sending')
+            return sending
+
+    def _dispatch(self, ref):
         record = self.store.get(ref, 'delivery')
         if record['state'] in ('sent', 'cancelled'):
             return record
         if record['payload'].get('kind') in ('status_reply', 'visual_receipt'):
-            permit, policy, config = {'cancelled': False}, {'send': True}, self.configuration()
+            config = self.configuration()
         else:
             permit = self.store.get(record['permit'], 'permit')
-            policy, config = self.policy(permit['point'])
+            _, config = self.policy(permit['point'])
         try:
             if record['state'] in ('sending', 'uncertain'):
                 # 发送后的崩溃窗口必须先对账；即使许可取消，也保留已送达的真实结果。
@@ -334,9 +369,11 @@ class Service:
                     return self.delivery_state(record, 'sent', result['external'])
                 if result['state'] != 'absent':
                     return self.delivery_state(record, 'uncertain')
-            if permit['cancelled'] or policy.get('send') is not True:
-                return self.delivery_state(record, 'cancelled')
-            self.delivery_state(record, 'sending')  # 提交发送意图，才调用通道。
+            # 对账最多 20 秒，这期间许可可能被取消。写发送意图时在事务里重读，
+            # 确定没发出且许可已取消或规则停用时记 cancelled，不再调 send。
+            record = self._begin_send(ref)
+            if record['state'] != 'sending':
+                return record
             result = self.transport(config, 'send', record)
             if result['state'] == 'sent':
                 return self.delivery_state(record, 'sent', result['external'])
