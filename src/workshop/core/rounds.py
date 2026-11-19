@@ -27,6 +27,35 @@ def automatic_failure(engine, token, reason):
             engine.fact("round_changed", {"token": token, "automatic_failure": True}, latest["item"])
 
 
+POLL_RETRIES = 3
+
+
+def poll_retry(engine, row, exc):
+    """刚起来时执行者常报一次看不清；同一轮连续 3 次才记失败标记。"""
+    count = row.get("poll_retries", 0) + 1
+    if count <= POLL_RETRIES:
+        engine.fact("round_changed", {"token": row["token"], "poll_retries": count}, row["item"])
+    if count >= POLL_RETRIES:
+        engine.delivery_error(f"poll:{row['token']}", exc, row["item"])
+
+
+def poll_ok(engine, row):
+    if row.get("poll_retries"):
+        engine.fact("round_changed", {"token": row["token"], "poll_retries": 0}, row["item"])
+    engine.delivery_ok(f"poll:{row['token']}")
+
+
+def clear_polls(engine):
+    """没在跑的轮（交了回执、判了失败、结束了）留下的轮询失败标记一并清掉。"""
+    prefix = "delivery:poll:"
+    for control in engine.log.all("controls", where=("failed", True)):
+        if not control["id"].startswith(prefix):
+            continue
+        row = engine.log.get("rounds", control["id"][len(prefix):])
+        if not row or row["status"] not in ("starting", "running") or row.get("receipt") is not None:
+            engine.delivery_ok(control["id"][len("delivery:"):])
+
+
 def check_round(engine, row):
     with engine.log.transaction():
         row = engine.log.get("rounds", row["token"])
@@ -41,12 +70,13 @@ def check_round(engine, row):
                               Started(**row["started"]) if row.get("started") else None, identity=[row["token"]])
             if state not in ("running", "exited"):
                 raise ValueError("执行者返回了未知存活状态")
+            poll_ok(engine, row)
             if state == "exited":
                 reason = "执行者已退出但没有交回执"
         except Pending:
             return
         except Retryable as exc:
-            engine.delivery_error(f"poll:{row['token']}", exc, row["item"])
+            poll_retry(engine, row, exc)
             return
     if reason:
         # poll 期间可能刚交回执；自动失败与真实回执由同一个写事务仲裁。
@@ -304,7 +334,7 @@ def finish(engine, row):
 
 
 def drive(engine):
-    """结算当前还开着的每一轮。"""
+    """结算当前还开着的每一轮；最后清掉已经不在跑的轮留下的轮询失败标记。"""
     for row in engine.active():
         item = engine.log.get("items", row["item"])
         try:
@@ -333,3 +363,4 @@ def drive(engine):
             engine.start_retry(item, row, "executor", row["executor"], exc)
         except Exception as exc:
             engine.broken(item["target"], "executor", row["executor"], exc)
+    clear_polls(engine)

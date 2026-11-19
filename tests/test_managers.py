@@ -217,6 +217,39 @@ def test_idle_shared_quota_restart_later_conclusions_status_only(service):
     assert len(sent) == 4
 
 
+def test_pushed_concerns_are_not_pushed_again_across_idle_segments(service):
+    """11-19 回放：同样成员连续三段空闲只发第一张；第三段多一件新事，只发这一件。"""
+    s, sent = service
+    segments = ['2026-11-19T03:37:00+00:00', '2026-11-19T05:03:00+00:00', '2026-11-19T06:00:00+00:00']
+    for n in ('a', 'b'):
+        update(s, record(n, idle=segments[0]))
+    s.call('manager_flush', {})
+    assert [p['members'] for _, _, p in sent] == [['a', 'b']]
+    for n in ('a', 'b'):
+        update(s, record(n, revision=2, idle=segments[1]))
+    s.call('manager_flush', {})
+    assert len(sent) == 1
+    for n in ('a', 'b'):
+        update(s, record(n, revision=3, idle=segments[2]))
+    fresh = record('c', idle=segments[2])
+    fresh['conclusion'].update(action='清理残留问卡', evidence='问卡还挂着')
+    update(s, fresh)
+    s.call('manager_flush', {})
+    assert len(sent) == 2
+    card = sent[1][2]
+    assert card['members'] == ['c'] and card['primary'] == 'c'
+    assert card['card']['header']['title']['content'] == '清理残留问卡'
+    panel = card['card']['body']['elements'][1]['elements']
+    assert [b['content'] for b in panel] == ['**清理残留问卡**\n问卡还挂着']
+    # 别的活跑起来后，推过的事不按「一件事一次」再推；没推过的照旧推一次。
+    for n in ('a', 'b', 'c'):
+        update(s, record(n, revision=4, total=1))
+    update(s, record('d', total=1))
+    s.call('manager_flush', {})
+    s.call('manager_flush', {})
+    assert [p['members'] for _, _, p in sent[2:]] == [['d']]
+
+
 def test_resolve_cancels_queued_and_stale_update_cannot_reopen(service):
     s, sent = service
     update(s, record())

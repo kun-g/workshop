@@ -87,6 +87,13 @@ def update(service, key, data):
     return {'ref': ref}
 
 
+def pushed(service):
+    """求助卡带过的事：没撤销的 manager_help 送达里的成员（项目经理事项的 episode）。"""
+    return {episode for r in service.store.all('delivery')
+            if r['payload'].get('kind') == 'manager_help' and r['state'] != 'cancelled'
+            for episode in r['payload'].get('members', [])}
+
+
 def queue(service, row):
     key, ref = row['episode'], service.store.identity('manager', row['id'])
     conclusion = row.get('conclusion') or {}
@@ -95,15 +102,19 @@ def queue(service, row):
     business = row.get('business', {})
     if business.get('total') is None:
         return {'ref': ref}  # 没有可信业务快照，不能选择额度归属。
+    done = pushed(service)
+    if row['episode'] in done:
+        return {'ref': ref}  # 推过的事后来的结论只更新状态。
     scope = 'incident:' + row['episode'] if business['total'] > 0 else 'idle:' + required(business.get('idle_since'), 'idle_since')
+    # 同一张卡只并同一栏、没推过的事项：等你的活在「等你」栏，不混进「处理不了」的卡。
+    known = [r for r in service.store.all('manager') if r['active'] and r['state'] in ('blocked', 'unavailable')
+             and r['episode'] not in done
+             and (r.get('conclusion') or {}).get('status_location') == conclusion.get('status_location')
+             and (scope.startswith('idle:') and r.get('business', {}).get('idle_since') == business.get('idle_since') or r['episode'] == row['episode'])]
     permit = service.permit(key, {'point': 'manager_help', 'scope': scope, 'owner': row['id'], 'basis': conclusion})
     delivery_id = service.store.identity('delivery', permit['ref'])
     if any(r['id'] == delivery_id for r in service.store.all('delivery')) or permit['cancelled']:
-        return {'ref': ref}  # 同范围后续结论只更新状态。
-    # 同一张卡只并同一栏的事项：等你的活在「等你」栏，不混进「处理不了」的卡。
-    known = [r for r in service.store.all('manager') if r['active'] and r['state'] in ('blocked', 'unavailable')
-             and (r.get('conclusion') or {}).get('status_location') == conclusion.get('status_location')
-             and (scope.startswith('idle:') and r.get('business', {}).get('idle_since') == business.get('idle_since') or r['episode'] == row['episode'])]
+        return {'ref': ref}  # 同范围只推一次；之后的结论只更新状态。
     combined = dict(conclusion)
     lines = [(r.get('conclusion') or {}).get('action', '') + '：' + (r.get('conclusion') or {}).get('evidence', '') for r in known]
     combined['evidence'] = '\n'.join(clip(line, (300 - len(lines) + 1) // len(lines)) for line in lines)
