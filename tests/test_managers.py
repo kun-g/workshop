@@ -2,6 +2,7 @@
 from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
 import json
+import os
 from pathlib import Path
 from types import SimpleNamespace
 import sys
@@ -371,6 +372,112 @@ def test_program_jobs_break_idle_even_when_finished_between_ticks(engine):
 def test_first_idle_sample_starts_now_even_with_old_completed_round(engine):
     engine.log.db.execute('INSERT INTO rounds VALUES (?,?)',('old',json.dumps({'token':'old','status':'ended','ended':'2020-01-01T00:00:00+00:00'})))
     assert snapshot(engine,{},NOW)['idle_since']==NOW
+
+
+def test_idle_heartbeat_reads_no_files_of_completed_jobs(engine, monkeypatch):
+    """几千个已完成作业：确认过扫描起点的下一拍只 stat 目录，不读任何文件。"""
+    from workshop.core import activity as activity_module
+    from workshop.core.jobs import write
+    root=engine.log.path.parent/'jobs'
+    root.mkdir(parents=True)
+    finished=(datetime.fromisoformat(NOW)-timedelta(hours=2)).timestamp()
+    old=(datetime.fromisoformat(NOW)-timedelta(hours=1)).timestamp()
+    for index in range(3000):
+        path=root/f'job-{index}'
+        path.mkdir()
+        write(path/'spec.json', {'port':'flow','method':'assess','item':f'alpha:{index}','materials':['x'*2000]})
+        write(path/'result.json', {'ok':None,'finished':finished,'port':'flow','method':'assess','item':f'alpha:{index}'})
+        os.utime(path, (old, old))
+    first=snapshot(engine,{},NOW)
+    seen=[]
+    real=activity_module.read
+    monkeypatch.setattr(activity_module,'read',lambda path: seen.append(path) or real(path))
+    second=snapshot(engine,first,(datetime.fromisoformat(NOW)+timedelta(seconds=1)).isoformat())
+    assert second['total']==0 and second['job_ids']==[]
+    assert seen==[]
+
+
+def test_running_job_is_carried_between_ticks_without_reading_its_spec(engine, monkeypatch):
+    """上一拍在跑的作业目录这一拍不再按 mtime 扫，照 job_ids 核对锁即可。"""
+    import fcntl
+    from workshop.core import activity as activity_module
+    from workshop.core.jobs import write
+    root=engine.log.path.parent/'jobs'
+    live=root/'busy'; live.mkdir(parents=True)
+    write(live/'spec.json', {'port':'flow','method':'brief','item':'alpha:one','materials':['x'*200000]})
+    old=(datetime.fromisoformat(NOW)-timedelta(hours=1)).timestamp()
+    os.utime(live, (old, old))
+    with (live/'lock').open('a') as lock:
+        fcntl.flock(lock,fcntl.LOCK_EX)
+        first=snapshot(engine,{},NOW)
+        assert first['jobs']==1 and first['job_ids']==['busy']
+        seen=[]
+        real=activity_module.read
+        monkeypatch.setattr(activity_module,'read',lambda path: seen.append(path) or real(path))
+        second=snapshot(engine,first,(datetime.fromisoformat(NOW)+timedelta(seconds=10)).isoformat())
+        assert second['jobs']==1 and second['job_ids']==['busy']
+    assert not [path for path in seen if path.name=='spec.json']
+
+
+def test_job_completed_between_ticks_breaks_idle_using_result_identity(engine, monkeypatch):
+    """两拍之间开工又完成的作业：按目录 mtime 找到，结果自带调用身份，不读大 spec。"""
+    from workshop.core import activity as activity_module
+    from workshop.core.jobs import write
+    root=engine.log.path.parent/'jobs'
+    root.mkdir(parents=True)
+    first=snapshot(engine,{'total':0,'idle_since':NOW,'last_activity_at':None},NOW)
+    assert first['scanned_at']==NOW
+    at=datetime.fromisoformat(NOW)+timedelta(seconds=20)
+    path=root/'brief'; path.mkdir()
+    write(path/'spec.json', {'port':'flow','method':'brief','item':'alpha:one','materials':['x'*200000]})
+    write(path/'result.json', {'ok':{},'finished':at.timestamp(),'port':'flow','method':'brief','item':'alpha:one'})
+    os.utime(path, (at.timestamp(), at.timestamp()))
+    seen=[]
+    real=activity_module.read
+    monkeypatch.setattr(activity_module,'read',lambda p: seen.append(p) or real(p))
+    later=snapshot(engine,first,(at+timedelta(seconds=20)).isoformat())
+    assert later['idle_since']==at.isoformat()
+    assert not [p for p in seen if p.name=='spec.json']
+
+
+def test_job_completed_between_ticks_with_old_result_format_reads_spec(engine):
+    """旧作业进程写的结果没有调用身份，回落到读 spec 认出业务作业。"""
+    from workshop.core.jobs import write
+    root=engine.log.path.parent/'jobs'
+    root.mkdir(parents=True)
+    first=snapshot(engine,{'total':0,'idle_since':NOW,'last_activity_at':None},NOW)
+    at=datetime.fromisoformat(NOW)+timedelta(seconds=20)
+    path=root/'legacy'; path.mkdir()
+    write(path/'spec.json', {'port':'flow','method':'assess','item':'alpha:one'})
+    write(path/'result.json', {'ok':{},'finished':at.timestamp()})
+    os.utime(path, (at.timestamp(), at.timestamp()))
+    later=snapshot(engine,first,(at+timedelta(seconds=20)).isoformat())
+    assert later['idle_since']==at.isoformat()
+
+
+def test_old_heartbeat_without_scan_start_scans_from_its_own_at(engine, monkeypatch):
+    """升级后第一拍：旧心跳没有 scanned_at，用它自己的 at 当扫描起点，不回头读历史作业。"""
+    from workshop.core import activity as activity_module
+    from workshop.core.jobs import write
+    at=engine.clock().isoformat()
+    root=engine.log.path.parent/'jobs'
+    root.mkdir(parents=True)
+    old=(datetime.fromisoformat(at)-timedelta(hours=1)).timestamp()
+    for index in range(100):
+        path=root/f'job-{index}'
+        path.mkdir()
+        write(path/'spec.json', {'port':'flow','method':'assess','item':f'alpha:{index}'})
+        write(path/'result.json', {'ok':None,'finished':old-60})
+        os.utime(path, (old, old))
+    (engine.log.path.parent/'heartbeat.json').write_text(json.dumps(
+        {'at':at,'business':{'total':0,'idle_since':at,'last_activity_at':None,'job_ids':[]}}))
+    seen=[]
+    real=activity_module.read
+    monkeypatch.setattr(activity_module,'read',lambda path: seen.append(path) or real(path))
+    engine.tick()
+    assert seen==[]
+    beat=json.loads((engine.log.path.parent/'heartbeat.json').read_text())
+    assert beat['business']['scanned_at']==at
 
 
 def test_shared_ledger_lock_does_not_allow_two_owners(tmp_path):

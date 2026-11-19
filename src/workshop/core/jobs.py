@@ -127,6 +127,12 @@ def read(path):
         return None
 
 
+def call_identity(spec):
+    """结果里带上这次调用是谁。心跳按目录 mtime 找新结果，直接从结果认业务作业，不读大 spec。"""
+    spec = spec or {}
+    return {'port': spec.get('port'), 'method': spec.get('method'), 'item': spec.get('item')}
+
+
 def held(path):
     """作业进程还持有锁：还在跑。"""
     try:
@@ -299,8 +305,9 @@ class Jobs:
                     os.killpg(pid, signal.SIGKILL)
                 except ProcessLookupError:
                     pass
+            spec = read(path / "spec.json") or {}
             write(path / "result.json", {"error": {"kind": "Retryable", "message": f"作业启动失败：{exc!r}"},
-                                         "finished": self.clock()})
+                                         "finished": self.clock(), **call_identity(spec)})
         finally:
             os.close(lock)
             os.close(output)
@@ -383,5 +390,6 @@ def execute(path, plugins: Plugins, lookup=None):
         kind = next((name for name, cls in ERRORS.items() if isinstance(exc, cls)), "error")
         result = {"error": {"kind": kind, "message": str(exc), "repr": repr(exc)}}
     result["finished"] = time.time()
+    result.update(call_identity(spec))
     write(path / "result.json", result)
     ring(path.parent.parent)
