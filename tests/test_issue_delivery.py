@@ -758,3 +758,36 @@ def test_non_runtime_merge_delivers_without_waiting_for_release(world, monkeypat
     assert (world['sha'] in state.get('delivered', [])) is (not wait)
     if not wait:
         assert not any(c[0] == 'kubectl' for c in calls(world))
+
+
+@pytest.mark.parametrize('release', ['scheduled', 'tag'])
+def test_unreadable_pr_files_count_as_release_then_recheck_decides(world, monkeypatch, release):
+    """取不到 PR 文件列表按要上线（issue交付 R4）；下一次回查取到且全在忽略路径时改判免上线并收尾。"""
+    target = {**world['target'], 'release': release, 'release_ignored_paths': ['docs/', '**/tests/', '*.md']}
+    data = snapshot(world, '交付')
+    remote = edit(world)
+    remote['pr']['changed_files'] = 1
+    edit(world, pr=remote['pr'])
+    world['io'].save(data, target, {'effects': {}, 'issue': 7, 'dod_head': world['sha']})
+    pages = world['io'].pages
+    # 合并确认时记需求文档那次读取成功；之后免上线判断那次失败，再下一次回查又取到。
+    readable = iter([True, False, True])
+
+    def files(endpoint):
+        if '/files?' not in endpoint:
+            return pages(endpoint)
+        if not next(readable):
+            raise Retryable('gh api 失败：HTTP 502')
+        return [{'filename': 'docs/guide.txt'}]
+    monkeypatch.setattr(world['io'], 'pages', files)
+    first = world['flow'].after(data, '交付', 'unreadable', target)
+    assert first.pending
+    state = world['io'].read(data, target)
+    assert 'non_release_merge' not in state and world['sha'] not in state.get('delivered', [])
+    assert len([c for c in calls(world) if c[0] == 'tag-release.sh']) == (release == 'tag')
+    second = world['flow'].after(data, '交付', 'readable', target)
+    assert not second.pending
+    state = world['io'].read(data, target)
+    assert state['non_release_merge'] == world['sha'] and world['sha'] in state['delivered']
+    assert world['flow']._delivery_done(target, state, world['sha'])
+    assert len([c for c in calls(world) if c[1:3] == ['pr', 'merge']]) == 1

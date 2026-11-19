@@ -310,7 +310,11 @@ class IssueDelivery:
     def _no_release_needed(self, target, pr):
         if not target.get('release_ignored_paths'):
             return False
-        files = self.io.pages(f"repos/{target['repo']}/pulls/{pr['number']}/files?per_page=100")
+        try:
+            files = self.io.pages(f"repos/{target['repo']}/pulls/{pr['number']}/files?per_page=100")
+        except (Retryable, ValueError):
+            # 取不到文件列表按要上线（issue交付 R4）；交付每次回查都重新判，下次取到了再按取到的结果。
+            return False
         # pull files 上限 3000；少页、截断或缺总数不能当作无服务变化。
         return (len(files) < 3000 and type(pr.get('changed_files')) is int
                 and len(files) == pr['changed_files'] and only_ignored_paths(files, target['release_ignored_paths']))
