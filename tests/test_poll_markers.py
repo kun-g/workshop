@@ -37,7 +37,7 @@ def marker(engine, token):
 def concern(engine, tmp_path, token):
     store = Store(tmp_path / "managers")
     try:
-        observe_failures(store, engine.log, "core", engine.clock().isoformat())
+        observe_failures(store, engine.log, "core", engine.clock().isoformat(), engine.rules)
         rows = {r["id"]: r for r in store.all()}
         row = rows.get(f"fault:delivery:poll:{token}")
         return row and row["active"]

@@ -28,6 +28,8 @@ def heading_of(ident):
         return '主循环'
     if parts[:2] == ['fault', 'delivery'] and len(parts) >= 5:
         return parts[2] + ':' + parts[3] + ' 送达'
+    if parts[:3] == ['fault', 'delivery', 'channel'] and len(parts) == 4:
+        return parts[3] + ' 送达通道'
     return str(ident)
 
 

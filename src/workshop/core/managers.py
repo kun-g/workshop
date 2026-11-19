@@ -11,6 +11,7 @@ import sqlite3
 import sys
 import uuid
 
+from .faults import clear_retired, delivery_retired
 from .jobs import Pending, Jobs
 from .models import Brief, Started, Receipt
 from .ports import InputBlocked, Unavailable
@@ -318,11 +319,15 @@ def observe_items(store, items, owner, now):
             store.resolve(row, now)
 
 
-def observe_failures(store, log, owner, now):
+def observe_failures(store, log, owner, now, rules):
     active = set()
     for control in log.all('controls'):
-        if control.get('broken') or control['id'].startswith('delivery:') and control.get('failed'):
-            key = 'fault:' + control['id']
+        ident = control['id']
+        delivery = ident.startswith('delivery:')
+        if delivery and control.get('failed') and delivery_retired(rules, ident[len('delivery:'):]):
+            continue
+        if control.get('broken') or delivery and control.get('failed'):
+            key = 'fault:' + ident
             active.add(key)
             store.observe(key, {'reason': '插件需要恢复', 'control': control}, owner, now)
     for row in store.all():
@@ -331,6 +336,8 @@ def observe_failures(store, log, owner, now):
 
 
 def tick(engine):
+    # 退役的送达不再有人重送，失败标记留着只会让心跳看门一直报；先清掉再观察。
+    clear_retired(engine)
     if not engine.rules.data.get('managers') or engine.jobs is None:
         return
     store = Store(engine.log.path.parent)
@@ -340,7 +347,7 @@ def tick(engine):
                 return
             now = engine.clock().isoformat()
             observe_items(store, engine.log.open_items(), 'core', now)
-            observe_failures(store, engine.log, 'core', now)
+            observe_failures(store, engine.log, 'core', now, engine.rules)
             try:
                 business = json.loads((store.directory / 'heartbeat.json').read_text()).get('business', {})
             except (OSError, ValueError):
