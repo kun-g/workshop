@@ -14,6 +14,7 @@ from workshop.core.models import After, Classification, Evidence, FlowBrief, OUT
 from .io import IO, executable, failure, run, tail
 from . import dod, decisions, intake, authorization, visual
 from . import relations as relation_source
+from . import stats as prstats
 from .requirements import changed_requirement, missing_documents, requirement_basis, updated_documents
 from workshop.core.ports import Retryable
 from workshop.github_identity import scoped as github_scope
@@ -815,7 +816,10 @@ class IssueDelivery:
                     self._merge_failed(pr, state, argv, merging, target)
             if not pr.get("merged") or not pr.get("merge_commit_sha"):
                 raise BusinessWait("合并结果未确认")
-            self._remember_requirements(pr, target, state)
+            # 合并确认时只取一次文件列表：需求文档和 PR 概况共用这一次的结果。
+            files, _ = self._changed_paths(pr, target)
+            self._remember_requirements(pr, target, state, files)
+            self._record_pr_stats(pr, state, files)
             state["merge"] = pr["merge_commit_sha"]
             state["pr"] = pr["number"]
             state["visual_after"] = max((m.get("seq", 0) for m in item.get("materials", [])), default=0)
@@ -861,12 +865,19 @@ class IssueDelivery:
             state["delivered"].append(merge)
         return After()
 
-    def _remember_requirements(self, pr, target, state):
+    def _remember_requirements(self, pr, target, state, files):
         """合并确认后记本活改过的文档；执行重来时保留。"""
-        files, _ = self._changed_paths(pr, target)
         changes = state.setdefault("requirement_changes", {})
         changes.update({path: pr["merge_commit_sha"] for path in updated_documents(files, target)})
 
+    @staticmethod
+    def _record_pr_stats(pr, state, files):
+        """把这个 PR 的概况按 PR 号记进活状态；同一个 PR 重复记一次不变。"""
+        stats = state.setdefault("pr_stats", {})
+        number = str(pr["number"])
+        if number in stats:
+            return
+        stats[number] = prstats.classify(files, pr.get("changed_files"))
 
 
 def make_flow():

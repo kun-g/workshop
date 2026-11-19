@@ -2,6 +2,7 @@
 from dataclasses import fields
 from datetime import date, datetime, timedelta
 import json
+from pathlib import Path
 from workshop.core.jobs import running as running_jobs
 from workshop.core.models import Event, utcnow
 from workshop.core.ports import Flow, Plugins
@@ -416,8 +417,12 @@ def model_metrics(log):
     return result
 
 
-def usage(log, now=None, since=None):
-    """since 是 YYYY-MM-DD：「按执行者配置档」只算这一天（本地时间）及以后开工的活；不给时算最近 7 天开工的。"""
+def usage(log, now=None, since=None, by=None, pr_stats_dir=None):
+    """since 是 YYYY-MM-DD：「按执行者配置档」只算这一天（本地时间）及以后开工的活；不给时算最近 7 天开工的。
+
+    by 是 kind、size、target 之一：这一段按活的类型再拆开。PR 概况直接读状态目录下的
+    issue_delivery 状态文件（issue #300），不引用插件代码；pr_stats_dir 可以另指。
+    """
     now = (now or utcnow()).astimezone()
     today = now.replace(hour=0, minute=0, second=0, microsecond=0)
     rows = [r for r in log.all("rounds") if r["status"] == "ended"]
@@ -464,5 +469,7 @@ def usage(log, now=None, since=None):
             raise ValueError(f"--since 要写成 YYYY-MM-DD，收到 {since}") from None
         start = datetime.combine(day, datetime.min.time()).astimezone()
         scope = f"{day.isoformat()} 起开工的活"
-    lines += profiles.render(profiles.profile_rows(log, start), scope)
+    buckets = profiles.buckets(log, by, pr_stats_dir or Path(log.path).parent / "issue_delivery") if by else None
+    lines += profiles.render(profiles.profile_rows(log, start, by, buckets),
+                             scope, by)
     return "\n".join(lines)
