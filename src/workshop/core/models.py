@@ -187,6 +187,9 @@ class Evidence:
     pause: bool = False
     action_targets: dict[str, str] = field(default_factory=dict)
     authorized_actions: list[dict] = field(default_factory=list)
+    # 流程判定当前执行者做不下来了：和 blocked 一起给（原因和建议动作照 blocked），handoff 是接手者接着做的阶段。
+    # 阶梯上有可换的，核心换人、不记卡住；没有可换的，按 blocked 记卡住。旧记录没有这一项，读回是 False。
+    unable: bool = False
 
     def validate(self) -> None:
         if not isinstance(self.action_targets, dict) or not all(
@@ -198,6 +201,9 @@ class Evidence:
             if (not isinstance(record, dict) or not all(isinstance(record.get(k), str) and record[k]
                     for k in ('action', 'target', 'request', 'result')) or type(record.get('applied')) is not bool):
                 raise ValueError("授权核实缺动作、目标、原申请、结果或生效状态")
+        if type(self.unable) is not bool or self.unable and (
+                self.passed or self.pause or not self.blocked or not self.handoff):
+            raise ValueError("做不下来须同时给阻塞和交接阶段，不能同时通过或暂停")
         if type(self.pause) is not bool or self.pause and (
                 self.passed or self.blocked or self.handoff or self.recheck_after or self.awaits_update):
             raise ValueError("暂停不能同时通过、阻塞、交接或另设等待")
