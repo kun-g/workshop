@@ -9,11 +9,11 @@ def rejected(reason):
     return {'state': 'rejected', 'accepted': False, 'reason': reason}
 
 
-def receipt_card(value):
+def receipt_card(value, title):
     choice = '通过' if value == '过' else '不通过'
     elements = [] if value == '过' else [{'tag': 'div', 'text': {'tag': 'plain_text', 'content': value}}]
     return {'schema': '2.0', 'header': {'title': {'tag': 'plain_text', 'content': '已收到：' + choice},
-            'subtitle': {'tag': 'plain_text', 'content': '亲眼看'}, 'template': 'green' if value == '过' else 'orange'},
+            'subtitle': {'tag': 'plain_text', 'content': '亲眼看 · ' + title}, 'template': 'green' if value == '过' else 'orange'},
             'body': {'elements': elements}}
 
 
@@ -60,5 +60,5 @@ def click(service, key, data):
                                 'message': delivery['external'], 'choice': value['choice'], 'text': answer})}})
     if not any(d['id'] == receipt for d in service.store.all('delivery')):
         service.store.put('delivery', receipt, {'id': receipt, 'permit': None, 'state': 'queued', 'external': None,
-            'payload': {'kind': 'visual_receipt', 'card': receipt_card(answer), 'wait': wait['id']}}, 'receipt_queued')
+            'payload': {'kind': 'visual_receipt', 'card': receipt_card(answer, delivery['payload']['card']['header']['title']['content']), 'wait': wait['id']}}, 'receipt_queued')
     return {'accepted': True, 'answered': answered, 'ref': receipt, 'answer': answer}

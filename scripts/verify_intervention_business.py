@@ -50,6 +50,15 @@ print(json.dumps({'state':state,'external':'local:'+m['key']}))
 '''
 
 
+def visible(node):
+    """首屏看得到的文字：不含折叠详情和按钮回传值。"""
+    if isinstance(node, list):
+        return ''.join(visible(n) for n in node)
+    if not isinstance(node, dict) or node.get('tag') == 'collapsible_panel':
+        return ''
+    return ''.join(v if k == 'content' and isinstance(v, str) else visible(v) for k, v in node.items() if k != 'behaviors')
+
+
 def emit(step, value):
     print(json.dumps({'step': step, **value}, ensure_ascii=False), flush=True)
 
@@ -172,13 +181,15 @@ def verify(args):
         def card_of(entry):
             with sqlite3.connect(root/'inbox.db') as db:
                 return json.loads(db.execute('SELECT payload FROM inbox WHERE key=?',(entry['delivery'],)).fetchone()[0])['card']
+        clicks = []
         def click(entry, choice, reason=None, event_id=None, who=None):
             # 按契约：工作台把 card.action.trigger 原样包进 status_click，一行写进介入点 socket。
             card = card_of(entry)
             buttons = [b for e in card['body']['elements'] for b in ([e] + e.get('elements', [])) if b.get('tag') == 'button']
             value = next(b['behaviors'][0]['value'] for b in buttons if b['behaviors'][0]['value']['choice'] == choice)
             action = {'tag':'button','value':value, **({'form_value':{'reason':reason}} if reason is not None else {})}
-            event_id = event_id or 'replay-' + choice + '-' + entry['delivery'][-8:]
+            clicks.append(choice)  # 每次点击是一个新事件号；重复点击另给号
+            event_id = event_id or 'replay-click-' + str(len(clicks))
             data = {'operation':'workshop-click:' + event_id, 'event':{'header':{'event_id':event_id}, 'event':{
                 'operator':{'open_id':who or rules['intervention']['status']['recipient']},
                 'context':{'open_chat_id':rules['intervention']['status']['chat'],'open_message_id':entry['external']},
@@ -271,8 +282,7 @@ def verify(args):
                 assert data['artifact'].endswith('.html') and 'summary' not in data and 'text' not in data
             if data['kind']=='visual':
                 card = data['card']
-                shown = json.dumps([card['header'], *(e for e in card['body']['elements'] if e['tag']!='collapsible_panel')],
-                                   ensure_ascii=False)
+                shown = visible([card['header'], *card['body']['elements']])
                 folded = json.dumps(card['body']['elements'][-1], ensure_ascii=False)
                 assert 'text' not in data and data['version'] not in shown and key not in shown
                 assert card['body']['elements'][-1]['expanded'] is False and data['version'] in folded and key in folded

@@ -100,11 +100,13 @@ def card(issue, target, item, version, pr, contract, permit):
         elements += [{'tag': 'markdown', 'content': '**' + label + '**'}, {'tag': 'div', 'text': plain(text)}]
 
     def button(text, kind, choice, **extra):
-        return {'tag': 'button', 'text': plain(text), 'type': kind, **extra, 'behaviors': [{'type': 'callback',
+        return {'tag': 'button', 'text': plain(text), 'type': kind, 'width': 'fill', **extra, 'behaviors': [{'type': 'callback',
                 'value': {'ns': CLICK_NS, 'permit': permit, 'version': version, 'choice': choice}}]}
-    elements += [button('通过', 'primary', 'pass'),
+    # 表单写法照 oh-my-assistant 的 ask-kun 卡（线上在用）：输入框必填，空着提交不了。
+    elements += [button('通过', 'primary_filled', 'pass'),
                  {'tag': 'form', 'name': 'visual', 'elements': [
-                     {'tag': 'input', 'name': 'reason', 'placeholder': plain('不通过时写哪里不对'), 'max_length': 1000},
+                     {'tag': 'input', 'name': 'reason', 'required': True, 'input_type': 'multiline_text',
+                      'max_length': 1000, 'width': 'fill', 'placeholder': plain('不通过时写哪里不对')},
                      button('不通过', 'danger', 'fail', name='fail', form_action_type='submit')]},
                  {'tag': 'collapsible_panel', 'expanded': False, 'header': {'title': plain('详情')},
                   'elements': [{'tag': 'div', 'text': plain('活：' + item + '\n合并提交：' + version)}]}]
