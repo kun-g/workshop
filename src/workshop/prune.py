@@ -4,6 +4,8 @@
 项目经理会话目录留 7 天；执行者的工作区只在活已结束、PR 已合并且没有未提交改动时收回。
 默认先列再删；`--dry-run` 只列不删。规则细节见 docs/implementation/执行者.md。
 """
+from contextlib import contextmanager
+import fcntl
 import json
 import os
 from pathlib import Path
@@ -18,6 +20,17 @@ from .core.managers import MANAGER_JOBS_KEEP_SECONDS, MANAGER_SESSION_KEEP_SECON
 from .core.ports import Retryable
 
 WORKTREE = re.compile(r'ws-[0-9a-f]{16}(?:-\d+)?')
+
+
+@contextmanager
+def locked(directory):
+    """和守护进程的一拍用同一把锁；持锁期间活不会变，删除不会撞上返工。"""
+    with (Path(directory) / 'workshop.db.lock').open('a') as handle:
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle, fcntl.LOCK_UN)
 
 
 def human(size):
@@ -182,6 +195,32 @@ def plan_worktrees(log, rules, registry):
     return candidates, kept, orphans
 
 
+def unfinished_round_workdirs(log):
+    """还没结束的轮正在用的工作目录；这些目录不能收回。"""
+    result = set()
+    for row in log.all('rounds', unless=('status', 'ended')):
+        workdir = row.get('workdir')
+        if workdir:
+            result.add(str(Path(workdir).resolve()))
+    return result
+
+
+def skip_reason(log, item_id, path, active):
+    """真删前按 id 重读：返回空串才删；返回原因就跳过。"""
+    item = log.get('items', item_id)
+    if not item:
+        return '活已经不在了'
+    if item.get('state') not in ('完成', '放弃'):
+        return f"活现在是 {item.get('state')}，没删"
+    if item.get('pending_rework'):
+        return '活标了返工，没删'
+    if not item.get('workdir') or str(Path(item['workdir']).resolve()) != str(Path(path).resolve()):
+        return '活的工作目录变了，没删'
+    if str(Path(path).resolve()) in active:
+        return '这个工作目录上还有没停的轮，没删'
+    return ''
+
+
 def _sweep_rounds(executor_root, now, dry_run):
     from .plugins.executors.local.retention import sweep_rounds
     orca = shutil.which('orca')
@@ -273,14 +312,25 @@ def prune(args, log, rules, registry):
     removed_count = (len(removed_rounds) + len(removed_jobs) + len(removed_core_jobs)
                      + len(removed_sessions))
     print(f'已删除 {removed_count} 个目录，共 {human(removed_size)}；开始删工作区。')
-    for candidate in candidates:
-        try:
-            result = candidate['executor'].release(candidate['item'], candidate['target'])
-        except Exception as exc:
-            print(f'  {candidate["path"]}：没删成：{type(exc).__name__}: {exc}', file=sys.stderr)
-            continue
-        if result is not None and not result.released:
-            print(f'  {candidate["path"]}：改主意没删：{result.reason}')
-        else:
-            print(f'  {candidate["path"]}：删了')
+    if candidates:
+        # 计划是只读快照；真删前和守护进程抢同一把锁，按 id 重读，避免把刚返工、
+        # 正在原工作区开轮的那件活的工作区删掉。
+        with locked(args.state_dir):
+            active = unfinished_round_workdirs(log)
+            for candidate in candidates:
+                path = candidate['path']
+                why = skip_reason(log, candidate['item']['id'], path, active)
+                if why:
+                    print(f'  {path}：跳过（{why}）')
+                    continue
+                item = log.get('items', candidate['item']['id'])
+                try:
+                    result = candidate['executor'].release(item, candidate['target'])
+                except Exception as exc:
+                    print(f'  {path}：没删成：{type(exc).__name__}: {exc}', file=sys.stderr)
+                    continue
+                if result is not None and not result.released:
+                    print(f'  {path}：改主意没删：{result.reason}')
+                else:
+                    print(f'  {path}：删了')
     return 0

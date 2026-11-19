@@ -64,6 +64,8 @@ def set_prs(local, *prs):
 
 
 def merged(local, number=1, **extra):
+    # 默认 PR 的 head 就是工作区当前提交；要模拟本地又多了提交，显式传 headRefOid。
+    extra.setdefault('headRefOid', git(local['workdir'], 'rev-parse', 'HEAD'))
     set_prs(local, {'number': number, 'state': 'MERGED', **extra})
 
 
@@ -122,6 +124,29 @@ def test_merged_pr_releases_worktree_and_branch_even_without_pushed_commits(loca
     assert branches(local['repo']) == ['main']
 
 
+def test_merged_pr_keeps_worktree_when_tip_has_commit_outside_pr_head(local):
+    # PR 合并的是 head；工作区后来又多了一次本地提交，远端也没有，删分支就丢了。
+    head = commit(local['workdir'], 'pr.txt', 'pr\n', 'pr work')
+    merged(local, 20, headRefOid=head)
+    commit(local['workdir'], 'local.txt', 'local\n', 'local only')
+    result = local['executor'].release(local['item'], local['target'], dry_run=True)
+    assert not result.released and '不在 PR #20 的 head 里' in result.reason
+    assert local['workdir'].exists() and local['branch'] in branches(local['repo'])
+    assert not local['executor'].release(local['item'], local['target']).released
+    assert local['workdir'].exists() and local['branch'] in branches(local['repo'])
+
+
+def test_detached_head_commit_outside_pr_head_is_kept(local):
+    # detached HEAD 上的新提交同样不在 PR head 里，不能只删工作区了事。
+    head = commit(local['workdir'], 'pr.txt', 'pr\n', 'pr work')
+    merged(local, 21, headRefOid=head)
+    git(local['workdir'], 'checkout', '-q', '--detach')
+    commit(local['workdir'], 'detached.txt', 'local\n', 'detached only')
+    result = local['executor'].release(local['item'], local['target'])
+    assert not result.released and '不在 PR #21 的 head 里' in result.reason
+    assert local['workdir'].exists() and local['branch'] in branches(local['repo'])
+
+
 def test_orca_codex_releases_the_same_way(local):
     # orca-codex 也按活 id 开同名 worktree，收回规则相同。
     codex = Executor('orca-codex', state_dir=local['root'] / 'state-codex',
@@ -139,6 +164,7 @@ def test_orca_suffix_is_the_same_worktree(local):
     git(local['repo'], 'worktree', 'add', '-q', '-b', 'ws/' + slug + '-2', str(suffixed), 'HEAD')
     (local['root'] / 'prs.json').write_text(json.dumps([
         {'number': 13, 'state': 'MERGED', 'headRefName': 'ws/' + slug + '-2',
+         'headRefOid': git(suffixed, 'rev-parse', 'HEAD'),
          'mergedAt': '2026-11-18T00:00:00Z', 'url': 'https://example/pr/13'}]))
     item = dict(local['item'], workdir=str(suffixed))
     assert local['executor'].release(item, local['target']) == Release(True)
@@ -157,11 +183,11 @@ def test_dirty_worktree_is_kept_with_reason(local):
 
 
 def test_ignored_files_do_not_count_as_changes(local):
-    merged(local)
     git(local['repo'], 'config', 'core.excludesFile', '/dev/null')
     (local['workdir'] / '.gitignore').write_text('.venv/\n')
     git(local['workdir'], 'add', '.gitignore')
     git(local['workdir'], '-c', 'user.name=T', '-c', 'user.email=t@l', 'commit', '-qm', 'ignore')
+    merged(local)
     (local['workdir'] / '.venv').mkdir()
     (local['workdir'] / '.venv/x').write_text('x')
     assert local['executor'].release(local['item'], local['target']) == Release(True)

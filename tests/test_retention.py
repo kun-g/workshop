@@ -13,6 +13,7 @@ import pytest
 
 from workshop import prune as prune_module
 from workshop.core.jobs import sweep_directory
+from workshop.core.models import Release
 from workshop.core.managers import maybe_sweep_sessions, sweep_sessions
 from workshop.plugins.executors.local import retention
 from workshop.plugins.executors.local.retention import maybe_sweep, sweep_rounds, sweep_state
@@ -305,3 +306,51 @@ def test_prune_command_cleans_old_rounds_jobs_and_sessions(tmp_path, monkeypatch
     assert not old_job.exists() and fresh_job.exists()
     assert not old_session.exists() and fresh_session.exists()
     assert not round_path.exists()
+
+
+def test_prune_rechecks_item_and_rounds_before_deleting_worktree(tmp_path, monkeypatch, capsys):
+    state = tmp_path / 'state'
+    state.mkdir()
+    workdir = tmp_path / 'ws-aaaaaaaaaaaaaaaa'
+    workdir.mkdir()
+    ended = {'id': 'alpha:7', 'target': 'alpha', 'state': '完成',
+             'workdir': str(workdir), 'sessions': {'writer': 's1'}}
+    db = sqlite3.connect(':memory:')
+    db.execute('CREATE TABLE items(body TEXT)')
+    db.execute('INSERT INTO items VALUES (?)', (json.dumps(ended),))
+    current, rounds = {'item': dict(ended)}, []
+    log = SimpleNamespace(db=db, get=lambda table, key: current['item'],
+                          all=lambda table, **kwargs: rounds)
+
+    class Executor:
+        def __init__(self):
+            self.actual = 0
+
+        def release(self, item, target, dry_run=False):
+            if dry_run:
+                return Release(True, '删')
+            self.actual += 1
+            return Release(True)
+
+    executor = Executor()
+    registry = SimpleNamespace(get=lambda port, name: executor if port == 'executor' else None)
+    rules = SimpleNamespace(data={'targets': {}}, target=lambda *args: {'plugin': 'issue', 'repo': 'alpha/repo'})
+    args = SimpleNamespace(state_dir=state, dry_run=False, verbose=False, executor_state_dir=None)
+    monkeypatch.setenv('WORKSHOP_EXECUTOR_STATE_DIR', str(tmp_path / 'executors'))
+
+    current['item'] = {**ended, 'pending_rework': True}
+    assert prune_module.prune(args, log, rules, registry) == 0
+    assert '跳过（活标了返工' in capsys.readouterr().out and executor.actual == 0
+
+    current['item'] = {**ended, 'state': '跑着'}
+    assert prune_module.prune(args, log, rules, registry) == 0
+    assert '跳过（活现在是 跑着' in capsys.readouterr().out and executor.actual == 0
+
+    current['item'] = dict(ended)
+    rounds.append({'workdir': str(workdir), 'status': 'running'})
+    assert prune_module.prune(args, log, rules, registry) == 0
+    assert '跳过（这个工作目录上还有没停的轮' in capsys.readouterr().out and executor.actual == 0
+
+    rounds.clear()
+    assert prune_module.prune(args, log, rules, registry) == 0
+    assert '删了' in capsys.readouterr().out and executor.actual == 1
