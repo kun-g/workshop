@@ -157,6 +157,35 @@ def test_visual_old_reply_cannot_answer_current_version(service):
     assert service.call('answer', {**reply, 'operation':'reply-new'})['token']
 
 
+def test_session_answer_can_pass_visual_wait(service):
+    permit = service.call('permit', {'operation': 'sp', 'point': 'visual', 'owner': 'alpha:one',
+        'scope': 'contract:alpha:one:v1', 'basis': {'contract': '看页面', 'location': '飞书', 'response': '过或不对'}})['ref']
+    delivery = service.call('enqueue', {'operation': 'se', 'permit': permit,
+        'payload': {'kind': 'visual', 'version': 'v1', 'text': '看页面'}})['ref']
+    service.transport = lambda *a: {'state': 'sent', 'external': 'om_v1'}
+    service.call('dispatch', {'ref': delivery})
+    ref = service.call('create', {'operation': 'sw', 'point': 'visual', 'owner': 'alpha:one',
+        'content': {'key': 'visual', 'stage': '收尾', 'version': 'v1', 'delivery': delivery,
+                    'response': '过或不对'}})['ref']
+    answer = {'ref': ref, 'value': '过', 'source': {'channel': 'session', 'session': 's-1',
+              'quote': '新的这个可以，直接过', 'version': 'v1'}}
+    with pytest.raises(ValueError, match='版本'):
+        service.call('answer', {**answer, 'operation': 'sa-old',
+                                'source': {**answer['source'], 'version': 'v0'}})
+    assert service.call('answer', {**answer, 'operation': 'sa-ok'})['token']
+    # 没送出的交付，会话回答也不能过。
+    pending_permit = service.call('permit', {'operation': 'sp2', 'point': 'visual', 'owner': 'alpha:two',
+        'scope': 'contract:alpha:two:v2', 'basis': {'contract': '看页面', 'location': '飞书', 'response': '过或不对'}})['ref']
+    pending = service.call('enqueue', {'operation': 'se2', 'permit': pending_permit,
+        'payload': {'kind': 'visual', 'version': 'v2', 'text': '看页面'}})['ref']
+    pending_ref = service.call('create', {'operation': 'sw2', 'point': 'visual', 'owner': 'alpha:two',
+        'content': {'key': 'visual', 'stage': '收尾', 'version': 'v2', 'delivery': pending,
+                    'response': '过或不对'}})['ref']
+    with pytest.raises(ValueError, match='交付版本'):
+        service.call('answer', {'operation': 'sa-pending', 'ref': pending_ref, 'value': '过',
+            'source': {'channel': 'session', 'session': 's-1', 'quote': '过', 'version': 'v2'}})
+
+
 def test_acceptance_shortcut_still_needs_authorization():
     item = {'stage':'执行','target':'alpha','history':[{'stage':'验收'}], 'approved':['对外发消息']}
     decision = decide(item, Receipt('done', '', '验收'), Evidence(passed=True, actions=['对外发消息']),

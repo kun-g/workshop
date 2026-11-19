@@ -172,8 +172,8 @@ class Service:
             raise ValueError('空回答不能解除等待')
         if record['point'] == 'visual' and record['content'].get('delivery'):
             delivery = self.store.get(record['content']['delivery'], 'delivery')
-            if (channel != 'external' or source.get('delivery') != delivery['id']
-                    or delivery['state'] != 'sent' or delivery['payload'].get('version') != source.get('version')):
+            if (delivery['state'] != 'sent' or delivery['payload'].get('version') != source.get('version')
+                    or (channel == 'external' and source.get('delivery') != delivery['id'])):
                 raise ValueError('回答未绑定本次已送达的交付版本')
         answer = {'value': data['value'], 'source': source}
         if record['answer'] is not None:

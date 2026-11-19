@@ -104,7 +104,7 @@ Kun 在会话里明确说「放」后，项目经理用 `workshop release ws#31 
 
 执行中需要 Kun 判断，执行者交无卡等待：证据 JSON 的 `decision` 写 `key`、`version`、`question`、`reason`、`recommend` 五个非空字符串；改问题换版本。回执 `outcome=nothing`、`leave={"kind":"等你","about":"问题"}`，不发 ask/notice，不填 advance。核心只存等待引用；问题和起始时间由介入点服务持久保存。
 
-协调对话先看 `workshop status` 或 `workshop why <活>`，再用 `workshop answer-wait <等待号> <回答> --version <问题版本> --quote <Kun原话> --session <会话号>` 登记。回答必须来自 Kun 本人，不能拿泛化放行代答；重复回答幂等，旧版本拒绝。到点再看用 later，自动续跑，不生成送回问卡。
+协调对话先看 `workshop status` 或 `workshop why <活>`，再用 `workshop answer-wait <等待号> <回答> --version <问题版本> --quote <Kun原话> --session <会话号>` 登记。回答必须来自 Kun 本人，不能拿泛化放行代答；重复回答幂等，旧版本拒绝。到点再看用 later，自动续跑，不生成送回问卡。亲眼看等待也用这条命令登记：回答「过」或「不对：哪里不对」，送达必须已发出、版本与等待一致；外部回复仍以引用原送达为准。
 
 
 ## 亲眼看与授权续接（#174）
