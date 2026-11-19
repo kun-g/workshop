@@ -55,7 +55,6 @@ def abandon(engine, item_id, reason):
         if any(r["item"] == item_id for r in engine.active()):
             raise ValueError(f"{item_id} 还有一轮没结束，先用 abort 结束那一轮再放弃")
         engine.fact("item_abandoned", {"id": item_id, "reason": reason.strip()}, item_id)
-        engine.cancel_questions(item)
         # 放弃前收到的返工、插件故障的恢复快照都作废：只有放弃之后的新返工才让它回来。
         engine.change(item, state="放弃", next=f"已放弃：{reason.strip()}", blocked_by="", serial_hold=False,
                     pending_advance=None, after_wait=None, wait_for_ready=False, retry_at=None,
@@ -138,7 +137,6 @@ def recover(engine, item_id, mode, reason, quote="", ref=None):
                            next="按原退避继续阶段回查", leave={"kind": "工序", "owner": "车间", "at": at,
                                                                    "about": "按原退避继续阶段回查"})
         else:
-            engine.cancel_questions(item)
             changes.update(state="空闲", pending_rework=True, next="按恢复事实返工",
                            leave={"kind": "工序", "owner": "车间", "at": stamp(engine.clock()), "about": "恢复后返工"})
         engine.change(item, **changes)

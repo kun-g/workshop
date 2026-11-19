@@ -38,10 +38,10 @@ class Rules:
             raise ValueError("concurrent 必须为正整数")
         if type(limits.get("chain_depth")) is not int or not 0 < limits["chain_depth"] <= 8:
             raise ValueError("chain_depth 必须在 1 到 8 之间")
-        if not data.get("channel"):
-            raise ValueError("规则缺通道插件")
-        if data.get("notices", "send") not in ("send", "hold"):
-            raise ValueError("notices 只能是 send 或 hold")
+        retired = [key for key in ("channel", "notices") if key in data]
+        if retired:
+            # 介入点 R13：消息只经介入点服务的送达命令，不再有核心通道和通知开关。
+            raise ValueError(f"{'、'.join(retired)} 已退役：消息只经介入点服务送达")
         if type(limits.get("round_timeout_seconds", 7200)) is not int or limits.get("round_timeout_seconds", 7200) <= 0:
             raise ValueError("每轮期限必须为正整数秒")
         for name, target in data["targets"].items():

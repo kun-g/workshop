@@ -15,9 +15,8 @@ if os.environ.get("WORKSHOP_RECORD_BASELINE"):
 
 from workshop.core.engine import Engine
 from workshop.core.log import Log
-from workshop.core.models import Answer, Evidence, Event, Poll, STAGES, Started, Usage, RoundUsage
+from workshop.core.models import Evidence, Event, Poll, STAGES, Started, Usage, RoundUsage
 from workshop.core.rules import Rules
-from workshop.core.cards import question, notice, validate_question, validate_notice
 from workshop.registry import Registry
 from workshop.plugins.selectors.ordered import OrderedSelector
 
@@ -134,43 +133,6 @@ class FakeExecutor:
         return RoundUsage(self.usage_value, children_reported=True) if isinstance(self.usage_value, Usage) else self.usage_value
 
 
-class FakeChannel:
-    def __init__(self):
-        self.messages = {}
-        self.answers = []
-        self.down = False
-
-    def ask(self, key, card):
-        if self.down:
-            raise ConnectionError("断线")
-        validate_question(card)
-        self.messages[key] = ("ask", card)
-        return f"external:{key}"
-
-    def notify(self, key, card):
-        if self.down:
-            raise ConnectionError("断线")
-        validate_notice(card)
-        self.messages[key] = ("notice", card)
-        return f"external:{key}"
-
-    def reconcile(self, key, card):
-        if self.down:
-            raise ConnectionError("断线")
-        return f"external:{key}" if key in self.messages else "absent"
-
-    def cancel(self, key, external):
-        if self.down:
-            raise ConnectionError("断线")
-        self.messages.pop(key, None)
-
-    def poll(self, cards):
-        if self.down:
-            raise ConnectionError("断线")
-        answers, self.answers = self.answers, []
-        return answers
-
-
 class FakeHome:
     def __init__(self):
         self.tickets = {}
@@ -200,7 +162,7 @@ def configuration():
                 executors={"writer": {"use": "writer", "family": "a", "billing": "subscription"},
                            "reviewer": [{"use": "writer", "family": "a", "billing": "subscription"}, {"use": "reviewer", "family": "b", "billing": "subscription"}],
                            "acceptor": [{"use": "writer", "family": "a", "billing": "subscription"}, {"use": "acceptor", "family": "c", "billing": "subscription"}]},
-                limits={"concurrent": 2, "chain_depth": 8}, selector="ordered", channel="channel", taskhome="home",
+                limits={"concurrent": 2, "chain_depth": 8}, selector="ordered", taskhome="home",
                 ask_first=["对外发消息", "花订阅以外的钱"], skip_ask=["自己的交付"])
 
 
@@ -212,7 +174,6 @@ def build(path, config=None):
     registry.register("flow", "other", FakeFlow())
     for name in ("writer", "reviewer", "acceptor"):
         registry.register("executor", name, FakeExecutor(name))
-    registry.register("channel", "channel", FakeChannel())
     registry.register("taskhome", "home", FakeHome())
     registry.register("source", "source", FakeSource())
     return Engine(log, Rules.validate(config or configuration()), registry, Clock())
@@ -251,10 +212,6 @@ def current(engine, key="one", target="alpha"):
 
 def finish(engine, advance=None, key="one", target="alpha", **extra):
     row = current(engine, key, target)
-    for name in ("ask", "notice"):
-        if name in extra:
-            extra[name] = [{**(question(v["title"]) if name == "ask" else notice(v["text"])), "key": v["key"]}
-                           if "subject" not in v else v for v in extra[name]]
     data = {"outcome": "done", "summary": f"完成{row['stage']}", "advance": advance, **extra}
     engine.submit(row["token"], data)
     engine.tick()

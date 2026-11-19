@@ -151,7 +151,7 @@ def manager_sections(view):
 def page(view, now=None):
     rows = view["rows"]
     now = now or datetime.now().astimezone()
-    asks = {c["item"]: c["decision"] for c in view["asks"]}
+    asks = {}
     for wait in view.get('waits', []):
         asks[wait['item']] = wait['question'] + '；推荐：' + wait['recommend']
         for row in rows:
@@ -170,10 +170,7 @@ def page(view, now=None):
     scope = ("全部活" if view["everything"] else "当前的活") + (f"，筛选：{filters}" if filters else "")
     hidden = f"另有 {view['hidden']} 件被筛掉" if view["hidden"] and view["filtered"] else ""  # 已结束的件数不提
     total = f"活 {len([r for r in rows if r['state'] not in ENDED])} 件" + "".join(f" · {s} {counts[s]}" for s in sorted(counts, key=lambda s: ORDER.index(s) if s in ORDER else 2.5))
-    channel = "".join(
-        [f'<p><b>读取失败</b><code>{e(c["item"])}</code>{e(c["reason"])}</p>' for c in view["unreadable"]]
-        + [f'<p><b>待对账</b><code>{e(c["item"])}</code>发给你的卡片连续 3 次不能确定飞书有没有送出，车间不敢重发，也不敢当没发<br><span class="note">卡号 {e(c["card"])}</span></p>'
-           for c in view["uncertain"]])
+    channel = "".join(f'<p><b>停了新派发</b><code>{e(h["target"])}</code>{e(h["reason"])}</p>' for h in view.get("holds", []))
     stamp = (f'<p class="stamp" id="stamp" data-at="{e(now.isoformat())}">更新于 <b>{e(now.strftime("%Y-%m-%d %H:%M:%S"))}</b>（<span id="ago">刚刚</span>）</p>')
     live = [r for r in rows if r["state"] not in ENDED]
     card = (f'<section class="card top"><p class="total">{e(total)}</p>' + stamp +
@@ -199,8 +196,7 @@ def page(view, now=None):
 {section("等资料", by_state["等资料"], asks, now, badge=False, head2="在等什么资料")}
 {section("定时", by_state["定时"], asks, now, badge=False, head2="到点做什么", due=True)}
 {section("已结束", ended, asks, now, folded=True)}
-{('<h2>等回答的问卡（旧记录）</h2><div class="card">' + ''.join('<p>'+e(c['decision'])+'</p>' for c in view['asks'])+'</div>') if view['asks'] else ''}
-{f'<details class="fold"><summary><h2>通道待对账</h2></summary><div class="card"><p class="note">车间给你发卡片、读你的回答走的是飞书；这里列的是「发出去不确定到没到」「你答了读不到」两类。</p>{channel}</div></details>' if channel else ""}
+{f'<h2>停了新派发</h2><div class="card"><p class="note">这些交付对象不派新的轮；在跑的轮、程序作业和等待都保留。</p>{channel}</div>' if channel else ""}
 <p class="note foot">由 <code>workshop status --html</code> 生成，排版是固定规则，不经模型。</p>
 </main><script>{SCRIPT}</script></body></html>
 """

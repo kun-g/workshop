@@ -76,12 +76,6 @@ def overview(log, *, everything=False, states=(), targets=(), flows=(), rules=No
     count = log.item_count()
     # 默认不列已结束的活：在库里先筛掉，不逐行解析它们（已结束的占绝大多数，解析一遍要 200 多毫秒）。
     items = log.all("items") if everything or states else log.open_items()
-    cards = log.all("cards")
-    unreadable = [c for c in cards if c["mode"] == "ask" and not c["answered"]
-                  and not c.get("cancelled") and not c.get("rejected") and c.get("read_failures", 0) >= 10]
-    blocked_reads = {c["item"] for c in unreadable}
-    # 读取故障是卡片的状态，投影到总览；不覆盖活已有的等待/故障，恢复后自然消失。
-    read_states = {i["id"] for i in items if i["id"] in blocked_reads and i["state"] == "等你"}
     # 守护进程在后台作业里替这件活跑东西（例如流程跑检查）时，状态显示作业的字样；每拍回查，跑完按结果结算。
     jobs = running_jobs(log.path.parent / "jobs")
     rows = []
@@ -89,11 +83,9 @@ def overview(log, *, everything=False, states=(), targets=(), flows=(), rules=No
         target, flow = flow_for(configured_targets, item["target"], plugins, item.get("flow", ""))
         row = log.get("rounds", item.get("round", ""))
         control = log.get("controls", item["target"]) or {}
-        stuck = item["state"] == "卡住" or item["id"] in read_states
-        shown = "暂停" if control.get("paused") else jobs.get(item["id"], "卡住" if item["id"] in read_states else item["state"])
+        stuck = item["state"] == "卡住"
+        shown = "暂停" if control.get("paused") else jobs.get(item["id"], item["state"])
         next_step, blocker = item["next"], item["blocked_by"] or "—"
-        if item["id"] in read_states:
-            next_step, blocker = "项目经理核对卡片读取错误（见卡住清单）", "通道"
         rows.append({"id": item["id"], "title": item.get("title") or item["id"], "target": item["target"],
                      "priority": (item.get('relations') or {}).get('priority', 'P1'),
                      "flow": item.get("flow") or "", "stage": item["stage"], "state": item["state"], "shown": shown,
@@ -111,19 +103,13 @@ def overview(log, *, everything=False, states=(), targets=(), flows=(), rules=No
     for r in picked:
         r["since"] = state_since(log, r["id"])
     ids = {r["id"] for r in picked}
-    keep = (lambda card: card["item"] in ids) if filtered else (lambda card: True)
-    by_id = {r["id"]: r for r in rows}
-    unread = [{"item": c["item"], "stage": by_id.get(c["item"], {}).get("stage", ""),
-               "reason": f"{c.get('external') or c['id']} 连续 {c['read_failures']} 次读取失败：{c.get('read_error', '')}"}
-              for c in unreadable if keep(c)]
-    asks = [{"item": c["item"], "card": c.get("external") or c["id"], "decision": c["payload"]["decision"]}
-            for c in cards if c["mode"] == "ask" and not c["answered"] and not c.get("cancelled")
-            and not c.get("rejected") and keep(c)]
-    uncertain = [{"item": c["item"], "card": c["id"]} for c in cards
-                 if c.get("reconcile_failed") and not c["sent"] and not c.get("cancel_done") and keep(c)]
+    # 交付对象停了新派发并写了原因（例如存量转换没成）：原因原样列出，在跑的和在等的不受影响。
+    holds = [{"target": name, "reason": control["reason"]}
+             for name in configured_targets
+             if (control := log.get("controls", name) or {}).get("paused") and control.get("reason")
+             and (not targets or name in targets)]
     return {"managers": read_managers(log.path.parent.resolve()), "rows": picked, "total": count, "ended": count - sum(r["state"] not in ENDED for r in rows),
-            "hidden": count - len(picked), "everything": everything, "filtered": filtered,
-            "unreadable": unread, "asks": asks, "uncertain": uncertain,
+            "hidden": count - len(picked), "everything": everything, "filtered": filtered, "holds": holds,
             "waits": [w for w in waiting_records(log, rules, plugins, cache=wait_cache) if w['item'] in ids],
             "filters": {"states": list(states), "targets": list(targets), "flows": list(flows)}}
 
@@ -132,35 +118,29 @@ def status(log, **options):
     view = overview(log, **options)
     rows = view["rows"]
     count = lambda state: sum(r["state"] == state for r in rows)
-    reads = sum(r["stuck"] and r["state"] == "等你" for r in rows)
-    head = f"活 {len(rows)} 件 · 跑着 {count('跑着')} · 等你 {count('等你') - reads} · 卡住 {count('卡住') + reads}"
+    head = f"活 {len(rows)} 件 · 跑着 {count('跑着')} · 等你 {count('等你')} · 卡住 {count('卡住')}"
     head += f" · 排队 {count('排队')}" if count("排队") else ""
     head += f" · 定时 {count('定时')}" if count("定时") else ""
     for waiting in ("等前置", "等子单", "等资料"):
         head += f" · {waiting} {count(waiting)}" if count(waiting) else ""
     if view["hidden"]:
         head += f"\n另有 {view['hidden']} 件没列出" + ("（筛掉的）" if view["filtered"] else "（已结束；workshop status --all 看全部）")
-    lines = [head, "活\t阶段\t状态\t谁在推\t下一步\t卡在谁手里\t优先级"]
+    lines = [head]
+    for hold in view["holds"]:
+        lines.append(f'{hold["target"]} 停了新派发：{one_line(hold["reason"])}')
+    lines.append("活\t阶段\t状态\t谁在推\t下一步\t卡在谁手里\t优先级")
     for r in rows:
         lines.append("\t".join((r["id"], r["stage"], r["shown"], r["who"], r["next"], r["blocker"], r['priority'])))
     lines.append("卡住\n活\t阶段\t原因\t建议动作")
     for r in rows:
         if r["state"] == "卡住":
             lines.append("\t".join((r["id"], r["stage"], one_line(r["reason"]), one_line(r["advice"]))))
-    for card in view["unreadable"]:
-        lines.append("\t".join((card["item"], card["stage"], one_line(card["reason"]),
-                                "项目经理核对通道读取权限和状态；恢复后自动收取原卡回答")))
     for heading, snapshot in sections(view).items():
         lines.extend([heading, *snapshot['lines']])
         if heading == '等你':
             lines.append('详情（等待号、版本、原因、推荐、等了多久）')
         if snapshot['details']:
             lines.extend(['详情', *snapshot['details']])
-    lines.append("等回答的问卡（旧记录）")
-    for card in view["asks"]:
-        lines.append(f'{card["item"]}\t{card["card"]}\t{card["decision"]}')
-    for card in view["uncertain"]:
-        lines.append(f'通道待对账\t{card["item"]}\t{card["card"]}\t连续 3 次不能确定是否已发送，需检查通道')
     return "\n".join(lines)
 
 

@@ -38,7 +38,7 @@ for area in ("core", "plugins"):
 
 plugins = root / "src/workshop/plugins"
 modules = []
-categories = {"sources", "executors", "channels", "taskhome", "selectors"}
+categories = {"sources", "executors", "taskhome", "selectors"}
 for child in plugins.iterdir():
     if child.name.startswith(("__", ".")):
         continue
@@ -71,10 +71,6 @@ forbidden_modules =
 """ + "".join(f"    {name}\n" for name in forbidden) + """
 # models / ports 内部的依赖由核心维护，只限制插件的直接引用。
 allow_indirect_imports = True
-ignore_imports =
-    # H6：卡片移到介入点插件后删除。
-    # H6：旧通道卡片路径迁走后删除。
-    workshop.plugins.channels.ask_kun -> workshop.core.cards
 
 [importlinter:contract:plugins-outer]
 name = 插件不引用装配层、看门和查看工具

@@ -1,19 +1,10 @@
 """执行取舍经等待端口持久保存；不发卡、不把会话放行当答案。"""
-import hashlib
-import json
 from workshop.core.models import After
 from workshop.core.ports import WaitRejected, WaitUnavailable
 
 
 def content(receipt, data, stage):
     value = data.get('decision')
-    if value is None and receipt.ask:
-        if len(receipt.ask) != 1:
-            raise ValueError('一次只登记一个取舍')
-        ask = receipt.ask[0]
-        value = {'key': ask['key'], 'question': ask['decision'], 'reason': ask['context'],
-                 'recommend': ask['recommend'], 'choices': ask['choices']}
-        value['version'] = hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()
     if value is None:
         return None
     if not isinstance(value, dict):

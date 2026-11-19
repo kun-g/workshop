@@ -29,8 +29,8 @@ import threading
 import time
 import traceback
 
-from .models import After, Answer, Brief, ChannelPoll, Classification, Event, Evidence, FlowBrief, Poll, Receipt, Relations, Release, RoundUsage, Selection, Started, Usage
-from .ports import ChannelRejected, Retryable, Unavailable, TargetBlocked, InputBlocked
+from .models import After, Brief, Classification, RETIRED_FIELDS, Event, Evidence, FlowBrief, Poll, Receipt, Relations, Release, RoundUsage, Selection, Started, Usage
+from .ports import Retryable, Unavailable, TargetBlocked, InputBlocked
 from .wake import ring
 from .records import StoredBrief, RoundHistory, ResultHistory, materialize
 
@@ -60,8 +60,6 @@ class JobFailed(Exception):
 FRESH = {
     ("flow", "relations"): 5,
     ("source", "poll"): 20,
-    ("channel", "poll"): 20,
-    ("channel", "reconcile"): 0,
     ("executor", "poll"): 30,
     ("executor", "available"): 60,
     ("selector", "select"): 60,
@@ -74,9 +72,9 @@ LABELS = {
     ("flow", "brief"): "等检查",
 }
 
-ERRORS = {"Retryable": Retryable, "Unavailable": Unavailable, "ChannelRejected": ChannelRejected,
+ERRORS = {"Retryable": Retryable, "Unavailable": Unavailable,
           "TargetBlocked": TargetBlocked, "InputBlocked": InputBlocked}
-TYPES = {cls.__name__: cls for cls in (After, Answer, Brief, ChannelPoll, Classification, Event, Evidence, FlowBrief, Poll,
+TYPES = {cls.__name__: cls for cls in (After, Brief, Classification, Event, Evidence, FlowBrief, Poll,
                                         Receipt, Relations, Release, RoundUsage, Selection, Started, Usage, StoredBrief, RoundHistory, ResultHistory)}
 KEEP_SECONDS = 86400
 SWEEP_SECONDS = 600
@@ -100,7 +98,11 @@ def encode(value):
 def decode(value):
     if isinstance(value, dict):
         if set(value) == {"__dataclass__", "fields"} and value["__dataclass__"] in TYPES:
-            return TYPES[value["__dataclass__"]](**{k: decode(v) for k, v in value["fields"].items()})
+            cls = TYPES[value["__dataclass__"]]
+            known = {f.name for f in fields(cls)}
+            # 旧版本作业结果里已取消的字段（回执的 ask、notice，完成钩子的 notice）读回时去掉。
+            return cls(**{k: decode(v) for k, v in value["fields"].items()
+                          if k in known or k not in RETIRED_FIELDS})
         return {k: decode(v) for k, v in value.items()}
     if isinstance(value, list):
         return [decode(v) for v in value]

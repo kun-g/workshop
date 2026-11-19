@@ -1,11 +1,6 @@
 """同步短时端口；不等待人或一轮结束。守护进程把每次调用放进独立的作业进程（jobs.py），一拍不等它。字段和恢复时序见接入文档。"""
 from typing import Callable, Literal, Protocol
-from .cards import Question, Notice
-from .models import After, Answer, Brief, ChannelPoll, FlowBrief, Classification, Evidence, Event, Poll, Receipt, Release, Started, RoundUsage, Selection
-
-
-class ChannelRejected(Exception):
-    """发送命令明确拒收卡片；启动或查询故障不得使用此异常。"""
+from .models import After, Brief, FlowBrief, Classification, Evidence, Event, Poll, Receipt, Release, Started, RoundUsage, Selection
 
 
 class Unavailable(Exception):
@@ -175,26 +170,6 @@ class Executor(Protocol):
         有没交出去的改动等原因不能收，返回 Release(False, 原因)，核心通知 Kun 一次，不再重试。
         暂时故障抛 Retryable。只在这件活没有在跑的轮次时调用。
         """
-        ...
-
-
-class Channel(Protocol):
-    def wake_paths(self, target: dict | None = None) -> list[str]:
-        """可选、纯本地查询（也兼容无参数实现）。逐交付对象收集路径；变化使通道的 poll 缓存过期。"""
-        ...
-
-    def ask(self, key: str, card: Question) -> str:
-        """返回外部编号。调用前核心已持久记发送中，异常后先 reconcile。"""
-        ...
-    def notify(self, key: str, card: Notice) -> str: ...
-    def reconcile(self, key: str, card: dict) -> str | Literal["absent"] | None:
-        """返回已发外部编号；absent 表示确定未发，可重试；None 表示不确定，禁止重发。"""
-        ...
-    def poll(self, cards: list[dict]) -> ChannelPoll | list[Answer]:
-        """逐卡读取结果带唯一 token；兼容旧通道的回答列表。value 返回所选 key；核心审批只认 yes。"""
-        ...
-    def cancel(self, key: str, external: str | None) -> None:
-        """按核心 key 幂等作废旧问题；external 不明时先对账，失败后重试。"""
         ...
 
 

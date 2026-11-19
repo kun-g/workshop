@@ -2,7 +2,6 @@
 from dataclasses import asdict
 from .models import due, stamp
 from .ports import Retryable
-from .cards import notice
 from .models import After
 from . import waits
 from .jobs import Pending
@@ -30,7 +29,9 @@ def after(engine, item, stage, key, target, *, recheck=False, restarting=False):
     if recheck and not restarting and (engine.log.get("effects", key) or {}).get("done"):
         engine.fact("effect", {"id": key, "done": False})
     value = engine.effect(effect_key, invoke)
-    result = After(**value) if isinstance(value, dict) else After(aliases=value or [])
+    # 旧版本存下的结果可能带已取消的 notice（介入点 R13 不再发），读回时去掉。
+    result = (After.stored(value) if isinstance(value, dict)
+              else After(aliases=value or []))
     if (not isinstance(result.blocked, str) or result.blocked and
             (result.pending or not isinstance(result.next, str) or not result.next.strip())):
         raise ValueError("回查阻塞须有下一步，不能同时继续等待")
@@ -39,8 +40,8 @@ def after(engine, item, stage, key, target, *, recheck=False, restarting=False):
         raise ValueError("仍留本阶段须有原因和下一步")
     if type(result.wake_on_completed) is not bool:
         raise ValueError("完成唤醒标记须是布尔值")
-    if type(result.restart) is not bool or not isinstance(result.notice, str):
-        raise ValueError("重启标记须是布尔值，通知须是字符串")
+    if type(result.restart) is not bool:
+        raise ValueError("重启标记须是布尔值")
     if not isinstance(result.recovery_id, str):
         raise ValueError("恢复标识必须是字符串")
     if result.recovery_id:
@@ -48,8 +49,6 @@ def after(engine, item, stage, key, target, *, recheck=False, restarting=False):
             raise ValueError("流程消费的不是本活当前恢复计划")
         engine.fact("recovery_applied", {"id": result.recovery_id}, item["id"],
                   source="recovery", ext_id="applied:" + result.recovery_id)
-    if result.notice.strip():
-        engine.card(item, f"after-notice:{key}", "notice", notice(result.notice))
     if restarting and result.restart:
         raise ValueError("重启后完成钩子不能再次请求重启")
     if result.wait is not None:

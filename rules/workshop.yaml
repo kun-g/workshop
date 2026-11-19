@@ -13,7 +13,7 @@ issue_triggers: &issue_triggers
     action: rework
   - {source: github, when: {kind: issue}, action: classify}
   - {source: github, action: update}
-  - {source: 'cli:feishu', action: update}
+  # 飞书群入口已停（介入点 Q3，#176）：群消息不进 issue 交付。
   - {source: 'cli:orca', action: update}
 # 唯一规则入口；插件通过 workshop.<port> 入口点按名字加载。
 targets:
@@ -57,11 +57,6 @@ targets:
     skill: issue-delivery
     permissions: repository
     label: Ready for Agent
-    # grant-console 开发；按群编号匹配，不把群名当凭据。
-    feishu_chat_id: oc_b518118e43fc373572b6efb5e1887e2b
-    feishu_profile: tuan
-    kun_feishu_open_id: ou_43456ed5ae17472375fcbb6ec0fc4661
-    ask_kun_state: ~/.local/state/ask-kun/asks.json
     pending_limit: 24
     short_name: gc
     ci: [check-and-build]
@@ -168,7 +163,6 @@ targets:
     intake_app_logins: ["lambdatheory-agent[bot]"]
     github_overlap_seconds: 60
     short_name: ws
-    ask_kun_state: ~/.local/state/ask-kun/asks.json
     ci: none
     prepare: [{argv: [uv, sync, --locked]}]
     release_prepare:
@@ -292,9 +286,7 @@ executors:
 limits: {concurrent: 5, chain_depth: 8, round_timeout_seconds: 7200, brief_max_chars: 524288}
 # 所有阶段默认用 quota；没有额度门槛时它和 ordered 一样按顺序取第一个。
 selector: quota
-channel: ask_kun
-# 通知开关：hold 只记不发（Kun 11-14：「自从你们这边开始用Ash给我发消息，里面全是垃圾消息。我已经不想看了」）。要 Kun 定的事走问卡，不受影响。
-notices: hold
+# 消息只经介入点服务的送达命令（intervention.transport），只送介入点 R12、R13 许可的几种；没有别的通道和通知开关（#176）。
 ask_first:
   - 对外发消息
   - 删别处的东西
@@ -309,7 +301,7 @@ stage_executors: {}
 # 状态页在本机的地址：车间主进程在这里只读提供 status.html（只监听本机），介入点卡片的按钮打开它。
 status_page: http://127.0.0.1:8765/status.html
 
-# 独立介入点能力；迁移单完成前不绑定现役流程、不改现役消息出口。
+# 介入点服务：等待、回答和送达都在这里（#172–#176）。
 wait_services:
   intervention:
     endpoint: ~/.local/state/workshop-intervention/run/service.sock

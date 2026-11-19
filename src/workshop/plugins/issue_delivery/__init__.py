@@ -200,27 +200,6 @@ class IssueDelivery:
             return "Orca 插话"
         return None
 
-    def _message(self, message_id, target):
-        if not self.io.lark or not re.fullmatch(r"om_[A-Za-z0-9_]+", message_id):
-            return None
-        try:
-            result = run([self.io.lark, "--profile", target.get("feishu_profile", "tuan"),
-                          "api", "GET", f"/open-apis/im/v1/messages/{message_id}", "--as", "bot"], check=False)
-            value = json.loads(result.stdout)
-            if result.returncode or value.get("ok") is not True:
-                return None
-            matches = [m for m in value.get("data", {}).get("items", []) if m.get("message_id") == message_id]
-            if len(matches) != 1:
-                return None
-            message = matches[0]
-            sender = message.get("sender", {})
-            if (sender.get("sender_type") != "user" or sender.get("id_type") != "open_id"
-                    or sender.get("id") != target.get("kun_feishu_open_id")):
-                return None
-            return message
-        except (ValueError, OSError, RuntimeError, Retryable):
-            return None
-
     @github_scope
     def classify(self, event, item, target, find_external):
         if event.source == 'github' and event.body.get('kind') == 'issue' and target.get('auto_intake'):
@@ -232,58 +211,10 @@ class IssueDelivery:
                     and event.body.get("item_id") == item["id"]):
                 return Classification("update", item["object_key"])
             return Classification()
-        if event.source != "cli:feishu":
-            return Classification()
-        message = self._message(event.ext_id, target)
-        if not message:
-            return Classification(discard=True, summary=f"飞书消息 {event.ext_id} 回查不到，或发送者不是 Kun")
-        try:
-            body = json.loads(message.get("body", {}).get("content", "{}"))
-        except (ValueError, TypeError):
-            return Classification()
-        text = body.get("text", "") if message.get("msg_type") == "text" else ""
-        for mention in message.get("mentions", []):
-            if mention.get("name", "").lower() == "ash":
-                text = text.replace(mention.get("key", "@Ash"), "@Ash")
-        # 发送者已按消息号回查是 Kun，原话取自上游，不取 CLI 正文。
-        said = f"飞书 Kun：「{spoken(text)}」"
-        key = None
-        parent = message.get("parent_id") or message.get("root_id")
-        if parent:
-            path = Path(target.get("ask_kun_state", "~/.local/state/ask-kun/asks.json")).expanduser()
-            try:
-                state = json.loads(path.read_text())
-                records = list(state.get("asks", {}).values()) + list(state.get("notices", {}).values())
-                matches = [r for r in records if r.get("message_id") == parent and r.get("chat_id") == message.get("chat_id")]
-            except (OSError, ValueError, AttributeError, TypeError):
-                matches = []
-            if len(matches) == 1:
-                external = matches[0].get("id")
-                found = find_external(external) if external else None
-                if found:
-                    key = found["item"]["object_key"]
-        if key is not None:
-            return Classification(action_for(text), key, summary=said + "（回复车间的卡片或通知）")
-        if message.get("chat_id") != target.get("feishu_chat_id"):
-            return Classification(discard=True, summary=said + "；不在交付对象的群，也没回复车间的卡片或通知")
-        text = re.sub(r"^\s*@Ash\s*", "", text, flags=re.I).strip()
-        short = target.get("short_name", target["name"])
-        named = re.fullmatch(re.escape(short) + r"#([1-9][0-9]*)\s*(不对(?:[，,:：。！!\s].*)?)", text, re.S)
-        if named:
-            found = find_external(object_key=named[1])
-            if found:
-                return Classification("rework", found["item"]["object_key"], summary=said)
-            return Classification(discard=True, summary=f"{said}；{short}#{named[1]} 找不到活")
-        # 引用查不到只当资料，不从 CLI 提供的 quote 推测归件。
-        return Classification(summary=said)
-
-    def _intake_message(self, item, target):
-        for material in item.get("materials", []):
-            if material.get("source") == "cli:feishu" and material.get("ext_id"):
-                message = self._message(material["ext_id"], target)
-                if message and message.get("chat_id") == target.get("feishu_chat_id"):
-                    return message
-        return None
+        if event.source == "cli:feishu":
+            # 群入口已停（介入点 Q3，Kun 11-16「暂时不和飞书群交互」）：群消息只留记录，不建活、不推进活。
+            return Classification(discard=True, summary="飞书群入口已停，群消息不建活、不推进活")
+        return Classification()
 
     def _issue(self, item, target):
         state = self.io.read(item, target)
@@ -330,13 +261,13 @@ class IssueDelivery:
             "完成后用执行者提供的 target.runtime.command + receipt <WORKSHOP_ROUND_TOKEN> --file <绝对JSON路径> 交回执，提交成功就退出。\n"
             'evidence 是字符串列表，其中一项放 JSON 字符串，schema="issue-delivery/v1"。\n'
             "等外部任务到点再看时交 later（key/at/about），退出会话；不得轮询占着会话。\n"
-            "需要 Kun 取舍时不发 ask 或 notice：evidence JSON 放 decision={key,version,question,reason,recommend}，"
+            "需要 Kun 取舍时：evidence JSON 放 decision={key,version,question,reason,recommend}，"
             "五项均为非空字符串；version 绑定本次完整问题，改问题换版本。leave={kind:等你,about:问题}，"
             "outcome=nothing，不填 advance，交回执后退出；车间登记无卡等待，协调对话按等待号和版本记录回答。\n"
             "需要授权时在中心申请一次，保存原申请号。evidence JSON 写 authorization={request,kind,action,provider_action,target,checkpoint}；"
-            "kind 为 exec/grant，target 为完整目标对象，checkpoint 为持久检查点；outcome=nothing，不填 advance/ask/later。"
+            "kind 为 exec/grant，target 为完整目标对象，checkpoint 为持久检查点；outcome=nothing，不填 advance/later。"
             "程序只查原申请，批准且生效后唤起；已代执行的动作不能重做。缺按量或对外消息授权类型时保持阻断。\n"
-            "不发进度通知（notice）：进度 Kun 在 workshop status / why 里看。\n"
+            "不给 Kun 发任何消息：进度和结果 Kun 在 workshop status / why 里看。\n"
         )
         allowed = "、".join(f"「{name}」" for name in item["allowed_advances"])
         common += (f'回执顶层只认 {"、".join(f.name for f in fields(Receipt))}，别的字段一律放进 evidence 那条 JSON；'
@@ -441,7 +372,7 @@ class IssueDelivery:
     def validate_receipt(self, item, receipt, target):
         if item['stage'] == '执行':
             if report(receipt).get('authorization') is not None:
-                if receipt.outcome != 'nothing' or receipt.advance or receipt.ask or receipt.later or receipt.leave:
+                if receipt.outcome != 'nothing' or receipt.advance or receipt.later or receipt.leave:
                     raise ValueError('授权等待须 outcome=nothing 且不同时推进、问卡、定时或 leave')
                 return
             value = decisions.content(receipt, report(receipt), item['stage'])
@@ -497,11 +428,8 @@ class IssueDelivery:
         """接单核对（核心 R2、R3，issue交付 R2、R10）：缺一项就停在接单等资料，不派轮、不发卡。"""
         state = self.io.read(item, target)
         if not item["object_key"].isdigit() and not state.get("issue"):
-            # 飞书进来的需求先核实原消息，由 after 开 issue；开好后下一次程序步再核对登记。
-            messages = [m for m in item["materials"] if m["source"] == "cli:feishu"]
-            if not messages or not self._intake_message(item, target):
-                return Evidence(reason="没有可信的接单来源")
-            return Evidence(passed=True, reason="原消息已核实，开 issue 后核对登记")
+            # 飞书群入口已停：不再从群消息开 issue，没有 issue 的活没有可信的接单来源。
+            return Evidence(reason="没有可信的接单来源：飞书群入口已停，需求在协调对话里说")
         issue = self._issue(item, target)
         body = issue.get("body") or ""
         documents = self.io.requirement_documents(target)
@@ -616,16 +544,7 @@ class IssueDelivery:
             return
         if state.get("creating"):
             raise BusinessWait("上次开 issue 结果未确认，需回查后恢复，不能重复开", rerun=False)
-        message = self._intake_message(item, target)
-        if not message:
-            raise BusinessWait("接单原消息无法核实", rerun=False)
-        text = json.loads(message["body"]["content"]).get("text", "")
-        state["creating"] = True
-        self.io.save(item, target, state)
-        issue = self.io.api(f'repos/{target["repo"]}/issues', data={
-            "title": text[:100] or "待补齐登记的需求", "body": marker + f'\n<!-- workshop-intake: {item["id"]} -->' + "\n\n## Kun 的原话\n" + text,
-            "labels": [target.get("label", "Ready for Agent")]})
-        state["issue"] = issue["number"]
+        raise BusinessWait("飞书群入口已停，不再从群消息开 issue；需求在协调对话里说", rerun=False)
 
     def _tag(self, item, target, state):
         sha = state["merge"]
@@ -751,7 +670,7 @@ class IssueDelivery:
 
     @github_scope
     def after(self, item, completed_stage, key, target, services=None):
-        receipt = Receipt(**item.get('result', {'outcome': 'done', 'summary': ''}))
+        receipt = Receipt.stored(item.get('result', {'outcome': 'done', 'summary': ''}))
         if completed_stage == '执行' and report(receipt).get('authorization') is not None:
             return authorization.after(self.io, item, target, report(receipt)['authorization'])
         value = decisions.content(receipt, report(receipt), completed_stage) if completed_stage == '执行' else None
@@ -808,10 +727,10 @@ class IssueDelivery:
 
     def _after(self, item, completed_stage, key, target):
         # assess 登记的等待由核心到点调用；这里不能执行合并、发版或上线。
-        receipt = Receipt(**item.get("result", {"outcome": "done", "summary": ""}))
+        receipt = Receipt.stored(item.get("result", {"outcome": "done", "summary": ""}))
         with self.io.locked(item, target) as state:
             if key in state["effects"] and not state["effects"][key].get("pending"):
-                return After(**state["effects"][key])
+                return After.stored(state["effects"][key])
             result = After()
             if item.get("pending_rework"):
                 return After(pending=True, rerun=True, reason="已收到可信返工", next="按返工意见回到执行")

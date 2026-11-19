@@ -30,7 +30,7 @@ def apply_timer(engine, timer, item):
         return  # 放弃前约的工序和送回不再打扰；到点只记事实。
     if timer["kind"] != "送回" and timer["owner"] != "车间":
         return  # 别人承诺的工序不冒充执行，也不发提醒。
-    if (item["state"] in ("定时", "完成") and not engine.answerable(item)
+    if (item["state"] in ("定时", "完成") and not engine.waiting(item)
           and (not item.get("retry_at") or stamp(engine.clock()) >= item["retry_at"])):
         engine.change(item, state="空闲", next=timer["about"])
 

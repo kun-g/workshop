@@ -99,7 +99,7 @@ class Flow(Entries):
 
     def apply_task(self, item, target, state, check):
         try:
-            supplied = result(Receipt(**item.get('result', {})))
+            supplied = result(Receipt.stored(item.get('result', {})))
         except (ValueError, TypeError):
             return
         key = supplied.get('task_key')
