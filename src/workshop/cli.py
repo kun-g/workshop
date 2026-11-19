@@ -43,6 +43,7 @@ def parser():
     status_command.add_argument("--html", nargs="?", const="", metavar="文件",
                                 help="写成一页网页；不给文件名时写到 --state-dir/status.html，打印路径")
     commands.add_parser("usage")
+    commands.add_parser("compact-managers", help="瘦身 managers.db：备份、把 history 转成变化记录并 VACUUM；可重复跑")
     metrics_command = commands.add_parser("metrics", help="只读查看供给、流动、负载及小时明细")
     metrics_command.add_argument("--since", help="回看时长，默认 24h；支持 s/m/h/d")
     metrics_command.add_argument("--from", dest="start", help="含时区的 ISO 起点")
@@ -137,6 +138,23 @@ def read_command(args):
 
 def main(argv=None):
     args = parser().parse_args(argv)
+    if args.command == "compact-managers":
+        from .core.managers import compact
+        try:
+            result = compact(args.state_dir)
+            if result.get('missing'):
+                print(f"没有 managers.db：{Path(args.state_dir) / 'managers.db'}")
+                return 0
+            before, after = result['before'], result['after']
+            size = lambda value: f'{value / 1024 / 1024:.1f} MB'
+            print(f"已备份：{result['backup']}")
+            print(f"managers.db：{size(before['file_bytes'])} → {size(after['file_bytes'])}")
+            print(f"history：{before['history']} 行，正文 {size(before['history_bytes'])} → {size(after['history_bytes'])}"
+                  f"（{result['rewritten']} 行旧快照转成变化记录）")
+            return 0
+        except (ValueError, KeyError, OSError, sqlite3.Error) as exc:
+            print(f'车间：{exc}', file=sys.stderr)
+            return 2
     if args.command == "check-issue":
         from .plugins.issue_delivery.check_issue import check_issue
         from .core.ports import Retryable, TargetBlocked

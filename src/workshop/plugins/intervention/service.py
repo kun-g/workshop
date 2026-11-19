@@ -67,6 +67,27 @@ class Service:
             raise ValueError('介入点未登记')
         return points[point], config
 
+    def business(self):
+        """最近一次由车间发来的全局业务状态；没有时由事项自己的旧记录兜底。"""
+        try:
+            return self.store.get(self.store.identity('manager_business', 'global'), 'manager_business')
+        except ValueError:
+            return None
+
+    def remember_business(self, value):
+        """业务状态只存一条；状态没变就不写 journal。"""
+        if not isinstance(value, dict) or set(value) - {'total', 'idle_since'}:
+            raise ValueError('business 必须是 total/idle_since 对象')
+        total = value.get('total')
+        if total is not None and (type(total) is not int or total < 0):
+            raise ValueError('business.total 必须是非负整数或 null')
+        idle = value.get('idle_since')
+        if idle is not None and not isinstance(idle, str):
+            raise ValueError('business.idle_since 必须是字符串或 null')
+        state = {'total': total, 'idle_since': idle}
+        if state != self.business():
+            self.store.put('manager_business', self.store.identity('manager_business', 'global'), state, 'business_updated')
+
     def call(self, action, data):
         if not isinstance(data, dict):
             raise ValueError('data 必须是对象')
@@ -78,10 +99,16 @@ class Service:
             'permit': {'operation', 'point', 'scope', 'owner', 'basis'},
             'enqueue': {'operation', 'permit', 'payload'},
             'cancel': {'operation', 'ref', 'reason'},
-            'manager_update': {'operation', 'record'}, 'manager_flush': set(),
+            'manager_update': {'operation', 'record'}, 'manager_flush': {'business'},
             'status_click': {'operation', 'event'},
         }
-        if action not in fields or set(data) != fields[action]:
+        allowed = fields.get(action)
+        if allowed is None:
+            raise ValueError('操作字段不完整或有未知字段')
+        if action == 'manager_flush':
+            if set(data) - allowed:
+                raise ValueError('操作字段不完整或有未知字段')
+        elif set(data) != allowed:
             raise ValueError('操作字段不完整或有未知字段')
         if action == 'ping':
             self.configuration()
@@ -96,6 +123,8 @@ class Service:
             wait = self.store.get(data['ref'], 'wait')
             return {'ref': wait['id'], 'ready': wait['answer'] is not None, 'token': wait['token']}
         if action == 'manager_flush':
+            if 'business' in data:
+                self.remember_business(data['business'])
             return manager.flush(self)
         if action == 'dispatch':
             return self.dispatch(data['ref'])
