@@ -49,7 +49,13 @@ class Driver(Base):
         'ignore_rules': lambda v: type(v) is bool,
         'require_subscription_login': lambda v: type(v) is bool,
         'skip_git_repo_check': lambda v: type(v) is bool,
+        'executor_dir': text,
     }
+    settings_file = 'config.toml'
+
+    def directory_settings(self, path):
+        file = Path(path) / self.settings_file
+        return tomllib.loads(file.read_text()) if file.exists() else {}
 
     def environment(self, config):
         return {'CODEX_HOME': str(Path(config['config_dir']).expanduser())} if 'config_dir' in config else {}
@@ -77,6 +83,10 @@ class Driver(Base):
             for field in ('model', 'effort'):
                 if not text(config.get(field)):
                     raise ValueError(f'配置档 {name} 的 {field}：交互启动必须写明')
+        if 'executor_dir' in config:
+            # 核心 R25：沿用本机登录时 Codex 关不掉个人配置。交互启动没有 --ignore-user-config；
+            # codex exec 加了它也照样加载 ~/.codex/skills 和 ~/.agents/skills。不绕过，等 Kun 定办法（#283）。
+            raise ValueError(f'配置档 {name} 的 executor_dir：Codex 沿用本机登录时关不掉个人配置，暂不支持')
         if config['transport'] == 'orca' and (config.get('ignore_rules') or config.get('ignore_user_config')):
             raise ValueError(f'配置档 {name} 的 ignore_rules/ignore_user_config：当前 CLI 只支持 headless')
         if 'plugins' in config:

@@ -30,8 +30,31 @@ def json_options(value):
     return json.loads(path.read_text())
 
 
+# 执行者目录（核心 R25）：设置文件按驱动定名，规矩统一放这个文件。
+RULES_FILE = 'rules.md'
+
+
+def repository_root(rules_path):
+    """规则文件所在仓库的根：往上找第一个有 .git 的目录；不在仓库里就用规则文件所在目录。"""
+    start = Path(rules_path).expanduser().resolve().parent
+    for candidate in (start, *start.parents):
+        if (candidate / '.git').exists():
+            return candidate
+    return start
+
+
+def directory_rules(config):
+    """执行者目录里的规矩；目录没写或文件为空时返回空串。"""
+    if not config.get('executor_dir'):
+        return ''
+    path = Path(config['executor_dir']) / RULES_FILE
+    return path.read_text().strip() if path.exists() else ''
+
+
 def instructions(config):
     parts = [config['prompt']] if config.get('prompt') else []
+    if directory_rules(config):
+        parts.append(directory_rules(config))
     for name in config.get('skills', []):
         path = Path(name).expanduser().resolve()
         if path.is_dir():
@@ -42,6 +65,7 @@ def instructions(config):
 
 class Driver:
     fields = {}
+    settings_file = ''  # 执行者目录里这一家的设置文件名
     family = ''
     binary = ''
     allocated_session = False
@@ -81,6 +105,31 @@ class Driver:
                     fail('quota.' + key, '必须写明')
             if 'min_remaining' in quota and (type(quota['min_remaining']) not in (int, float) or not 0 <= quota['min_remaining'] <= 100):
                 fail('quota.min_remaining', '必须在 0 到 100 之间')
+
+    def directory_settings(self, path):
+        """读执行者目录里的设置文件；没有这个文件时为空。格式不对抛 ValueError。"""
+        return {}
+
+    def bind(self, name, config, rules_path):
+        """把 executor_dir 换成绝对路径并读一遍目录里的设置；规则加载时调用，目录或设置不对就报出配置档名。
+
+        相对路径从规则文件所在仓库的根算起。
+        """
+        if 'executor_dir' not in config:
+            return config
+        value = config['executor_dir']
+        if not text(value):
+            raise ValueError(f'配置档 {name} 的 executor_dir：必须是非空字符串')
+        if not rules_path:
+            raise ValueError(f'配置档 {name} 的 executor_dir：规则没有文件路径，无法定位仓库')
+        path = (repository_root(rules_path) / Path(value).expanduser()).resolve()
+        if not path.is_dir():
+            raise ValueError(f'配置档 {name} 的 executor_dir：目录 {path} 不存在')
+        try:
+            self.directory_settings(path)
+        except (OSError, ValueError) as exc:
+            raise ValueError(f'配置档 {name} 的 executor_dir：{path / self.settings_file} 格式不对：{exc}') from exc
+        return {**config, 'executor_dir': str(path)}
 
     def executor(self, name, config):
         from ..adapters import Executor

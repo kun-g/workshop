@@ -188,8 +188,12 @@ class TaskHome(Protocol):
 
 
 class Driver(Protocol):
-    """装配层 Registry 调用；这里的三个成员均为必需。驱动内部方法不属于装配端口。"""
+    """装配层 Registry 调用；除标明可选的，成员均为必需。驱动内部方法不属于装配端口。"""
     family: str
+
+    def bind(self, name: str, config: dict, rules_path: str | None) -> dict:
+        """可选，装配层在核对前调用：把配置档里相对规则文件所在仓库写的路径换成绝对路径；读不了就报出配置档名。"""
+        ...
 
     def validate(self, name: str, config: dict) -> None:
         """必需，装配层在启动任何会话前核对配置档。"""

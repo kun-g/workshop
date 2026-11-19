@@ -57,6 +57,9 @@ class Registry:
                 driver = self.get('driver', profile['driver'])
             except (LookupError, ImportError) as exc:
                 raise ValueError(f"配置档 {name} 的 driver：{exc}") from exc
+            bind = getattr(driver, 'bind', None)
+            if bind:
+                profile = bind(name, profile, rules.path)
             driver.validate(name, profile)
             profiles[name] = {**profile, 'family': driver.family}
         self.profiles = profiles

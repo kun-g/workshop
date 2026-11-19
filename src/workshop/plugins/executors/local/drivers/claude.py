@@ -15,6 +15,18 @@ from ..usage import after, number, aggregate, grouped, rows
 from ..pricing import cost
 from .base import Driver as Base, text, strings, options, json_options, instructions
 
+# 个人配置里会被当成指令读进来的文件（相对每一层目录）；执行者目录模式下，工作目录以上各层都排除。
+OUTSIDE_INSTRUCTIONS = ('CLAUDE.md', 'CLAUDE.local.md', 'AGENTS.md', '.claude/CLAUDE.md', '.claude/rules/**')
+
+
+def outside_instructions(*workdirs):
+    """工作目录以上每一层的指令文件，写成 claudeMdExcludes 的绝对路径。"""
+    patterns = []
+    for workdir in filter(None, workdirs):
+        for parent in Path(workdir).parents:
+            patterns += [str(parent / name) for name in OUTSIDE_INSTRUCTIONS]
+    return list(dict.fromkeys(patterns))
+
 
 class Driver(Base):
     family = 'claude'
@@ -26,7 +38,24 @@ class Driver(Base):
         'permission_mode': lambda v: v in ('acceptEdits', 'auto', 'bypassPermissions', 'manual', 'dontAsk', 'plan'),
         'restricted': lambda v: type(v) is bool, 'strict_mcp_config': lambda v: type(v) is bool,
         'mcp_config': options, 'plugins': strings, 'settings': options, 'config_dir': text,
+        'executor_dir': text,
     }
+    settings_file = 'settings.json'
+
+    def directory_settings(self, path):
+        file = Path(path) / self.settings_file
+        if not file.exists():
+            return {}
+        value = json.loads(file.read_text())
+        if not isinstance(value, dict):
+            raise ValueError('顶层必须是 JSON 对象')
+        return value
+
+    def validate(self, name, config):
+        super().validate(name, config)
+        if 'executor_dir' in config and 'config_dir' in config:
+            # 执行者目录模式沿用本机订阅登录（默认配置目录），不能同时换一个登录。
+            raise ValueError(f'配置档 {name} 的 config_dir：和 executor_dir 不能同时写，执行者沿用本机登录')
 
     def environment(self, config):
         return {'CLAUDE_CONFIG_DIR': str(Path(config['config_dir']).expanduser())} if 'config_dir' in config else {}
@@ -52,7 +81,15 @@ class Driver(Base):
             argv += ['--model', config['model']]
         if config.get('effort'):
             argv += ['--effort', config['effort']]
-        settings = copy.deepcopy(json_options(config['settings'])) if 'settings' in config else {}
+        # 执行者目录模式（核心 R25）：不读用户级设置、hook、全局指令和自动记忆，只读仓库这一层和执行者目录。
+        isolated = bool(config.get('executor_dir'))
+        settings = copy.deepcopy(self.directory_settings(config['executor_dir'])) if isolated else {}
+        settings.update(copy.deepcopy(json_options(config['settings'])) if 'settings' in config else {})
+        if isolated:
+            argv += ['--setting-sources', 'project']
+            settings['autoMemoryEnabled'] = False
+            settings['claudeMdExcludes'] = [*settings.get('claudeMdExcludes', []),
+                                            *outside_instructions(workdir, trust_workdir)]
         if executor.interactive:
             hook = shlex.join([sys.executable, str(Path(__file__).parents[1] / 'hook.py')])
             settings.setdefault('hooks', {}).setdefault('UserPromptSubmit', []).append({'hooks': [{'type': 'command', 'command': hook}]})
@@ -60,7 +97,7 @@ class Driver(Base):
             argv += ['--settings', str(directory / 'hooks.json')]
         else:
             argv += ['-p', '--output-format', 'json']
-            if 'settings' in config:
+            if 'settings' in config or isolated:
                 argv += ['--settings', json.dumps(settings, ensure_ascii=False)]
         if config.get('restricted'):
             argv += ['--restricted']
@@ -70,10 +107,10 @@ class Driver(Base):
             if field in config:
                 value = config[field]
                 argv += [flag, ','.join(value) if isinstance(value, list) else value]
-        if config.get('strict_mcp_config'):
+        if config.get('strict_mcp_config') or isolated:
             argv += ['--strict-mcp-config']
-        if 'mcp_config' in config:
-            value = config['mcp_config']
+        if 'mcp_config' in config or isolated:
+            value = config.get('mcp_config', {'mcpServers': {}})
             argv += ['--mcp-config', json.dumps(value, separators=(',', ':')) if isinstance(value, dict) else str(Path(value).expanduser())]
         prompt = instructions(config)
         if prompt:

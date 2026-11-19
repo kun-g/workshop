@@ -10,7 +10,8 @@ def default_profile(name):
     profiles = yaml.safe_load(path.read_text())['executor_profiles']
     if name not in profiles:
         raise ValueError(f'配置档 {name} 未在规则中定义')
-    return dict(profiles[name])
+    from .drivers import load
+    return load(profiles[name]['driver']).bind(name, dict(profiles[name]), path)
 
 
 def make_orca_claude():
