@@ -1,6 +1,6 @@
 """每轮开头按作用域加载固定部分：用户指示、未结案进度、笔记索引、近期告知。
 
-预算按条数和字符数两道上限；超限按 用户指示 > 未结案进度 > 近期告知 截断，用户指示不能被挤出。
+预算按条数和字符数两道上限；超限按 用户指示 > 未结案进度 > 笔记索引 > 近期告知 截断，用户指示不能被挤出。
 笔记只给索引（id + 摘要），正文由查看命令按 id 读。已结案的进度不进开头加载。
 """
 import json
@@ -76,10 +76,10 @@ def context(store, scope, config):
     used = {"entries": 0, "chars": 0}
     items = instructions(store, scope)
     kept_instructions = trim(items, budget, used)
-    note_index = notes(store, scope)
-    kept_notes = trim([{**note, "claim": "", "summary": note["summary"]} for note in note_index], budget, used)
     progress_items = progress(store, scope)
     kept_progress = trim(progress_items, budget, used)
+    note_index = notes(store, scope)
+    kept_notes = trim([{**note, "claim": "", "summary": note["summary"]} for note in note_index], budget, used)
     reported_items = reported(store, scope, budget)
     kept_reported = trim(reported_items, budget, used)
     return {"scope": scope, "budget": budget, "instructions": kept_instructions,

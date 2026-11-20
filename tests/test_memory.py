@@ -153,6 +153,44 @@ def test_context_scope_excludes_other_scopes(tmp_path):
     assert [e["claim"] for e in loaded["instructions"]] == ["给 alpha"]
 
 
+def test_note_index_counts_toward_budget_after_open_progress(tmp_path):
+    """笔记索引也占预算；笔记再多也不挤掉用户指示和未结案进度。"""
+    engine = build(tmp_path / "state")
+    seqs = facts(engine, 1)
+    token = running_round(engine)
+    service = MemoryService()
+    for i in range(2):
+        service.add(kind="instruction", scope="alpha", claim=f"指示{i}", summary="", source_fact_seqs=seqs,
+                    token=token, target=target(tmp_path))
+    for i in range(3):
+        service.add(kind="progress", scope="alpha", claim=f"未结案进度{i}", summary="", state="未结案",
+                    item=f"alpha:open{i}", source_fact_seqs=seqs, token=token, target=target(tmp_path))
+    for i in range(30):
+        service.add(kind="note", scope="alpha", claim=f"笔记正文{i}", summary=f"笔记{i}", source_fact_seqs=seqs,
+                    token=token, target=target(tmp_path))
+    store = make_store(tmp_path)
+    budgets = {"max_entries": 8, "max_chars": 1000, "reported_recent": 10}
+    loaded = context.context(store, "alpha", {"budgets": budgets})
+    store.close()
+    assert len(loaded["instructions"]) == 2
+    assert len(loaded["progress"]) == 3
+    assert len(loaded["notes"]) == 3 and loaded["truncated"]["notes"] is True
+    assert sum(len(loaded[key]) for key in ("instructions", "notes", "progress", "reported")) <= 8
+
+
+def test_progress_append_same_state_returns_existing_row(tmp_path):
+    """同一件活、同一状态、同一说法再写一次（来源不同）：不重复，回读已有那行。"""
+    store = make_store(tmp_path)
+    first = store.append(kind="progress", scope="alpha", claim="做到第二步", source_fact_seqs=[1], batch="b1",
+                         item="alpha:one", state="未结案")
+    again = store.append(kind="progress", scope="alpha", claim="做到第二步", source_fact_seqs=[2], batch="b2",
+                         item="alpha:one", state="未结案")
+    rows = [row for row in store.latest_progress() if row["item"] == "alpha:one"]
+    store.close()
+    assert again is not None and again["id"] == first["id"]
+    assert len(rows) == 1
+
+
 # ---- 三、轮内写入的令牌和来源 ----
 
 def test_add_requires_running_round_token(tmp_path):
@@ -347,6 +385,86 @@ def test_fail_closed_equivalence(tmp_path):
         result = dreaming.run(store, facts_port, dreamer, batch="dream:x")
         assert result["written"] == []
     store.close()
+
+
+# 假模型：记忆插件按规则 memory.dreamer 起 scripts/memory_dreamer.py，它再起这个「模型」。
+# 按提示词分辨是做梦还是等价判定，原样打出环境变量里给的回答；EXIT 表示模型非零退出。
+FAKE_MODEL = """
+import os, sys
+prompt = sys.argv[-1]
+value = os.environ["FAKE_SAME" if "同一个" in prompt else "FAKE_PROPOSE"]
+if value == "EXIT":
+    sys.exit(3)
+print(value)
+"""
+
+
+def model_dreamer(tmp_path, *, propose, same):
+    import sys
+    model = tmp_path / "fake_model.py"
+    model.write_text(FAKE_MODEL)
+    script = Path(__file__).resolve().parents[1] / "scripts" / "memory_dreamer.py"
+    data = settings(tmp_path, dreamer={"script": str(script), "argv": [sys.executable, str(model)],
+                                       "env": {"FAKE_PROPOSE": propose, "FAKE_SAME": same}, "timeout": 60})
+    return make_dreamer(None, data)
+
+
+def test_dreamer_without_script_is_local_and_config_is_checked(tmp_path):
+    assert type(make_dreamer(None, settings(tmp_path))) is Dreamer
+    with pytest.raises(ValueError):
+        settings(tmp_path, dreamer={"script": "x.py", "argv": "claude"})
+
+
+def test_model_dreamer_writes_through_configured_script(tmp_path):
+    engine = build(tmp_path / "state")
+    seqs = facts(engine, 1)
+    store = make_store(tmp_path)
+    facts_port = ports.Facts(settings(tmp_path)["facts_db"])
+    proposals = [{"kind": "reported", "scope": "*", "claim": "模型提炼的结论", "source_fact_seqs": seqs},
+                 {"kind": "reported", "scope": "*", "claim": "模型编的来源", "source_fact_seqs": [999999]}]
+    dreamer = model_dreamer(tmp_path, propose="好的：" + json.dumps(proposals, ensure_ascii=False),
+                            same='{"same": false}')
+    result = dreaming.run(store, facts_port, dreamer, batch="dream:model")
+    store.close()
+    assert [e["claim"] for e in result["written"]] == ["模型提炼的结论"]
+    assert [r["claim"] for r in result["rejected"]] == ["模型编的来源"]
+
+
+def test_model_dreamer_propose_failure_writes_nothing(tmp_path):
+    engine = build(tmp_path / "state")
+    facts(engine, 1)
+    store = make_store(tmp_path)
+    facts_port = ports.Facts(settings(tmp_path)["facts_db"])
+    for answer in ("EXIT", "没有 JSON"):
+        dreamer = model_dreamer(tmp_path, propose=answer, same='{"same": false}')
+        with pytest.raises(ValueError):
+            dreaming.run(store, facts_port, dreamer, batch="dream:bad")
+    # 失败不推进游标、不写条目
+    assert int(store.meta("dream_cursor") or 0) == 0 and store.effective() == []
+    store.close()
+
+
+@pytest.mark.parametrize("same", ["EXIT", '{"same": "yes"}', "不是 JSON"])
+def test_model_equivalence_fail_closed(tmp_path, same):
+    engine = build(tmp_path / "state")
+    seqs = facts(engine, 1)
+    service = MemoryService()
+    m1 = service.add(kind="reported", scope="*", claim="原说法", summary="", source_fact_seqs=seqs,
+                     token=running_round(engine), target=target(tmp_path))
+    service.correct(m1["id"], "原说法", watermark=20, target=target(tmp_path))
+    store = make_store(tmp_path)
+    facts_port = ports.Facts(settings(tmp_path)["facts_db"])
+    candidate = json.dumps([{"claim": "改写过的说法", "source_fact_seqs": seqs}], ensure_ascii=False)
+    # 对照：模型判「不是同一个」时放行，说明下面的拒绝来自判定失败。
+    allowed = dreaming.run(store, facts_port, model_dreamer(tmp_path, propose=candidate, same='{"same": false}'),
+                           batch="dream:ok")
+    assert [e["claim"] for e in allowed["written"]] == ["改写过的说法"]
+    store.set_meta("dream_cursor", 0)
+    candidate = json.dumps([{"claim": "又一个改写", "source_fact_seqs": seqs}], ensure_ascii=False)
+    result = dreaming.run(store, facts_port, model_dreamer(tmp_path, propose=candidate, same=same),
+                          batch="dream:bad")
+    store.close()
+    assert result["written"] == [] and "同一个说法" in result["rejected"][0]["reason"]
 
 
 def test_correction_does_not_taint_other_claims(tmp_path):
