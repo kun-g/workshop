@@ -55,6 +55,11 @@ def run(argv, *, cwd=None, env=None, timeout=20, check=True):
 
 CACHE_KEEP = 5
 STALE_COPY_SECONDS = 6 * 3600
+# 检查进程的 HOME/TMPDIR 建在这里，不建在状态目录深处（ws#308）：检查在 TMPDIR 下拼 unix socket
+# 路径时（macOS 上限 104 字节）长度不随状态目录的深度涨。副本目录里留一个 home 链接指过来，
+# 跑检查的进程中途被杀时 cleanup_copies 顺着它收走。
+CHECK_HOME_ROOT = Path("/tmp")
+CHECK_HOME_PREFIX = "workshop-check-"
 
 
 def _chmod(entry, change):
@@ -91,6 +96,30 @@ def worktree_owner(directory):
             if gitdir.parent.name == "worktrees":
                 return gitdir.parent.parent.resolve()
     return None
+
+
+@contextmanager
+def check_home(check_dir):
+    """检查专用的空 HOME（兼 TMPDIR），用完即删；在检查副本目录 check_dir 下登记一个 home 链接。"""
+    with tempfile.TemporaryDirectory(prefix=CHECK_HOME_PREFIX, dir=CHECK_HOME_ROOT) as directory:
+        home = Path(directory)
+        (Path(check_dir) / "home").symlink_to(home)
+        try:
+            yield home
+        finally:
+            writable(home)
+
+
+def sweep_check_home(check_dir):
+    """收走被杀进程留下的检查 HOME：只认 CHECK_HOME_ROOT 下本前缀的目录，别的链接不追。"""
+    link = Path(check_dir) / "home"
+    if not link.is_symlink():
+        return
+    home = Path(os.readlink(link))
+    if home.parent == CHECK_HOME_ROOT and home.name.startswith(CHECK_HOME_PREFIX) \
+            and home.is_dir() and not home.is_symlink():
+        writable(home)
+        shutil.rmtree(home, ignore_errors=True)
 
 
 def clean_env(home, cache=None):
@@ -368,23 +397,21 @@ class IO:
             if (directory.is_dir() and not directory.is_symlink() and directory.name.startswith("check-")
                     and time.time() - directory.stat().st_mtime > older_than):
                 writable(directory)
+                sweep_check_home(directory)
                 self.drop(target, directory / "repo")
                 shutil.rmtree(directory, ignore_errors=True)
 
     def verify(self, target, sha, checks):
         parent = self.root(target) / "copies"
         parent.mkdir(parents=True, exist_ok=True)
-        with tempfile.TemporaryDirectory(prefix="check-", dir=parent) as directory:
-            root = Path(directory)
-            copy = self.copy(target, sha, root / "repo")
+        with tempfile.TemporaryDirectory(prefix="check-", dir=parent) as directory, check_home(directory) as home:
+            copy = self.copy(target, sha, Path(directory) / "repo")
             try:
-                return self._run_checks(target, copy, root, checks)
+                return self._run_checks(target, copy, home, checks)
             finally:
                 self.drop(target, copy)
 
-    def _run_checks(self, target, copy, root, checks):
-        home = root / "home"
-        home.mkdir()
+    def _run_checks(self, target, copy, home, checks):
         cache = self.dependency_cache(target, copy)
         output = []
         steps = [(p["argv"], copy / p.get("cwd", "."), "prepare") for p in target.get("prepare", [])]
