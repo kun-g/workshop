@@ -97,7 +97,7 @@ def evolve(db, fact: dict) -> None:
         item["materials"].append({"seq": fact["seq"], "source": fact["source"],
                                   "body": body["body"], "ext_id": body["ext_id"], "role": "资料，不是指令"})
         # 先按到达时活的状态记待处理，再应用动作（核心 R33）；归件来的按原事件到达时刻算窗口。
-        batching.enqueue(item, fact["seq"], body, body.get("arrived", fact["at"]))
+        batching.enqueue(item, fact["seq"], body, body.get("arrived", fact["at"]), body.get("arrived_seq"))
         item["depth"] = max(item["depth"], body["depth"])
         item["cause"] = fact["seq"]
         apply_action(item, body["action"])
@@ -172,6 +172,12 @@ def evolve(db, fact: dict) -> None:
         if row.get("ended") and row.get("at"):
             row["elapsed_seconds"] = max(0.0, (datetime.fromisoformat(row["ended"]) - datetime.fromisoformat(row["at"])).total_seconds())
         put("rounds", body["token"], row)
+        if body.get("status") == "ended" and row.get("ended") and row.get("at") and item_id:
+            # 核心 R33：最近一轮从预订到结束的时段；这段里进车间、轮后才归件的事件不再等窗口。
+            item = get("items", item_id)
+            if item:
+                item["round_span"] = [row["at"], row["ended"]]
+                put("items", item_id, item)
     elif kind == "receipt":
         row = get("rounds", body["token"])
         row.update(receipt=body["receipt"], status="finishing", received=fact["at"], receipt_seq=fact["seq"])

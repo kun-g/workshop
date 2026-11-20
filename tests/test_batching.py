@@ -409,3 +409,73 @@ def test_replay_matches_live_view(engine):
     live = item(engine)
     engine.log.rebuild()
     assert item(engine) == live
+
+
+def test_exactly_twenty_events_start_without_waiting(engine):
+    seqs = [put(engine, f"e{n}") for n in range(1, 21)]
+    assert batches(engine) == [seqs]
+    assert running(engine)[0]["at"] == "2026-11-13T08:00:00+00:00"
+
+
+def delayed_classification(engine, names):
+    """这些外部事件的归件先不出结果（作业还在跑），别的照常归件。"""
+    from workshop.core.jobs import Pending
+    flow = engine.plugins.get("flow", "flow")
+    classify = flow.classify
+
+    def slow(event, item, target, find_external=None):
+        if event.ext_id in names:
+            raise Pending("归件作业还在跑")
+        return classify(event, item, target, find_external)
+
+    flow.classify = slow
+
+
+def external(engine, name, **extra):
+    assert engine.ingest(event(ext_id=name, action="update", **extra), ingress="external")
+    engine.tick()
+    return engine.log.db.execute("SELECT max(seq) FROM facts WHERE kind='event_classified' "
+                                 "AND json_extract(body, '$.event.ext_id')=?", (name,)).fetchone()[0]
+
+
+def test_queue_follows_arrival_order_when_classification_finishes_out_of_order(engine):
+    """归件有先后：先进车间的 e1 晚归件，批次和派活说明里仍排在 e2 前面。
+    还没归件的事件不算哪件活的待处理（归件才定它属于哪件、丢不丢），不挡已归件的。"""
+    delayed = {"e1"}
+    delayed_classification(engine, delayed)
+    external(engine, "e1")
+    e2 = external(engine, "e2")
+    delayed.clear()
+    at(engine, 10)
+    engine.tick()
+    e1 = engine.log.db.execute("SELECT max(seq) FROM facts WHERE kind='event_classified' "
+                               "AND json_extract(body, '$.event.ext_id')='e1'").fetchone()[0]
+    assert e2 < e1 and [e["seq"] for e in item(engine)["queue"]] == [e1, e2]
+    at(engine, 500)
+    engine.tick()
+    assert batches(engine) == [[e1, e2]]
+    assert engine.log.brief(running(engine)[0])["batch"] == [e1, e2]
+
+
+def test_event_arriving_during_round_but_classified_after_does_not_wait(engine):
+    e1 = put(engine, "e1", batch_window_ms=0)
+    delayed = {"e2"}
+    delayed_classification(engine, delayed)
+    at(engine, 100)
+    external(engine, "e2")
+    at(engine, 200)
+    done(engine)
+    assert batches(engine) == [[e1]] and item(engine)["state"] == "等资料"
+    delayed.clear()
+    at(engine, 250)
+    engine.tick()
+    assert len(batches(engine)) == 2
+    assert running(engine)[0]["at"] == "2026-11-13T08:00:00.250000+00:00"
+
+
+def test_skip_rejects_event_already_in_flight(engine):
+    e1 = put(engine, "e1", batch_window_ms=0)
+    assert batches(engine) == [[e1]]
+    with pytest.raises(ValueError):
+        engine.skip_event("alpha:one", e1, "陈旧")
+    assert not any(f["kind"] == "event_skipped" for f in engine.log.facts())

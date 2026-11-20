@@ -16,18 +16,24 @@ WINDOW_MS = 500  # 默认合批窗口，从第一条待处理事件到达算起�
 LIMIT = 20  # 单批上限；凑满不等窗口。
 
 
-def enqueue(item, seq, body, arrived):
+def enqueue(item, seq, body, arrived, order=None):
     """视图在事件进到活时调用。旧事实（没有 batchable 字段）不进队列，重放结果与当时一致。
     定时到点是核心自己约的时刻，到点直接把活放回空闲，不作为待处理事件进批次；
-    否则失败重试的定时会在在途批次之后留下一条，让下一批混进它。"""
+    否则失败重试的定时会在在途批次之后留下一条，让下一批混进它。
+    order 是事件进车间时的事实序号：要归件的事件归件有先后，队列仍按进车间的先后排。"""
     if "batchable" not in body or body.get("source") == "timer":
         return
-    entry = {"seq": seq, "at": arrived, "alone": not body["batchable"], "rework": body.get("action") == "rework",
+    entry = {"seq": seq, "order": seq if order is None else order, "at": arrived, "alone": not body["batchable"],
+             "rework": body.get("action") == "rework",
              # 上一轮还在跑时到的：它结束后不再等窗口，把当时所有待处理事件合成一批。
              "held": item.get("state") == "跑着"}
     if body.get("batch_window_ms") is not None:
         entry["window"] = body["batch_window_ms"]
-    item.setdefault("queue", []).append(entry)
+    queue = item.setdefault("queue", [])
+    index = len(queue)
+    while index and queue[index - 1].get("order", queue[index - 1]["seq"]) > entry["order"]:
+        index -= 1
+    queue.insert(index, entry)
 
 
 def settle(item, consumed=()):
@@ -59,7 +65,7 @@ def consume(item, seqs):
 def skip(item, seq):
     """标记为跳过；已定进在途批次的照常处理，不改。"""
     if seq in (item.get("inflight") or []):
-        return
+        return  # engine.skip_event 已先拒绝；重放旧事实时照样不动在途批次。
     for entry in item.get("queue") or []:
         if entry["seq"] == seq:
             entry["skip"] = True
@@ -86,12 +92,18 @@ def plan(item, window=WINDOW_MS):
             break
         run.append(entry)
     seqs = [e["seq"] for e in run]
-    # 后面还有不可攒批的或已凑满：这一批不会再变；上一轮跑着时到的，结束就取。
-    # 窗口为 0 的（来源要立即取的）也不等。
-    if len(run) < len(entries) or any(e["held"] or e.get("window", window) == 0 for e in run):
+    # 已凑满或后面还有不可攒批的：这一批不会再变；窗口为 0 的（来源要立即取的）也不等。
+    # 上一轮跑着时到的（含进车间在轮中、归件在轮后的），轮结束就取。
+    if (len(run) == LIMIT or len(run) < len(entries)
+            or any(e["held"] or during(item, e) or e.get("window", window) == 0 for e in run)):
         return seqs, None
     at = min(datetime.fromisoformat(e["at"]) + timedelta(milliseconds=e.get("window", window)) for e in run)
     return seqs, stamp(at)
+
+
+def during(item, entry):
+    span = item.get("round_span")
+    return bool(span) and span[0] <= entry["at"] <= span[1]
 
 
 def due(item, now, window=WINDOW_MS):
