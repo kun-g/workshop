@@ -171,6 +171,10 @@ def test_visual_old_reply_cannot_answer_current_version(service):
         service.call('answer', {**reply, 'ref':oldref})
     reply['source'].update(version='new',delivery=new)
     assert service.call('answer', {**reply, 'operation':'reply-new'})['token']
+    versions = dict(service.store.db.execute(
+        "SELECT version, responded_at FROM message_outbox WHERE item=? AND point='visual'", ('alpha:one',)))
+    assert set(versions) == {'old', 'new'}
+    assert versions['old'] is None and versions['new']
 
 
 def test_session_answer_can_pass_visual_wait(service):
@@ -426,6 +430,9 @@ def test_visual_buttons_answer_this_delivery(tmp_path, service, monkeypatch, cho
     # 重复点击（新事件）不重复作答，也不再回第二条已收到。
     again = service.call('status_click', click_event(card, choice, reason, event_id='ev-2'))
     assert again['accepted'] and not again['answered'] and len(sent) == 2
+    rows = service.store.db.execute('SELECT category, status, respondable, responded_at IS NOT NULL '
+                                    'FROM message_outbox ORDER BY category').fetchall()
+    assert rows == [('visual', 'delivered', 1, 1), ('visual_receipt', 'delivered', 0, 0)]
     other = 'fail' if passed else 'pass'
     assert not service.call('status_click', click_event(card, other, '改主意', event_id='ev-3'))['accepted']
     result = after(flow, item, target, services)

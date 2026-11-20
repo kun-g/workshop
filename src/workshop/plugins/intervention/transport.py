@@ -36,6 +36,27 @@ def command(args, argv, **kwargs):
     return value
 
 
+def confirmed(record, message=None):
+    """保留提供方的发送时间，尤其是隔天才对账成功的旧消息。"""
+    value = (message or {}).get('create_time')
+    if value is not None:
+        try:
+            if str(value).isdigit():
+                # 飞书原生接口是 Unix 毫秒，CLI 也可能给秒或 ISO 时间。
+                stamp = int(value) / (1000 if len(str(value)) > 10 else 1)
+                at = datetime.fromtimestamp(stamp, timezone.utc)
+            else:
+                at = datetime.fromisoformat(str(value))
+            if at.tzinfo is not None:
+                record['sent_at'] = at.astimezone(timezone.utc).isoformat()
+        except (ValueError, OverflowError, OSError):
+            pass  # 时间字段仅供度量，不能改变已有的对账结论。
+    result = {'state': 'sent', 'external': record['external']}
+    if record.get('sent_at'):
+        result['sent_at'] = record['sent_at']
+    return result
+
+
 def attachment_name(content):
     try:
         value = ElementTree.fromstring(content)
@@ -90,7 +111,7 @@ def deliver(args, message):
         if record['payload'] != payload:
             raise ValueError('同一送达号不能更换内容')
         if record.get('external'):
-            return {'state': 'sent', 'external': record['external']}
+            return confirmed(record)
         file = None
         if payload['kind'] == 'update_report':
             file = Path(payload['artifact']).expanduser().resolve(strict=True)
@@ -116,8 +137,9 @@ def deliver(args, message):
             if len(matches) == 1:
                 record['external'] = matches[0]['message_id']
                 record['reconciled'] = True
+                receipt = confirmed(record, matches[0])
                 save(path, record)
-                return {'state': 'sent', 'external': record['external']}
+                return receipt
             # 无匹配也可能尚未可见；不能把未找到当作没发送。
             return {'state': 'unknown'}
         record['started'] = datetime.now(timezone.utc).isoformat()
@@ -144,8 +166,10 @@ def deliver(args, message):
         if not external:
             return {'state': 'unknown'}
         record['external'] = external
+        record['sent_at'] = datetime.now(timezone.utc).isoformat()
+        receipt = confirmed(record, value['data'])
         save(path, record)
-        return {'state': 'sent', 'external': external}
+        return receipt
 
 
 def main():
