@@ -38,6 +38,11 @@ class Log:
                 BEGIN SELECT RAISE(ABORT, 'facts are append only'); END;
             CREATE TRIGGER IF NOT EXISTS facts_no_delete BEFORE DELETE ON facts
                 BEGIN SELECT RAISE(ABORT, 'facts are append only'); END;
+            -- 核心 R37：来源换了键的规矩以后，旧事实按新键认回的别名；纯派生、可从事实表重算，不改事实。
+            -- ext_id 为空串的一行记已经算到哪个事实序号。
+            CREATE TABLE IF NOT EXISTS fact_aliases (
+                source TEXT NOT NULL, ext_id TEXT NOT NULL, seq INTEGER NOT NULL,
+                PRIMARY KEY(source, ext_id));
         """)
         for table in TABLES:
             self.db.execute(f"CREATE TABLE IF NOT EXISTS {table}(id TEXT PRIMARY KEY, body TEXT NOT NULL)")
@@ -184,6 +189,9 @@ class Log:
 
     def append(self, kind, body, item=None, *, source="core", ext_id=None, at=None) -> bool:
         with self.transaction():
+            if ext_id and self.db.execute("SELECT 1 FROM fact_aliases WHERE source=? AND ext_id=?",
+                                          (source, ext_id)).fetchone():
+                return False  # 旧事实已按旧键记过这一次变化（核心 R37）
             cursor = self.db.execute(
                 "INSERT INTO facts(kind,source,ext_id,item,body,at) VALUES (?,?,?,?,?,?) "
                 "ON CONFLICT(source,ext_id) DO NOTHING",
@@ -289,6 +297,24 @@ class Log:
                 yield dict(zip(("stage", "outcome", "ended", "executor"), row))
         finally:
             rows.close()
+
+    def aliased_through(self, source):
+        row = self.db.execute("SELECT seq FROM fact_aliases WHERE source=? AND ext_id=''", (source,)).fetchone()
+        return row[0] if row else 0
+
+    def unaliased(self, source, after, kinds):
+        """序号大于 after 的这个来源的事实，供算别名；只取种类、键和正文。"""
+        marks = ",".join("?" for _ in kinds)
+        return self.db.execute(f"SELECT seq,ext_id,body FROM facts WHERE seq>? AND source=? AND kind IN ({marks}) "
+                               "ORDER BY seq", (after, source, *kinds))
+
+    def alias(self, source, rows, through):
+        """登记别名（已有的不覆盖），并记下算到的事实序号。"""
+        with self.transaction():
+            self.db.executemany("INSERT OR IGNORE INTO fact_aliases(source,ext_id,seq) VALUES (?,?,?)",
+                                [(source, ext_id, seq) for ext_id, seq in rows])
+            self.db.execute("INSERT INTO fact_aliases(source,ext_id,seq) VALUES (?,'',?) "
+                            "ON CONFLICT(source,ext_id) DO UPDATE SET seq=excluded.seq", (source, through))
 
     def facts(self, item=None):
         query = "SELECT * FROM facts" + (" WHERE item=?" if item else "") + " ORDER BY seq"

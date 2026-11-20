@@ -7,6 +7,16 @@ from . import batching
 TABLES = ("items", "rounds", "cards", "timers", "controls", "cursors", "deferred", "effects", "aliases", "waits", "restarts")
 
 
+def take_state(item, version, overwrite, snapshot):
+    """来源对象的状态和水位（核心 R37）：版本不倒退；同一版本已由当下快照校正过的，不再被同版本的推送盖回。"""
+    current = item.get("source_version")
+    if current is not None and (version < current or version == current and item.get("source_snapshot") and not snapshot):
+        return
+    item["source_state"] = {**(item.get("source_state") or {}), **overwrite}
+    item["source_version"] = version
+    item["source_snapshot"] = snapshot
+
+
 def evolve(db, fact: dict) -> None:
     def get(table, key):
         row = db.execute(f"SELECT body FROM {table} WHERE id=?", (key,)).fetchone()
@@ -82,6 +92,13 @@ def evolve(db, fact: dict) -> None:
         if body.get("unmatched") or body.get("pending_classification"):
             return
         item = get("items", item_id)
+        if body.get("stale"):
+            # 核心 R37：陈旧的只留痕，标记为跳过——不进批次、不回拨状态、不改动作，水位仍只连续推进。
+            if item:
+                batching.enqueue(item, fact["seq"], body, body.get("arrived", fact["at"]), body.get("arrived_seq"))
+                batching.skip(item, fact["seq"])
+                put("items", item_id, item)
+            return
         if not item:
             if body.get("release_gate") and body["action"] != "ready":
                 return  # 来源里没放行过的对象只记事实，不建活。
@@ -101,7 +118,14 @@ def evolve(db, fact: dict) -> None:
         item["depth"] = max(item["depth"], body["depth"])
         item["cause"] = fact["seq"]
         apply_action(item, body["action"])
+        if body.get("overwrite") is not None:
+            take_state(item, body["version"], body["overwrite"], body.get("snapshot", False))
         put("items", item_id, item)
+    elif kind == "source_corrected":
+        item = get("items", item_id)
+        if item:
+            take_state(item, body["version"], body["overwrite"], True)
+            put("items", item_id, item)
     elif kind == "batch_done":
         item = get("items", item_id)
         batching.consume(item, body["seqs"])
@@ -125,7 +149,7 @@ def evolve(db, fact: dict) -> None:
         if "event" in body:
             evolve(db, {**fact, "kind": "event", "source": body["event"]["source"], "body": body["event"]})
         item = get("items", item_id)
-        if item:
+        if item and not body.get("event", {}).get("stale"):
             apply_action(item, body["action"])
             item["cause"] = max(item["cause"], fact["seq"])
             put("items", item_id, item)

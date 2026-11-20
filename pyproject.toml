@@ -28,6 +28,7 @@ memory = "workshop.plugins.memory.port:make_memory"
 
 [project.entry-points."workshop.source"]
 github = "workshop.plugins.sources.github:make_source"
+webhook = "workshop.plugins.sources.webhook:make_source"
 main_branch = "workshop.plugins.scheduled_release.source:make_source"
 watch_updates = "workshop.plugins.watch_updates:make_source"
 

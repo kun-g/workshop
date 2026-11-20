@@ -11,7 +11,7 @@ from .ports import Plugins
 from .models import stamp, utcnow
 from .records import defer_items, materialize
 from .stages import serial_stage
-from . import batching, beat, faults, holding, homes, hooks, intake, picking, rounds, timing, waking, workdirs, waits
+from . import aliases, batching, beat, faults, holding, homes, hooks, intake, picking, rounds, timing, waking, workdirs, waits
 
 
 def finder(log, target):
@@ -216,6 +216,9 @@ class Engine:
 
     def sources(self, *args, **kwargs):
         return intake.sources(self, *args, **kwargs)
+
+    def refresh_aliases(self, *args, **kwargs):
+        return aliases.refresh(self, *args, **kwargs)
 
     def source_retry(self, *args, **kwargs):
         return intake.source_retry(self, *args, **kwargs)
