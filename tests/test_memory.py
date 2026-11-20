@@ -76,6 +76,18 @@ def test_memory_stored_separately_with_provenance(tmp_path):
     store.close()
 
 
+def test_list_include_corrected_shows_offline_entries(tmp_path):
+    """`workshop memory list` 默认不列被纠正下线的；`--include-corrected` 连它们一起列。"""
+    engine = build(tmp_path / "state")
+    seqs = facts(engine, 1)
+    service = MemoryService()
+    row = service.add(kind="instruction", scope="*", claim="被纠正的说法", summary="", source_fact_seqs=seqs,
+                      token=running_round(engine), target=target(tmp_path))
+    service.correct(row["id"], "被纠正的说法", watermark=20, target=target(tmp_path))
+    assert [r["id"] for r in service.entries(target=target(tmp_path))] == []
+    assert [r["id"] for r in service.entries(target=target(tmp_path), include_corrected=True)] == [row["id"]]
+
+
 def test_correction_row_lives_in_same_append_table(tmp_path):
     engine = build(tmp_path / "state")
     seqs = facts(engine, 1)

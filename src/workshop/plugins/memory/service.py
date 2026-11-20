@@ -73,9 +73,7 @@ class MemoryService:
     def entries(self, target=None, kind=None, scope=None, include_corrected=False):
         store = store_of(target)
         try:
-            rows = store.effective(kind=kind, scope=scope)
-            hidden = set() if include_corrected else set(store.corrected())
-            return [row for row in rows if row["id"] not in hidden]
+            return store.effective(kind=kind, scope=scope, include_corrected=include_corrected)
         finally:
             store.close()
 

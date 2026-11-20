@@ -195,8 +195,8 @@ class Store:
         return [self._row(row) for row in self.db.execute(
             "SELECT * FROM memory WHERE kind='correction' ORDER BY seq")]
 
-    def effective(self, kind=None, scope=None):
-        hidden = set(self.corrected())
+    def effective(self, kind=None, scope=None, include_corrected=False):
+        hidden = set() if include_corrected else set(self.corrected())
         clauses, values = [], []
         if kind is not None:
             clauses.append("kind=?")
