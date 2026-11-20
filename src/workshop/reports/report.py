@@ -303,7 +303,9 @@ def why(log, item_id, rules=None, plugins=None, raw=False):
             detail = f'挑选逻辑没选出执行者 {body["reason"]}'
         elif kind == "executor_handover":
             skipped = "、".join(f"第 {n} 级" for n in body["skipped"]) or "无"
-            detail = (f'阶梯换人 {body["from"]}（第 {body["from_level"]} 级）→ {body["to"]}（第 {body["to_level"]} 级），'
+            # 旧事实没有 ladder 字段；旧写法的阶梯名为空：都照原来的样子显示。
+            named = f'阶梯 {body["ladder"]} 换人' if body.get("ladder") else '阶梯换人'
+            detail = (f'{named} {body["from"]}（第 {body["from_level"]} 级）→ {body["to"]}（第 {body["to_level"]} 级），'
                       f'原因 {body["cause"]}：{body["reason"]}；跳过：{skipped}')
         elif kind in ("card_rejected", "card_cancelled_external"):
             detail = f'卡片{ "拒收" if kind == "card_rejected" else "作废"} {body["id"]}：{body["reason"]}'

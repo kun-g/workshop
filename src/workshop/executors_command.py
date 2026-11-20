@@ -12,6 +12,7 @@ import subprocess
 import sys
 import time
 
+from .core import ladder
 from .core.log import Log
 from .deployment import assemble
 from .registry import Registry
@@ -64,15 +65,22 @@ def inspect(rules_path, deployment, state_dir, registry=Registry):
 
 
 def ladder_lines(data):
-    """配了执行者阶梯时每级一行，制表符分隔：级号、成员、接手者；没配时为空（ws#301）。"""
-    return [f'{number}\t{",".join(level["members"])}\t{",".join(level["takeover"])}'
-            for number, level in enumerate(data.get('ladder') or [], 1)]
+    """配了执行者阶梯时每条一段：段头一行，下面每级一行，制表符分隔：级号、成员、接手者；没配时为空。
+
+    旧写法 ladder（没名字的一条）段头不带名字，输出和以前一样（ws#301）；ladders 按阶梯名分段（ws#318）。
+    """
+    lines = []
+    for name, table in ladder.tables(data).items():
+        lines.append(f'阶梯 {name}（级号、成员、接手者）' if name else '阶梯（级号、成员、接手者）')
+        lines.extend(f'{number}\t{",".join(level["members"])}\t{",".join(level["takeover"])}'
+                     for number, level in enumerate(table, 1))
+    return lines
 
 
 def check(rules_path, deployment, state_dir, out=None, err=None, registry=Registry):
     out, err = out or sys.stdout, err or sys.stderr
     try:
-        lines, warnings, ladder = inspect(rules_path, deployment, state_dir, registry)
+        lines, warnings, ladders = inspect(rules_path, deployment, state_dir, registry)
     except (ValueError, KeyError, TypeError, OSError) as exc:
         print(f'车间：{exc}', file=err)
         return 2
@@ -80,10 +88,8 @@ def check(rules_path, deployment, state_dir, out=None, err=None, registry=Regist
         print(line, file=out)
     for warning in warnings:
         print('警告：' + warning, file=out)
-    if ladder:
-        print('阶梯（级号、成员、接手者）', file=out)
-        for line in ladder:
-            print(line, file=out)
+    for line in ladders:
+        print(line, file=out)
     return 0
 
 

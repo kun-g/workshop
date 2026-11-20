@@ -125,10 +125,15 @@ class Rules:
             configs = resolved
         if any(not isinstance(c, dict) or c.get("billing") not in ("subscription", "metered") for c in configs):
             raise ValueError("每个执行者必须写明 billing=subscription 或 metered")
-        if "ladder" in data:
+        if "ladder" in data and "ladders" in data:
+            raise ValueError(ladder.BOTH)
+        if "ladder" in data or "ladders" in data:
             # 部署目录配的执行者阶梯（核心 R14）；点到的执行者必须是配置档或某个候选。
             defined = set(profiles) or {(c if isinstance(c, str) else c.get("use")) for c in configs_named(data, mappings)}
-            data = {**data, "ladder": ladder.validate(data["ladder"], defined)}
+            if "ladders" in data:
+                data = {**data, "ladders": ladder.validate_named(data["ladders"], defined)}
+            else:
+                data = {**data, "ladder": ladder.validate(data["ladder"], defined)}
         for name in ("ask_first", "skip_ask"):
             if not isinstance(data.get(name), list) or not all(isinstance(v, str) for v in data[name]):
                 raise ValueError(f"{name} 必须是列表")
