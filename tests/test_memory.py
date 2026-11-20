@@ -494,15 +494,13 @@ def test_outbox_field_contract(tmp_path):
 
 
 def test_readonly_outbox_rejects_writes(tmp_path):
-    from workshop.plugins.intervention.store import Store as InterventionStore
+    """通过记忆插件自己的只读连接对 intervention.db 写，必须报错。"""
     import sqlite3
+    from workshop.plugins.intervention.store import Store as InterventionStore
     database = tmp_path / "intervention.db"
-    store = InterventionStore(database, target="workshop")
-    store.close()
-    path = database.resolve().as_uri() + "?mode=ro"
-    with sqlite3.connect(path, uri=True) as db:
-        with pytest.raises(sqlite3.OperationalError):
-            db.execute("UPDATE message_outbox SET status='failed'")
+    InterventionStore(database, target="workshop").close()
+    with pytest.raises(sqlite3.OperationalError):
+        ports.Outbox(database).write_probe()
 
 
 # ---- 十、每周做梦、每周备份走 R34 到点开活 ----

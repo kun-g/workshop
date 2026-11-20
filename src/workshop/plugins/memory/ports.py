@@ -91,3 +91,16 @@ class Outbox:
 
     def messages(self):
         return outbox_rows(self.database)
+
+    def write_probe(self):
+        """经同一只读连接尝试写；必须报错，不吞异常。"""
+        return outbox_write_probe(self.database)
+
+
+def outbox_write_probe(database):
+    """经同一只读连接尝试写发件表：必须抛 sqlite3.OperationalError；不吞异常。"""
+    path = Path(database).expanduser().resolve()
+    uri = path.as_uri() + "?mode=ro"
+    with closing(sqlite3.connect(uri, uri=True, timeout=5)) as db:
+        db.execute("UPDATE message_outbox SET items=items")
+    return False

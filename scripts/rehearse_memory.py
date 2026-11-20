@@ -187,6 +187,24 @@ def demo_correction(env, state, seq):
                      ensure_ascii=False, indent=1))
 
 
+def show_restore(cli, env, state):
+    database = state / "memory.db"
+    before = sqlite3.connect(database).execute(
+        "SELECT count(*) FROM memory WHERE kind='instruction'").fetchone()[0]
+    for suffix in ("", "-wal", "-shm"):
+        Path(str(database) + suffix).unlink(missing_ok=True)
+    print(f"已删 {database}（连同 -wal/-shm）；原件条目数 {before}")
+    show(cli, env, "memory", "restore")
+    conn = sqlite3.connect(database)
+    try:
+        integrity = conn.execute("PRAGMA integrity_check").fetchone()[0]
+        rows = conn.execute("SELECT id,claim FROM memory WHERE kind='instruction'").fetchall()
+    finally:
+        conn.close()
+    print(f"PRAGMA integrity_check = {integrity}")
+    print(f"恢复后读出的用户指示：{rows}")
+
+
 def round_brief_memory(state, key):
     conn = sqlite3.connect(state / "workshop.db")
     try:
@@ -291,6 +309,8 @@ def main():
         show(cli, env, "memory", "dream")
         show(cli, env, "memory", "dream")
         show(cli, env, "memory", "backup")
+        print("--- 真实备份/恢复：删库连同 -wal/-shm，再用这次备份恢复，查完整性并读出原条目 ---")
+        show_restore(cli, env, state)
         print("--- 做梦写入和被拒候选（mock 生成器，来源事实真实）---")
         demo_dream(env, state, seq)
         print("--- 负向纠正后再做梦：等价候选被拒 ---")
