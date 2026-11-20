@@ -9,6 +9,9 @@
 
 流程和执行者用演练替身（本文件里的类，经临时 dist-info 的入口点装进守护进程和作业进程）：
 派活只到预订一轮为止，量的是核心自己的路径，不起模型、不发网络请求。
+
+这是真实时钟的演练脚本，不是测试：等心跳、等到点用「查条件 + 总超时」的循环，循环里短暂 sleep 让出 CPU，
+和 rehearse_batching.py 一样；E8 管的是测试，测试（tests/test_schedules.py）只用假时钟，不 sleep。
 """
 import argparse
 from datetime import datetime, timedelta, timezone

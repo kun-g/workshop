@@ -296,6 +296,33 @@ def test_waiting_for_authorization_for_24_hours_is_reported(tmp_path):
     engine.log.close()
 
 
+def test_authorization_wait_counts_from_entering_it_not_from_older_state_changes(tmp_path):
+    engine = build(tmp_path)
+    add(engine, "weekly", every="weekly", weekday="mon")
+    engine.clock.now = at(2026, 11, 16, 1)
+    schedules.scan(engine)
+    item = last_item(engine, "weekly")
+    engine.clock.now = at(2026, 11, 15, 0)  # 更早的一次改状态（例如串行排队），不能当等授权的起点
+    engine.change(item, state="排队", next="等串行位置")
+    engine.clock.now = start = at(2026, 11, 16, 2)
+    reason = "动作等待授权中心核实原申请和实际生效：对外发消息"
+    item = last_item(engine, "weekly")
+    with engine.log.transaction():
+        # 关口要授权时，结算一轮写的是 gate_blocked 和 round_finished，不是 item_changed。
+        engine.fact("gate_blocked", {"gate_reason": reason}, item["id"])
+        engine.change(item, kind="round_finished", state="卡住", blocked_by=reason,
+                      next="流程按原申请号核实授权中心的结果后恢复", leave=engine.blocked_leave(reason))
+    tick(engine)
+    assert control(engine, "weekly")["held"] == {"item": item["id"], "kind": "等授权", "since": "2026-11-16T02:00:00+00:00"}
+    engine.clock.now = start + timedelta(hours=23, minutes=59)
+    tick(engine)
+    assert not facts(engine, "schedule_starved")
+    engine.clock.now = start + timedelta(hours=24, minutes=1)
+    tick(engine)
+    assert len(facts(engine, "schedule_starved")) == 1 and notifications(engine) == 0
+    engine.log.close()
+
+
 def test_closing_the_held_item_clears_starved_and_resets_skips(tmp_path):
     engine = build(tmp_path)
     add(engine)

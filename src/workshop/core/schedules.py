@@ -19,7 +19,8 @@ CATCHUP = ("coalesce_one", "skip")
 ENDED = ("完成", "放弃")
 STARVE_SKIPS = 3
 STARVE_HOLD = timedelta(hours=24)
-# 「skip」补跑策略下，扫到时离槽位超过这么久，算停机错过，只推进不开活。
+# 「skip」补跑策略下，扫到时离槽位超过这么久，算停机错过，只推进不开活；没超过的是按时到点，照常开活
+#（否则 skip 策略的任务永远不开活）。守护进程按到点时刻醒，正常运转时延迟在 1 秒内。
 LATE = timedelta(minutes=5)
 
 
@@ -88,11 +89,28 @@ def fired(log, ext_id):
     return log.db.execute("SELECT 1 FROM facts WHERE source=? AND ext_id=?", (SOURCE, ext_id)).fetchone() is not None
 
 
+# 改活状态的事实种类（evolve 里按正文更新活的那几种）；只查 item_changed 会漏掉结算一轮时改的状态。
+STATE_KINDS = ("item_changed", "gate_blocked", "gate_passed", "round_finished", "work_blocked")
+
+
+def entered(log, item_id):
+    """这件活最近一次改状态的时刻。"""
+    marks = ",".join("?" for _ in STATE_KINDS)
+    found = log.db.execute(f"SELECT at FROM facts WHERE item=? AND kind IN ({marks}) "
+                           "AND json_extract(body,'$.state') IS NOT NULL ORDER BY seq DESC LIMIT 1",
+                           (item_id, *STATE_KINDS)).fetchone()
+    return found[0] if found else None
+
+
 def held(item):
-    """挂起的样子：等你，或流程在等授权中心核实（卡在关口或在回查）。不是挂起返回 None。"""
+    """挂起的样子：等你，或流程在等授权中心核实（卡在关口或在回查）。不是挂起返回 None。
+
+    核心没有单独的「等授权」状态：关口要授权时卡住并写明「授权中心」（gates.decide、rounds），
+    流程回查授权时把同样的原因写进 gate_reason；三处任一写着就算。"""
     if item["state"] == "等你":
         return "等你"
-    if "授权中心" in (item.get("gate_reason") or "") and (item["state"] == "卡住" or item.get("after_wait")):
+    reasons = " ".join(str(item.get(k) or "") for k in ("gate_reason", "blocked_by", "next"))
+    if "授权中心" in reasons and (item["state"] == "卡住" or item.get("after_wait")):
         return "等授权"
     return None
 
@@ -131,10 +149,10 @@ def settle(engine, row, now):
     changes = {}
     hold = row.get("held")
     kind = held(last) if running else None
-    since = engine.log.state_since(last["id"]) if kind else None
+    # 等你从最近一次进入这个状态算起；等授权时流程反复回查会改状态，从第一次看到算起，之后不再挪。
+    since = entered(engine.log, last["id"]) if kind == "等你" else None
     if kind and (not hold or hold.get("item") != last["id"] or hold.get("kind") != kind
                  or kind == "等你" and since and since != hold.get("since")):
-        # 等你从进入这个状态算起；等授权时流程反复回查会改状态，从第一次看到算起。
         hold = {"item": last["id"], "kind": kind, "since": since or stamp(now)}
         changes["held"] = hold
     elif not kind and hold:
