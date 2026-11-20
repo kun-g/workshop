@@ -41,8 +41,8 @@ Orca 插话钩子去掉轮次令牌后以 `cli:orca` 进入：流程用核心已
 
 - 开：`git -c core.hooksPath=/dev/null worktree add --detach <目录> <完整提交号>`。主检出里已有这个提交就不 fetch；没有才 `fetch --no-tags --no-write-fetch-head https://github.com/<repo>.git <sha>`，只取这一个提交，不写主检出的 FETCH_HEAD，不动它的分支、HEAD 和工作区。耗时随文件数涨，不随历史涨。
 - 只含该提交的受跟踪文件，没有上一次的遗留。同一系统用户本来就能写任何文件，单独 clone 隔离不了多少，所以不再改 origin、不另做配置隔离；检查环境里用 `GIT_CONFIG_*` 把 `core.hooksPath` 设成 `/dev/null`，检查里跑的 git 也不执行主检出的钩子。凭据白名单（`clean_env`）照旧。
-- 位置：检查副本在 `issue_delivery_state_dir/copies/check-*/repo`，审查/验收只读副本在 `issue_delivery_state_dir/reviews/<活哈希>-<sha>`（先在临时目录开，再 `worktree move` 过去，最后去写位）。
-- 收：检查不论通过、失败、超时还是准备命令出错，跑完都 `worktree remove --force`，删不掉（只读）就先恢复写位再删目录，然后 `worktree prune`。审查副本在轮停止后由 `cleanup` 收；daemon 启动时 `cleanup` 再清一遍：审查副本保留未停止轮的目录，检查副本超过 6 小时的视为进程被杀留下的，删掉并收回登记。
+- 位置：检查副本在 `issue_delivery_state_dir/copies/check-*/repo`；检查进程的 HOME 兼 TMPDIR 不建在状态目录里，而是每轮新建的 `/tmp/workshop-check-*`，`copies/check-*/home` 是指过去的链接（ws#308：状态目录深时 TMPDIR 下拼的 unix socket 路径超过 macOS 的 104 字节上限，switchboard 的检查因此失败）。审查/验收只读副本在 `issue_delivery_state_dir/reviews/<活哈希>-<sha>`（先在临时目录开，再 `worktree move` 过去，最后去写位）。
+- 收：检查不论通过、失败、超时还是准备命令出错，跑完都 `worktree remove --force`，删不掉（只读）就先恢复写位再删目录，然后 `worktree prune`。审查副本在轮停止后由 `cleanup` 收；daemon 启动时 `cleanup` 再清一遍：审查副本保留未停止轮的目录，检查副本超过 6 小时的视为进程被杀留下的，删掉（连同 `home` 链接指向的 `/tmp/workshop-check-*`）并收回登记。
 - 同一主检出上的 fetch、worktree add/move/remove/prune 用 `issue_delivery_state_dir/copies/<主检出哈希>.lock` 串行；跑检查本身不持锁，几件活可以同时跑。
 
 **依赖缓存**：检查仍在每轮新建的空 HOME、无凭据环境里跑，但副本里有 `uv.lock` 时，环境多一个 `UV_CACHE_DIR=issue_delivery_state_dir/uv-cache/<uv.lock 内容哈希前 16 位>`。选按锁文件分、不选只读共享缓存，是因为只读缓存要另有人负责预热；按锁文件分时，改了依赖的 PR 只写自己那一份，不会动到别的锁文件在用的缓存。同一锁文件的检查共用一份，第二次 `uv sync --locked` 不再下载（11-13 本机：冷缓存 2.7 秒，热缓存 0.14 秒）。每次取缓存时只留最近用过的 5 份，其余超过一天没用的删掉；要整个清，停掉车间后删 `uv-cache/` 即可，下次检查重新下载。没有 `uv.lock` 的仓库不设缓存，沿用空 HOME。
