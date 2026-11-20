@@ -246,6 +246,7 @@ def click(service, key, data, prepared):
     if prepared.get('rejected'):
         return prepared['rejected']
     snapshot = prepared['snapshot']
+    service.outbox.clicked(original['id'], service.store.timestamp())
     ref = service.store.identity('delivery', key)
     # 用户主动读取的响应不创建求助许可，不消耗自动推送额度。
     service.store.put('delivery', ref, {'id': ref, 'permit': None, 'state': 'queued', 'external': None,

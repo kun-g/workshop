@@ -1,11 +1,13 @@
 """先提交再确认；操作号绑定完整请求，不覆盖已有回答和发送记录。"""
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from datetime import datetime, timezone
 import hashlib
 import json
 from pathlib import Path
 import sqlite3
 import threading
+
+from .outbox import Outbox
 
 
 def encode(value):
@@ -19,7 +21,8 @@ def required(value, name):
 
 
 class Store:
-    def __init__(self, path):
+    def __init__(self, path, *, now=None, target='unknown'):
+        self.now = now or (lambda: datetime.now(timezone.utc))
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         # 连接由并发处理的请求线程共用；每次访问都过同一把可重入锁，
@@ -39,6 +42,10 @@ class Store:
             CREATE TRIGGER IF NOT EXISTS journal_no_delete BEFORE DELETE ON journal
                 BEGIN SELECT RAISE(ABORT, 'append only'); END;
         ''')
+        self.outbox = Outbox(self, target)
+
+    def timestamp(self):
+        return self.now().astimezone(timezone.utc).isoformat()
 
     def close(self):
         with self.lock:
@@ -68,14 +75,18 @@ class Store:
 
     def put(self, kind, key, body, event):
         text = encode(body)
-        with self.lock:
+        with self.lock, (nullcontext() if self.db.in_transaction else self.transaction()):
             old = self.db.execute('SELECT body FROM records WHERE id=?', (key,)).fetchone()
             if old and old[0] == text:
                 return  # 内容没变就不是一次变化；journal 只追加真实变化，不重复记。
             self.db.execute('INSERT INTO records VALUES (?,?,?) ON CONFLICT(id) DO UPDATE SET body=excluded.body',
                             (key, kind, text))
-            self.db.execute('INSERT INTO journal(kind,id,body,at) VALUES (?,?,?,?)',
-                            (event, key, text, datetime.now(timezone.utc).isoformat()))
+            at = self.timestamp()
+            self.db.execute('INSERT INTO journal(kind,id,body,at) VALUES (?,?,?,?)', (event, key, text, at))
+            if kind == 'delivery':
+                self.outbox.delivery(body, at)
+            elif kind == 'wait' and event == 'answered':
+                self.outbox.answered(body, at)
 
     def result(self, key, action, data):
         """只查已有操作结果；重复请求不必再跑一遍慢的只读命令。"""

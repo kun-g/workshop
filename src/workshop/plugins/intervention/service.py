@@ -13,14 +13,19 @@ from . import manager, visual_click
 
 
 class Service:
-    def __init__(self, state, rules):
+    def __init__(self, state, rules, *, now=None):
         self.rules = Path(rules)
         self.state = Path(state)
-        self.configuration()
-        self.store = Store(self.state / 'intervention.db')
+        config = self.configuration()
+        self.store = Store(self.state / 'intervention.db', now=now,
+                           target=config.get('status', {}).get('recipient', 'unknown'))
         # 连接和只读请求并发处理；外部送达保持串行，一次只推进一条，
         # 同一送达不会在两个线程里各发一次。调用方超时重试前仍须先对账。
         self.dispatch_lock = threading.Lock()
+
+    @property
+    def outbox(self):
+        return self.store.outbox
 
     def configuration(self):
         document = yaml.safe_load(self.rules.read_text())
@@ -366,7 +371,7 @@ class Service:
                 # 发送后的崩溃窗口必须先对账；即使许可取消，也保留已送达的真实结果。
                 result = self.transport(config, 'reconcile', record)
                 if result['state'] == 'sent':
-                    return self.delivery_state(record, 'sent', result['external'])
+                    return self.delivery_state(record, 'sent', result['external'], sent_at=result.get('sent_at'))
                 if result['state'] != 'absent':
                     return self.delivery_state(record, 'uncertain')
             # 对账最多 20 秒，这期间许可可能被取消。写发送意图时在事务里重读，
@@ -376,7 +381,7 @@ class Service:
                 return record
             result = self.transport(config, 'send', record)
             if result['state'] == 'sent':
-                return self.delivery_state(record, 'sent', result['external'])
+                return self.delivery_state(record, 'sent', result['external'], sent_at=result.get('sent_at'))
             if result['state'] == 'absent':
                 # 送达命令不存在或起不来，确定没发出：记 unsent，下次照原送达号重发。
                 return self.delivery_state(record, 'unsent', error=result.get('error') or '送达命令起不来')
@@ -384,8 +389,15 @@ class Service:
         except (ValueError, OSError, subprocess.SubprocessError) as exc:
             return self.delivery_state(record, 'uncertain', error=type(exc).__name__ + ': ' + str(exc))
 
-    def delivery_state(self, record, state, external=None, error=None):
+    def delivery_state(self, record, state, external=None, error=None, *, sent_at=None):
         record = {**record, 'state': state, 'external': external, 'error': error}
+        if isinstance(sent_at, str):
+            try:
+                at = datetime.fromisoformat(sent_at)
+                if at.tzinfo is not None:
+                    record['sent_at'] = at.astimezone(timezone.utc).isoformat()
+            except (ValueError, OverflowError):
+                pass  # 外部回执没给出有效时间时，度量沿用确认送达的日志时间。
         with self.store.transaction():
             self.store.put('delivery', record['id'], record, state)
         return record

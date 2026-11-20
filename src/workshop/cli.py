@@ -54,6 +54,10 @@ def parser():
     metrics_command.add_argument("--from", dest="start", help="含时区的 ISO 起点")
     metrics_command.add_argument("--to", dest="end", help="含时区的 ISO 终点")
     metrics_command.add_argument("--database", type=Path, help="状态库副本路径，默认读取 --state-dir/workshop.db")
+    reports = commands.add_parser('reports', help='只读报告')
+    messages = reports.add_subparsers(dest='report', required=True).add_parser('messages', help='介入点发件与回应基线')
+    messages.add_argument('--intervention-db', type=Path, help='介入点库路径，默认按介入点服务的 endpoint 定位')
+    messages.add_argument('--as-of', help='统计截止时间（含时区的 ISO 时间），默认现在')
     why_command = commands.add_parser("why", help="列出一件活每一轮的起因和结果；活写成 <短名>#<编号> 或 <交付对象>:<对象键>")
     why_command.add_argument("item", nargs="?")
     why_command.add_argument("--raw", action="store_true", help="每条事件后原样打印原始资料")
@@ -135,6 +139,15 @@ def read_command(args):
                         path = Path(args.html).expanduser() if args.html else args.state_dir / 'status.html'
                         write_page(path, page(overview(log, **options)))
                         print(path.resolve())
+                elif args.command == 'reports':
+                    from .reports.messages import messages
+                    database = args.intervention_db
+                    if database is None:
+                        saved = log.get('controls', '@rules')
+                        rules = current_rules(args, saved).data
+                        endpoint = Path(rules['wait_services']['intervention']['endpoint']).expanduser().resolve()
+                        database = endpoint.parent.parent / 'intervention.db'
+                    print(messages(log, database, args.as_of))
                 elif args.command == 'why':
                     try:
                         rules = current_rules(args, log.get('controls', '@rules')).data
@@ -189,7 +202,7 @@ def main(argv=None):
         except (ValueError, TypeError, KeyError, OSError, sqlite3.Error, OverflowError) as exc:
             print(f"车间：{exc}", file=sys.stderr)
             return 2
-    if args.command in ("status", "why", "usage"):
+    if args.command in ("status", "why", "usage", "reports"):
         return read_command(args)
     if args.command == "executors":
         from . import executors_command
