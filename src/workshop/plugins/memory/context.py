@@ -76,13 +76,16 @@ def context(store, scope, config):
     used = {"entries": 0, "chars": 0}
     items = instructions(store, scope)
     kept_instructions = trim(items, budget, used)
+    note_index = notes(store, scope)
+    kept_notes = trim([{**note, "claim": "", "summary": note["summary"]} for note in note_index], budget, used)
     progress_items = progress(store, scope)
     kept_progress = trim(progress_items, budget, used)
     reported_items = reported(store, scope, budget)
     kept_reported = trim(reported_items, budget, used)
     return {"scope": scope, "budget": budget, "instructions": kept_instructions,
-            "progress": kept_progress, "notes": notes(store, scope), "reported": kept_reported,
+            "progress": kept_progress, "notes": kept_notes, "reported": kept_reported,
             "truncated": {"instructions": len(kept_instructions) < len(items),
+                          "notes": len(kept_notes) < len(note_index),
                           "progress": len(kept_progress) < len(progress_items),
                           "reported": len(kept_reported) < len(reported_items)}}
 

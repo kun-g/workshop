@@ -137,10 +137,17 @@ class Store:
                 "INSERT INTO memory(id,kind,scope,claim,summary,claim_hash,source_fact_seqs,batch,item,state,created_at) "
                 "VALUES (?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT DO NOTHING",
                 (entry_id, kind, scope, claim, summary or "", digest, seqs, batch, item, state, createdAt))
-            if not cursor.rowcount:
-                # 同一说法的同一来源版本已经写过：重跑不重复；回读既有行。
-                return self.entry(entry_id)
-        return self.entry(entry_id)
+            if cursor.rowcount:
+                return self._row(self.db.execute("SELECT * FROM memory WHERE id=?", (entry_id,)).fetchone())
+            found = self._row(self.db.execute(
+                "SELECT * FROM memory WHERE kind=? AND scope=? AND claim_hash=? AND source_fact_seqs=? "
+                "AND weight=1 ORDER BY seq DESC LIMIT 1", (kind, scope, digest, seqs)).fetchone())
+            if found is not None:
+                return found
+            # 进度按 (item, state, claim_hash) 唯一；id 可能因作用域不同而不同。
+            return self._row(self.db.execute(
+                "SELECT * FROM memory WHERE kind='progress' AND item IS ? AND state IS ? AND claim_hash=? "
+                "ORDER BY seq DESC LIMIT 1", (item, state, digest)).fetchone())
 
     def append_correction(self, entry_id, phrase, watermark):
         if not isinstance(phrase, str) or not phrase.strip():

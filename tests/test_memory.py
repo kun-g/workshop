@@ -124,9 +124,9 @@ def test_context_budget_and_priority(tmp_path):
     assert not any("已结案" in e["claim"] for e in loaded["progress"])
     # ② 确实截断，条数和字符严格不超上限，2 条用户指示全部保留
     assert loaded["truncated"]["reported"] is True
-    total_entries = len(loaded["instructions"]) + len(loaded["progress"]) + len(loaded["reported"])
+    total_entries = sum(len(loaded[key]) for key in ("instructions", "notes", "progress", "reported"))
     total_chars = sum(len(e.get("claim", "")) + len(e.get("summary", "")) for key in
-                      ("instructions", "progress", "reported") for e in loaded[key])
+                      ("instructions", "notes", "progress", "reported") for e in loaded[key])
     assert total_entries <= budgets["max_entries"]
     assert total_chars <= budgets["max_chars"]
     assert len(loaded["instructions"]) == 2

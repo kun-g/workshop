@@ -323,13 +323,17 @@ def main():
         # 从两条真实轮次摘要各提一条候选：和纠正说法等价的被拒，另一条写入。
         correct_first(state)
         reset_cursor(state)
-        show(cli, env, "memory", "dream")
-        # 真实模型偶尔只把纠正过的那条提出来；拨回游标重试一次，让「写入的候选」也出现。
-        retried = dream_candidates_written(state)
-        if not retried:
-            print("第一次只得到被拒候选；拨回游标，用真实模型再做一次梦")
+        # 真实模型每次提案不完全一样；为了拿到「写入的候选」和「被拒的候选」各一份原样输出，
+        # 拨回游标最多试 4 次，哪次两者都出现就停。已写入的条目由唯一索引挡住，不会重复。
+        for attempt in range(4):
             reset_cursor(state)
-            show(cli, env, "memory", "dream")
+            result = show(cli, env, "memory", "dream")
+            try:
+                value = json.loads(result.stdout)
+            except ValueError:
+                continue
+            if value.get("written") and value.get("rejected"):
+                break
         show(cli, env, "memory", "backup")
         print("--- 真实备份/恢复：删库连同 -wal/-shm，再用这次备份恢复，查完整性并读出原条目 ---")
         show_restore(cli, env, state)
