@@ -1,6 +1,6 @@
 """一拍的顺序。
 
-这一拍只做这些：收作业结果、归类外部事件、清一次流程目录、收来源事件、读通道、定时、结算开着的轮、推进每件活、收回目录、再读通道、写心跳。
+这一拍只做这些：收作业结果、归类外部事件、清一次流程目录、收来源事件、周期任务到点、读通道、定时、结算开着的轮、推进每件活、收回目录、再读通道、写心跳。
 失败记账和心跳放在一起。
 一拍超过 100 毫秒时，等锁和各步耗时追加到状态目录的 tick-slow.jsonl，只留最近 100 条。
 """
@@ -11,7 +11,7 @@ import time
 
 from .jobs import Pending
 from .models import stamp
-from . import batching, rounds, relations, waits, hooks, activity, managers, faults
+from . import batching, rounds, relations, waits, hooks, activity, managers, faults, schedules
 
 SLOW_TICK_MS = 100
 SLOW_ITEM_MS = 5
@@ -67,6 +67,8 @@ def one(engine, began=None):
                 engine.cleaned_flows = True
             with Span(spans, "sources"):
                 engine.sources()
+            with Span(spans, "schedules"):
+                schedules.scan(engine)
             with Span(spans, "timers"):
                 engine.timers()
             with Span(spans, "waits"):

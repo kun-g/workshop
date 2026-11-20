@@ -3,7 +3,7 @@ from datetime import datetime
 from pathlib import Path
 from inspect import signature
 
-from . import batching
+from . import batching, schedules
 
 
 def wake_paths(engine):
@@ -68,6 +68,8 @@ def wait_timeout(engine):
             include(control.get("at"))
     for row in engine.active():
         include(row.get("deadline"))
+    for at in schedules.deadlines(engine.log):
+        include(at)  # 周期任务到点、挂起满 24 小时（核心 R34）。
     window = engine.batch_window()
     for item in engine.log.open_items() + engine.log.release_items():
         include(item.get("retry_at"))

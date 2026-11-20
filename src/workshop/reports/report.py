@@ -8,6 +8,7 @@ from workshop.core.models import Event, utcnow
 from workshop.core.ports import Flow, Plugins
 from workshop.core.flows import configured
 from workshop.core.holding import resolve
+from workshop.core.schedules import starved as starved_schedules
 
 
 from .manager_status import read_managers, sections
@@ -114,7 +115,10 @@ def overview(log, *, everything=False, states=(), targets=(), flows=(), rules=No
              and (not targets or name in targets)]
     isolated_sources = [control for control in log.all('controls', where=('broken', True))
                         if control['id'].startswith('@source:') and (not targets or control['target'] in targets)]
+    # 周期任务停摆（核心 R34）：只在 status 里显示，不发消息；挂起的活结案后不再列出。
+    starved = [row for row in starved_schedules(log) if not targets or row["item"].split(":", 1)[0] in targets]
     return {"managers": read_managers(log.path.parent.resolve()), "rows": picked, "isolated_sources": isolated_sources,
+            "starved_schedules": starved,
             "total": count, "ended": count - sum(r["state"] not in ENDED for r in rows),
             "hidden": count - len(picked), "everything": everything, "filtered": filtered, "holds": holds,
             "waits": [w for w in waiting_records(log, rules, plugins, cache=wait_cache) if w['item'] in ids],
@@ -151,6 +155,9 @@ def status(log, **options):
             advice = one_line(r["advice"]) + retry_note(r)
             lines.append("\t".join((r["id"], r["stage"], one_line(r["reason"]), advice)))
     lines.extend(source_isolation_line(c) for c in view['isolated_sources'])
+    if view["starved_schedules"]:
+        lines.append(f"周期任务停摆 {len(view['starved_schedules'])} 条\n任务\t挂起的活\t状态\t原因")
+        lines.extend(schedule_starved_line(row) for row in view["starved_schedules"])
     for heading, snapshot in sections(view).items():
         lines.extend([heading, *snapshot['lines']])
         if heading == '等你':
@@ -158,6 +165,10 @@ def status(log, **options):
         if snapshot['details']:
             lines.extend(['详情', *snapshot['details']])
     return "\n".join(lines)
+
+
+def schedule_starved_line(row):
+    return "\t".join((row["schedule"], row["item"], row["state"], one_line(row["reason"])))
 
 
 def one_line(text):

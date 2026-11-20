@@ -11,7 +11,7 @@ from importlib.resources import files
 from urllib.parse import quote
 from datetime import datetime
 from html import escape as e
-from .report import source_isolation_line
+from .report import schedule_starved_line, source_isolation_line
 
 
 ASSETS = files("workshop").joinpath("assets")
@@ -175,6 +175,7 @@ def page(view, now=None):
     total = f"活 {len([r for r in rows if r['state'] not in ENDED])} 件" + "".join(f" · {s} {counts[s]}" for s in sorted(counts, key=lambda s: ORDER.index(s) if s in ORDER else 2.5))
     channel = "".join(f'<p><b>停了新派发</b><code>{e(h["target"])}</code>{e(h["reason"])}</p>' for h in view.get("holds", []))
     isolated = ''.join(f'<p>{e(source_isolation_line(c))}</p>' for c in view.get('isolated_sources', []))
+    starved = ''.join(f'<p>{e(schedule_starved_line(r))}</p>' for r in view.get('starved_schedules', []))
     stamp = (f'<p class="stamp" id="stamp" data-at="{e(now.isoformat())}">更新于 <b>{e(now.strftime("%Y-%m-%d %H:%M:%S"))}</b>（<span id="ago">刚刚</span>）</p>')
     live = [r for r in rows if r["state"] not in ENDED]
     card = (f'<section class="card top"><p class="total">{e(total)}</p>' + stamp +
@@ -193,6 +194,7 @@ def page(view, now=None):
 <p class="sub">{e(scope)}{(" · " + e(hidden)) if hidden else ""}</p>
 {section("卡住", stuck, asks, now, badge=False, warn=True)}
 {f'<h2>来源隔离</h2><div class="card">{isolated}</div>' if isolated else ''}
+{f'<h2>周期任务停摆</h2><div class="card">{starved}</div>' if starved else ''}
 {manager_sections(view)}
 {section("在动", moving, asks, now, running=True)}
 {section("排队", by_state["排队"], asks, now, badge=False)}

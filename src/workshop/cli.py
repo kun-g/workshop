@@ -9,7 +9,8 @@ import sys
 from .core.engine import Engine, finder
 from .core.jobs import Jobs, execute
 from .core.log import Log
-from .core.models import Event
+from .core.models import Event, WEEKDAYS
+from .core import schedules
 from .core.ports import WaitRejected, WaitUnavailable
 from .core.holding import resolve
 from .reports.report import overview, status, unfiled, usage, why
@@ -91,6 +92,22 @@ def parser():
     prune.add_argument("--verbose", action="store_true", help="逐个列出目录")
     prune.add_argument("--executor-state-dir", type=Path,
                        help="执行者状态目录；默认 WORKSHOP_EXECUTOR_STATE_DIR 或 ~/.local/state/workshop-executors")
+    schedule = commands.add_parser("schedule", help="周期任务：每天或每周的当地时刻到点开一件活（核心 R34）；只写事实")
+    schedule_commands = schedule.add_subparsers(dest="schedule_command", required=True)
+    schedule_add = schedule_commands.add_parser("add", help="登记一条周期任务")
+    schedule_add.add_argument("schedule", help="任务号：小写字母、数字、- 和 _")
+    schedule_add.add_argument("--target", required=True, help="交付对象")
+    schedule_add.add_argument("--flow", default="", help="流程，默认交付对象的默认流程")
+    schedule_add.add_argument("--title", required=True, help="开出来的活的标题")
+    schedule_add.add_argument("--every", required=True, choices=("daily", "weekly"))
+    schedule_add.add_argument("--at", required=True, help="当地时刻 HH:MM")
+    schedule_add.add_argument("--weekday", choices=WEEKDAYS, help="每周的任务在星期几")
+    schedule_add.add_argument("--tz", default="Asia/Shanghai", help="时区，默认 Asia/Shanghai")
+    schedule_add.add_argument("--catchup", default="coalesce_one", choices=("coalesce_one", "skip"),
+                              help="停机错过时：coalesce_one 恢复后只补一次（默认），skip 只推进不补")
+    schedule_add.add_argument("--about", default="", help="开活时带给流程的说明")
+    schedule_commands.add_parser("list", help="只读列出周期任务")
+    schedule_commands.add_parser("disable", help="停用一条周期任务；之后到点不再开活").add_argument("schedule")
     commands.add_parser("pause").add_argument("target")
     resume = commands.add_parser("resume")
     resume.add_argument("target")
@@ -148,6 +165,8 @@ def read_command(args):
                         endpoint = Path(rules['wait_services']['intervention']['endpoint']).expanduser().resolve()
                         database = endpoint.parent.parent / 'intervention.db'
                     print(messages(log, database, args.as_of))
+                elif args.command == 'schedule':
+                    print(schedules.listing(log))
                 elif args.command == 'why':
                     try:
                         rules = current_rules(args, log.get('controls', '@rules')).data
@@ -202,7 +221,7 @@ def main(argv=None):
         except (ValueError, TypeError, KeyError, OSError, sqlite3.Error, OverflowError) as exc:
             print(f"车间：{exc}", file=sys.stderr)
             return 2
-    if args.command in ("status", "why", "usage", "reports"):
+    if args.command in ("status", "why", "usage", "reports") or getattr(args, "schedule_command", None) == "list":
         return read_command(args)
     if args.command == "executors":
         from . import executors_command
@@ -305,6 +324,16 @@ def main(argv=None):
             elif args.command == 'release':
                 item_id = engine.release_here(args.item, args.quote, args.session)
                 print(f'已登记会话放行：{item_id}')
+            elif args.command == "schedule":
+                if args.schedule_command == "add":
+                    row = schedules.add(engine, args.schedule, target=args.target, flow=args.flow, title=args.title,
+                                        every=args.every, at=args.at, weekday=args.weekday, zone=args.tz,
+                                        catchup=args.catchup, about=args.about)
+                    print(f"已登记周期任务 {row['schedule']}：下一次 {row['next_at']}")
+                else:
+                    schedules.disable(engine, args.schedule)
+                    print(f"已停用周期任务 {args.schedule}；之后到点不再开活")
+                ring(args.state_dir)  # 守护进程重算该什么时候醒。
             elif args.command == "pause":
                 engine.pause(args.target)
                 print(f"已暂停 {args.target}；当前一轮继续收尾")

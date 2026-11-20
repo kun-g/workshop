@@ -2,13 +2,13 @@
 
 `workshop release-now` 在发版状态目录写 release-now，来源立刻多比较一次，之后走同一发版流程。
 """
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 import base64
 import json
 from pathlib import Path
 import re
 
-from workshop.core.models import Event, Poll
+from workshop.core.models import Cadence, Event, Poll
 from workshop.core.ports import Retryable
 from workshop.github_identity import scoped, run_read as run
 from workshop.path_policy import only_ignored_paths
@@ -17,7 +17,6 @@ from .io import release_config, release_path, read as read_record
 
 
 REQUEST = 'release-now'
-EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
 
 
 def interval_minutes(target):
@@ -32,6 +31,10 @@ def interval_minutes(target):
     return minutes
 
 
+def cadence(target):
+    return Cadence('minutes', minutes=interval_minutes(target), zone='UTC')
+
+
 class MainBranchSource:
     def __init__(self, clock=None):
         self.clock = clock or (lambda: datetime.now(timezone.utc))
@@ -44,20 +47,20 @@ class MainBranchSource:
 
     @scoped
     def poll(self, target, cursor):
-        minutes = interval_minutes(target)
-        elapsed = (self.clock().astimezone(timezone.utc) - EPOCH) // timedelta(minutes=1)
-        slot = (EPOCH + timedelta(minutes=elapsed // minutes * minutes)).isoformat()
         config, root = release_config(target)
         request = root / REQUEST
         # 请求由 CLI 写，来源只读。确认随事件和游标一起提交；在途结果被
         # 唤醒作废、超时或重启时，旧游标仍能重放请求，不先删除唯一凭据。
         previous_slot, _, acknowledged = (cursor or '').partition('\n')
+        # 到点、下一次和去重标识与用户周期任务共用核心的 Cadence（核心 R34）；槽位沿 UTC epoch 切。
+        scan = cadence(target).scan(self.clock(), last=previous_slot)
+        slot = scan.slot
         requested = request.read_text().strip() if request.exists() else ''
         asked = requested if requested != acknowledged else ''
         def position(request_id):
             return slot + ('\n' + request_id if request_id else '')
         next_cursor = position(asked or acknowledged)
-        if previous_slot == slot and not asked:
+        if not scan.due and not asked:
             return Poll([], cursor)
         cluster = config.get('scheduled_release_mode', 'self') == 'cluster'
         try:
@@ -119,7 +122,7 @@ class MainBranchSource:
                     needs_release = False
             except (KeyError, ValueError, TypeError) as exc:
                 raise Retryable('无法确认累计改动是否需要上线') from exc
-        ext = 'now:' + asked if asked else slot
+        ext = 'now:' + asked if asked else scan.ext_id()
         events = [] if not needs_release else [Event('main_branch', ext, target['name'], to,
             ('立即发版 ' if asked else '定时发版 ') + to[:12], {'kind': 'ahead', 'from': head, 'to': to})]
         return Poll(events, next_cursor)
