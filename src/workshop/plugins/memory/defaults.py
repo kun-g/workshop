@@ -1,11 +1,11 @@
-"""默认做梦生成器和等价判定：本地、确定性，不连模型。
+"""做梦生成器和等价判定：配置了 `memory.dreamer.script` 就用真实执行者模型，
+否则用本地确定性实现（`check.sh` 里的测试和未配置的部署都不连模型）。
 
-生成器把事实表新增里「kind in round_result/program_result」的事实各派一条候选（说法是
-事实的一句摘要），来源带这个事实序号；判定按说法规范化后比较。
-测试和真实路径都能用；要接真实模型，替换本模块的 make_dreamer 即可。
+`check.sh` 的测试只走本地确定性实现；真实路径的 `workshop dream` 用配置里的脚本。
 """
 import json
 import re
+import subprocess
 
 from .dreambase import Dreamer
 
@@ -36,5 +36,40 @@ def equivalent(left, right):
     return normalize(left) == normalize(right)
 
 
-def make_dreamer(target=None):
+class ModelDreamer(Dreamer):
+    """经配置的脚本起真实执行者模型；超时、非零退出或格式不对都抛异常（fail-closed）。"""
+
+    def __init__(self, script, argv, env, timeout):
+        self.script = script
+        self.argv = list(argv)
+        self.env = dict(env)
+        self.timeout = timeout
+        super().__init__(self._propose, self._same)
+
+    def _call(self, action, payload):
+        import os
+        import sys
+        command = [sys.executable, self.script, action] if self.script.endswith(".py") else [self.script, action]
+        env = {**os.environ, **self.env}
+        result = subprocess.run([*command, *self.argv], input=json.dumps(payload, ensure_ascii=False),
+                                capture_output=True, text=True, timeout=self.timeout, env=env)
+        if result.returncode:
+            raise ValueError(f"做梦模型退出 {result.returncode}：{result.stderr[-500:]}")
+        return json.loads(result.stdout)
+
+    def _propose(self, facts, cursor):
+        return self._call("propose", {"facts": facts, "cursor": cursor}).get("proposals") or []
+
+    def _same(self, left, right):
+        value = self._call("same", {"left": left, "right": right}).get("same")
+        if type(value) is not bool:
+            raise ValueError("等价判定没有返回布尔 same")
+        return value
+
+
+def make_dreamer(target=None, settings=None):
+    dreamer = (settings or {}).get("dreamer") if isinstance(settings, dict) else None
+    if isinstance(dreamer, dict) and dreamer.get("script"):
+        return ModelDreamer(dreamer["script"], dreamer.get("argv") or [], dreamer.get("env") or {},
+                            float(dreamer.get("timeout") or 120))
     return Dreamer(generate, equivalent)

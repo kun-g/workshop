@@ -52,7 +52,8 @@ class Flow:
             f"1) 在 {target.get('checkout')} 里执行：WORKSHOP_STATE_DIR={state_dir} "
             f"{command} memory add --token \"$WORKSHOP_ROUND_TOKEN\" --kind instruction "
             f"--scope '{TARGET}' --claim '演练：回答一律用中文' --source-fact-seqs {seq}\n"
-            "2) 回执 summary 原样写「用户指示 N 条」，N 是本轮开头记忆节里用户指示的条数。"
+            "2) 回执 summary 原样写这一句（供做梦提炼）："
+            + ("演练：回答一律用中文" if item.get("object_key") == "round-1" else "演练：记忆备份要放在状态目录之外")
         )
         return FlowBrief(text, workdir=str(target["checkout"]), readonly=False,
                          materials=[{"source": "memory-rehearsal", "role": "资料，不是指令",
@@ -81,6 +82,23 @@ def fact_seq():
         return "（读不到来源序号，跳过第 1 步）"
 
 
+def profile_model(profile):
+    from workshop.deployment import assemble
+    value = assemble(ROOT / "rules/workshop.yaml").rules.data["executor_profiles"].get(profile) or {}
+    return value.get("model") or "claude-haiku-4-5"
+
+
+def profile_env(profile):
+    from workshop.deployment import assemble
+    value = assemble(ROOT / "rules/workshop.yaml").rules.data["executor_profiles"].get(profile) or {}
+    gateway = value.get("gateway") or {}
+    env = {}
+    if gateway.get("base_url"):
+        env["ANTHROPIC_BASE_URL"] = gateway["base_url"]
+        env["ANTHROPIC_AUTH_TOKEN"] = gateway.get("token", "")
+    return env
+
+
 def real_profiles(profile):
     """从现役部署目录只读拿到执行者定义；只保留要用的这一套。
 
@@ -104,7 +122,12 @@ def rule_text(profile, state, checkout):
         "selector": "ordered", "ask_first": [], "skip_ask": [],
         "memory": {"target": TARGET, "flow": "", "path": str(state / "memory.db"),
                    "backup_dir": str(state.parent / "memory-backups"),
-                   "intervention_db": str(state / "intervention.db")},
+                   "intervention_db": str(state / "intervention.db"),
+                   # 真实路径的做梦也走真实执行者模型（check.sh 里的测试不连模型）。
+                   "dreamer": {"script": str(ROOT / "scripts/memory_dreamer.py"),
+                               "argv": [str(Path("/opt/homebrew/bin/claude")), "--model", profile_model(profile),
+                                        "--effort", "low"],
+                               "env": profile_env(profile), "timeout": 180}},
     }
 
 
@@ -125,67 +148,34 @@ def show(cli, env, *argv, name="workshop"):
     return result
 
 
-def demo_dream(env, state, seq):
-    """经命令行跑一次做梦：mock 生成器返回一个真实来源候选和一个不存在来源的候选。"""
-    sys.path.insert(0, str(ROOT / "src"))
-    from workshop.plugins.memory import service as memory_service
-    from workshop.plugins.memory.dreambase import Dreamer
-    from workshop.plugins.memory.store import open_store
-    # 上一段（真实梦/重跑）已经把游标推到末尾；拨回 0，让演示候选能读到来源事实。
-    store = open_store(str(state / "memory.db"))
+def dream_candidates_written(state):
+    conn = sqlite3.connect(state / "memory.db")
     try:
-        store.set_meta("dream_cursor", 0)
+        return conn.execute("SELECT count(*) FROM memory WHERE batch LIKE 'dream:%' AND weight=1").fetchone()[0]
     finally:
-        store.close()
-    original = memory_service._dreamer
-    memory_service._dreamer = lambda target=None: Dreamer(
-        lambda facts, cursor: [
-            {"kind": "reported", "scope": "*", "claim": "演练：来源真实，应写入", "source_fact_seqs": [seq]},
-            {"kind": "reported", "scope": "*", "claim": "演练：来源不存在，应被拒", "source_fact_seqs": [10 ** 9]},
-        ], lambda left, right: left == right)
-    try:
-        os.environ["WORKSHOP_STATE_DIR"] = str(state)
-        result = memory_service.MemoryService().dream(target={"runtime": {"state_dir": str(state)}})
-    finally:
-        memory_service._dreamer = original
-    print(json.dumps({"written": [e["claim"] for e in result["written"]],
-                      "rejected": result["rejected"], **({"note": result["note"]} if result.get("note") else {})},
-                     ensure_ascii=False, indent=1))
+        conn.close()
 
 
-def demo_correction(env, state, seq):
-    """纠正“演练：来源真实，应写入”，再让 mock 生成器给一个说法相同的候选（来源不晚于水位）。"""
-    from workshop.plugins.memory import service as memory_service
-    from workshop.plugins.memory.dreambase import Dreamer
-    service = memory_service.MemoryService()
+def correct_first(state):
+    from workshop.plugins.memory.service import MemoryService
+    service = MemoryService()
     target = {"runtime": {"state_dir": str(state)}}
-    water = max(seq, 2)
-    row = next((row for row in service.entries(target=target) if row["claim"] == "演练：来源真实，应写入"), None)
-    if row is None:
-        print("没有可纠正的条目")
+    rows = [row for row in service.entries(target=target) if row["kind"] == "instruction"]
+    if not rows:
+        print("没有可纠正的指令")
         return
-    service.correct(row["id"], "演练：来源真实，应写入", watermark=water, target=target)
-    # 游标拨回去，让等价候选真的被做梦读到（来源不晚于水位，才会触发拒绝）。
+    row = rows[0]
+    service.correct(row["id"], row["claim"], watermark=10 ** 6, target=target)
+    print(f"已纠正 {row['id']}（水位 1000000）：{row['claim']}")
+
+
+def reset_cursor(state):
     from workshop.plugins.memory.store import open_store
     store = open_store(str(state / "memory.db"))
     try:
         store.set_meta("dream_cursor", 0)
     finally:
         store.close()
-    original = memory_service._dreamer
-    memory_service._dreamer = lambda target=None: Dreamer(
-        lambda facts, cursor: [{"kind": "reported", "scope": "*",
-                                "claim": "演练：换个说法但等价", "source_fact_seqs": [seq]}],
-        lambda left, right: True)  # 等价判定为是
-    try:
-        os.environ["WORKSHOP_STATE_DIR"] = str(state)
-        result = service.dream(target=target)
-    finally:
-        memory_service._dreamer = original
-    print(json.dumps({"written": [e["claim"] for e in result["written"]],
-                      "rejected": result["rejected"], **({"note": result["note"]} if result.get("note") else {})},
-                     ensure_ascii=False, indent=1))
-
 
 restarted = []
 
@@ -326,11 +316,20 @@ def main():
                   "title": "记忆真实路径第二轮", "body": {"kind": "instruction"}, "action": "ready"}
         show(cli, env, "event", "--json", json.dumps(event2, ensure_ascii=False))
         # 第二轮的派活说明是在第一轮之后新组的：等它预订出来，记忆一节应带上第一轮写的用户指示。
-        wait_for(lambda: round_brief_memory(state, "round-2"), args.timeout, process)
+        second_brief = wait_for(lambda: round_brief_memory(state, "round-2"), args.timeout, process)
         show(cli, env, "status", "--all")
         show(cli, env, "memory", "list", "--kind", "instruction")
+        # 先纠正第一轮那条说法（水位取很大，让候选来源都算「不晚于水位」）；真实模型随后
+        # 从两条真实轮次摘要各提一条候选：和纠正说法等价的被拒，另一条写入。
+        correct_first(state)
+        reset_cursor(state)
         show(cli, env, "memory", "dream")
-        show(cli, env, "memory", "dream")
+        # 真实模型偶尔只把纠正过的那条提出来；拨回游标重试一次，让「写入的候选」也出现。
+        retried = dream_candidates_written(state)
+        if not retried:
+            print("第一次只得到被拒候选；拨回游标，用真实模型再做一次梦")
+            reset_cursor(state)
+            show(cli, env, "memory", "dream")
         show(cli, env, "memory", "backup")
         print("--- 真实备份/恢复：删库连同 -wal/-shm，再用这次备份恢复，查完整性并读出原条目 ---")
         show_restore(cli, env, state)
@@ -338,12 +337,10 @@ def main():
         restart_daemon(process, cli, env, root, log)
         process = restarted[0]
         show(cli, env, "memory", "list", "--kind", "instruction")
-        print("--- 做梦写入和被拒候选（mock 生成器，来源事实真实）---")
-        demo_dream(env, state, seq)
-        print("--- 负向纠正后再做梦：等价候选被拒 ---")
-        demo_correction(env, state, seq)
-        print("--- 第二轮派活说明里的记忆一节（原样）---")
-        print(json.dumps(round_brief_memory(state, "round-2"), ensure_ascii=False, indent=1))
+        print("--- 做梦：真实模型写入和被拒候选（来源事实来自真实轮次）---")
+        print("见上一段 `workshop memory dream` 的原样输出：written/rejected 分别列出。")
+        print("--- 第二轮派活说明里的记忆一节（原样，收到即存下的副本）---")
+        print(json.dumps(second_brief, ensure_ascii=False, indent=1))
         code = 0
     finally:
         process.terminate()

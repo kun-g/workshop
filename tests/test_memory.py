@@ -558,7 +558,7 @@ def test_fake_clock_weekly_dream_reaches_flow_entry(tmp_path, monkeypatch):
     import workshop.plugins.memory.defaults as defaults
     original = defaults.make_dreamer
 
-    def mock_dreamer(target=None):
+    def mock_dreamer(target=None, settings=None):
         return Dreamer(Generator([proposal]), lambda a, b: a == b)
 
     defaults.make_dreamer = mock_dreamer

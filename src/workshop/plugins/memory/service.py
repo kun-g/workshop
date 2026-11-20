@@ -92,7 +92,7 @@ class MemoryService:
         data = settings(target)
         store = open_store(data["path"])
         try:
-            return dreaming.run(store, ports.Facts(data["facts_db"]), _dreamer(target), batch=f"dream:{_now()}")
+            return dreaming.run(store, ports.Facts(data["facts_db"]), _dreamer(data), batch=f"dream:{_now()}")
         finally:
             store.close()
 
@@ -117,9 +117,9 @@ class MemoryService:
             store.close()
 
 
-def _dreamer(target):
+def _dreamer(settings):
     from .defaults import make_dreamer
-    return make_dreamer(target)
+    return make_dreamer(None, settings)
 
 
 def schedule_options(state_dir, rules_data):

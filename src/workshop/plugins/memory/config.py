@@ -15,6 +15,8 @@ DEFAULTS = {
     # 到点开出来的活挂到哪个交付对象、走哪个流程；默认车间自己。
     "target": "workshop",
     "flow": "memory",
+    # 做梦生成器和等价判定：给了脚本就用真实执行者模型，不给就用本地确定性实现（测试不连模型）。
+    "dreamer": {"script": "", "argv": [], "env": {}, "timeout": 120},
     "budgets": {"max_entries": 40, "max_chars": 6000, "reported_recent": 10},
     "dream": {"every": "weekly", "weekday": "mon", "at": "04:00", "zone": "Asia/Shanghai"},
     "backup": {"every": "weekly", "weekday": "mon", "at": "05:00", "zone": "Asia/Shanghai"},
@@ -64,6 +66,16 @@ def resolve(root, overrides=None):
     data["backup_dir"] = str(Path(given).expanduser().resolve() if given
                              else (root.parent / (root.name + "-memory-backups")).resolve())
     data["intervention_db"] = str(Path(str(data["intervention_db"])).expanduser().resolve())
+    dreamer = data.get("dreamer")
+    if not isinstance(dreamer, dict):
+        raise ValueError("memory.dreamer 必须是对象")
+    data["dreamer"] = {**DEFAULTS["dreamer"], **dreamer}
+    if data["dreamer"].get("script") and not isinstance(data["dreamer"]["script"], str):
+        raise ValueError("memory.dreamer.script 必须是路径字符串")
+    if not isinstance(data["dreamer"].get("argv"), list) or not all(isinstance(v, str) for v in data["dreamer"]["argv"]):
+        raise ValueError("memory.dreamer.argv 必须是字符串列表")
+    if not isinstance(data["dreamer"].get("env"), dict):
+        raise ValueError("memory.dreamer.env 必须是对象")
     budgets = data.get("budgets")
     if not isinstance(budgets, dict):
         raise ValueError("memory.budgets 必须是对象")

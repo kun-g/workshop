@@ -102,7 +102,7 @@ class MemoryFlow:
         if kind == "dream":
             store = open_store(data["path"])
             try:
-                return dreaming.run(store, ports.Facts(data["facts_db"]), self.dreamer(target),
+                return dreaming.run(store, ports.Facts(data["facts_db"]), self.dreamer(data),
                                     batch=f'dream:{item["id"]}:{self.now()}')
             finally:
                 store.close()
@@ -120,9 +120,9 @@ class MemoryFlow:
                 store.close()
         raise ValueError(f"不认识的记忆活：{kind or '（到点说明里没有记忆：开头）'}")
 
-    def dreamer(self, target):
+    def dreamer(self, settings):
         from .defaults import make_dreamer
-        return make_dreamer(target)
+        return make_dreamer(None, settings)
 
     def path(self, item, target):
         root = self.root or (config.state_root(target) / "memory" / "flow")

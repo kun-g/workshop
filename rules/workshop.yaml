@@ -368,6 +368,11 @@ memory:
   # 只读打开介入点发件表，不 import 介入点插件。
   intervention_db: ~/.local/state/workshop-intervention/intervention.db
   budgets: {max_entries: 40, max_chars: 6000, reported_recent: 10}
+  # 做梦和等价判定用真实执行者模型：留空表示用本地确定性实现（测试和没配模型时用）。
+  # 配了就按脚本起模型，例如：
+  # dreamer: {script: ~/workspace/runtime/repos/workshop/scripts/memory_dreamer.py,
+  #           argv: [/opt/homebrew/bin/claude, --model, <模型>], env: {ANTHROPIC_BASE_URL: ..., ANTHROPIC_AUTH_TOKEN: ...}}
+  dreamer: {script: "", argv: [], env: {}, timeout: 120}
   dream: {every: weekly, weekday: mon, at: "04:00", zone: Asia/Shanghai}
   backup: {every: weekly, weekday: mon, at: "05:00", zone: Asia/Shanghai}
 
