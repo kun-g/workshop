@@ -37,19 +37,18 @@ def enqueue(item, seq, body, arrived, order=None):
 
 
 def settle(item, consumed=()):
-    """去掉已处理的，水位按序号连续推进：队首是已处理或跳过的才往前走。"""
+    """标记已处理；水位按挂到活上的事实序号连续推进，不越过任何还没处理的事件。
+    队列按进车间先后排，归件有先后时两种顺序可能不一致：已处理、跳过的先留在队列里，
+    等序号比它小的都处理完再一起出队。"""
     consumed = set(consumed)
-    watermark = item.get("watermark", 0)
-    rest, passing = [], True
-    for entry in item.get("queue") or []:
-        done = entry["seq"] in consumed
-        if passing and (done or entry.get("skip")):
-            watermark = max(watermark, entry["seq"])
-            continue
-        passing = False
-        if not done:
-            rest.append(entry)
-    item["queue"], item["watermark"] = rest, watermark
+    queue = item.get("queue") or []
+    for entry in queue:
+        if entry["seq"] in consumed:
+            entry["done"] = True
+    low = min((e["seq"] for e in queue if not e.get("done") and not e.get("skip")), default=None)
+    passed = [e for e in queue if (e.get("done") or e.get("skip")) and (low is None or e["seq"] < low)]
+    item["watermark"] = max([item.get("watermark", 0), *(e["seq"] for e in passed)])
+    item["queue"] = [e for e in queue if e not in passed]
     if consumed:
         item["inflight"] = [seq for seq in item.get("inflight") or [] if seq not in consumed]
 
@@ -73,7 +72,7 @@ def skip(item, seq):
 
 
 def waiting(item):
-    return [e for e in item.get("queue") or [] if not e.get("skip")]
+    return [e for e in item.get("queue") or [] if not e.get("skip") and not e.get("done")]
 
 
 def plan(item, window=WINDOW_MS):
@@ -103,7 +102,11 @@ def plan(item, window=WINDOW_MS):
 
 def during(item, entry):
     span = item.get("round_span")
-    return bool(span) and span[0] <= entry["at"] <= span[1]
+    if not span:
+        return False
+    # 按时间比，不按字符串：整秒的时间串不带小数，字典序和先后不一致。
+    begin, end, at = (datetime.fromisoformat(value) for value in (*span, entry["at"]))
+    return begin <= at <= end
 
 
 def due(item, now, window=WINDOW_MS):
@@ -116,4 +119,4 @@ def due(item, now, window=WINDOW_MS):
 
 def later(item, batch):
     """还在队列里、但不在本批的事件序号：它们的正文不进这一轮的派活说明。"""
-    return {e["seq"] for e in item.get("queue") or []} - set(batch)
+    return {e["seq"] for e in item.get("queue") or [] if not e.get("done")} - set(batch)

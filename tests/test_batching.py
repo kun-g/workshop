@@ -9,7 +9,7 @@ from datetime import timedelta
 import pytest
 
 from conftest import Clock, build, configuration, event
-from workshop.core.models import Evidence
+from workshop.core.models import Evidence, stamp
 from workshop.core.ports import InputBlocked
 from workshop.core.rules import Rules
 
@@ -479,3 +479,57 @@ def test_skip_rejects_event_already_in_flight(engine):
     with pytest.raises(ValueError):
         engine.skip_event("alpha:one", e1, "陈旧")
     assert not any(f["kind"] == "event_skipped" for f in engine.log.facts())
+
+
+def test_watermark_does_not_pass_unconsumed_event_when_filed_out_of_order(engine):
+    """先进车间、后归件的 e1 不可攒批，排在先归件的 e2 前面单独一轮；
+    e1 处理完时 e2 还没处理，水位不能越过 e2（它挂到活上的序号更小）。"""
+    delayed = {"e1"}
+    delayed_classification(engine, delayed)
+    external(engine, "e1", batchable=False)
+    e2 = external(engine, "e2")
+    delayed.clear()
+    at(engine, 10)
+    engine.tick()
+    e1 = engine.log.db.execute("SELECT max(seq) FROM facts WHERE kind='event_classified' "
+                               "AND json_extract(body, '$.event.ext_id')='e1'").fetchone()[0]
+    assert e2 < e1 and batches(engine) == [[e1]]
+    done(engine)
+    assert watermark(engine) < e2
+    at(engine, 500)  # e2 的窗口从它进车间（t=0）算起。
+    engine.tick()
+    assert batches(engine) == [[e1], [e2]]
+    done(engine)
+    assert watermark(engine) == e1 and item(engine)["queue"] == []
+
+
+@pytest.mark.parametrize("ended, arrived, starts", [
+    # 上一轮整秒结束，事件在它之前（带小数）进车间、轮后才归件：轮结束就取。
+    (10_000, 9_800, 10_050),
+    # 上一轮在带小数的时刻结束，事件在之后的整秒进车间：照常等满窗口。
+    (9_500, 10_000, 10_500),
+])
+def test_round_span_compares_times_not_strings(engine, ended, arrived, starts):
+    e1 = put(engine, "e1", batch_window_ms=0)
+    delayed = {"e2"}
+    delayed_classification(engine, delayed)
+    if arrived < ended:
+        at(engine, arrived)
+        external(engine, "e2")
+    at(engine, ended)
+    done(engine)
+    if arrived >= ended:
+        at(engine, arrived)
+        external(engine, "e2")
+    delayed.clear()
+    at(engine, 10_050)
+    engine.tick()
+    if starts > 10_050:
+        assert batches(engine) == [[e1]]
+        at(engine, starts - 1)
+        engine.tick()
+        assert batches(engine) == [[e1]]
+        at(engine, starts)
+        engine.tick()
+    assert len(batches(engine)) == 2
+    assert running(engine)[0]["at"] == stamp(T0 + timedelta(milliseconds=starts))

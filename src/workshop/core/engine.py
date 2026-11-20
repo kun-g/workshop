@@ -251,7 +251,7 @@ class Engine:
             raise ValueError("跳过事件要写明原因")
         with self.log.transaction():
             item = self.log.get("items", item_id)
-            if item is None or not any(e["seq"] == seq for e in item.get("queue") or []):
+            if item is None or not any(e["seq"] == seq and not e.get("done") for e in item.get("queue") or []):
                 raise ValueError(f"{item_id} 上没有待处理的事件 {seq}")
             if seq in (item.get("inflight") or []):
                 raise ValueError(f"事件 {seq} 已定进在途批次，照常处理，不能再跳过")
