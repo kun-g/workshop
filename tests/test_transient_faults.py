@@ -173,7 +173,7 @@ def test_event_does_not_move_an_item_into_another_isolation(tmp_path):
     try:
         engine.ingest(event(key='one', ext_id='1'), directed=True)
         engine.tick()
-        engine.broken('alpha', 'source', 'source', RuntimeError('来源代码错误'))
+        engine.broken('alpha', 'executor', 'writer', RuntimeError('执行者代码错误'))
         before = item(engine, key='one')
         assert before['plugin_failure_key'] == 'alpha' and not before.get('plugin_retry_at')
         at = (engine.clock() + timedelta(hours=1)).isoformat()

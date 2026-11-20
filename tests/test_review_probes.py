@@ -303,7 +303,7 @@ def test_17_transient_source_backoff_then_fault(engine, monkeypatch):
     assert len(calls) == 3 and not engine.control("alpha").get("broken")
     engine.clock.now += timedelta(minutes=15)
     engine.tick()
-    assert len(calls) == 4 and engine.control("alpha")["broken"]
+    assert len(calls) == 4 and engine.control("@source:alpha:source")["broken"]
 
 
 def test_18_cli_event_infers_chain_depth(engine, tmp_path):
@@ -359,7 +359,7 @@ def test_26_no_card_wait_only_explicit_ready_event_releases(engine):
 def test_4_timer_due_during_fault_runs_after_repair(engine):
     reach(engine, "执行")
     finish(engine, later=[{"key": "later", "at": "+1m", "about": "查看"}])
-    engine.broken("alpha", "source", "source", RuntimeError("坏了"))
+    engine.broken("alpha", "executor", "writer", RuntimeError("坏了"))
     engine.clock.now += timedelta(minutes=2)
     engine.tick()
     assert not engine.log.all("timers")[0]["fired"]
@@ -372,7 +372,7 @@ def test_4_answer_during_fault_is_used_after_repair(engine):
     reach(engine, "执行")
     port = pause_for_kun(engine)
     finish(engine, "证据")
-    engine.broken("alpha", "source", "source", RuntimeError("坏了"))
+    engine.broken("alpha", "executor", "writer", RuntimeError("坏了"))
     port.ready["decision"] = "answered"
     engine.tick()
     engine.resume("alpha", [])
@@ -396,7 +396,7 @@ def test_25_core_term_check_rejects_variants(tmp_path, term):
 def test_26_ready_during_fault_retains_original_stage(engine):
     reach(engine, "说清楚")
     finish(engine, leave={"kind": "等你", "about": "先聊清楚"})
-    engine.broken("alpha", "source", "source", RuntimeError("坏了"))
+    engine.broken("alpha", "executor", "writer", RuntimeError("坏了"))
     engine.ingest(event(ext_id="ready", action="ready"))
     engine.resume("alpha", [])
     engine.tick()

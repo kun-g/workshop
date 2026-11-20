@@ -7,7 +7,7 @@ import subprocess
 
 import pytest
 
-from conftest import FakeSource, event, item
+from conftest import FakeSource, current, event, finish, item, reach
 from test_jobs import ManualJobs
 from test_review_round3 import approval_wait
 from workshop import github_identity
@@ -19,6 +19,7 @@ from workshop.plugins.sources.github import GitHubSource
 
 
 RETRY = 'retry:source:alpha:source'
+ISOLATION = '@source:alpha:source'
 
 
 def wire_source(engine, tmp_path, monkeypatch, fault='timeout'):
@@ -109,15 +110,17 @@ def test_deadline_survives_restart_and_isolates_once(engine, tmp_path, monkeypat
     state = wire_source(engine, tmp_path, monkeypatch)
     t0 = engine.clock()
     before = item(engine)
+    before_wait = engine.log.get('waits', 'bind:approval')
     other = FakeSource()
-    other.events = [event('second', target='beta', ext_id='second')]
+    monkeypatch.setattr(other, 'poll', lambda target, cursor: Poll([], (cursor or 0) + 1))
     engine.plugins.register('source', 'other', other)
-    engine.rules.data['targets']['beta']['sources'] = ['other']
+    engine.rules.data['targets']['alpha']['sources'].append('other')
     for minute, next_minute in zip((0, 1, 3, 8, 18, 28), (1, 3, 8, 18, 28, 30)):
         engine.clock.now = t0 + timedelta(minutes=minute)
         engine.sources()
-        assert not engine.control('alpha').get('broken')
+        assert not engine.log.all('controls', where=('broken', True))
         assert item(engine) == before
+        assert engine.log.get('waits', 'bind:approval') == before_wait
         assert engine.control(RETRY)['at'] == stamp(t0 + timedelta(minutes=next_minute))
         # 事实重放及引擎重建后继续使用原首次失败时间，不延长窗口。
         engine.log.rebuild()
@@ -126,27 +129,29 @@ def test_deadline_survives_restart_and_isolates_once(engine, tmp_path, monkeypat
     engine.clock.now = t0 + timedelta(minutes=30)
     state['fault'] = None if recover_at_deadline else 'oserror'
     engine.sources()
-    assert not engine.control('beta').get('broken') and len(other.cursors) == 7
+    assert not engine.control('alpha').get('broken')
+    assert engine.log.get('cursors', 'alpha:other')['cursor'] == 7
     failures = [f for f in engine.log.facts() if f['kind'] == 'plugin_failed']
     if recover_at_deadline:
         assert not failures and not engine.control('alpha').get('broken')
         assert item(engine) == before and engine.control(RETRY)['count'] == 0
         return
-    assert engine.control('alpha')['broken']
-    assert item(engine)['state'] == '卡住' and item(engine)['plugin_blocked']
+    isolated = engine.control(ISOLATION)
+    assert isolated['broken'] and isolated['since'] == stamp(engine.clock())
+    assert item(engine) == before and engine.log.get('waits', 'bind:approval') == before_wait
     assert len(failures) == 1 and '1800 秒' in failures[0]['body']['error']
-    assert 'GitHub 命令未确认完成' in failures[0]['body']['error']
+    assert 'OSError' in failures[0]['body']['error']
     calls = state.copy()
-    for _ in range(3):
-        engine.clock.now += timedelta(hours=1)
-        engine.sources()
-    assert state == calls
+    engine.clock.now += timedelta(minutes=59)
+    engine.sources()
+    assert state == calls and engine.log.get('cursors', 'alpha:other')['cursor'] == 8
+    engine.clock.now += timedelta(minutes=1)
+    engine.tick()
+    control = engine.control(ISOLATION)
+    assert state['reads'] == calls['reads'] + 1 and control['since'] == isolated['since']
+    assert control['broken'] and control['retry_at'] == stamp(engine.clock() + timedelta(hours=1))
     assert len([f for f in engine.log.facts() if f['kind'] == 'plugin_failed']) == 1
     assert not engine.log.all('cards')
-    engine.resume('alpha', [])
-    state['fault'] = None
-    engine.sources()
-    assert not engine.control('alpha').get('broken') and not item(engine).get('plugin_blocked')
 
 
 @pytest.mark.parametrize('fault', ['json', 'program', 'config'])
@@ -155,8 +160,14 @@ def test_nontransient_errors_still_isolate_immediately(engine, tmp_path, monkeyp
     if fault == 'config':
         engine.rules.data['targets']['alpha']['github_identity']['mode'] = 'invalid'
     engine.sources()
-    assert engine.control('alpha')['broken']
-    assert not engine.control(RETRY).get('count')
+    control = engine.control(ISOLATION)
+    assert control['broken'] and not control['auto_retry']
+    assert not engine.control('alpha').get('broken') and not engine.control(RETRY).get('count')
+    engine.clock.now += timedelta(hours=2)
+    engine.tick()
+    assert engine.control(ISOLATION)['broken']
+    engine.resume('alpha', [])
+    assert not engine.control(ISOLATION)['broken']
 
 
 def test_broken_source_is_woken_hourly_and_recovers(engine, tmp_path, monkeypatch):
@@ -167,21 +178,64 @@ def test_broken_source_is_woken_hourly_and_recovers(engine, tmp_path, monkeypatc
     for minute in (0, 1, 3, 8, 18, 28, 30):
         engine.clock.now = t0 + timedelta(minutes=minute)
         engine.sources()
-    control = engine.control('alpha')
+    control = engine.control(ISOLATION)
     assert control['broken'] and control['auto_retry']
     assert control['retry_at'] == stamp(t0 + timedelta(minutes=90))
-    assert item(engine)['state'] == '卡住' and item(engine)['plugin_blocked']
-    # 没到点的一拍不读来源；到点这一拍自动解除隔离，按原路径重试并恢复被卡的活。
+    assert item(engine)['state'] == '等你' and not item(engine).get('plugin_blocked')
     state['fault'] = None
     engine.clock.now = t0 + timedelta(minutes=89)
     engine.tick()
-    assert engine.control('alpha')['broken'] and state['reads'] == 7
+    assert engine.control(ISOLATION)['broken'] and state['reads'] == 7
     engine.clock.now = datetime.fromisoformat(control['retry_at'])
     engine.tick()
-    assert not engine.control('alpha').get('broken')
+    assert not engine.control(ISOLATION)['broken']
     assert not item(engine).get('plugin_blocked') and item(engine)['state'] == '等你'
-    assert engine.control(RETRY)['count'] == 0
+    assert engine.control(RETRY)['count'] == 0 and engine.control(RETRY)['since'] is None
     assert state['reads'] == 9  # 一次拉取加一次 normalize
+    state['fault'] = 'timeout'
+    engine.sources()
+    assert engine.control(RETRY)['count'] == 1 and engine.control(RETRY)['since'] == stamp(engine.clock())
+    assert not engine.control(ISOLATION)['broken']
+
+
+def test_isolated_source_leaves_timers_rounds_and_other_source_running(engine, monkeypatch):
+    reach(engine, '执行')
+    finish(engine, later=[{'key': 'again', 'at': '+31m', 'about': '复查'}])
+    def failing(target, cursor):
+        raise Retryable('read failed')
+    monkeypatch.setattr(engine.plugins.get('source', 'source'), 'poll', failing)
+    other = FakeSource()
+    monkeypatch.setattr(other, 'poll', lambda target, cursor: Poll([], (cursor or 0) + 1))
+    engine.plugins.register('source', 'other', other)
+    engine.rules.data['targets']['alpha']['sources'].append('other')
+    engine.tick()
+    engine.clock.now += timedelta(minutes=30)
+    engine.tick()
+    assert engine.control(ISOLATION)['broken'] and item(engine)['state'] == '定时'
+    engine.clock.now += timedelta(minutes=1)
+    engine.tick()
+    assert engine.log.all('timers')[0]['fired'] and current(engine)['stage'] == '执行'
+    assert engine.control(ISOLATION)['broken'] and engine.log.get('cursors', 'alpha:other')['cursor'] == 3
+
+
+@pytest.mark.parametrize('error', [TypeError('bad type'), KeyError('missing field')])
+def test_resume_clears_only_its_sources_and_resets_failure_window(engine, monkeypatch, error):
+    errors = {'alpha': error, 'beta': error}
+    def poll(target, cursor):
+        raise errors[target['name']]
+    monkeypatch.setattr(engine.plugins.get('source', 'source'), 'poll', poll)
+    engine.rules.data['targets']['beta']['sources'] = ['source']
+    engine.source_retry('alpha', 'source', Retryable('previous transport error'))
+    engine.clock.now += timedelta(minutes=1)
+    engine.sources()
+    assert all(engine.control(f'@source:{target}:source')['broken'] for target in errors)
+    engine.resume('alpha', [], expected=[])
+    assert not engine.control(ISOLATION)['broken'] and engine.control('@source:beta:source')['broken']
+    assert engine.control(RETRY)['count'] == 0
+    errors['alpha'] = Retryable('new failure')
+    engine.sources()
+    assert engine.control(RETRY)['count'] == 1 and engine.control(RETRY)['since'] == stamp(engine.clock())
+    assert not any(f['kind'] == 'plugin_retry_ok' for f in engine.log.facts())
 
 
 def test_sources_have_separate_windows_and_preserve_failed_cursor(engine, monkeypatch):
@@ -293,6 +347,6 @@ def test_late_failed_result_uses_elapsed_time_not_attempt_count(engine, monkeypa
     engine.sources()
     engine.clock.now += timedelta(minutes=35)
     engine.sources()
-    assert engine.control('alpha')['broken'] and engine.control(RETRY)['count'] == 2
+    assert engine.control(ISOLATION)['broken'] and engine.control(RETRY)['count'] == 2
     failure = next(f for f in engine.log.facts() if f['kind'] == 'plugin_failed')
     assert '2100 秒' in failure['body']['error'] and 'last read error' in failure['body']['error']

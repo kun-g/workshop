@@ -7,7 +7,6 @@ import hashlib
 import json
 import re
 import shutil
-import subprocess
 import time
 import os
 from pathlib import Path
@@ -15,8 +14,8 @@ import tempfile
 from urllib.parse import urlencode
 
 from workshop.core.models import Event, Poll
-from workshop.core.ports import Retryable, TargetBlocked
-from workshop.github_identity import scoped, run as identity_run
+from workshop.core.ports import Retryable
+from workshop.github_identity import scoped, run_read
 
 
 class _YieldPoll(Exception):
@@ -91,13 +90,7 @@ class GitHubSource:
         args = [self.gh, "api", "--method", "GET", "--include", endpoint]
         if old.get("etag") and saved is not None:
             args += ["-H", f'If-None-Match: {old["etag"]}']
-        try:
-            result = identity_run(args, text=True, capture_output=True, timeout=min(12, remaining))
-        except TargetBlocked as exc:
-            # 此处只发 GET；签发失败和读取结果未确认均可重试，写入仍保留原阻塞语义。
-            raise Retryable(str(exc)) from None
-        except (OSError, subprocess.TimeoutExpired) as exc:
-            raise Retryable("GitHub 读取暂时不可用") from exc
+        result = run_read(args, text=True, capture_output=True, timeout=min(12, remaining))
         raw = result.stdout.replace("\r\n", "\n")
         headers, sep, body = raw.partition("\n\n")
         status = re.match(r"HTTP/\S+ (\d+)", headers)

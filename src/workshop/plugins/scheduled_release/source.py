@@ -7,11 +7,10 @@ import base64
 import json
 from pathlib import Path
 import re
-import subprocess
 
 from workshop.core.models import Event, Poll
 from workshop.core.ports import Retryable
-from workshop.github_identity import scoped, run
+from workshop.github_identity import scoped, run_read as run
 from workshop.path_policy import only_ignored_paths
 from workshop.running import current as running_commit
 from .io import release_config, release_path, read as read_record
@@ -73,10 +72,7 @@ class MainBranchSource:
         checkout = str(Path(target['checkout']).expanduser().resolve())
         remote = f"https://github.com/{target['repo']}.git"
         def read(argv):
-            try:
-                result = run(argv, capture_output=True, text=True, timeout=30)
-            except (OSError, subprocess.TimeoutExpired) as exc:
-                raise Retryable('定时比较未完成') from exc
+            result = run(argv, capture_output=True, text=True, timeout=30)
             if result.returncode:
                 raise Retryable('定时比较失败：' + result.stderr[-500:])
             return result.stdout.strip()

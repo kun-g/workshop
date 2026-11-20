@@ -192,6 +192,10 @@ def resume(engine, target, selected: list[str], expected: list[str] | None = Non
                     timer = engine.log.get("timers", event.ext_id)
                     if timer:
                         engine.apply_timer(timer, replayed)
+        for control in engine.log.all('controls', where=('broken', True)):
+            if control['id'].startswith('@source:') and control['target'] == target:
+                faults.clear_broken(engine, control['id'], control)
+                faults.reset_retry(engine, f"source:{target}:{control['plugin']}", recovered=False)
         # 恢复只解除插件故障；重试耗尽和连锁上限须由新决定处理。
         engine.restore_target(target)
 

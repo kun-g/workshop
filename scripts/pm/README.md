@@ -16,5 +16,4 @@
 | `rework_done.py <活> <原话> <会话号>` | 已完成的活要返工，Kun 有原话 | `recover --mode rework` 收已完成的活 |
 | `close_batch.py <批次的活> --production … --verified-by …` | 集群发版批次停在等授权或卡住，线上已只读核对无误；先加 `--dry-run` 看一遍 | gc#179；「核对后收批次」命令 |
 | `watch.py --items … --expect … [--by HH:MM]` | 后台盯几件活：有该看的变化、或到了预期时间还没变化，就叫醒 | 车间按预期时间提醒项目经理 |
-| `autoresume.sh [交付对象] [分钟]` | 网络抖动时交付对象反复被标坏：确认签发和 GitHub 都通再 resume | 车间对瞬时失败自己重试 |
 | `render_gc_card.py <申请记录.json>` | 发卡给 Kun 前，用 grant-console 线上渲染代码看第一屏（用 grant-console 的 venv 跑） | 发卡前自动检查第一屏 |

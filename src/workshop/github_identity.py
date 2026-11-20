@@ -68,10 +68,13 @@ def sign(config, repo, source=None, *, relations_read=False):
     argv = [str(Path(p).expanduser()) if p.startswith('~') else p for p in config['signer']]
     if relations_read:
         argv.append('--relations-read')
+    argv.extend(['--repo', repo])
     try:
-        result = subprocess.run([*argv, '--repo', repo], env=env, capture_output=True, text=True, timeout=30)
-    except (OSError, subprocess.TimeoutExpired):
-        raise IdentityError(f'{repo} App 签发不可用或超时；未执行动作，无个人身份回退') from None
+        result = subprocess.run(argv, env=env, capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        reason = _failure_kind(exc)
+        command = _safe_argv(argv, os.environ if source is None else source)
+        raise IdentityError(f'{repo} App 签发失败：{reason}；argv: {command}；未执行动作，无个人身份回退') from None
     # Neither successful nor failed signer output may be included in an exception.
     # 例外：签发器自己写的一行分类结果（固定前缀、已去掉疑似密钥）只用来查原因。
     token = result.stdout.strip()
@@ -131,29 +134,61 @@ def scoped(function=None, *, relations_read=False):
     return call
 
 
+def run_read(argv, **kwargs):
+    """Only for side-effect-free commands: an unconfirmed read is safe to retry."""
+    return _run(argv, kwargs, read_only=True)
+
+
 def run(argv, **kwargs):
-    """Use identity only for gh/git; explicit clean check environments stay clean."""
+    """An unconfirmed gh/git action must be checked before it can be repeated."""
+    return _run(argv, kwargs, read_only=False)
+
+
+def _redact(value, env):
+    for key in ('GH_TOKEN', 'GITHUB_TOKEN', 'GH_ENTERPRISE_TOKEN', 'GITHUB_ENTERPRISE_TOKEN'):
+        if token := env.get(key):
+            if isinstance(value, bytes):
+                value = value.replace(token.encode(), b'[redacted]')
+            else:
+                value = value.replace(token, '[redacted]')
+    return value
+
+
+def _safe_argv(argv, env):
+    return json.dumps([SECRET.sub('[redacted]', _redact(str(arg), env)) for arg in argv], ensure_ascii=False)
+
+
+def _failure_kind(exc):
+    if isinstance(exc, subprocess.TimeoutExpired):
+        return f'TimeoutExpired（超时 {exc.timeout:g} 秒）'
+    return type(exc).__name__
+
+
+def _run(argv, kwargs, *, read_only):
     state = _scope.get()
-    active = (state and state['config']['mode'] == 'app' and kwargs.get('env') is None
-              and Path(argv[0]).name in ('gh', 'git'))
-    if not active:
+    executable = Path(argv[0]).name
+    if executable not in ('gh', 'git') and not read_only:
         return subprocess.run(argv, **kwargs)
-    if state['env'] is None:
-        state['env'] = environment(state['config'], state['repo'], relations_read=state['relations_read'])
-    env = state['env']
-    argv = list(argv)
-    if Path(argv[0]).name == 'gh':
-        argv[0] = str(Path(state['config']['gh']).expanduser())
-    kwargs['env'] = env
+    if executable in ('gh', 'git') and kwargs.get('env') is None and state and state['config']['mode'] == 'app':
+        if state['env'] is None:
+            state['env'] = environment(state['config'], state['repo'], relations_read=state['relations_read'])
+        kwargs['env'] = state['env']
+        if executable == 'gh':
+            argv = [str(Path(state['config']['gh']).expanduser()), *argv[1:]]
+    env = kwargs.get('env') if kwargs.get('env') is not None else os.environ
     try:
         result = subprocess.run(argv, **kwargs)
-    except (OSError, subprocess.TimeoutExpired):
-        raise TargetBlocked('GitHub 命令未确认完成；请回查后继续') from None
-    token = env['GH_TOKEN']
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        if not read_only:
+            raise TargetBlocked('GitHub 命令未确认完成；请回查后继续') from None
+        stderr = getattr(exc, 'stderr', '') or ''
+        if isinstance(stderr, bytes):
+            stderr = stderr.decode(errors='replace')
+        tail = SECRET.sub('[redacted]', _redact(stderr, env))[-500:]
+        message = f'{_failure_kind(exc)}；argv: {_safe_argv(argv, env)}'
+        raise Retryable(message + (f'；stderr: {tail}' if tail else '')) from None
     for field in ('stdout', 'stderr'):
         value = getattr(result, field)
-        if isinstance(value, str):
-            setattr(result, field, value.replace(token, '[redacted]'))
-        elif isinstance(value, bytes):
-            setattr(result, field, value.replace(token.encode(), b'[redacted]'))
+        if isinstance(value, (str, bytes)):
+            setattr(result, field, _redact(value, env))
     return result

@@ -16,13 +16,7 @@ from conftest import current, event, item
 from test_review_round3 import wait_without_card
 
 
-def fail_source(engine, monkeypatch):
-    def fail(*args):
-        raise RuntimeError("来源 500")
-    monkeypatch.setattr(engine.plugins.get("source", "source"), "poll", fail)
-
-
-def test_1_broken_source_stops_two_receipted_rounds_and_other_target_runs(engine, monkeypatch):
+def test_1_broken_target_stops_two_receipted_rounds_and_other_target_runs(engine, monkeypatch):
     for key in ("one", "two"):
         engine.ingest(event(key, ext_id=key))
     engine.tick()
@@ -38,8 +32,7 @@ def test_1_broken_source_stops_two_receipted_rounds_and_other_target_runs(engine
         calls.append(1)
         return original(*args)
     monkeypatch.setattr(flow, "assess", assess)
-    source_poll = engine.plugins.get("source", "source").poll
-    fail_source(engine, monkeypatch)
+    engine.broken("alpha", "executor", "writer", RuntimeError("执行者故障"))
     engine.tick()
     for row in rows:
         saved = engine.log.get("rounds", row["token"])
@@ -52,7 +45,6 @@ def test_1_broken_source_stops_two_receipted_rounds_and_other_target_runs(engine
         engine.tick()
     assert engine.plugins.get("executor", "writer").stops == stops
     assert not calls
-    monkeypatch.setattr(engine.plugins.get("source", "source"), "poll", source_poll)
     engine.resume("alpha", [])
     engine.tick()
     assert len(calls) == 2 and len(flow.after_keys) == 2
@@ -65,7 +57,7 @@ def test_1_broken_target_still_detects_and_stops_running_round(engine, monkeypat
     engine.ingest(event())
     engine.tick()
     row = current(engine)
-    engine.broken("alpha", "source", "source", RuntimeError("故障"))
+    engine.broken("alpha", "executor", "writer", RuntimeError("故障"))
     if trigger == "exit":
         engine.plugins.get("executor", "writer").live.discard(row["token"])
     elif trigger == "timeout":
@@ -114,7 +106,7 @@ def test_1_stop_failure_keeps_slot_until_confirmed_even_while_broken(engine):
     row = current(engine)
     executor = engine.plugins.get("executor", "writer")
     executor.stop_error = True
-    engine.broken("alpha", "source", "source", RuntimeError("来源故障"))
+    engine.broken("alpha", "executor", "writer", RuntimeError("执行者故障"))
     engine.abort(row["token"])
     engine.tick()
     assert engine.occupied() == 1 and not engine.log.get("rounds", row["token"]).get("stopped")

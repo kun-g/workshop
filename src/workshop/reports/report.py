@@ -112,7 +112,10 @@ def overview(log, *, everything=False, states=(), targets=(), flows=(), rules=No
              for name in configured_targets
              if (control := log.get("controls", name) or {}).get("paused") and control.get("reason")
              and (not targets or name in targets)]
-    return {"managers": read_managers(log.path.parent.resolve()), "rows": picked, "total": count, "ended": count - sum(r["state"] not in ENDED for r in rows),
+    isolated_sources = [control for control in log.all('controls', where=('broken', True))
+                        if control['id'].startswith('@source:') and (not targets or control['target'] in targets)]
+    return {"managers": read_managers(log.path.parent.resolve()), "rows": picked, "isolated_sources": isolated_sources,
+            "total": count, "ended": count - sum(r["state"] not in ENDED for r in rows),
             "hidden": count - len(picked), "everything": everything, "filtered": filtered, "holds": holds,
             "waits": [w for w in waiting_records(log, rules, plugins, cache=wait_cache) if w['item'] in ids],
             "filters": {"states": list(states), "targets": list(targets), "flows": list(flows)}}
@@ -147,6 +150,7 @@ def status(log, **options):
         if r["state"] == "卡住":
             advice = one_line(r["advice"]) + retry_note(r)
             lines.append("\t".join((r["id"], r["stage"], one_line(r["reason"]), advice)))
+    lines.extend(source_isolation_line(c) for c in view['isolated_sources'])
     for heading, snapshot in sections(view).items():
         lines.extend([heading, *snapshot['lines']])
         if heading == '等你':
@@ -158,6 +162,12 @@ def status(log, **options):
 
 def one_line(text):
     return " ".join(str(text).split())
+
+
+def source_isolation_line(control):
+    next_step = f"下次自动重试 {control['retry_at']}" if control['auto_retry'] else '等项目经理'
+    return (f"{control['target']} 来源 {control['plugin']} 自 {control['since']} 隔离，"
+            f"{next_step}。最后错误：{one_line(control['reason'])}")
 
 
 def retry_note(row):
