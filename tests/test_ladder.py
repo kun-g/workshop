@@ -177,7 +177,7 @@ def test_ten_failures_hand_over_to_the_next_level_instead_of_blocking(engine):
     assert state["takeover"] == "mid" and state["handovers"] == 1
     assert state["failures"] == 0 and state.get("gate_count", 0) == 0
     assert current(engine)["executor"] == "mid"
-    assert handovers(engine) == [{"from": "weak", "from_level": 1, "to": "mid", "to_level": 2, "cause": "failures",
+    assert handovers(engine) == [{"ladder": "", "from": "weak", "from_level": 1, "to": "mid", "to_level": 2, "cause": "failures",
                                   "reason": "连续 10 次没跑成", "skipped": []}]
     # 接手的执行者也是 10 次。
     fail_rounds(engine, 9)
@@ -386,7 +386,8 @@ def test_handover_fact_fields_and_why_and_status_lines(engine):
     reach(engine, "执行")
     gate_rounds(engine, 3)
     [record] = handovers(engine)
-    assert set(record) == {"from", "from_level", "to", "to_level", "cause", "reason", "skipped"}
+    assert set(record) == {"ladder", "from", "from_level", "to", "to_level", "cause", "reason", "skipped"}
+    assert record["ladder"] == ""
     text = why(engine.log, "alpha:one")
     assert f"阶梯换人 weak（第 1 级）→ top（第 3 级），原因 gate：{record['reason']}；跳过：第 2 级" in text
     engine.submit(current(engine)["token"], {"outcome": "failed", "summary": "不成"})

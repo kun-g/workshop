@@ -226,12 +226,12 @@ def finish(engine, row):
         takeover = None
         if evidence.unable:
             # 流程判这个执行者做不下来了：同样先问阶梯；决定好了才让流程发外部消息（换人还是卡住，措辞不同）。
-            if ladder.levels(engine.rules.data) and ladder.writing(evidence.handoff):
+            if ladder.configured(engine.rules.data) and ladder.writing(evidence.handoff):
                 takeover = ladder.find(engine, item, item.get("executor"))
             if callable(getattr(engine.plugins.get(port, name), "unable_decided", None)):
                 engine.call(port, name, "unable_decided", item, evidence, target, takeover,
                             identity=[item["id"], "unable", token, takeover and takeover["to"]], item=item["id"])
-        elif not program and ladder.levels(engine.rules.data) and ladder.writing(row["stage"]):
+        elif not program and ladder.configured(engine.rules.data) and ladder.writing(row["stage"]):
             gate_reason = "停下必须登记工序、送回或等你" if missing_leave else decision.reason
             if ((receipt.outcome == "failed" and item["failures"] + 1 >= ladder.FAILURE_LIMIT)
                     or gate_count(item, row, gate_reason)[2] >= ladder.gate_limit(item)):
