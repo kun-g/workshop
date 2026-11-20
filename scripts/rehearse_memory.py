@@ -340,7 +340,9 @@ def main():
         print("--- 重启守护进程后记忆库仍可读 ---")
         restart_daemon(process, cli, env, root, log)
         process = restarted[0]
-        show(cli, env, "memory", "list", "--kind", "instruction")
+        # 第一轮那条指示在做梦前已被纠正下线：先列有效条目（做梦写的），再连纠正下线的一起列。
+        show(cli, env, "memory", "list")
+        show(cli, env, "memory", "list", "--include-corrected")
         print("--- 做梦：真实模型写入和被拒候选（来源事实来自真实轮次）---")
         print("见上一段 `workshop memory dream` 的原样输出：written/rejected 分别列出。")
         print("--- 第二轮派活说明里的记忆一节（原样，收到即存下的副本）---")
