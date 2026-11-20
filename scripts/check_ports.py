@@ -17,7 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 PROTOCOLS = {name: getattr(ports, cls) for name, cls in {
     'source': 'Source', 'flow': 'Flow', 'executor': 'Executor',
     'taskhome': 'TaskHome', 'selector': 'Selector', 'wait': 'WaitService',
-    'driver': 'Driver', 'plugins': 'Plugins',
+    'driver': 'Driver', 'plugins': 'Plugins', 'memory': 'Memory',
 }.items()}
 
 

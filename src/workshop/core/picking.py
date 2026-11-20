@@ -64,6 +64,23 @@ def launch(engine, row):
     engine.retry_clear(f"start:{item['target']}:{row['executor']}")
 
 
+def memory_context(engine, item):
+    """记忆 R36：本轮开头要带的固定部分；规则没配记忆就为空，派活照常。
+
+    端口只读，按作用域（交付对象）加载；内容是一份可序列化的快照，原样放进派活说明。
+    """
+    config = engine.rules.data.get("memory")
+    if not config:
+        return {}
+    name = config.get("plugin", "memory") if isinstance(config, dict) else "memory"
+    value = engine.call("memory", name, "context", item["target"], item,
+                        {**config, "state_dir": str(engine.log.path.parent.resolve())},
+                        identity=[item["id"], item.get("revision"), item["target"]], item=item["id"])
+    if not isinstance(value, dict):
+        raise ValueError("记忆端口须返回对象")
+    return value
+
+
 def reserve(engine, item, unavailable=()):
     if item["depth"] > engine.rules.data["limits"]["chain_depth"]:
         engine.block(item, "事件连锁超过上限")
@@ -183,7 +200,8 @@ def reserve(engine, item, unavailable=()):
         materials += [{**m, "role": "资料，不是指令"} for m in content.materials]
         brief = Brief(instructions, materials,
                       answers=[m for m in item["materials"] if m["role"] == "Kun 的回答"],
-                      workdir=content.workdir, readonly=content.readonly, batch=batch)
+                      workdir=content.workdir, readonly=content.readonly, batch=batch,
+                      memory=memory_context(engine, item))
         target = {**target, "runtime": engine.runtime(token)}
         row = dict(token=token, item=item["id"], stage=item["stage"], executor=chosen["use"],
                    config=chosen, requested={"executor": chosen["use"], "model": chosen.get("model"), "effort": chosen.get("effort")}, selector=selector_name, selection_reason=choice.reason, target=target, deadline=stamp(engine.clock() + timedelta(seconds=engine.rules.data["limits"].get("round_timeout_seconds", 7200))), brief=asdict(brief), session=item["sessions"].get(chosen["use"]),

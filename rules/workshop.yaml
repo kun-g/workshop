@@ -120,6 +120,10 @@ targets:
         triggers: [{source: main_branch, when: {kind: ahead}, action: ready}]
         scheduled_release_state_dir: ~/.local/state/workshop
         stages: [证据, 交付, 验收, 收尾]
+      # 记忆 R36：每周做梦、每周备份由 R34 到点开活，走这个程序流程；外部入口不建活。
+      memory:
+        triggers: []
+        stages: [接单, 执行, 收尾]
       watch_updates:
         triggers:
           - {source: watch_updates, when: {resume: true}, action: rework}
@@ -355,6 +359,22 @@ skip_ask:
 
 # 阶段可单独指定候选；省略时沿用 writer/reviewer/acceptor。
 stage_executors: {}
+
+# 记忆 R36：独立 memory.db，每轮开头按作用域加载；每周做梦、每周备份登记成 R34 周期任务。
+memory:
+  path: memory.db
+  # 备份必须在状态目录之外；资料地图登记的就是这里。留空表示状态目录旁的同名 -memory-backups。
+  backup_dir: ~/.local/state/workshop-memory-backups
+  # 只读打开介入点发件表，不 import 介入点插件。
+  intervention_db: ~/.local/state/workshop-intervention/intervention.db
+  budgets: {max_entries: 40, max_chars: 6000, reported_recent: 10}
+  # 做梦和等价判定用真实执行者模型：留空表示用本地确定性实现（测试和没配模型时用）。
+  # 配了就按脚本起模型，例如：
+  # dreamer: {script: ~/workspace/runtime/repos/workshop/scripts/memory_dreamer.py,
+  #           argv: [/opt/homebrew/bin/claude, --model, <模型>], env: {ANTHROPIC_BASE_URL: ..., ANTHROPIC_AUTH_TOKEN: ...}}
+  dreamer: {script: "", argv: [], env: {}, timeout: 120}
+  dream: {every: weekly, weekday: mon, at: "04:00", zone: Asia/Shanghai}
+  backup: {every: weekly, weekday: mon, at: "05:00", zone: Asia/Shanghai}
 
 # 状态页在本机的地址：车间主进程在这里只读提供 status.html（只监听本机），介入点卡片的按钮打开它。
 status_page: http://127.0.0.1:8765/status.html

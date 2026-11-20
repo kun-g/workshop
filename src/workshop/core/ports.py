@@ -187,6 +187,35 @@ class Executor(Protocol):
         ...
 
 
+class Memory(Protocol):
+    """派活说明里的记忆一节；实现放在插件里，独立于事实表存储。"""
+    def context(self, scope: str, item: dict, config: dict) -> dict:
+        """只读：本轮开头要带的记忆（用户指示、未结案进度、笔记索引、近期告知）。
+
+        受 config 里预算的条数和字符约束，超限按 用户指示 > 未结案进度 > 近期告知
+        截断，用户指示不能被挤出；笔记只给索引（id 和摘要），正文按需经查看命令读取。
+        返回对象里每项至少带 id 和内容；不无界全量返回。"""
+        ...
+
+
+class OutboxRead(Protocol):
+    """只读发件状态端口；核心只定义接口，实现在插件里以 sqlite mode=ro 打开。"""
+    def messages(self) -> list[dict]:
+        """只读返回发件行，至少含 status、item、items 三个字段；不申请许可、不发送、不写库。"""
+        ...
+
+
+class FactsRead(Protocol):
+    """只读事实表端口；核心只定义接口，实现在插件里以 sqlite mode=ro 打开。"""
+    def since(self, seq: int, limit: int = 500) -> list[dict]:
+        """只读返回序号大于 seq 的事实，按序号升序；字段含 seq、kind、source、item、body、at。"""
+        ...
+
+    def exists(self, seqs: list[int]) -> dict[int, bool]:
+        """只读核对这些事实序号在不在。"""
+        ...
+
+
 class TaskHome(Protocol):
     """可选工单端口，第一版不配置。"""
     def open(self, key: str, item: dict, target: dict) -> str: ...
