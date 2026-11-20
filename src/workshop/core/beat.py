@@ -11,7 +11,7 @@ import time
 
 from .jobs import Pending
 from .models import stamp
-from . import rounds, relations, waits, hooks, activity, managers, faults
+from . import batching, rounds, relations, waits, hooks, activity, managers, faults
 
 SLOW_TICK_MS = 100
 SLOW_ITEM_MS = 5
@@ -104,6 +104,10 @@ def advance(engine, item):
     if item.get("program"):
         engine.finish(item["program"])
         return
+    if item["state"] == "等资料" and not item.get("plugin_blocked") and batching.waiting(item):
+        # 核心 R33：上一批定下之后到的事件还没处理，等同来源有了新事件，重新核对。
+        engine.change(item, state="空闲", next="来源有更新，重新核对", blocked_by="")
+        item = engine.log.get("items", item["id"])
     if (item["pending_rework"] and item["depth"] <= engine.rules.data["limits"]["chain_depth"]
             and not any(r["item"] == item["id"] for r in engine.active())):
         if engine.jobs and item.get("workdir") and not item.get("workdir_released"):

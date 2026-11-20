@@ -94,6 +94,10 @@ class Log:
     def item_count(self):
         return self.db.execute('SELECT count(*) FROM items').fetchone()[0]
 
+    def fact_at(self, seq):
+        row = self.db.execute("SELECT at FROM facts WHERE seq=?", (seq,)).fetchone()
+        return row[0] if row else None
+
     def event_at(self, seq):
         row = self.db.execute("SELECT body FROM facts WHERE seq=? AND kind='event'", (seq,)).fetchone()
         return json.loads(row[0]) if row else None

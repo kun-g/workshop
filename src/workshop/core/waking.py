@@ -3,6 +3,8 @@ from datetime import datetime
 from pathlib import Path
 from inspect import signature
 
+from . import batching
+
 
 def wake_paths(engine):
     """可选端口只返回本地路径；路径变动只使声明者的查询结果过期。"""
@@ -66,9 +68,11 @@ def wait_timeout(engine):
             include(control.get("at"))
     for row in engine.active():
         include(row.get("deadline"))
+    window = engine.batch_window()
     for item in engine.log.open_items() + engine.log.release_items():
         include(item.get("retry_at"))
         include(item.get("release_at"))
+        include(batching.due(item, now, window))  # 合批窗口到点就醒（核心 R33）。
     for row in engine.log.all("waits"):
         if row["state"] in ("waiting", "resumed"):
             include(row.get("next_at"))

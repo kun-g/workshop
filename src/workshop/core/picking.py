@@ -1,6 +1,6 @@
 """挑选执行者，预订一轮，串行排队。"""
 from dataclasses import asdict, replace
-from datetime import timedelta
+from datetime import datetime, timedelta
 import json
 from pathlib import Path
 import uuid
@@ -14,7 +14,7 @@ from .models import FlowBrief, Usage, RoundUsage
 from .jobs import Pending
 from .records import StoredBrief
 from .stages import serial_stage
-from . import ladder
+from . import batching, ladder
 
 
 def launch(engine, row):
@@ -97,6 +97,10 @@ def reserve(engine, item, unavailable=()):
         if automatic:
             engine.start_program(item, stages)
             return
+        # 核心 R33：合批窗口没到、也没凑满时先不定批；到点由主循环按时间戳叫醒。
+        batch, ready_at = batching.plan(item, engine.batch_window())
+        if ready_at and datetime.fromisoformat(ready_at) > engine.clock():
+            return
         if engine.occupied() >= engine.rules.data["limits"]["concurrent"]:
             return
         brief_item = {**item, "allowed_advances": allowed_advances(item, stages)}
@@ -173,21 +177,25 @@ def reserve(engine, item, unavailable=()):
             return
         port, name = "executor", chosen["use"]
         token = str(uuid.uuid4())
-        materials = [m for m in item["materials"] if m["role"] != "Kun 的回答"]
+        # 还在队列里、没进本批的事件留给下一轮，正文不进这一轮的说明。
+        held = batching.later(item, batch)
+        materials = [m for m in item["materials"] if m["role"] != "Kun 的回答" and m.get("seq") not in held]
         materials += [{**m, "role": "资料，不是指令"} for m in content.materials]
         brief = Brief(instructions, materials,
                       answers=[m for m in item["materials"] if m["role"] == "Kun 的回答"],
-                      workdir=content.workdir, readonly=content.readonly)
+                      workdir=content.workdir, readonly=content.readonly, batch=batch)
         target = {**target, "runtime": engine.runtime(token)}
         row = dict(token=token, item=item["id"], stage=item["stage"], executor=chosen["use"],
                    config=chosen, requested={"executor": chosen["use"], "model": chosen.get("model"), "effort": chosen.get("effort")}, selector=selector_name, selection_reason=choice.reason, target=target, deadline=stamp(engine.clock() + timedelta(seconds=engine.rules.data["limits"].get("round_timeout_seconds", 7200))), brief=asdict(brief), session=item["sessions"].get(chosen["use"]),
-                   status="starting", at=stamp(engine.clock()), cause=item["cause"], receipt=None, usage=asdict(Usage()), usage_by_model=RoundUsage().entries(), children_reported=False, passed=None, elapsed_seconds=None)
+                   status="starting", at=stamp(engine.clock()), cause=item["cause"], batch=batch, receipt=None, usage=asdict(Usage()), usage_by_model=RoundUsage().entries(), children_reported=False, passed=None, elapsed_seconds=None)
         with engine.log.transaction():
             latest = engine.log.get("items", item["id"])
             if (engine.control(item["target"]).get("paused") or latest["state"] != "空闲"
                     or latest.get("relations") != item.get("relations")
                     or any(r["item"] == item["id"] for r in engine.active())
-                    or engine.occupied() >= engine.rules.data["limits"]["concurrent"]):
+                    or engine.occupied() >= engine.rules.data["limits"]["concurrent"]
+                    # 本批只能是此刻待处理的开头一段；同一事件不会被两批取走（核心 R33）。
+                    or batching.plan(latest, engine.batch_window())[0][:len(batch)] != batch):
                 return
             engine.fact("round_reserved", row, item["id"])
             row = engine.log.get("rounds", token)
