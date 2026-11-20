@@ -225,7 +225,8 @@ def configuration():
                 executors={"writer": {"use": "writer", "family": "a", "billing": "subscription"},
                            "reviewer": [{"use": "writer", "family": "a", "billing": "subscription"}, {"use": "reviewer", "family": "b", "billing": "subscription"}],
                            "acceptor": [{"use": "writer", "family": "a", "billing": "subscription"}, {"use": "acceptor", "family": "c", "billing": "subscription"}]},
-                limits={"concurrent": 2, "chain_depth": 8}, selector="ordered", taskhome="home",
+                # 合批窗口（核心 R33）在 test_batching.py 用默认 500ms 测；别的测试不以它为题，立即取。
+                limits={"concurrent": 2, "chain_depth": 8, "batch_window_ms": 0}, selector="ordered", taskhome="home",
                 ask_first=["对外发消息", "花订阅以外的钱"], skip_ask=["自己的交付"])
 
 

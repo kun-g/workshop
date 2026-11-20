@@ -2,6 +2,7 @@
 import json
 from datetime import datetime
 from .records import compact, compact_history
+from . import batching
 
 TABLES = ("items", "rounds", "cards", "timers", "controls", "cursors", "deferred", "effects", "aliases", "waits", "restarts")
 
@@ -95,9 +96,19 @@ def evolve(db, fact: dict) -> None:
                 item["materials"].extend(held(item_id, fact["seq"]))
         item["materials"].append({"seq": fact["seq"], "source": fact["source"],
                                   "body": body["body"], "ext_id": body["ext_id"], "role": "资料，不是指令"})
+        # 先按到达时活的状态记待处理，再应用动作（核心 R33）；归件来的按原事件到达时刻算窗口。
+        batching.enqueue(item, fact["seq"], body, body.get("arrived", fact["at"]))
         item["depth"] = max(item["depth"], body["depth"])
         item["cause"] = fact["seq"]
         apply_action(item, body["action"])
+        put("items", item_id, item)
+    elif kind == "batch_done":
+        item = get("items", item_id)
+        batching.consume(item, body["seqs"])
+        put("items", item_id, item)
+    elif kind == "event_skipped":
+        item = get("items", item_id)
+        batching.skip(item, body["seq"])
         put("items", item_id, item)
     elif kind == "item_abandoned":
         # 放弃的事实序号：之前收到的返工、放行即使之后才分类或补放，也不再让它回来。
@@ -151,6 +162,8 @@ def evolve(db, fact: dict) -> None:
         put("rounds", body["token"], compact(body, fact["seq"]))
         item = get("items", item_id)
         item.update(state="跑着", next="等回执", blocked_by="", round=body["token"])
+        if "batch" in body:
+            item["inflight"] = body["batch"]
         item["revision"] += 1
         put("items", item_id, item)
     elif kind == "round_changed":

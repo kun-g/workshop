@@ -85,7 +85,7 @@ def rules():
         executors={"writer": {"use": "writer", "family": "a", "billing": "subscription"},
                    "reviewer": [{"use": "reviewer", "family": "b", "billing": "subscription"}],
                    "acceptor": [{"use": "acceptor", "family": "c", "billing": "subscription"}]},
-        limits={"concurrent": 3, "chain_depth": 8}, selector="ordered",
+        limits={"concurrent": 3, "chain_depth": 8, "batch_window_ms": 0}, selector="ordered",
         ask_first=["对外发消息"], skip_ask=[]))
 
 

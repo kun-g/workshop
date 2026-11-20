@@ -152,6 +152,8 @@ def classify_events(engine):
                           "event_seq": entry["event_seq"], **note,
                           **({"event": {**asdict(event), "action": action,
                                         "release_gate": entry.get('release_gate', False),
+                                        # 合批窗口从事件进车间算起，不从归件完算（核心 R33、R27）。
+                                        "arrived": engine.log.fact_at(entry["event_seq"]),
                                         "initial_stage": initial_stage(target)}} if entry.get("defer_creation") else {})}, event.item_id)
             engine.retry_clear(entry["id"])
         except Pending:

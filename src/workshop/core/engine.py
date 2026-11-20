@@ -11,7 +11,7 @@ from .ports import Plugins
 from .models import stamp, utcnow
 from .records import defer_items, materialize
 from .stages import serial_stage
-from . import beat, faults, holding, homes, hooks, intake, picking, rounds, timing, waking, workdirs, waits
+from . import batching, beat, faults, holding, homes, hooks, intake, picking, rounds, timing, waking, workdirs, waits
 
 
 def finder(log, target):
@@ -240,6 +240,20 @@ class Engine:
 
     def active(self):
         return self.log.all("rounds", unless=("status", "ended"))
+
+    def batch_window(self):
+        """合批窗口毫秒数（核心 R33）：规则 limits.batch_window_ms，默认 500；单个事件可由来源改小。"""
+        return self.rules.data["limits"].get("batch_window_ms", batching.WINDOW_MS)
+
+    def skip_event(self, item_id, seq, reason):
+        """把一件活上待处理的事件标记为跳过：只留痕，不进任何批次（核心 R33 判据六）。"""
+        if not isinstance(reason, str) or not reason.strip():
+            raise ValueError("跳过事件要写明原因")
+        with self.log.transaction():
+            item = self.log.get("items", item_id)
+            if item is None or not any(e["seq"] == seq for e in item.get("queue") or []):
+                raise ValueError(f"{item_id} 上没有待处理的事件 {seq}")
+            self.fact("event_skipped", {"seq": seq, "reason": reason}, item_id)
 
     def occupied(self):
         return sum(not row.get("stopped") for row in self.active())

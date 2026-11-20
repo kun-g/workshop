@@ -243,6 +243,9 @@ def finish(engine, row):
             engine.fact("program_result" if program else "round_result", {"token": token, "stage": row["stage"], "outcome": receipt.outcome,
                       "summary": summary, "evidence": receipt.evidence, "reason": evidence.reason},
                       item["id"], source="result", ext_id=token)
+            if not program and receipt.outcome != "failed" and row.get("batch"):
+                # 核心 R33：这一轮没失败才把它带上的事件标成已处理；失败按同一批重跑。
+                engine.fact("batch_done", {"token": token, "seqs": row["batch"]}, item["id"])
             for later in receipt.later:
                 engine.timer(item, f'{token}:{later["key"]}', later["at"], later["about"], base=received_at)
             # 最后一个程序阶段的 leave 是自动补的收尾登记，不是后续工序。

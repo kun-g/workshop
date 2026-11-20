@@ -30,6 +30,10 @@ def due(value: str, now: datetime) -> str:
     return stamp(datetime.fromisoformat(value))
 
 
+# 合批窗口上限：窗口再加一拍处理也要落在核心 R27 的 1 秒之内。
+BATCH_WINDOW_MAX_MS = 500
+
+
 @dataclass(frozen=True)
 class Event:
     source: str
@@ -44,6 +48,9 @@ class Event:
     flow_default: bool = False
     action_id: str = ""
     previous_ids: list[str] = field(default_factory=list)
+    # 核心 R33：来源可把合批窗口设为 0（立即取），不设用规则的默认窗口；不可攒批的事件单独一轮。
+    batch_window_ms: int | None = None
+    batchable: bool = True
 
     @property
     def item_id(self) -> str:
@@ -61,6 +68,9 @@ class Event:
             raise ValueError("旧事件标识须为字符串列表")
         if type(self.depth) is not int or self.depth < 0 or self.action not in ("update", "rework", "ready"):
             raise ValueError("事件深度或动作无效")
+        if (self.batch_window_ms is not None and not (type(self.batch_window_ms) is int and 0 <= self.batch_window_ms <= BATCH_WINDOW_MAX_MS)
+                or type(self.batchable) is not bool):
+            raise ValueError("合批窗口须为 0 到 500 毫秒的整数，能否攒批须为布尔值")
 
 
 @dataclass(frozen=True)
@@ -160,6 +170,8 @@ class Brief:
     answers: list[dict] = field(default_factory=list)
     workdir: str | None = None
     readonly: bool = False
+    # 核心 R33：这一轮带上的事件序号，按到达顺序；正文在 materials 里按 seq 对应。
+    batch: list[int] = field(default_factory=list)
 
 
 @dataclass(frozen=True)

@@ -1,7 +1,8 @@
 """唯一规则文件的读取与校验。"""
 from dataclasses import dataclass
 from pathlib import Path
-from .models import STAGES, DEFAULT_BRIEF_MAX_CHARS
+from .models import STAGES, DEFAULT_BRIEF_MAX_CHARS, BATCH_WINDOW_MAX_MS
+from .batching import WINDOW_MS as BATCH_WINDOW_MS
 from .flows import configured, entries as flow_entries, validate as validate_flows
 from . import ladder
 import yaml
@@ -43,6 +44,9 @@ class Rules:
         if retired:
             # 介入点 R13：消息只经介入点服务的送达命令，不再有核心通道和通知开关。
             raise ValueError(f"{'、'.join(retired)} 已退役：消息只经介入点服务送达")
+        window = limits.get("batch_window_ms", BATCH_WINDOW_MS)
+        if type(window) is not int or not 0 <= window <= BATCH_WINDOW_MAX_MS:
+            raise ValueError(f"batch_window_ms 必须是 0 到 {BATCH_WINDOW_MAX_MS} 的整数毫秒")
         if type(limits.get("round_timeout_seconds", 7200)) is not int or limits.get("round_timeout_seconds", 7200) <= 0:
             raise ValueError("每轮期限必须为正整数秒")
         for name, target in data["targets"].items():
