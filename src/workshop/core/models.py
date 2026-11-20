@@ -281,6 +281,8 @@ class Brief:
     readonly: bool = False
     # 核心 R33：这一轮带上的事件序号，按到达顺序；正文在 materials 里按 seq 对应。
     batch: list[int] = field(default_factory=list)
+    # 记忆 R36：本轮开头按作用域加载的固定部分（用户指示、未结案进度、笔记索引、近期告知）。
+    memory: dict = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

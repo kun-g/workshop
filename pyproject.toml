@@ -21,6 +21,10 @@ experiment = "workshop.plugins.selectors.experiment:make_selector"
 issue_delivery = "workshop.plugins.issue_delivery:make_flow"
 scheduled_release = "workshop.plugins.scheduled_release:make_flow"
 watch_updates = "workshop.plugins.watch_updates:make_flow"
+memory = "workshop.plugins.memory:make_flow"
+
+[project.entry-points."workshop.memory"]
+memory = "workshop.plugins.memory.port:make_memory"
 
 [project.entry-points."workshop.source"]
 github = "workshop.plugins.sources.github:make_source"

@@ -108,6 +108,33 @@ def parser():
     schedule_add.add_argument("--about", default="", help="开活时带给流程的说明")
     schedule_commands.add_parser("list", help="只读列出周期任务")
     schedule_commands.add_parser("disable", help="停用一条周期任务；之后到点不再开活").add_argument("schedule")
+    memory = commands.add_parser("memory", help="记忆 R36：写入、查看、纠正、做梦、备份和恢复；不写主事实表")
+    memory_commands = memory.add_subparsers(dest="memory_command", required=True)
+    memory_add = memory_commands.add_parser("add", help="轮内写一条记忆；必须带本轮轮次令牌和真实来源事实")
+    memory_add.add_argument("--token", help="本轮轮次令牌（也认 WORKSHOP_ROUND_TOKEN）")
+    memory_add.add_argument("--kind", required=True, choices=("instruction", "note", "reported", "progress"),
+                             help="instruction 用户指示、note 用户笔记、reported 已告知、progress 任务进度")
+    memory_add.add_argument("--scope", default="*", help="作用域，默认 *（所有活）")
+    memory_add.add_argument("--claim", required=True, help="说法正文")
+    memory_add.add_argument("--summary", default="", help="摘要；笔记索引显这个")
+    memory_add.add_argument("--source-fact-seqs", required=True, help="来源事实序号，逗号分隔；必须是真实存在的事实")
+    memory_add.add_argument("--item", help="进度对应的活号")
+    memory_add.add_argument("--state", help="进度状态，例如 未结案、已结案")
+    memory_show = memory_commands.add_parser("show", help="按 id 读出记忆正文（开头加载只给笔记索引）")
+    memory_show.add_argument("id")
+    memory_list = memory_commands.add_parser("list", help="列出有效记忆（被纠正的不在）")
+    memory_list.add_argument("--kind", choices=("instruction", "note", "reported", "progress"))
+    memory_list.add_argument("--scope")
+    memory_list.add_argument("--include-corrected", action="store_true", help="连被纠正下线的一起列")
+    memory_correct = memory_commands.add_parser("correct", help="负向纠正：追加纠正行，原条目立即下线")
+    memory_correct.add_argument("id")
+    memory_correct.add_argument("--phrase", required=True, help="等价判定用的说法")
+    memory_correct.add_argument("--watermark", help="纠正水位（来源事实序号），默认当前事实表最大序号")
+    memory_commands.add_parser("dream", help="手动做梦：只写派生层；没有新事实就什么都不写")
+    memory_commands.add_parser("backup", help="备份 memory.db（路径在状态目录之外）")
+    memory_restore = memory_commands.add_parser("restore", help="整体恢复 memory.db：默认取最新备份")
+    memory_restore.add_argument("--backup", type=Path, help="指定备份文件")
+    memory_commands.add_parser("reported", help="按介入点真实送达状态，把新送达的写进已告知")
     commands.add_parser("pause").add_argument("target")
     resume = commands.add_parser("resume")
     resume.add_argument("target")
@@ -186,6 +213,63 @@ def read_command(args):
         return 2
 
 
+def register_memory_schedules(engine, state_dir):
+    """记忆 R36：每周做梦、每周备份登记成 R34 周期任务；已登记的不重开，停用的不复活。"""
+    from .plugins.memory import service as memory_service
+    for options in memory_service.schedule_options(state_dir, engine.rules.data):
+        if engine.log.get("controls", schedules.PREFIX + options["schedule"]):
+            continue
+        try:
+            schedules.add(engine, options["schedule"], target=options["target"], flow=options["flow"],
+                          title=options["title"], every=options["every"], at=options["at"],
+                          weekday=options["weekday"], zone=options["zone"], about=options["about"])
+        except (ValueError, KeyError) as exc:
+            # 规则里没有这个交付对象或流程：记下来，不拦住守护进程启动。
+            engine.fact("memory_schedule_failed", {"schedule": options["schedule"], "error": str(exc)})
+
+
+def memory_command(args):
+    """记忆 R36 的命令行；直接调插件业务，不经核心状态库写入（memory.db 单独一份）。"""
+    from .plugins.memory import service
+    target = {"runtime": {"state_dir": str(Path(args.state_dir).expanduser().resolve())}}
+    try:
+        memory = service.MemoryService()
+        if args.memory_command == "add":
+            seqs = [int(v) for v in args.source_fact_seqs.split(",") if v.strip()]
+            row = memory.add(kind=args.kind, scope=args.scope, claim=args.claim, summary=args.summary,
+                             source_fact_seqs=seqs, item=args.item, state=args.state,
+                             token=args.token or os.environ.get("WORKSHOP_ROUND_TOKEN"), target=target)
+            print(f"已记下 {row['id']}（{row['kind']}，批次 {row['batch']}）")
+        elif args.memory_command == "show":
+            row = memory.show(args.id, target=target)
+            print(json.dumps(row, ensure_ascii=False, indent=1))
+        elif args.memory_command == "list":
+            lines = ["id\t种类\t作用域\t状态\t生成批次\t来源事实\t说法"]
+            for row in memory.entries(target=target, kind=args.kind, scope=args.scope,
+                                      include_corrected=args.include_corrected):
+                lines.append("\t".join(str(row.get(key) or "—") for key in
+                                        ("id", "kind", "scope", "state", "batch")) + "\t"
+                             + ",".join(str(v) for v in row["source_fact_seqs"]) + "\t" + row["claim"])
+            print("\n".join(lines))
+        elif args.memory_command == "correct":
+            watermark = int(args.watermark) if args.watermark else None
+            row = memory.correct(args.id, args.phrase, watermark=watermark, target=target)
+            print(f"已纠正 {args.id}：追加 {row['id']}，水位 {row['corrected_seq']}；下一轮不再加载 {args.id}")
+        elif args.memory_command == "dream":
+            print(json.dumps(memory.dream(target=target), ensure_ascii=False, indent=1))
+        elif args.memory_command == "backup":
+            print(json.dumps(memory.backup(target=target), ensure_ascii=False))
+        elif args.memory_command == "restore":
+            print(json.dumps(memory.restore(target=target, backup=args.backup), ensure_ascii=False))
+        elif args.memory_command == "reported":
+            written = memory.record_reported(target=target)
+            print(f"新增已告知 {len(written)} 条（只认 delivered、folded 的送达）")
+        return 0
+    except (ValueError, TypeError, KeyError, OSError, sqlite3.Error) as exc:
+        print(f"车间：{exc}", file=sys.stderr)
+        return 2
+
+
 def main(argv=None):
     args = parser().parse_args(argv)
     if args.command == "compact-managers":
@@ -221,6 +305,8 @@ def main(argv=None):
         except (ValueError, TypeError, KeyError, OSError, sqlite3.Error, OverflowError) as exc:
             print(f"车间：{exc}", file=sys.stderr)
             return 2
+    if args.command == "memory":
+        return memory_command(args)
     if args.command in ("status", "why", "usage", "reports") or getattr(args, "schedule_command", None) == "list":
         return read_command(args)
     if args.command == "executors":
@@ -286,6 +372,9 @@ def main(argv=None):
                 jobs = Jobs(args.state_dir / "jobs", [sys.executable, "-m", "workshop.cli", "--state-dir", state_dir, "job"])
             engine = Engine(log, rules, Registry(), jobs=jobs,
                             daemon=process_identity(os.getpid()) if args.command == "run" else None)
+            if args.command == "run" and not args.once:
+                # 记忆 R36：每周做梦、每周备份登记成 R34 周期任务；已登记的不重开。
+                register_memory_schedules(engine, args.state_dir)
             if args.command in ("event", "receipt"):
                 data = json.loads(args.json if args.json is not None else args.file.read_text() if args.file else sys.stdin.read())
                 added = engine.ingest(Event(**data), round_token=os.environ.get("WORKSHOP_ROUND_TOKEN"), ingress="external") if args.command == "event" else engine.submit(args.token, data)
