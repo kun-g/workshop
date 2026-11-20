@@ -96,6 +96,10 @@ def block(engine, item, reason, plugin=False, retry_at=None, failure_key=None):
                       before_plugin_failure=saved, leave=leave)
 
 
+def source_control_key(target, name):
+    return f'@source:{target}:{name}'
+
+
 def broken(engine, target, port, name, exc, retry=None):
     """隔离一个插件（或一个交付对象的动作前提）。
 
@@ -116,6 +120,8 @@ def broken(engine, target, port, name, exc, retry=None):
         for target_name, flow in affected:
             scoped = flow is not None and 'flows' in engine.rules.data['targets'][target_name]
             key = f'@flow:{target_name}:{name}' if scoped else target_name
+            if port == 'source':
+                key = source_control_key(target_name, name)
             state = engine.control(key)
             schedule = {'target': target_name, 'plugin': name, 'port': port,
                         'reason': f'{port}/{name}: {exc}',
@@ -138,6 +144,9 @@ def broken(engine, target, port, name, exc, retry=None):
                 auto = bool(retry)
             else:
                 auto = False
+            if port == 'source':
+                # 来源隔离只关掉它自己的轮询；已有的活照常运行。
+                continue
             when = retry_at if auto else None
             # 只有没结束的活会被标卡住；不读已结束活的大正文（核心 R27）。
             for item in engine.log.open_items():
@@ -176,14 +185,18 @@ def retry_due(engine, key):
     return (engine.control(f"retry:{key}").get("at") or "") <= stamp(engine.clock())
 
 
-def retry_clear(engine, key):
+def reset_retry(engine, key, *, recovered):
     state = engine.control(f"retry:{key}")
     if state.get("count") or state.get("at") or state.get("since"):
-        if state.get("count"):
+        if recovered and state.get("count"):
             engine.fact("plugin_retry_ok", {"target": state.get("target"), "port": state.get("port"),
                                             "name": state.get("name"), "count": state.get("count")})
         engine.fact("control", {"id": f"retry:{key}", "count": 0, "at": None, "since": None,
                                 "target": None, "port": None, "name": None})
+
+
+def retry_clear(engine, key):
+    reset_retry(engine, key, recovered=True)
     # 重试成功：这一段隔离自动解除，被它卡住的活按手工 resume 同一条路恢复。
     for control in engine.log.all("controls", where=("auto_retry", True)):
         if control.get("broken") and control.get("retry_key") == key:
@@ -270,7 +283,7 @@ def clear_broken(engine, key, control, *, wake=False):
         engine.fact("control", {"id": key, "broken": False, "action_blocked": False,
                                 "auto_retry": False, "retry_at": None})
         target = control.get("target")
-        if target:
+        if target and not key.startswith('@source:'):
             restore_items(engine, target, control.get("plugin"), failure_key=key)
 
 
@@ -282,6 +295,9 @@ def wake_broken(engine):
     now = stamp(engine.clock())
     woke = False
     for control in engine.log.all("controls", where=("auto_retry", True)):
+        # 来源即使到点仍保持隔离，直到轮询成功，避免作业途中退出被误记为恢复。
+        if control['id'].startswith('@source:'):
+            continue
         if not control.get("broken") or not control.get("retry_at") or control["retry_at"] > now:
             continue
         clear_broken(engine, control["id"], control, wake=True)

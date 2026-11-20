@@ -9,7 +9,7 @@ from .models import Classification
 from .jobs import Pending
 from .flows import entries, matches
 from .stages import gate
-from .faults import RETRY_CAP_SECONDS, active_broken
+from .faults import RETRY_CAP_SECONDS, active_broken, source_control_key
 
 
 def ingest(engine, event: Event, round_token: str | None = None, *, ingress: str = "source", directed=False) -> bool:
@@ -260,9 +260,12 @@ def sources(engine):
             continue
         for name in rule.get("sources", []):
             key = f"{target}:{name}"
-            cursor = (engine.log.get("cursors", key) or {}).get("cursor")
+            control = engine.control(source_control_key(target, name))
+            if control.get('broken') and not control.get('auto_retry'):
+                continue
             if not engine.retry_due(f"source:{key}"):
                 continue
+            cursor = (engine.log.get("cursors", key) or {}).get("cursor")
             try:
                 # 身份只认交付对象：游标每次都可能变，带进身份就成了一出结果马上再拉；拉的间隔由新鲜期管。
                 batch = engine.call("source", name, "poll", engine.rules.target(target), cursor, identity=[target])
@@ -277,7 +280,7 @@ def sources(engine):
                         engine.ingest(event)
                     if batch.cursor != cursor:
                         engine.fact("cursor", {"id": key, "cursor": batch.cursor})
-                engine.retry_clear(f"source:{key}")
+                    engine.retry_clear(f"source:{key}")
             except Pending:
                 continue
             except Retryable as exc:
@@ -288,9 +291,9 @@ def sources(engine):
 
 def source_retry(engine, target, name, exc):
     """只读来源按持续时长退避；其他端口仍沿用各自的失败处理。"""
-    key = f"retry:source:{target}:{name}"
+    key = f"source:{target}:{name}"
     with engine.log.transaction():
-        state = engine.control(key)
+        state = engine.control(f"retry:{key}")
         now = engine.clock()
         since = state.get("since") if state.get("count") else None
         since = datetime.fromisoformat(since) if since else now
@@ -300,11 +303,11 @@ def source_retry(engine, target, name, exc):
         if elapsed < 1800:
             at = stamp(min(now + timedelta(seconds=delay), since + timedelta(minutes=30)))
         else:
-            # 隔离期间每小时自动重试一次；成功即解除隔离，失败的活按原状恢复。
+            # 隔离期间每小时再读一次，读成功才解除这一段隔离。
             at = stamp(now + timedelta(seconds=RETRY_CAP_SECONDS))
         engine.fact("plugin_retry", {"target": target, "port": "source", "name": name,
                   "count": count, "error": str(exc), "since": stamp(since), "elapsed_seconds": elapsed, "at": at})
-        engine.fact("control", {"id": key, "count": count, "since": stamp(since), "at": at,
+        engine.fact("control", {"id": f"retry:{key}", "count": count, "since": stamp(since), "at": at,
                                 "target": target, "port": "source", "name": name})
         if elapsed >= 1800:
             engine.broken(target, "source", name, Retryable(f"来源连续失败 {elapsed:.0f} 秒；最后错误：{exc}"),

@@ -63,6 +63,27 @@ def test_paused_targets_listed_after_stuck_with_reason():
     assert "通道待对账" not in html and "问卡" not in html
 
 
+def test_isolated_sources_have_their_own_lines_in_status_and_page(engine):
+    from workshop.reports.report import overview, status
+
+    since = '2026-11-20T01:30:00+00:00'
+    retry_at = '2026-11-20T02:30:00+00:00'
+    for target, source, retry in [('alpha', 'updates', True), ('alpha', 'main', False), ('beta', 'other', False)]:
+        engine.log.append('control', {'id': f'@source:{target}:{source}', 'target': target, 'port': 'source',
+                                      'plugin': source, 'broken': True, 'since': since, 'auto_retry': retry,
+                                      'retry_at': retry_at if retry else None, 'reason': 'error <one>\nline'})
+    text_status = status(engine.log, targets=['alpha'])
+    lines = text_status.split('卡住\n', 1)[1].splitlines()
+    auto = f'alpha 来源 updates 自 {since} 隔离，下次自动重试 {retry_at}。最后错误：error <one> line'
+    manual = f'alpha 来源 main 自 {since} 隔离，等项目经理。最后错误：error <one> line'
+    assert auto in lines and manual in lines and 'beta 来源' not in text_status
+    assert text_status.startswith('活 0 件')
+    html = page(overview(engine.log, targets=['alpha']), NOW)
+    assert auto.replace('<one>', '&lt;one&gt;') in html and '等项目经理' in html
+    engine.log.append('control', {'id': '@source:alpha:updates', 'broken': False})
+    assert auto not in status(engine.log)
+
+
 def test_one_line_per_item_title_and_next_step_with_wait_inside():
     html = page(view(row()), NOW)
     (line,) = [s for s in summaries(html) if "任务关系" in s]

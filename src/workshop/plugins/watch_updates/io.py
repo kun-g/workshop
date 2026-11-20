@@ -15,7 +15,8 @@ from urllib.request import urlopen
 
 import yaml
 
-from workshop.github_identity import run, scoped
+from workshop.core.ports import Retryable
+from workshop.github_identity import run_read as run, scoped
 from .model import SCHEMA, digest, tag_version, upstream, validate_software, version
 from .inventory import filter_scopes, upgrade_records, with_scopes
 
@@ -180,7 +181,7 @@ class IO:
         for page in range(1, 101):
             remaining = deadline - monotonic()
             if remaining <= 0:
-                raise TimeoutError('GitHub releases 读取超时，不能用部分结果判断')
+                raise Retryable(f'gh api repos/{repo}/releases 读取总预算 180 秒已用完')
             result = run(['gh', 'api', f'repos/{repo}/releases?per_page={PAGE}&page={page}'],
                          capture_output=True, text=True, timeout=min(60, remaining))
             if result.returncode:
