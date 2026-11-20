@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, timezone
 import json
 import re
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 STAGES = ("接单", "说清楚", "执行", "证据", "审查", "交付", "验收", "收尾", "观察")
 OUTCOMES = ("done", "failed", "nothing")
@@ -87,6 +88,114 @@ class Poll:
     events: list[Event]
     cursor: str | None = None
     normalized: bool = False
+
+
+EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
+WEEKDAYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
+
+
+@dataclass(frozen=True)
+class Due:
+    """一次到点扫描的结论（核心 R34）。
+
+    slot 是不晚于 now 的最近一个槽位，锚定槽位时刻、不用 now：停机后补跑、半程崩溃重扫，算出的都是同一个。
+    时刻一律写成当地时间带时区偏移的 ISO 8601，夏令时回拨时两个 01:30 也各有唯一表示，可直接做去重标识。
+    """
+    slot: str
+    due: bool       # 下一次时刻已到（没有记过下一次的算到）
+    missed: int     # 从下一次时刻到 slot 共到点几次；没到为 0
+    next_at: str    # slot 之后的下一个时刻
+
+    def ext_id(self, prefix=""):
+        return f"{prefix}:{self.slot}" if prefix else self.slot
+
+
+@dataclass(frozen=True)
+class Cadence:
+    """周期：每 N 分钟（沿 UTC epoch 切）、每天或每周的当地时刻。定时发版和用户周期任务共用这一份扫描。"""
+    every: str                  # minutes、daily、weekly
+    minutes: int = 0
+    at: str = ""                # 当地时刻 HH:MM
+    weekday: int = 0            # 每周：0 是周一
+    zone: str = "Asia/Shanghai"
+
+    def __post_init__(self):
+        if self.every not in ("minutes", "daily", "weekly"):
+            raise ValueError("周期只支持 minutes、daily、weekly")
+        if self.every == "minutes":
+            if type(self.minutes) is not int or self.minutes <= 0:
+                raise ValueError("每 N 分钟的 N 须为正整数")
+        elif not isinstance(self.at, str) or not re.fullmatch(r"([01][0-9]|2[0-3]):[0-5][0-9]", self.at):
+            raise ValueError("时刻须为 HH:MM（00:00 到 23:59）")
+        if type(self.weekday) is not int or not 0 <= self.weekday <= 6:
+            raise ValueError("星期须为 0（周一）到 6（周日）")
+        try:
+            if not isinstance(self.zone, str) or not self.zone:
+                raise ValueError(self.zone)
+            ZoneInfo(self.zone)
+        except (ZoneInfoNotFoundError, ValueError) as exc:
+            raise ValueError(f"未知时区：{self.zone!r}") from exc
+
+    def tz(self):
+        return ZoneInfo(self.zone)
+
+    def key(self, moment: datetime) -> str:
+        return moment.astimezone(self.tz()).isoformat()
+
+    def local(self, day) -> datetime:
+        """当地某天的这个时刻，换成 UTC。回拨重复的取第一次；跳时跳过的取跳过之后的第一个时刻。"""
+        hour, minute = map(int, self.at.split(":"))
+        wall = datetime(day.year, day.month, day.day, hour, minute)
+        zone = self.tz()
+        first = wall.replace(tzinfo=zone, fold=0).astimezone(timezone.utc)
+        if first.astimezone(zone).replace(tzinfo=None) == wall:
+            return first
+        moment = min(first, wall.replace(tzinfo=zone, fold=1).astimezone(timezone.utc))
+        while moment.astimezone(zone).replace(tzinfo=None) < wall:
+            moment += timedelta(minutes=1)
+        return moment
+
+    def nearby(self, moment: datetime):
+        day = moment.astimezone(self.tz()).date()
+        days = (day + timedelta(days=n) for n in range(-8, 9))
+        return [self.local(d) for d in days if self.every == "daily" or d.weekday() == self.weekday]
+
+    def floor(self, moment: datetime) -> datetime:
+        """不晚于 moment 的最近一个槽位。"""
+        if self.every == "minutes":
+            elapsed = (moment.astimezone(timezone.utc) - EPOCH) // timedelta(minutes=1)
+            return EPOCH + timedelta(minutes=elapsed // self.minutes * self.minutes)
+        return max(slot for slot in self.nearby(moment) if slot <= moment)
+
+    def after(self, moment: datetime) -> datetime:
+        """晚于 moment 的第一个槽位。"""
+        if self.every == "minutes":
+            return self.floor(moment) + timedelta(minutes=self.minutes)
+        return min(slot for slot in self.nearby(moment) if slot > moment)
+
+    def scan(self, now: datetime, next_at=None, *, last=None) -> Due:
+        """扫到点、算下一次：next_at 是记下的下一次时刻；只记了上一次槽位的传 last。读不出的时刻当没记过。"""
+        def moment(value):
+            try:
+                parsed = datetime.fromisoformat(value) if isinstance(value, str) and value else None
+            except ValueError:
+                return None
+            return parsed if parsed and parsed.tzinfo else None
+        start = moment(next_at)
+        if start is None and moment(last) is not None:
+            start = self.after(moment(last))
+        slot = self.floor(now)
+        due = start is None or start <= now
+        if not due:
+            missed = 0
+        elif start is None or start > slot:
+            missed = 1
+        elif self.every == "minutes":
+            missed = (slot - start) // timedelta(minutes=self.minutes) + 1
+        else:
+            days = (slot.astimezone(self.tz()).date() - start.astimezone(self.tz()).date()).days
+            missed = days // (1 if self.every == "daily" else 7) + 1
+        return Due(self.key(slot), due, missed, self.key(self.after(slot)))
 
 
 @dataclass(frozen=True)

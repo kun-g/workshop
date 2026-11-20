@@ -83,6 +83,8 @@ targets:
 
 `Retryable` 表示暂时读取故障。按交付对象与来源分别记录首次失败时间，间隔依次为 1、2、5、10 分钟，之后保持 10 分钟，下一次尝试不晚于首次失败后 30 分钟；达到 30 分钟的尝试仍失败才隔离，原因保留最后错误与持续时长。重启保留退避窗口，成功清掉次数、首次失败时间和下一次时间。隔离只暂停这个交付对象下该来源的轮询，每小时再读一次。同对象的其他来源、活和等待照常运行。配置或数据等代码错误立即隔离该来源，等项目经理处理。`workshop status` 单列隔离原因和重试时间，`workshop resume <交付对象>` 可解除该对象下的来源隔离。
 
+到点扫描（核心 R34）：周期来源和用户周期任务都用 `models.Cadence(every, minutes, at, weekday, zone).scan(now, next_at, last=...) -> Due(slot, due, missed, next_at)`，不另写切槽位、推进下一次或拼去重标识。`slot` 是不晚于 now 的最近一个槽位（锚定槽位，不用 now），`next_at` 是它之后的下一个时刻，都写成当地时间带时区偏移的 ISO 8601；夏令时跳过的时刻取跳过之后的第一个时刻，回拨重复的取第一次。`minutes` 沿 UTC epoch 切（定时发版 `sources.main_branch.every`，游标照旧存上一次槽位）；`daily`、`weekly` 按当地时刻。用户周期任务存在 `controls` 的 `@schedule:<任务号>`（kind=schedule，登记、停用、下一次时刻、挂起起点都只写 control 事实），每拍在来源之后扫描：到点开活写来源 `schedule`、ext_id `<任务号>:<槽位>`、动作 ready 的定向事件，从流程的第一个阶段起走；补跑策略 `coalesce_one`（默认）停机错过几次都只开一件，锚定最近错过的槽位；`skip` 对扫到时已离槽位超过 5 分钟或错过不止一次的只推进不开活，按时到点照常开活。上一件没结束记 `schedule_skipped`（来源 `schedule-skipped`），连续跳过 3 次或上一件等你（从最近一次进入算）、等授权（核心没有单独状态：卡住或回查且原因写明「授权中心」，从第一次扫到算）超过 24 小时记 `schedule_starved`（来源 `schedule-starved`，ext_id `<任务号>:<活>`，同一件挂起只一条）。上一件、跳过次数、报没报过停摆都从事实表算，不另存计数。`workshop status` 列出还挂着的停摆。
+
 三个读取 GitHub 的来源通过 `github_identity.run_read` 调用只读 gh/git 命令。在 app 和 inherit 模式下，命令超时或发生 `OSError` 都抛 `Retryable`。App 签发失败也可重试。写命令未确认完成时抛 `TargetBlocked`，需要回查后继续。
 
 ## 流程 Flow 和关口
