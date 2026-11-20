@@ -187,6 +187,29 @@ def demo_correction(env, state, seq):
                      ensure_ascii=False, indent=1))
 
 
+restarted = []
+
+
+def restart_daemon(process, cli, env, root, log):
+    """停掉守护进程再拉起来；记忆库在主事实表之外，重启后照样能读。"""
+    process.terminate()
+    process.wait(timeout=30)
+    log.close()
+    new_log = (root / "daemon-restart.log").open("w")
+    fresh = subprocess.Popen([*cli, "run"], env=env, stdout=new_log, stderr=subprocess.STDOUT, cwd=root)
+    deadline = time.monotonic() + 60
+    while time.monotonic() < deadline and fresh.poll() is None:
+        try:
+            address = json.loads((Path(env["WORKSHOP_STATE_DIR"]) / "heartbeat.json").read_text())
+            if address.get("process", {}).get("pid") == fresh.pid:
+                break
+        except (OSError, ValueError):
+            pass
+        select.select([], [], [], .1)
+    restarted[:] = [fresh]
+    print(f"重启后 daemon pid {fresh.pid}")
+
+
 def show_restore(cli, env, state):
     database = state / "memory.db"
     before = sqlite3.connect(database).execute(
@@ -311,6 +334,10 @@ def main():
         show(cli, env, "memory", "backup")
         print("--- 真实备份/恢复：删库连同 -wal/-shm，再用这次备份恢复，查完整性并读出原条目 ---")
         show_restore(cli, env, state)
+        print("--- 重启守护进程后记忆库仍可读 ---")
+        restart_daemon(process, cli, env, root, log)
+        process = restarted[0]
+        show(cli, env, "memory", "list", "--kind", "instruction")
         print("--- 做梦写入和被拒候选（mock 生成器，来源事实真实）---")
         demo_dream(env, state, seq)
         print("--- 负向纠正后再做梦：等价候选被拒 ---")
