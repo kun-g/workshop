@@ -72,15 +72,45 @@ def ingest(engine, event: Event, round_token: str | None = None, *, ingress: str
         return added
 
 
+def stale(item, event):
+    """状态覆盖类变更的版本落后于活上已记的（核心 R37 判据三）；增量类变更不带版本，永不陈旧。"""
+    current = (item or {}).get("source_version")
+    return event.overwrite is not None and current is not None and event.version < current
+
+
+def correct_state(engine, event):
+    """来源当下的快照和已记的同键撞上：不再落一行，但活上记的状态以它为准（同一秒重复变化会撞键）。"""
+    if not event.snapshot or event.overwrite is None:
+        return
+    item = engine.log.get("items", event.item_id)
+    current = (item or {}).get("source_version")
+    if item is None or current is not None and event.version < current:
+        return
+    known = item.get("source_state") or {}
+    if (current == event.version and item.get("source_snapshot")
+            and all(known.get(k) == v for k, v in event.overwrite.items())):
+        return
+    engine.fact("source_corrected", {"version": event.version, "overwrite": event.overwrite,
+                                     "ext_id": event.ext_id}, item["id"])
+
+
 def record_event(engine, event, ingress, *, namespaced=False, classify=False):
     first = initial_stage(engine.rules.target(event.target, event.flow))
     with engine.log.transaction():
         paused = engine.control(event.target).get("paused", False)
         kind = "deferred_event" if paused else "event"
-        added = engine.fact(kind, {**asdict(event), "ingress": ingress, "pending_classification": classify or ingress == "external",
+        # 陈旧的只留痕：不归件、不回拨状态、不进批次，标记为跳过（核心 R37、R33 判据六）。
+        late = not paused and stale(engine.log.get("items", event.item_id), event)
+        added = engine.fact(kind, {**asdict(event), "ingress": ingress,
+                                 "pending_classification": (classify or ingress == "external") and not late,
                                  **({'initial_stage': first} if not paused else {}),
+                                 **({'stale': True} if late else {}),
                                  **gate(ingress)}, event.item_id, source=event.source,
                                  ext_id=json.dumps([event.target, event.flow, event.ext_id], ensure_ascii=False) if namespaced else event.ext_id)
+        if not added and not paused:
+            correct_state(engine, event)
+        if late:
+            return added
         if added and not paused:
             if classify or ingress == "external":
                 engine.classification_intent(event, release_gate=ingress == 'source')
@@ -148,9 +178,10 @@ def classify_events(engine):
                 raise ValueError("流程返回了未知事件动作")
             action = engine.after_abandon(event.item_id, entry.get("received_seq", entry["event_seq"]), action)
             with engine.log.transaction():
+                late = stale(engine.log.get("items", event.item_id), event)
                 engine.fact("event_classified", {"id": entry["id"], "action": action,
                           "event_seq": entry["event_seq"], **note,
-                          **({"event": {**asdict(event), "action": action,
+                          **({"event": {**asdict(event), "action": action, **({"stale": True} if late else {}),
                                         "release_gate": entry.get('release_gate', False),
                                         # 合批窗口从事件进车间算起，不从归件完算（核心 R33、R27）。
                                         "arrived": engine.log.fact_at(entry["event_seq"]),
@@ -276,6 +307,8 @@ def sources(engine):
                     batch = engine.call('source', name, 'normalize', batch, engine.rules.target(target),
                                         lookup={**engine.scope(target), 'flows': {
                                             flow: engine.scope(target, flow) for flow in entries(rule)}})
+                # 来源换过键的，先把旧事实按新键认回，同一次变化不再落一行（核心 R37）。
+                engine.refresh_aliases({event.source for event in batch.events})
                 with engine.log.transaction():
                     for event in batch.events:
                         if event.target != target:

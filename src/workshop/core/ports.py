@@ -47,7 +47,14 @@ class Source(Protocol):
         ...
 
     def wake_paths(self, target: dict | None = None) -> list[str]:
-        """可选、纯本地查询（也兼容无参数实现）。返回文件路径；文件变化使本来源在该交付对象的 poll 缓存过期。"""
+        """可选、纯本地查询（也兼容无参数实现）。返回文件路径；文件变化使本来源在该交付对象的 poll 缓存过期。
+        推送式来源返回自己的 spool 目录：入口写进一份，守护进程立即醒来重读（核心 R37）。"""
+        ...
+
+    def rekey(self, event: dict) -> list[str]:
+        """可选、纯本地、确定。来源换过键的规矩时实现：事实表里一条旧事件（asdict 的事件正文）
+        → 同一次变化现在的来源键；拼不出返回空列表。核心据此建只从事实表算出的别名表，
+        同一次变化按新键再来时不再落一行（核心 R37）。来源名同事件的 source。"""
         ...
 
     def poll(self, target: dict, cursor: str | None) -> Poll:

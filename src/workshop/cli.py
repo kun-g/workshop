@@ -148,6 +148,9 @@ def parser():
     executor_commands.add_parser("check", help="只读地把仓库规则和部署目录完整加载、校验一遍；每个执行者一行").add_argument(
         "directory", nargs="?", type=Path, help="部署目录；默认 WORKSHOP_DEPLOYMENT 或 ~/.config/workshop")
     executor_commands.add_parser("reload", help="先校验，过了才用 launchctl kickstart -k 重启守护进程，等新进程跑通一拍")
+    webhook = commands.add_parser("webhook", help="起推送入口（核心 R37）：只听本机 loopback，验签后写 spool；"
+                                                   "规则没给这个交付对象配 webhook 来源就不起、不开端口")
+    webhook.add_argument("--target", required=True, help="交付对象")
     job = commands.add_parser("job", help="（守护进程内部用）在独立进程里跑一个作业，结果写回作业目录")
     job.add_argument("directory", type=Path)
     return result
@@ -270,8 +273,28 @@ def memory_command(args):
         return 2
 
 
+def webhook_command(args):
+    """读规则定设置后换成独立的入口进程：入口不 import 事实表，也不打开状态库（核心 R37）。"""
+    from .plugins.sources.webhook.config import settings
+    try:
+        rules = load_rules(args.rules or REPOSITORY_RULES)
+        if args.target not in rules.data["targets"]:
+            raise ValueError(f"没有交付对象 {args.target}")
+        target = rules.target(args.target)
+        if "webhook" not in target.get("sources", []) or "webhook" not in target:
+            raise ValueError(f"{args.target} 没有启用推送来源（默认关闭）：不起入口、不开端口")
+        config = settings(target)
+    except (ValueError, KeyError, OSError) as exc:
+        print(f"车间：{exc}", file=sys.stderr)
+        return 2
+    os.execv(sys.executable, [sys.executable, "-m", "workshop.plugins.sources.webhook.entry",
+                              "--config", json.dumps(config, ensure_ascii=False)])
+
+
 def main(argv=None):
     args = parser().parse_args(argv)
+    if args.command == "webhook":
+        return webhook_command(args)
     if args.command == "compact-managers":
         from .core.managers import compact
         try:

@@ -52,6 +52,13 @@ class Event:
     # 核心 R33：来源可把合批窗口设为 0（立即取），不设用规则的默认窗口；不可攒批的事件单独一轮。
     batch_window_ms: int | None = None
     batchable: bool = True
+    # 核心 R37：状态覆盖类变更（开关、负责人等）带上覆盖的字段和对象版本，版本落后于活上已记的就是陈旧，
+    # 只留痕、不回拨、不进批次；增量类变更（新评论等）不填，按自己的标识和到达顺序处理。
+    # version 是能按字符串先后比较的版本（如 ISO 时间）。snapshot 表示这是来源当下读到的快照：
+    # 和已记的同键撞上时，以它校正活上记的状态（同一秒的重复变化会撞键）。
+    version: str | None = None
+    overwrite: dict | None = None
+    snapshot: bool = False
 
     @property
     def item_id(self) -> str:
@@ -72,6 +79,10 @@ class Event:
         if (self.batch_window_ms is not None and not (type(self.batch_window_ms) is int and 0 <= self.batch_window_ms <= BATCH_WINDOW_MAX_MS)
                 or type(self.batchable) is not bool):
             raise ValueError("合批窗口须为 0 到 500 毫秒的整数，能否攒批须为布尔值")
+        if (self.version is not None and (not isinstance(self.version, str) or not self.version)
+                or self.overwrite is not None and (not isinstance(self.overwrite, dict) or self.version is None)
+                or type(self.snapshot) is not bool):
+            raise ValueError("状态覆盖须同时带非空版本串，快照标记须为布尔值")
 
 
 @dataclass(frozen=True)

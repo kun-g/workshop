@@ -103,6 +103,7 @@ source_modules =
     workshop.wait_client
     workshop.authorization
     workshop.github_identity
+    workshop.github_events
     workshop.path_policy
     workshop.running
     workshop.quota_gate

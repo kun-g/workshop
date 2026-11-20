@@ -13,8 +13,9 @@ from pathlib import Path
 import tempfile
 from urllib.parse import urlencode
 
-from workshop.core.models import Event, Poll
+from workshop.core.models import Poll
 from workshop.core.ports import Retryable
+from workshop import github_events
 from workshop.github_identity import scoped, run_read
 
 
@@ -28,6 +29,11 @@ class GitHubSource:
         self.gh = gh or shutil.which("gh")
         if not self.gh:
             raise RuntimeError("找不到 gh；请在启动 PATH 中配置")
+
+    @staticmethod
+    def rekey(event):
+        """升级前事实的正文 → 同一次变化现在的键；核心据此建独立的别名表（核心 R37 判据二）。"""
+        return github_events.rekey(event)
 
     @staticmethod
     def normalize(batch, target, find_external):
@@ -179,32 +185,23 @@ class GitHubSource:
             return max([previous or "1970-01-01T00:00:00Z", *[r["updated_at"] for r in rows]])
 
         def marker(pr):
-            matches = re.findall(r"<!-- workshop-item: ([^\s<>]+) -->", pr.get("body") or "")
-            if len(matches) == 1 and matches[0].startswith(name + ":"):
-                return matches[0][len(name) + 1:]
-            return None
+            return github_events.marker(pr.get("body"), name)
 
         def emit(kind, number, key, identity, value, initial=False):
-            signature = hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()
+            # 键由推拉共用的归一键拼（核心 R37）；seen 仍按 GitHub 自己的标识认「这条见过没有」。
+            signature = github_events.signature(value)
             identity_key = f"{kind}:{number}:{identity}"
             previous = seen.get(identity_key)
             if previous == signature:
                 return
-            ext = f"{repo}:{identity_key}"
             seen[identity_key] = signature
-            actor, author = value.get('actor') or {}, value.get('user') or {}
-            body = {'kind': kind, 'repo': repo, 'number': number, 'data': value,
-                    'actor': actor.get('login', ''), 'author': author.get('login', ''),
-                    'label': (value.get('label') or {}).get('name', ''),
-                    'text': (value.get('body') or '').strip(), 'edited': previous is not None,
-                    'by_workshop': initial or actor.get('type') == 'Bot' or automated(value)}
-            events.append(Event('github', f'{ext}:{signature}', name, key, f'{repo} #{number}', body,
-                                action_id=ext, previous_ids=[ext, f'{ext}:{signature}']))
+            actor = value.get('actor') or {}
+            events.append(github_events.event(
+                target, kind, number, key, identity, value, edited=previous is not None,
+                by_workshop=initial or actor.get('type') == 'Bot' or automated(value), snapshot=True, legacy=True))
 
         def automated(value):
-            user = value.get("user") or {}
-            return (user.get("type") == "Bot" or user.get("login") in bots
-                    or "<!-- workshop-comment:" in (value.get("body") or ""))
+            return github_events.automated(value, bots)
 
         def comments(endpoint, kind, number, key):
             for comment in self._list(endpoint + "?per_page=100", cache):
