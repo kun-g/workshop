@@ -289,3 +289,11 @@ def test_rules_point_only_waits():
     import yaml
     points = yaml.safe_load(Path('rules/workshop.yaml').read_text())['intervention']['points']
     assert points['human_check']['wait'] is True and points['human_check']['send'] is False
+
+
+def test_question_names_full_version_for_answer_wait(world):
+    """问题里写全长合并提交号：answer-wait --version 照抄就对得上。"""
+    engine, service, _ = until_human_wait(world, 'human-version')
+    [wait] = human_waits(service)
+    assert wait['content']['version'] in wait['content']['question']
+    engine.log.close()

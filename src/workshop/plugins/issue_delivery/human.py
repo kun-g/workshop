@@ -33,7 +33,8 @@ def after(flow, item, target, services):
         with flow.io.locked(item, target) as state:
             state.setdefault('human_checks', {})[version] = {'items': entries}
             flow.io.save(item, target, state)
-    question = '上线后人验（合并提交 ' + version[:12] + '）：\n' + '\n'.join(
+    # 写全长提交号：answer-wait --version 要和等待内容里的版本逐字相同。
+    question = '上线后人验（合并提交 ' + version + '）：\n' + '\n'.join(
         f'{number}. {text}' for number, text in enumerate(entries, 1))
     try:
         reference = port.create(operation, {'point': POINT, 'owner': item['id'], 'content': {
