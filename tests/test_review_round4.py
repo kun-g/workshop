@@ -68,7 +68,8 @@ def test_1_broken_target_still_detects_and_stops_running_round(engine, monkeypat
     engine.tick()
     saved = engine.log.get("rounds", row["token"])
     assert saved["stopped"] and saved["automatic_failure"]
-    assert saved["status"] == "finishing" and saved["receipt"]["outcome"] == "failed"
+    # 人手动结束的失败轮不需要流程插件，隔离期间也照常结束（#329）；退出、超时的仍等隔离解除。
+    assert saved["status"] == ("ended" if trigger == "abort" else "finishing") and saved["receipt"]["outcome"] == "failed"
     assert not saved.get("assessment")
     assert current(engine, "next", "beta")["status"] == "running"
     engine.resume("alpha", [])
@@ -114,7 +115,8 @@ def test_1_stop_failure_keeps_slot_until_confirmed_even_while_broken(engine):
     engine.clock.now += timedelta(minutes=5)
     engine.tick()
     assert engine.occupied() == 0 and item(engine)["state"] == "卡住"
-    assert engine.log.get("rounds", row["token"])["status"] == "finishing"
+    # 停止确认后，被 abort 的失败轮在隔离期间照常结束（#329）。
+    assert engine.log.get("rounds", row["token"])["status"] == "ended"
 
 
 @pytest.mark.parametrize("registered_sender", [None, "another-person"])

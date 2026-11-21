@@ -167,12 +167,55 @@ def settle_executor(engine, row):
     return False
 
 
+def aborted_failure(row):
+    """被 abort（或到期）判失败、回执里只有失败原因的轮：结算不需要流程插件。"""
+    try:
+        receipt = Receipt.parse({k: v for k, v in row["receipt"].items() if k not in RETIRED_FIELDS},
+                                datetime.fromisoformat(row["received"]))
+    except (ValueError, TypeError, KeyError):
+        return False
+    return (bool(row.get("abort_requested")) and receipt.outcome == "failed"
+            and not (receipt.events or receipt.later or receipt.leave))
+
+
+def finish_aborted(engine, row, item):
+    """交付对象隔离期间结束一轮被 abort 的失败轮：只记失败，不评估、不推进、不派新轮（重试到隔离解除后）。"""
+    token = row["token"]
+    receipt = Receipt.parse({k: v for k, v in row["receipt"].items() if k not in RETIRED_FIELDS},
+                            datetime.fromisoformat(row["received"]))
+    with engine.log.transaction():
+        item = engine.log.get("items", item["id"])
+        summary = engine.failure_reason(row, receipt) or receipt.summary
+        engine.fact("round_result", {"token": token, "stage": row["stage"], "outcome": "failed", "summary": summary,
+                                     "evidence": receipt.evidence, "reason": "交付对象隔离期间结束被 abort 的轮"},
+                    item["id"], source="result", ext_id=token)
+        changes = dict(round=None, retry_executor=None, last_failure=summary,
+                       cause=max(item["cause"], row["receipt_seq"]))
+        changes.update(engine.failure_changes(item, row))
+        engine.fact("round_changed", {"token": token, "status": "ended", "ended": stamp(engine.clock()),
+                                      "outcome": "failed", "summary": summary, "passed": None}, item["id"])
+        if item.get("plugin_blocked"):
+            # 活仍卡在插件故障上；失败的结果记进隔离前的快照，解除隔离后按它恢复。
+            saved = {k: changes.get(k) for k in ("state", "next", "blocked_by", "leave") if k in changes}
+            engine.change(item, "round_finished", **{k: v for k, v in changes.items() if k not in saved},
+                          before_plugin_failure={**(item.get("before_plugin_failure") or {}), **saved})
+        else:
+            engine.change(item, "round_finished", **changes)
+    engine.retry_clear(f"finish:{token}")
+
+
 def finish(engine, row):
     program = row.get("program", False)
     if not program and not engine.settle_executor(row):
         return
     item = engine.log.get("items", row["item"])
-    if engine.flow_broken(item["target"], item.get("flow", "")) or not engine.retry_due(f"finish:{row['token']}"):
+    if engine.flow_broken(item["target"], item.get("flow", "")):
+        # 核心 R20：隔离期间不调流程插件、不评估证据；只有人手动结束且回执是光杆 failed 的轮，
+        # 不需要插件就能结算，照常结束，免得活因为这一轮没结束而放弃不了。
+        if not program and aborted_failure(row):
+            finish_aborted(engine, row, item)
+        return
+    if not engine.retry_due(f"finish:{row['token']}"):
         return
     engine.cleanup_flows()
     token = row["token"]
