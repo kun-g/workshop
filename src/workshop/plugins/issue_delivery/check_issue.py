@@ -4,11 +4,12 @@ import re
 
 from workshop import github_identity
 from . import dod, intake
+from .hints import hints
 from .io import IO
 from .requirements import change_documents, changed_requirement, requirement_basis
 
 
-def check_issue(args, rules):
+def check_issue(args, rules, commands=None):
     if args.file is not None:
         if args.issue or not args.target:
             raise ValueError("查草稿须用 --file <路径> --target <短名>，不能同时给 issue")
@@ -25,20 +26,23 @@ def check_issue(args, rules):
         raise ValueError(f"交付对象不存在或不唯一：{name}")
     # 取 issue 流程覆盖后的配置，与接单使用同一份 required_checks / requirement_docs / 身份。
     target = rules.target(matches[0], "issue_delivery")
-    problems, checks, documents = inspect(target, number, body)
+    problems, checks, documents, notes = inspect(target, number, body, commands)
     if documents is not None:
         print("进交付时要求 PR 改的需求文档：" + "、".join(sorted(documents)))
     if problems:
-        print("\n".join(problems))
+        print("\n".join(problems + notes))
         return 1
     print("接单核对通过，要跑的检查（交付对象规则登记）：")
     for argv in checks:
         print(json.dumps(argv, ensure_ascii=False))
+    # 提示不改结论（ws#326）：开单前看到明显的路径、命令冲突。
+    for line in notes:
+        print(line)
     return 0
 
 
 @github_identity.scoped
-def inspect(target, number=None, body=None):
+def inspect(target, number=None, body=None, commands=None):
     io = IO(gh=target.get("github_identity", {}).get("gh"), git="git")
     if number is not None:
         issue = io.api(f'repos/{target["repo"]}/issues/{number}')
@@ -61,4 +65,4 @@ def inspect(target, number=None, body=None):
             required = change_documents(basis, documents, target)
         except ValueError:
             pass  # 登记核对已给出缺项；没有确定的文档列表可展示。
-    return problems, checks, required
+    return problems, checks, required, hints(body, target, documents, commands)

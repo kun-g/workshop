@@ -14,6 +14,7 @@ from urllib.parse import quote
 from workshop.core.models import After, Classification, Evidence, FlowBrief, OUTCOMES, Receipt
 from .io import IO, executable, failure, run, tail
 from . import dod, decisions, intake, authorization, visual
+from .hints import hints
 from . import relations as relation_source
 from . import stats as prstats
 from .requirements import changed_requirement, missing_documents, requirement_basis, updated_documents
@@ -533,7 +534,9 @@ class IssueDelivery:
         with self.io.locked(item, target) as state:
             state.update(visual=dod.visual(body), registered=True)
             self.io.save(item, target, state)
-        return Evidence(checks, True, reason="接单核对：合并前 DoD、约束都在，检查按交付对象规则")
+        # 提示不改结论（ws#326），写进理由，workshop why 看得到；插件拿不到命令表，不查子命令。
+        notes = hints(body, target, documents)
+        return Evidence(checks, True, reason="；".join(["接单核对：合并前 DoD、约束都在，检查按交付对象规则", *notes]))
 
     def _assess_execution(self, item, target, checks):
         """执行交接（issue交付 R13）：以 PR 去掉 Draft 为准，不看回执的 advance。"""
