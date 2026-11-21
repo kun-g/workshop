@@ -72,9 +72,15 @@ def test_requirement_change_outside_only_scope():
 def test_unknown_workshop_subcommand():
     body = issue(['`workshop reports outbox` 按人输出；另列次数', '范围声明：`workshop reports outbox` 的输出注明',
                   '`workshop why ws#1` 能看到', '新增 `workshop schedule add` 命令',
-                  '出现 `workshop <子命令>` 时提示', '`workshop --state-dir /tmp/x reports messages` 照旧'], ['无'])
+                  '出现 `workshop <子命令>` 时提示', '`workshop --state-dir /tmp/x reports messages` 照旧',
+                  '`workshop check-issue/why` 能用'], ['无'])
     assert hints(body, WORKSHOP, commands=TREE) == [
         '提示：合并前 DoD「`workshop reports outbox` 按人输出」用到 `workshop reports outbox`，'
+        '现有命令里没有 reports outbox，同一句也没写「新增」']
+    # 斜杠并列的几个子命令（ws#311 的 `workshop schedule add/list/disable`）逐个查，都在就不提示。
+    slash = issue(['`workshop reports messages/outbox` 输出'], ['无'])
+    assert hints(slash, WORKSHOP, commands=TREE) == [
+        '提示：合并前 DoD「`workshop reports messages/outbox` 输出」用到 `workshop reports messages/outbox`，'
         '现有命令里没有 reports outbox，同一句也没写「新增」']
     # 只看 workshop 交付对象；没有命令表时不查。
     assert hints(body, TARGET, commands=TREE) == []

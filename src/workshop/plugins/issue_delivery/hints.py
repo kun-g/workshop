@@ -129,6 +129,13 @@ def _unknown(tokens, tree):
     for token in tokens[index:]:
         if not node or token.startswith(("-", "<")):
             return None
+        if "/" in token:
+            # add/list/disable：斜杠并列的几个子命令逐个查，之后的词分不清跟哪个，不再往下查。
+            choices = token.split("/")
+            if not all(choices):
+                return None
+            missing = next((c for c in choices if c not in node), None)
+            return " ".join(words + [missing]) if missing else None
         words.append(token)
         if token not in node:
             return " ".join(words)
