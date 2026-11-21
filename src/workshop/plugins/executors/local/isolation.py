@@ -1,7 +1,7 @@
 """Strip ambient deployment credentials while keeping the CLI's original subscription login."""
 import os
 from pathlib import Path
-from workshop.github_identity import environment as identity_environment
+from workshop.github_identity import executor_environment as identity_executor_environment
 
 # 订阅计费的会话不能被进程环境里的按量密钥改走按量。
 SUBSCRIPTION_SECRETS = ('ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'OPENAI_API_KEY', 'CURSOR_API_KEY')
@@ -34,8 +34,9 @@ def session_environment(spec, base=None):
         env = environment(Path(spec['gh_config']), env)
     elif spec.get('github_identity', {}).get('mode') == 'app':
         config = spec['github_identity']
-        env = identity_environment(config, spec['repo'], env)
-        env['PATH'] = str(Path(config['gh']).expanduser().parent) + os.pathsep + env.get('PATH', '')
+        # 执行轮每次用令牌现签；环境里只有签发器配置，没有令牌。
+        env = identity_executor_environment(config, spec['repo'], env,
+                                            bin_dir=Path(spec['gh_config']) / 'bin')
     for key in ('CLAUDECODE', 'WORKSHOP_RULES'):
         env.pop(key, None)
     return env

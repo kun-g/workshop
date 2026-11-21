@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 import sys
 
 import pytest
@@ -9,7 +10,7 @@ from workshop.plugins.executors.local import default_profile
 
 
 @pytest.mark.parametrize('kind', ['orca-claude', 'orca-codex', 'cursor-grok'])
-def test_real_runner_injects_app_without_serializing_token(setup, kind):
+def test_real_runner_injects_app_signer_without_serializing_token(setup, kind):
     root, make, item, target = setup
     signer = root / 'signer.py'
     signer.write_text("import sys\nassert sys.argv[1:] == ['--repo','kun-g/workshop']\nprint('test-installation-token')\n")
@@ -20,7 +21,11 @@ def test_real_runner_injects_app_without_serializing_token(setup, kind):
     started = executor.launch('app-round', BRIEF, item, CONFIG, target)
     wait_for(lambda: (root/'agents').exists() and (root/'agents').read_text().endswith('\n'))
     call = json.loads((root/'agents').read_text().splitlines()[0])
-    assert call['env']['GH_TOKEN'] == call['env']['GITHUB_TOKEN'] == 'test-installation-token'
+    # 执行轮环境里不再有令牌；只有签发器配置，git/gh 每次用时现签。
+    assert 'GH_TOKEN' not in call['env'] and 'GITHUB_TOKEN' not in call['env']
+    assert json.loads(call['env']['WORKSHOP_GITHUB_SIGNER'])[-1] == str(signer)
+    wrapper = Path(call['env']['PATH'].split(':')[0]) / 'gh'
+    assert wrapper.exists() and 'test-installation-token' not in wrapper.read_text()
     spec = read(executor.directory('app-round')/'spec.json')
     assert spec['github_identity'] == target['github_identity']
     for file in executor.root.rglob('*'):
