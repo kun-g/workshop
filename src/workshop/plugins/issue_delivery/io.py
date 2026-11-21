@@ -184,6 +184,26 @@ def clean_env(home, cache=None, python=None):
             **({"UV_CACHE_DIR": str(cache)} if cache else {})}
 
 
+SELF_REVIEW = "作者就是审核身份，不发批准"
+
+
+def bot_login(login):
+    """同一个 App 两种写法：gh 给 app/名字，REST 给 名字[bot]；统一成后者。登录名不分大小写。
+    不去掉 [bot]：同名的普通用户和 App 不是一个人。"""
+    login = (login or "").strip().lower()
+    if login.startswith("app/"):
+        login = login.removeprefix("app/") + "[bot]"
+    return login
+
+
+def self_review(pr, config):
+    """PR 作者就是 bot_review 的审核身份：GitHub 不许作者批准自己的 PR（422），返回不发批准的原因。"""
+    author = (pr.get("user") or pr.get("author") or {}).get("login") or ""
+    if author and bot_login(author) == bot_login(config["login"]):
+        return SELF_REVIEW
+    return ""
+
+
 class IO:
     def __init__(self, gh=None, git=None, state_dir=None, lark=None):
         self.gh = gh or executable("gh")
@@ -412,14 +432,18 @@ class IO:
             self.drop(target, directory)
 
     def bot_review(self, item, target, pr, body="已按此提交审查"):
+        """补 bot 批准；PR 作者就是审核身份时不发，返回原因给调用方记进活里，否则返回空串。"""
         config = target.get("bot_review")
         if not config:
-            return
+            return ""
+        skipped = self_review(pr, config)
+        if skipped:
+            return skipped
         endpoint = f'repos/{target["repo"]}/pulls/{pr["number"]}/reviews'
         reviews = self.pages(endpoint + "?per_page=100")
         if any(r.get("user", {}).get("login") == config["login"] and r.get("state") == "APPROVED"
                and r.get("commit_id") == pr["head"]["sha"] for r in reviews):
-            return
+            return ""
         env = {**os.environ, "AGENT_KIND": "workshop", "AGENT_SESSION_ID": item["id"]}
         signer = [str(Path(p).expanduser()) for p in config["signer"]]
         signed = run(signer + ["token", "--repo", target["repo"]], env=env)
@@ -435,6 +459,7 @@ class IO:
                 json.load(response)
         except (OSError, ValueError) as exc:
             raise Retryable("bot 批准结果未确认，重试前回查提交号") from None
+        return ""
 
     def cleanup_copies(self, target, older_than=STALE_COPY_SECONDS):
         """进程中途被杀留下的检查副本：超过期限的删掉并收回登记。正在跑的检查远短于这个期限。"""
