@@ -880,6 +880,14 @@ class IssueDelivery:
 
     def _deliver(self, item, target, state):
         """交付由程序做（issue交付 R3、R5、R13）：合并 → 上线 → 跑上线后 DoD。"""
+        notes = []
+        result = self._deliver_steps(item, target, state, notes)
+        if notes:
+            # 程序阶段 after 的结果进 workshop why：跳过的事由放在原因最前面。
+            result = replace(result, reason="；".join(notes + [result.reason] if result.reason else notes))
+        return result
+
+    def _deliver_steps(self, item, target, state, notes):
         pr = self.io.pr(item, target)
         if not state.get("merge"):
             approved = self._approved_head(state)
@@ -893,7 +901,10 @@ class IssueDelivery:
                     return After(pending=True, reason="GitHub 还没算出能否合并", next="稍后回查能否合并")
                 if target.get("bot_review"):
                     # 合并保护要的 bot 批准在合并前补上，批的是合并前 DoD 查过的提交。
-                    self.io.bot_review(item, target, pr, body="未审查：按合并前 DoD 检查通过的提交批准合并")
+                    # 作者就是审核身份时 GitHub 不许自批，不发，原因记进活里（issue交付 R11）。
+                    skipped = self.io.bot_review(item, target, pr, body="未审查：按合并前 DoD 检查通过的提交批准合并")
+                    if skipped:
+                        notes.append(skipped)
                 if not self._ci(pr, target):
                     return After(pending=True, reason="CI 尚未全部成功", next="回查 CI，失败则修正")
                 argv = [self.io.gh, "pr", "merge", str(pr["number"]), "--repo", target["repo"],

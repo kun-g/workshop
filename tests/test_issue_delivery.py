@@ -16,7 +16,7 @@ from workshop.plugins.issue_delivery import IssueDelivery, action_for
 from workshop.plugins.issue_delivery.io import IO, clean_env
 from workshop.core.ports import Retryable
 from source_routing import RoutedGitHubSource as GitHubSource
-from conftest import build, configuration, current, finish, in_process_commands, item
+from conftest import build, configuration, current, event, finish, in_process_commands, item
 
 
 # 新写法（ws#286）：背景和目标、合并前 DoD、约束、要不要亲眼看、原话；检查按交付对象规则。
@@ -844,3 +844,98 @@ def test_unreadable_pr_files_count_as_release_then_recheck_decides(world, monkey
     assert state['non_release_merge'] == world['sha'] and world['sha'] in state['delivered']
     assert world['flow']._delivery_done(target, state, world['sha'])
     assert len([c for c in calls(world) if c[1:3] == ['pr', 'merge']]) == 1
+
+
+# ws#325：PR 作者就是 bot_review 的审核身份时，GitHub 不许自批（422），车间不发批准，原因记进活里。
+BOT_LOGIN = 'lambdatheory-agent[bot]'
+
+
+@pytest.mark.parametrize('author,skipped', [
+    ('lambdatheory-agent[bot]', True), ('app/lambdatheory-agent', True), ('LambdaTheory-Agent[bot]', True),
+    ('kun-g', False), ('lambdatheory-agent', False), ('', False),
+])
+@pytest.mark.parametrize('login', [BOT_LOGIN, 'app/lambdatheory-agent'])
+def test_self_review_matches_both_spellings_of_the_app(author, skipped, login):
+    from workshop.plugins.issue_delivery.io import SELF_REVIEW, self_review
+    pr = {'user': {'login': author}} if author else {}
+    assert self_review(pr, {'login': login}) == (SELF_REVIEW if skipped else '')
+    # gh pr view 给的 author 字段也认。
+    assert self_review({'author': {'login': author}}, {'login': login}) == (SELF_REVIEW if skipped else '')
+
+
+def bot_target(world, tmp_path):
+    signer = tmp_path / 'signer'
+    signer.write_text('#!/bin/sh\necho signed-token\n')
+    signer.chmod(0o755)
+    return {**world['target'], 'release': 'none', 'bot_review': {'login': BOT_LOGIN, 'signer': [str(signer)]}}
+
+
+def deliver_with_author(world, monkeypatch, target, author):
+    import urllib.request
+    remote = edit(world)
+    remote['pr']['user'] = {'login': author}
+    edit(world, pr=remote['pr'])
+    data = snapshot(world, '交付')
+    world['io'].save(data, target, {'effects': {}, 'issue': 7, 'dod_head': world['sha']})
+    posted = []
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def read(self, *args):
+            return b'{"state": "APPROVED"}'
+
+    def urlopen(request, timeout=None):
+        posted.append((request.full_url, request.get_method(), json.loads(request.data)))
+        return Response()
+    monkeypatch.setattr(urllib.request, 'urlopen', urlopen)
+    return data, posted
+
+
+def test_bot_review_skips_when_pr_author_is_the_reviewer(world, monkeypatch, tmp_path):
+    target = bot_target(world, tmp_path)
+    data, posted = deliver_with_author(world, monkeypatch, target, BOT_LOGIN)
+    real = world['io'].pages
+
+    def pages(endpoint):
+        assert '/reviews' not in endpoint, '自批不该回查 review'
+        return real(endpoint)
+    monkeypatch.setattr(world['io'], 'pages', pages)
+    outcome = world['flow'].after(data, '交付', 'self-review', target)
+    # 不发 POST、不抛 Retryable，照常合并；原因交给调用方，进程序阶段 after 的结果。
+    assert posted == []
+    assert not outcome.pending and outcome.reason == '作者就是审核身份，不发批准'
+    assert len([c for c in calls(world) if c[1:3] == ['pr', 'merge']]) == 1
+    assert world['io'].read(data, target)['merge']
+
+
+def test_bot_review_still_approves_other_authors(world, monkeypatch, tmp_path):
+    target = bot_target(world, tmp_path)
+    data, posted = deliver_with_author(world, monkeypatch, target, 'kun-g')
+    real = world['io'].pages
+    monkeypatch.setattr(world['io'], 'pages', lambda endpoint: [] if '/reviews' in endpoint else real(endpoint))
+    outcome = world['flow'].after(data, '交付', 'other-author', target)
+    assert [(url, method) for url, method, _ in posted] == [
+        ('https://api.github.com/repos/kun-g/workshop/pulls/11/reviews', 'POST')]
+    assert posted[0][2]['event'] == 'APPROVE' and posted[0][2]['commit_id'] == world['sha']
+    assert not outcome.pending and outcome.reason == ''
+
+
+def test_self_review_reason_shows_in_why(world, monkeypatch, tmp_path):
+    from workshop.reports.report import why
+    target = bot_target(world, tmp_path)
+    data, posted = deliver_with_author(world, monkeypatch, target, 'app/lambdatheory-agent')
+    delivered = world['flow'].after(data, '交付', 'why', target)
+    engine = build(world['root'] / 'core')
+    flow = engine.plugins.get('flow', 'flow')
+    monkeypatch.setattr(flow, 'automatic', lambda i, s, t: s == '接单', raising=False)
+    monkeypatch.setattr(flow, 'after', lambda i, s, k, t: delivered)
+    engine.ingest(event())
+    engine.tick()
+    lines = [line for line in why(engine.log, 'alpha:one').splitlines() if '程序阶段 接单 after' in line]
+    assert len(lines) == 1 and '作者就是审核身份，不发批准' in lines[0]
+    engine.log.close()
