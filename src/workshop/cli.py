@@ -19,6 +19,16 @@ from .core.wake import Mailbox, ring
 from .registry import Registry, load_rules
 
 
+def command_tree(node=None):
+    """子命令树 {名字: 子树}，给 check-issue 提示 DoD 里不存在的 `workshop <子命令>`（ws#326）。"""
+    tree = {}
+    for action in (node or parser())._actions:
+        if isinstance(action, argparse._SubParsersAction):
+            for name, sub in action.choices.items():
+                tree[name] = command_tree(sub)
+    return tree
+
+
 def parser():
     result = argparse.ArgumentParser(prog="workshop")
     result.add_argument("--state-dir", type=Path, default=Path(os.environ.get("WORKSHOP_STATE_DIR", "~/.local/state/workshop")).expanduser())
@@ -316,7 +326,7 @@ def main(argv=None):
         from .plugins.issue_delivery.check_issue import check_issue
         from .core.ports import Retryable, TargetBlocked
         try:
-            return check_issue(args, current_rules(args, None))
+            return check_issue(args, current_rules(args, None), command_tree())
         except (ValueError, KeyError, OSError, RuntimeError, Retryable, TargetBlocked) as exc:
             print(f"车间：{exc}", file=sys.stderr)
             return 2
