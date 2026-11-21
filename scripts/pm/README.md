@@ -2,7 +2,7 @@
 
 项目经理手工干预车间时用的脚本，从 11-15 项目经理 6c36ee03 的临时目录挪进来。手册见 `docs/项目经理.md`。
 
-每个工具都说明车间少一个机制：做成 `workshop` 命令或车间自己会处理之后，删掉对应的工具。每用一次，在问题记录（workspace 的 `contexts/projects/workshop/问题记录.md`）里记一行。
+每个工具都说明车间少一个机制：做成 `workshop` 命令或车间自己会处理之后，删掉对应的工具。每用一次，记进问题记录（`docs/knowledge/lessons/` 里带 `status` 的教训，见 `docs/knowledge/README.md`）。
 
 改状态的工具直接调车间核心写线上状态库，不经过 `workshop` 命令。它们只动没在跑的活，原因记成「项目经理：…」，在 `workshop why` 里查得到。
 

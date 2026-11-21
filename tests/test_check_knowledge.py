@@ -20,7 +20,8 @@ def make(tmp_path, agents, entries, lessons, pm=""):
     for name, body in entries.items():
         (k / name).write_text(body)
     for name, made in lessons.items():
-        (k / "lessons" / f"{name}.md").write_text("---\nrefs: x\n---\n\n# x\n")
+        body = made if made.startswith("---") else "---\nrefs: x\n---\n\n# x\n"
+        (k / "lessons" / f"{name}.md").write_text(body)
     return check.problems(tmp_path)
 
 
@@ -79,3 +80,31 @@ def test_front_matter_required(tmp_path):
     assert any("S2-x.md：front matter 缺 written_in" in p for p in found)
     assert any("S3-x.md：id 写的是 S9" in p for p in found)
     assert not any("S1：没有条目文件" in p for p in found)
+
+
+def problem(status, body="## 经过\n- 11-20 22:29 ws#310 推不上去\n"):
+    return f"---\nrefs: ws#310\nstatus: {status}\n---\n\n# 令牌过期\n\n{body}"
+
+
+def test_problem_status_values(tmp_path):
+    good = {f"p{i}": problem(s) for i, s in enumerate(["未处理", "手工干预", "已解决", "不做", "已开单 ws#324", "已开单 ws#325、gc#216"])}
+    assert make(tmp_path, "", {}, good) == []
+
+
+def test_problem_status_rejects_free_text_and_missing_section(tmp_path):
+    found = make(tmp_path, "", {}, {"a": problem("未处理（建议不做）"), "b": problem("已开单 #324"),
+                                    "c": problem("未处理", body="只有一段话\n")})
+    assert any("a.md：status 只能是" in p for p in found)
+    assert any("b.md：status 只能是" in p for p in found)
+    assert any("c.md：问题记录要有「## 经过」" in p for p in found)
+
+
+def test_plain_lesson_needs_no_status(tmp_path):
+    assert make(tmp_path, "", {}, {"a": "---\nrefs: x\n---\n\n# 一件事\n"}) == []
+
+
+def test_open_problems_skips_closed(tmp_path):
+    make(tmp_path, "", {}, {"20261120-a": problem("未处理"), "20261120-b": problem("已解决"),
+                            "20261120-c": problem("已开单 ws#324"), "20261120-d": "---\nrefs: x\n---\n\n# 教训\n"})
+    assert [(stem, status) for stem, status, _ in check.open_problems(tmp_path)] == [
+        ("20261120-a", "未处理"), ("20261120-c", "已开单 ws#324")]

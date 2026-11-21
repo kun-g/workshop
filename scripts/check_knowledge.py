@@ -5,9 +5,14 @@
 用的层：USE_FILES 里以「- P1 」「- S3 」「- E2 」开头的行，一条一行。
 条目文件：docs/knowledge/{principles,standards,experiences}/<编号>-<短名>.md，front matter 有
   id、summary、written_in、mechanism、status、approved、sources。
-教训：docs/knowledge/lessons/*.md，front matter 有 refs。
+教训：docs/knowledge/lessons/*.md，front matter 有 refs。带 status 的教训是问题记录：status 只能取
+  PROBLEM_STATUS 里的写法，正文要有「## 经过」。
+
+命令行：不带参数做检查；--open 列出没处理完的问题记录，再加 --issues 用 gh 查「已开单」的单关了没有。
 """
+import json
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -25,6 +30,11 @@ STATES = ("在用", "机制接管", "废止")
 
 ENTRY_KEYS = ("id", "summary", "written_in", "mechanism", "status", "approved", "sources")
 LESSON_KEYS = ("refs",)
+# 问题记录的 status；单号前缀对应的仓库见 REPOS。
+TICKET = r"(?:ws|gc|sb)#\d+"
+PROBLEM_STATUS = re.compile(rf"未处理|手工干预|已解决|不做|已开单 {TICKET}(?:、{TICKET})*")
+CLOSED = ("已解决", "不做")
+REPOS = {"ws": "kun-g/workshop", "gc": "kun-g/grant-console", "sb": "kun-g/switchboard"}
 RANK = {"E": 1, "S": 2, "P": 3}  # 教训算 0
 RULE_ID = re.compile(r"[PSE]\d+")
 
@@ -82,8 +92,10 @@ def problems(root):
                 entries[rule] = (path, f)
     lessons = set()
     for path in sorted((base / "lessons").glob("*.md")):
-        if front_matter(path, LESSON_KEYS, out) is not None:
+        if (f := front_matter(path, LESSON_KEYS, out)) is not None:
             lessons.add(path.stem)
+            if "status" in f:
+                problem_status(path, f, out)
 
     for rule, places in used.items():
         for name, number, text in places:
@@ -130,8 +142,52 @@ def problems(root):
     return out
 
 
+def problem_status(path, f, out):
+    """问题记录：status 写法对，正文有「经过」。"""
+    name = f"lessons/{path.name}"
+    if not PROBLEM_STATUS.fullmatch(str(f["status"])):
+        out.append(f"{name}：status 只能是 未处理、手工干预、已解决、不做，或「已开单 ws#N」（gc#N、sb#N，几张用顿号连）")
+    if "\n## 经过\n" not in path.read_text():
+        out.append(f"{name}：问题记录要有「## 经过」一节，每发生一次一行")
+
+
+def open_problems(root):
+    """没处理完的问题记录：[(文件名, status, 标题)]，按文件名排。"""
+    found = []
+    for path in sorted((Path(root) / KNOWLEDGE / "lessons").glob("*.md")):
+        f = front_matter(path, LESSON_KEYS, [])
+        if f and "status" in f and str(f["status"]) not in CLOSED:
+            title = next((line[2:] for line in path.read_text().splitlines() if line.startswith("# ")), path.stem)
+            found.append((path.stem, str(f["status"]), title))
+    return found
+
+
+def ticket_state(ticket):
+    """用 gh 只读查一张单的状态；查不到返回 None。"""
+    prefix, number = ticket.split("#")
+    result = subprocess.run(["gh", "issue", "view", number, "-R", REPOS[prefix], "--json", "state"],
+                            capture_output=True, text=True, timeout=30)
+    return json.loads(result.stdout)["state"] if result.returncode == 0 else None
+
+
+def report_open(root, issues=False):
+    for stem, status, title in open_problems(root):
+        line = f"{stem}\t{status}\t{title}"
+        if issues and status.startswith("已开单"):
+            states = [(t, ticket_state(t)) for t in re.findall(TICKET, status)]
+            if states and all(state == "CLOSED" for _, state in states):
+                line += "\t单已关，回去改 status"
+            elif any(state is None for _, state in states):
+                line += "\t有单查不到：" + "、".join(t for t, state in states if state is None)
+        print(line)
+
+
 if __name__ == "__main__":
-    found = problems(Path(__file__).resolve().parents[1])
+    root = Path(__file__).resolve().parents[1]
+    if "--open" in sys.argv[1:]:
+        report_open(root, issues="--issues" in sys.argv[1:])
+        sys.exit(0)
+    found = problems(root)
     for p in found:
         print("知识检查：" + p, file=sys.stderr)
     if found:
