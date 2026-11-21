@@ -161,6 +161,33 @@ def test_program_pending_limit_without_notice(engine, monkeypatch, rerun):
     assert len(held) == 0
 
 
+def test_new_recheck_replaces_only_older_episodes_of_same_item(engine, monkeypatch):
+    flow = automatic(engine, monkeypatch)
+    monkeypatch.setattr(flow, 'after', lambda *args: After(pending=True, reason='等待', next='回查'))
+    engine.ingest(event(key='watch:check'))
+    engine.ingest(event(key='watch:check:other', ext_id='other'))
+    current_item = item(engine, 'watch:check')
+    other = item(engine, 'watch:check:other')
+    engine.change(current_item, pending_episode=10)
+
+    older = ['after:program:old:9:99', 'after:old:2:1']
+    keep = ['after:program:same:10:1', 'after:newer:11:1', 'leave:program:old',
+            'token:after:program:old:2:1', 'retry:old', 'start:old', 'recover:old', 'nothing:old']
+    for key in older + keep:
+        engine.timer(current_item, key, '+1h', '原定时')
+    engine.timer(other, older[0], '+1h', '另一件活的定时')
+    engine.tick()
+
+    prefix = current_item['id'] + ':'
+    fired = [f['body'] for f in engine.log.facts(current_item['id']) if f['kind'] == 'timer_fired']
+    assert fired == [{'id': prefix + key, 'reason': '被同一件活的新回查定时取代'} for key in older]
+    timers = engine.log.all('timers', where=('item', current_item['id']))
+    assert {t['id'] for t in timers if t['fired']} == {prefix + key for key in older}
+    new_key = item(engine, 'watch:check')['after_wait']['key'] + ':10:1'
+    assert {t['id'] for t in timers if not t['fired']} == {prefix + key for key in [*keep, new_key]}
+    assert not engine.log.get('timers', other['id'] + ':' + older[0])['fired']
+
+
 def test_program_after_retry_survives_restart_with_same_key(engine, monkeypatch):
     flow = automatic(engine, monkeypatch)
     keys = []
