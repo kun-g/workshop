@@ -203,3 +203,19 @@ def test_open_issue_checks_real_author(command, world, capsys, author, code):
     assert command('ws#7') == code
     out = capsys.readouterr().out
     assert ('开单来源' in out) == bool(code)
+
+
+@pytest.mark.parametrize('section,code,problem', [
+    ('## 上线后人验\n- 去掉【Draft】后进入接单：status 里从等资料变成执行。\n', 0, None),
+    ('## 上线后人验\n上线后看一眼。\n', 1, '「上线后人验」须逐项列出，每项第一行写看什么、怎么判'),
+])
+def test_draft_with_human_check_section(command, world, capsys, section, code, problem):
+    """ws#330：check-issue 认「上线后人验」节，各项不要求 workshop-checks；有节没列表项报缺项。"""
+    draft = world['root'] / 'human.md'
+    draft.write_text(BODY + section)
+    assert command('--file', str(draft), '--target', 'ws') == code
+    out = capsys.readouterr().out
+    if problem:
+        assert out.splitlines() == [problem]
+    else:
+        assert out == '接单核对通过，要跑的检查（交付对象规则登记）：\n["scripts/check.sh"]\n'

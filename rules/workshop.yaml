@@ -413,3 +413,5 @@ intervention:
       scope_prefixes: ['incident:', 'idle:']
       required_basis: [action, reason, evidence, status_location]
     resume_selection: {wait: true, send: false}
+    # 上线后人验（issue交付 R14、介入点 R1、R9）：只登记等待，不发消息。
+    human_check: {wait: true, send: false, required_wait: [key, version, stage, question]}
