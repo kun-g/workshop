@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
 import urllib.request
@@ -122,8 +123,53 @@ def sweep_check_home(check_dir):
         shutil.rmtree(home, ignore_errors=True)
 
 
-def clean_env(home, cache=None):
+def requested_python(copy, cwd=None):
+    """副本里 .python-version 要的解释器（第一条非注释行），同 uv 从命令目录往上找到副本根为止；没有返回 None。"""
+    copy = Path(copy).resolve()
+    directory = Path(cwd or copy).resolve()
+    for folder in (directory, *directory.parents):
+        if not folder.is_relative_to(copy):
+            break
+        try:
+            lines = (folder / ".python-version").read_text().splitlines()
+        except (FileNotFoundError, IsADirectoryError, NotADirectoryError, UnicodeError):
+            continue
+        return next((line.strip() for line in lines if line.strip() and not line.strip().startswith("#")), None)
+    return None
+
+
+def check_python(copy, cwd=None):
+    """检查用哪个解释器，返回 (真实路径, None)，本机没有副本要的版本时返回 (None, 原因)；没有 uv 时不定。
+
+    副本有 .python-version 的，在本机已装的解释器里找（uv 管理的和 PATH 上的），不下载；
+    没有的，用车间进程自身的基础解释器（同定时发版）。不靠 PATH 上手工建的链接（ws#327）。
+    """
+    request = requested_python(copy, cwd)
+    if request is None:
+        return str(Path(sys._base_executable).resolve()), None
+    uv = shutil.which("uv")
+    if not uv:
+        # 没有 uv 就没有谁会去下载解释器；按副本自己的办法找，不替它定。
+        return None, None
+    # 只找不装：真实 HOME 下 uv 管理的解释器也算本机已装；不读副本里的项目和配置。
+    env = {k: v for k, v in os.environ.items() if k != "UV_PYTHON"}
+    env["UV_PYTHON_DOWNLOADS"] = "never"
+    try:
+        found = subprocess.run([uv, "python", "find", request, "--no-python-downloads", "--no-project", "--no-config"],
+                               env=env, text=True, errors="replace", capture_output=True, timeout=30)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return None, f"找副本 .python-version 要的 Python {request} 没有完成：{exc}"
+    path = found.stdout.strip().splitlines()[-1:] if not found.returncode else []
+    if not path or not Path(path[0]).is_file():
+        return None, (f"本机没有副本 .python-version 要的 Python {request}；检查不下载解释器"
+                      f"（UV_PYTHON_DOWNLOADS=never）。请 Kun 装好这个版本，或改 .python-version。"
+                      + (f"\n{tail(found.stderr)}" if tail(found.stderr) else ""))
+    return str(Path(path[0]).resolve()), None
+
+
+def clean_env(home, cache=None, python=None):
     # 白名单环境；不能让检查脚本继承守护进程的 GitHub、SSH、AWS 等凭据。
+    # 解释器固定、不下载（ws#327）：下载 CPython 会让检查超时，换台机器也不该靠手工链接。
     return {"PATH": os.environ.get("PATH", "/opt/homebrew/bin:/usr/bin:/bin"),
             "HOME": str(home), "LANG": "en_US.UTF-8", "TMPDIR": str(home),
             "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1",
@@ -133,6 +179,8 @@ def clean_env(home, cache=None):
             "KUBECONFIG": "/dev/null",
             # 副本是主检出的 worktree，共用它的钩子目录；检查里跑的 git 一律不执行钩子。
             "GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "core.hooksPath", "GIT_CONFIG_VALUE_0": "/dev/null",
+            "UV_PYTHON_DOWNLOADS": "never",
+            **({"UV_PYTHON": str(python)} if python else {}),
             **({"UV_CACHE_DIR": str(cache)} if cache else {})}
 
 
@@ -416,9 +464,18 @@ class IO:
         output = []
         steps = [(p["argv"], copy / p.get("cwd", "."), "prepare") for p in target.get("prepare", [])]
         steps += [(argv, copy, "check") for argv in checks]
+        pythons = {}
         for argv, cwd, kind in steps:
             if not cwd.resolve().is_relative_to(copy.resolve()):
                 raise ValueError("准备命令目录须在干净副本内")
+            if cwd not in pythons:
+                pythons[cwd], missing = check_python(copy, cwd)
+                if missing:
+                    # 副本要的解释器本机没有：记成准备步骤没过，写明缺哪个版本，退回执行；不去下载。
+                    request = requested_python(copy, cwd)
+                    output.append({"argv": ["uv", "python", "find", request], "exit_code": 2, "stdout": "",
+                                   "stderr": missing, "kind": "prepare", "missing_python": request})
+                    break
             command = list(argv)
             if "/" not in command[0] and not shutil.which(command[0]):
                 # 登记的检查要的工具本机没有：记成这条检查没过（退出码 127，同 shell），退回执行去处理；
@@ -430,7 +487,7 @@ class IO:
             if "/" not in command[0]:
                 command[0] = executable(command[0])
             try:
-                result = subprocess.run(command, cwd=cwd, env=clean_env(home, cache),
+                result = subprocess.run(command, cwd=cwd, env=clean_env(home, cache, pythons[cwd]),
                     timeout=target.get("check_timeout", 60), text=True, capture_output=True)
                 entry = {"argv": argv, "exit_code": result.returncode, "stdout": result.stdout, "stderr": result.stderr, "kind": kind}
             except subprocess.TimeoutExpired as exc:
