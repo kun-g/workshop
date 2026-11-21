@@ -12,6 +12,8 @@ FENCE = re.compile(r"^\s*(```|~~~)")
 DEFAULT_CHECKS = [["scripts/check.sh"]]
 # workshop status、why 和 check-issue 报同一句。
 CONSTRAINT = "「约束」节须单写「无」或至少列一条"
+# 上线后要人看、或要等外部条件才能验的项（issue交付 R14）。
+HUMAN = "上线后人验"
 
 
 def _validate(value):
@@ -79,7 +81,7 @@ def _quote(text):
 def registration(body, target, documents=None):
     """接单核对（核心 R2、R3，issue交付 R2、R10）：返回 (缺的项, 这件活要跑的检查)。
 
-    只看合并前 DoD、约束、要不要亲眼看、上线后 DoD 和需求变更；旧写法的「依据」「能跑的检查」
+    只看合并前 DoD、约束、要不要亲眼看、上线后 DoD、上线后人验和需求变更；旧写法的「依据」「能跑的检查」
     「不可逆或对外的动作」三节不再要求（兼容：写了也不报错，「能跑的检查」不生效）。
     documents 为 None 时不核对需求变更指明的文档（调用方另取文档）。
     """
@@ -110,6 +112,9 @@ def registration(body, target, documents=None):
                 problems.append("「上线后 DoD」须给每项写 workshop-checks 代码块")
         except (ValueError, TypeError) as exc:
             problems.append(f"「上线后 DoD」的检查格式不对：{exc}")
+    if has_section(body, HUMAN) and not human_items(body):
+        # 上线后人验的项不要求写成 workshop-checks：它放的就是检查跑不出来的项。
+        problems.append("「上线后人验」须逐项列出，每项第一行写看什么、怎么判")
     # 只列已有需求编号的不核对编号存不存在；需求变更要有原文、原话和登记的文档。
     basis = requirement_basis(body)
     if changed_requirement(basis) is not None:
@@ -128,6 +133,16 @@ def registration(body, target, documents=None):
 def post_checks(body):
     """上线后 DoD 的检查；没写这一节为空。"""
     return checks_in(section(body or "", "上线后 DoD"))
+
+
+def has_section(body, heading):
+    """正文里有这个二级标题（节里是空的也算有）。"""
+    return re.search(r"^## " + re.escape(heading) + r"[ \t]*$", body or "", re.M) is not None
+
+
+def human_items(body):
+    """上线后人验的各项第一行原文；没写这一节为空。"""
+    return [entry["text"] for entry in items(section(body or "", HUMAN))]
 
 
 def visual(body):
