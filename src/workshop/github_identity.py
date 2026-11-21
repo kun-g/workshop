@@ -85,6 +85,46 @@ def sign(config, repo, source=None, *, relations_read=False):
     return token
 
 
+def executor_environment(config, repo, source=None, *, bin_dir):
+    """执行轮的环境：带签发器配置，不带令牌。
+
+    凭据助手和 PATH 上的 gh 包装每次用到令牌都现签，跑多久都不会因为开轮时
+    签的令牌过期而失败。进程环境里没有令牌，别的子进程拿不到会过期的令牌。
+    车间程序自己的动作仍走 environment()，保留开轮时签一次的行为。
+    """
+    import shlex
+    import sys
+    env = dict(os.environ if source is None else source)
+    if config['mode'] == 'inherit':
+        return env
+    for key in list(env):
+        if key.startswith(('GIT_CONFIG_', 'AGENT_GH_')) or key in (
+                'GH_TOKEN', 'GITHUB_TOKEN', 'GH_ENTERPRISE_TOKEN', 'GITHUB_ENTERPRISE_TOKEN'):
+            env.pop(key, None)
+    signer = [str(Path(p).expanduser()) if p.startswith('~') else p for p in config['signer']]
+    gh = str(Path(config['gh']).expanduser())
+    helper = Path(__file__).with_name('github_credential.py')
+    bin_dir = Path(bin_dir)
+    bin_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    bin_dir.chmod(0o700)
+    wrapper = bin_dir / 'gh'
+    # 包装脚本只带解释器和助手路径；令牌由助手每次调用时现签，脚本里不写令牌。
+    wrapper.write_text('#!/bin/sh\nexec {} {} gh "$@"\n'.format(
+        shlex.quote(sys.executable), shlex.quote(str(helper))))
+    wrapper.chmod(0o700)
+    env.update(GH_PROMPT_DISABLED='1', GIT_TERMINAL_PROMPT='0',
+               GIT_CONFIG_GLOBAL='/dev/null', GIT_CONFIG_NOSYSTEM='1',
+               WORKSHOP_GITHUB_SIGNER=json.dumps(signer),
+               WORKSHOP_GITHUB_REPO=repo, WORKSHOP_GITHUB_GH=gh)
+    settings = [('credential.helper', ''), ('credential.helper', '!' + shlex.join([sys.executable, str(helper)])),
+                ('credential.useHttpPath', 'true'), ('http.extraHeader', '')]
+    env['GIT_CONFIG_COUNT'] = str(len(settings))
+    for n, (key, value) in enumerate(settings):
+        env[f'GIT_CONFIG_KEY_{n}'], env[f'GIT_CONFIG_VALUE_{n}'] = key, value
+    env['PATH'] = str(bin_dir) + os.pathsep + env.get('PATH', '')
+    return env
+
+
 def environment(config, repo, source=None, *, relations_read=False):
     env = dict(os.environ if source is None else source)
     if config['mode'] == 'inherit':

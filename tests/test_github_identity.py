@@ -21,17 +21,110 @@ def signing(tmp_path):
     return {'mode': 'app', 'gh': '/usr/bin/gh', 'signer': [sys.executable, str(script)]}
 
 
+@pytest.fixture
+def fresh_signing(tmp_path):
+    """每次调用输出不同令牌的假签发器，用来证明每次 get 都现签。"""
+    script = tmp_path / 'fresh-signer.py'
+    counter = tmp_path / 'fresh-signer.count'
+    script.write_text(
+        "import os, sys\n"
+        "assert sys.argv[1:] == ['--repo', 'kun-g/workshop']\n"
+        f"path = {str(counter)!r}\n"
+        "n = int(open(path).read()) + 1 if os.path.exists(path) else 1\n"
+        "open(path, 'w').write(str(n))\n"
+        "print('fresh-token-' + str(n))\n")
+    return {'mode': 'app', 'gh': '/usr/bin/gh', 'signer': [sys.executable, str(script)]}, counter
+
+
 @pytest.mark.parametrize('driver', ['claude', 'codex', 'cursor'])
-def test_session_signs_once_only_in_memory_and_preserves_spec(tmp_path, signing, driver):
-    spec = {'driver': driver, 'readonly': False, 'env': {}, 'github_identity': signing, 'repo': 'kun-g/workshop'}
+def test_session_environment_has_signer_not_token_and_preserves_spec(tmp_path, signing, driver):
+    spec = {'driver': driver, 'readonly': False, 'env': {}, 'github_identity': signing,
+            'repo': 'kun-g/workshop', 'gh_config': str(tmp_path / 'gh-config')}
     original = json.dumps(spec)
     env = session_environment(spec, {'PATH': '/global-wrapper', 'GH_TOKEN': 'human', 'GITHUB_TOKEN': 'human',
                                     'GIT_CONFIG_COUNT': '1', 'GIT_CONFIG_KEY_0': 'credential.helper', 'GIT_CONFIG_VALUE_0': 'human'})
-    assert env['GH_TOKEN'] == env['GITHUB_TOKEN'] == 'fake-app-token'
-    assert env['PATH'].split(os.pathsep)[0] == '/usr/bin'
+    # 环境里只有签发器配置，没有会过期的令牌。
+    for key in ('GH_TOKEN', 'GITHUB_TOKEN', 'GH_ENTERPRISE_TOKEN', 'GITHUB_ENTERPRISE_TOKEN'):
+        assert key not in env
+    assert json.loads(env['WORKSHOP_GITHUB_SIGNER'])[-1] == str(tmp_path / 'signer.py')
+    assert env['WORKSHOP_GITHUB_REPO'] == 'kun-g/workshop'
+    bin_dir = Path(env['PATH'].split(os.pathsep)[0])
+    assert bin_dir == tmp_path / 'gh-config' / 'bin'
+    wrapper = bin_dir / 'gh'
+    assert wrapper.exists() and os.access(wrapper, os.X_OK)
+    assert 'fake-app-token' not in wrapper.read_text()
     assert env['GIT_CONFIG_VALUE_0'] == ''
     assert 'fake-app-token' not in original and json.dumps(spec) == original
     assert all('fake-app-token' not in value for key, value in env.items() if key.startswith('GIT_CONFIG_'))
+
+
+def test_git_helper_signs_fresh_for_each_get(tmp_path, fresh_signing):
+    signing, _ = fresh_signing
+    spec = {'readonly': False, 'env': {}, 'github_identity': signing,
+            'repo': 'kun-g/workshop', 'gh_config': str(tmp_path / 'gh-config')}
+    env = session_environment(spec, {'PATH': os.environ['PATH']})
+    helper = str(Path(identity.__file__).with_name('github_credential.py'))
+    tokens = []
+    for _ in range(2):
+        result = subprocess.run([sys.executable, helper, 'get'], env=env, text=True, capture_output=True, check=True,
+                                input='protocol=https\nhost=github.com\npath=kun-g/workshop.git\n\n')
+        tokens.append(result.stdout.split('password=', 1)[1].strip())
+    assert tokens == ['fresh-token-1', 'fresh-token-2']
+
+
+def test_git_credential_fill_uses_the_fresh_helper_twice(tmp_path, fresh_signing):
+    signing, _ = fresh_signing
+    spec = {'readonly': False, 'env': {}, 'github_identity': signing,
+            'repo': 'kun-g/workshop', 'gh_config': str(tmp_path / 'gh-config')}
+    env = session_environment(spec, {'PATH': os.environ['PATH']})
+    tokens = []
+    for _ in range(2):
+        result = subprocess.run(['/usr/bin/git', 'credential', 'fill'], env=env, text=True,
+                                capture_output=True, check=True,
+                                input='protocol=https\nhost=github.com\npath=kun-g/workshop.git\n\n')
+        tokens.append(dict(line.split('=', 1) for line in result.stdout.splitlines())['password'])
+    assert tokens == ['fresh-token-1', 'fresh-token-2']
+
+
+def test_gh_wrapper_signs_fresh_for_each_call(tmp_path, fresh_signing):
+    signing, _ = fresh_signing
+    real = tmp_path / 'real-gh'
+    real.write_text('#!/bin/sh\nprintf "%s\\n" "$GH_TOKEN"\n')
+    real.chmod(0o755)
+    signing['gh'] = str(real)
+    spec = {'readonly': False, 'env': {}, 'github_identity': signing,
+            'repo': 'kun-g/workshop', 'gh_config': str(tmp_path / 'gh-config')}
+    env = session_environment(spec, {'PATH': '/usr/bin:/bin'})
+    wrapper = str(Path(env['PATH'].split(os.pathsep)[0]) / 'gh')
+    assert 'fresh-token' not in Path(wrapper).read_text()
+    first = subprocess.run([wrapper, 'api', 'repos/kun-g/workshop'], env=env, text=True, capture_output=True, check=True)
+    second = subprocess.run([wrapper, 'api', 'repos/kun-g/workshop'], env=env, text=True, capture_output=True, check=True)
+    assert first.stdout.strip() == 'fresh-token-1'
+    assert second.stdout.strip() == 'fresh-token-2'
+
+
+def test_signing_failure_fails_git_and_gh_and_never_uses_an_old_token(tmp_path):
+    script = tmp_path / 'fail-signer.py'
+    script.write_text(
+        "import json, sys\n"
+        "print('SIGNING_ERROR ' + json.dumps({'kind': 'keychain', 'detail': '读不到私钥'}), file=sys.stderr)\n"
+        "print('leaked-token')\n"
+        "sys.exit(1)\n")
+    signing = {'mode': 'app', 'gh': str(tmp_path / 'real-gh'), 'signer': [sys.executable, str(script)]}
+    spec = {'readonly': False, 'env': {}, 'github_identity': signing,
+            'repo': 'kun-g/workshop', 'gh_config': str(tmp_path / 'gh-config')}
+    env = session_environment(spec, {'PATH': os.environ['PATH']})
+    # 即使有人塞了旧令牌，有签发器配置时也不能退回去用。
+    env['GH_TOKEN'] = env['GITHUB_TOKEN'] = 'stale-human-token'
+    helper = str(Path(identity.__file__).with_name('github_credential.py'))
+    git = subprocess.run([sys.executable, helper, 'get'], env=env, text=True, capture_output=True,
+                         input='protocol=https\nhost=github.com\npath=kun-g/workshop.git\n\n')
+    assert git.returncode != 0 and 'github 凭据签发失败' in git.stderr and 'keychain: 读不到私钥' in git.stderr
+    assert 'stale-human-token' not in git.stdout + git.stderr and 'leaked-token' not in git.stdout + git.stderr
+    wrapper = str(Path(env['PATH'].split(os.pathsep)[0]) / 'gh')
+    gh = subprocess.run([wrapper, 'api', 'repos/kun-g/workshop'], env=env, text=True, capture_output=True)
+    assert gh.returncode != 0 and 'github gh 签发失败' in gh.stderr and 'keychain: 读不到私钥' in gh.stderr
+    assert 'stale-human-token' not in gh.stdout + gh.stderr and 'leaked-token' not in gh.stdout + gh.stderr
 
 
 @pytest.mark.parametrize('stage', ['审查', '验收'])
@@ -130,11 +223,15 @@ def test_git_helper_only_supplies_exact_repository(signing):
 def test_runner_failure_stops_before_agent_and_submits_once(tmp_path, signing, monkeypatch):
     signing['signer'] = ['/missing-signer']
     spec = {'readonly': False, 'env': {}, 'github_identity': signing, 'repo': 'kun-g/workshop',
-            'token': 'round', 'receipt_command': ['workshop']}
+            'token': 'round', 'receipt_command': ['workshop'], 'gh_config': str(tmp_path / 'gh')}
     (tmp_path / 'spec.json').write_text(json.dumps(spec))
     submitted = []
     monkeypatch.setattr(runner, 'submit', lambda directory, spec, env, name, receipt: submitted.append(receipt) or {'code': 0})
     monkeypatch.setattr(runner, 'for_spec', lambda spec: pytest.fail('agent preparation must not run'))
+    # 开工时不再现签（现签推迟到每次 git/gh 调用）；这里模拟开工前仍会失败的配置检查。
+    def broken(spec, base=None):
+        raise identity.IdentityError('签发配置不可用')
+    monkeypatch.setattr(runner, 'session_environment', broken)
     runner.main(tmp_path)
     runner.main(tmp_path)
     assert len(submitted) == 1
