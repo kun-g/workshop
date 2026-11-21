@@ -388,8 +388,9 @@ def main(argv=None):
                 rules = current_rules(args, saved)
             jobs = None
             if args.command == "run":
-                from .running import record, process_identity
-                record()  # 作业子进程继承；定时发版拿它和远端比
+                from .running import prepare, record, process_identity
+                # 记下在跑的版本并导出这份代码：作业子进程继承 PYTHONPATH，不加载主检出后来的模块。
+                prepare(args.state_dir) if not args.once else record()
             if args.command == "run" and not args.once:
                 state_dir = str(args.state_dir.resolve())
                 jobs = Jobs(args.state_dir / "jobs", [sys.executable, "-m", "workshop.cli", "--state-dir", state_dir, "job"])

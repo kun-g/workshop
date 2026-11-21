@@ -243,6 +243,9 @@ class ReleaseRollback:
                 status = record.get("status")
                 if status == "ok":
                     return {}
+                if status == "failed":
+                    # 交付阶段失败由发版活和项目经理处理；发版记录本身合法，不能报成状态无效。
+                    return {}
                 if status == "restarting":
                     if (now - timestamp(record["at"])).total_seconds() <= 180:
                         return {}
