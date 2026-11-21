@@ -2,6 +2,7 @@
 from collections import Counter
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+import sqlite3
 
 from conftest import build, configuration, current, event, finish, reach
 from test_quota_selector import snapshot
@@ -193,3 +194,151 @@ def test_engine_assigns_metered_candidates_like_subscription(tmp_path):
         assert row["selection_reason"] == f"实验分配：alpha:one 分给 {intended}，规则候选 2 个，可用 2 个；阶段 执行，第 3 轮"
     finally:
         engine.log.close()
+
+
+def pace_snapshot(path, provider, used, resets_at, collected=NOW):
+    """按 ai_quota 表结构写一份带重置时间和窗口长度的快照，供只写 pace_margin 的候选用。"""
+    connection = sqlite3.connect(path)
+    connection.executescript("""
+        CREATE TABLE payloads (id INTEGER PRIMARY KEY, run_id INTEGER, collected_at TEXT, source TEXT,
+                               provider TEXT, account TEXT, plan TEXT, error TEXT, raw TEXT);
+        CREATE TABLE readings (id INTEGER PRIMARY KEY, payload_id INTEGER, window_name TEXT, window_minutes INTEGER,
+                               used_percent REAL, resets_at TEXT, balance REAL, currency TEXT);""")
+    cursor = connection.execute("INSERT INTO payloads VALUES (NULL, 1, ?, 'codexbar', ?, NULL, NULL, NULL, '{}')",
+                                (collected.isoformat(), provider))
+    connection.execute("INSERT INTO readings VALUES (NULL, ?, 'Weekly', 10080, ?, ?, NULL, NULL)",
+                       (cursor.lastrowid, used, resets_at.isoformat()))
+    connection.commit()
+    connection.close()
+    return path
+
+
+def test_in_flight_keeps_executor_when_quota_snapshot_unreadable(tmp_path):
+    """ws#333：额度快照读不到（过期）不等于额度不够，在途活沿用上一轮，不换人。"""
+    rule = ["codex", "claude", "grok"]
+    configs = [gated("codex", "codex"), plain("claude"), plain("grok")]
+    work = find(rule, "codex")
+    stale = snapshot(tmp_path / "stale.db", {"codex": {"Weekly": 0.0}}, NOW - timedelta(minutes=46))
+    history = [{"item": work, "stage": "执行", "executor": "codex", "outcome": "done"}]
+    choice = choose(work, configs, path=stale, history=history, round_number=2)
+    assert choice.config["use"] == "codex"
+    assert "沿用本阶段已开过轮的 codex" in choice.reason
+    assert "额度快照过期" in choice.reason
+
+
+def test_in_flight_keeps_executor_when_all_quota_snapshots_unreadable(tmp_path):
+    """ws#333：所有候选额度都读不到、但活开过轮时，仍沿用上一轮，不返回 Selection(None)。"""
+    names = [f"c{n}" for n in range(8)]
+    configs = [gated(name, name) for name in names]
+    stale = snapshot(tmp_path / "stale.db", {name: {"Weekly": 0.0} for name in names}, NOW - timedelta(minutes=46))
+    history = [{"item": "x:1", "stage": "执行", "executor": names[0], "outcome": "done"}]
+    choice = choose("x:1", configs, path=stale, history=history, round_number=2)
+    assert choice.config is not None and choice.config["use"] == names[0]
+    assert "沿用本阶段已开过轮的" in choice.reason and "额度快照过期" in choice.reason
+
+
+def test_new_work_skips_unreadable_candidate(tmp_path):
+    """ws#333：新活（没开过轮）遇到过期快照，照旧跳过 X 改分给别的候选。"""
+    rule = ["codex", "claude"]
+    configs = [gated("codex", "codex"), plain("claude")]
+    work = find(rule, "codex")
+    stale = snapshot(tmp_path / "stale.db", {"codex": {"Weekly": 0.0}}, NOW - timedelta(minutes=46))
+    choice = choose(work, configs, path=stale)
+    assert choice.config["use"] == "claude"
+    assert "本该分给 codex，额度快照过期" in choice.reason
+
+
+def test_new_work_nothing_usable_when_all_unreadable(tmp_path):
+    """ws#333：新活所有候选额度都读不到时仍返回 Selection(None) 并带理由。"""
+    names = ["a", "b"]
+    configs = [gated(name, name) for name in names]
+    stale = snapshot(tmp_path / "stale.db", {name: {"Weekly": 0.0} for name in names}, NOW - timedelta(minutes=46))
+    choice = choose("x:1", configs, path=stale)
+    assert choice.config is None
+    assert choice.reason.startswith("实验分配：x:1 没有可用候选，规则候选 2 个，可用 0 个；")
+    assert "额度快照过期" in choice.reason
+
+
+def test_takeover_assigns_even_when_quota_unreadable(tmp_path):
+    """ws#333：阶梯指定的接手者额度读不到时照样分给它，不返回空（避免核心当成接手者不可用再跳级）。"""
+    stale = snapshot(tmp_path / "stale.db", {"codex": {"Weekly": 0.0}}, NOW - timedelta(minutes=46))
+    config = gated("codex", "codex")
+    choice = choose("x:1", [config], path=stale, takeover="codex")
+    assert choice.config is not None and choice.config["use"] == "codex"
+    assert "交给阶梯指定的接手者 codex" in choice.reason
+
+
+def test_takeover_with_insufficient_quota_still_none(tmp_path):
+    """ws#333：额度确实不够的接手者照旧不算可分配（返回空，交核心走阶梯）。"""
+    low = snapshot(tmp_path / "low.db", {"codex": {"Weekly": 90.0}})
+    config = gated("codex", "codex")
+    choice = choose("x:1", [config], path=low, takeover="codex")
+    assert choice.config is None
+    assert "codex 周额度剩 10%，低于门槛 15%" in choice.reason
+
+
+def test_in_flight_changes_when_quota_genuinely_low(tmp_path):
+    """ws#333：额度确实不够（快照新鲜、剩余低于门槛）时，在途活也按不可分配处理、正常换人。"""
+    rule = ["codex", "claude"]
+    configs = [gated("codex", "codex"), plain("claude")]
+    work = find(rule, "codex")
+    low = snapshot(tmp_path / "low.db", {"codex": {"Weekly": 90.0}})
+    history = [{"item": work, "stage": "执行", "executor": "codex", "outcome": "done"}]
+    choice = choose(work, configs, path=low, history=history, round_number=2)
+    assert choice.config["use"] == "claude"
+    assert "本该分给 codex（本阶段已开过轮），codex 周额度剩 10%，低于门槛 15%，改分给 claude" in choice.reason
+
+
+def test_in_flight_changes_when_pace_margin_not_met(tmp_path):
+    """ws#333：只写 pace_margin 的在途活，额度确实不够（快照新鲜、低于匀速线减余量）也正常换人。"""
+    rule = ["codex", "claude"]
+    configs = [{**plain("codex"), "quota": {"provider": "codex", "window": "Weekly", "pace_margin": 0,
+                                            "label": "Codex 周额度"}}, plain("claude")]
+    work = find(rule, "codex")
+    # 已用 95%（剩 5%），匀速线 9%（离重置还剩 9% 的窗口）：只写配速也放不了行。
+    path = pace_snapshot(tmp_path / "pace.db", "codex", 95.0, NOW + timedelta(minutes=10080 * 9 / 100))
+    history = [{"item": work, "stage": "执行", "executor": "codex", "outcome": "done"}]
+    choice = choose(work, configs, path=path, history=history, round_number=2)
+    assert choice.config["use"] == "claude"
+    assert "本该分给 codex（本阶段已开过轮）" in choice.reason and "匀速线" in choice.reason
+
+
+def test_fallback_walks_rule_order_not_available_count():
+    """ws#333：回退沿规则顺序往后找，不按可用候选数重新取模，结果不随可用候选个数变化。"""
+    rule = ["a", "b", "c", "d"]
+    work = find(rule, "b")
+    assert choose(work, [plain("a"), plain("c"), plain("d")], rule=rule).config["use"] == "c"
+    assert choose(work, [plain("a"), plain("d")], rule=rule).config["use"] == "d"
+    # 把 a 从可用候选里拿掉，结果仍是 c、d。
+    assert choose(work, [plain("c"), plain("d")], rule=rule).config["use"] == "c"
+    assert choose(work, [plain("d")], rule=rule).config["use"] == "d"
+
+
+def test_fallback_result_stable_across_rounds(tmp_path):
+    """ws#333：可用集合不变时，回退结果在同一件活多轮之间固定。"""
+    rule = ["codex", "claude", "grok"]
+    configs = [gated("codex", "codex"), plain("claude"), plain("grok")]
+    work = find(rule, "codex")
+    stale = snapshot(tmp_path / "stale.db", {"codex": {"Weekly": 0.0}}, NOW - timedelta(minutes=46))
+    assert {choose(work, configs, path=stale).config["use"] for _ in range(5)} == {"claude"}
+
+
+def test_all_available_distribution_unchanged():
+    """ws#333：全部可用时分配不变——8 个候选各占 9.5%~15.5%，且每个活号分到的人与改动前逐个相同。"""
+    configs = [plain(f"c{n}") for n in range(8)]
+    works = [f"workshop:{n}" for n in range(1, 1001)]
+    counts = Counter(choose(w, configs).config["use"] for w in works)
+    assert len(counts) == 8 and all(95 <= v <= 155 for v in counts.values()), counts
+    for w in works:
+        assert choose(w, configs).config["use"] == configs[bucket(w, 8)]["use"]
+
+
+def test_no_assignable_candidate_lists_each_reason(tmp_path):
+    """ws#333：没有可分配候选时行为不变——返回空并逐个列出候选为什么不可分配。"""
+    low = snapshot(tmp_path / "low.db", {"codex": {"Weekly": 90.0}, "claude": {"Weekly": 95.0}})
+    configs = [gated("codex", "codex"), gated("claude", "claude")]
+    choice = choose("x:1", configs, path=low)
+    assert choice.config is None
+    assert choice.reason.startswith("实验分配：x:1 没有可用候选，规则候选 2 个，可用 0 个；")
+    assert "codex：codex 周额度剩 10%，低于门槛 15%" in choice.reason
+    assert "claude：claude 周额度剩 5%，低于门槛 15%" in choice.reason

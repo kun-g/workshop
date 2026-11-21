@@ -2,11 +2,14 @@
 
 - 可用候选 = 核心交来的候选（已去掉不可用的；订阅和按量计费的一样交来）− 额度不够的（额度门槛保底或配速和 quota 挑法同一套，见 workshop.quota_gate.judge）。
 - 本该分给谁 = 规则候选[哈希(活号) 对规则候选数取模]；它可用就分给它，同一件活每一轮都算出同一个。
-- 它这一轮不可用时，分给 可用候选[哈希(活号) 对可用候选数取模]，理由写明本该分给谁、为什么换。
-- 一个可用的都没有时返回 Selection(None, 理由)，核心照 quota 挑法的情形记卡住。
+- 它这一轮不可用时，从它在规则候选里的位置往后（到头回到开头），沿规则顺序取第一个可分配的；理由写明本该分给谁、为什么换。
+- 一个可分配的都没有时返回 Selection(None, 理由)，核心照 quota 挑法的情形记卡住。
 - 这件活在本阶段已经开过轮（真启动过，不算启动时报不可用的），本该分给谁改为最近一轮的执行者：
-  规则候选增减后在途的活不换人；它不可用时照上面改分并写明理由。
-- 阶梯指定了接手者（挑选上下文的 takeover）时核心只交来它一个：不按活号分配，额度门槛照样看，理由写明（ws#301）。
+  规则候选增减后在途的活不换人；它这一轮可分配就分给它，额度确实不够时照上面按规则顺序改分并写明理由。
+  额度快照读不到（过期、缺窗口、库没采集到）不等于额度不够：本阶段开过轮的活不因此换人，照旧沿用上一轮；
+  即使所有候选的额度都读不到也不返回空（返回空会被核心当成接手者不可用再跳级），沿用上一轮。
+- 阶梯指定了接手者（挑选上下文的 takeover）时核心只交来它一个：不按活号分配，额度门槛照样看；
+  额度读不到时照样分给它，不返回空（同样避免被核心当成接手者不可用再跳级），理由写明（ws#301、ws#333）。
 活号和规则候选名单从核心交来的挑选上下文 target["selection"] 的 item、rule_candidates 读。
 """
 from datetime import datetime, timezone
@@ -34,9 +37,12 @@ class ExperimentSelector:
         if not isinstance(item, str) or not item:
             return Selection(None, "实验分配拿不到活号，不分配" + suffix)
         usable, skipped, notes = [], {}, []
+        unreadable = set()
+        by_name = {}
         snapshot = None
         for candidate in candidates:
             config = candidate["config"]
+            by_name[config["use"]] = config
             quota = threshold(config)
             if quota is None:
                 usable.append(config)
@@ -47,6 +53,7 @@ class ExperimentSelector:
                 passed, text = judge(quota, snapshot)
             except Unreadable as exc:
                 skipped[config["use"]] = str(exc)
+                unreadable.add(config["use"])
                 continue
             if passed:
                 usable.append(config)
@@ -55,13 +62,20 @@ class ExperimentSelector:
                 skipped[config["use"]] = text
         rule = list(dict.fromkeys(selection.get("rule_candidates") or [c["config"]["use"] for c in candidates]))
         counts = f"规则候选 {len(rule)} 个，可用 {len(usable)} 个"
-        if not usable:
+
+        def nothing():
             reasons = [f"{name}：{why}" for name, why in skipped.items()]
             return Selection(None, "；".join([f"实验分配：{item} 没有可用候选，{counts}"] + reasons) + suffix)
+
         takeover = selection.get("takeover")
         if takeover:
             # 阶梯指定了接手者：核心只交来它一个，不按活号分配；额度门槛照样看（ws#301）。
-            chosen = next((config for config in usable if config["use"] == takeover), usable[0])
+            chosen = next((config for config in usable if config["use"] == takeover), None)
+            if chosen is None and takeover in unreadable:
+                # 额度读不到（不是不够）时照样分给它，不返回空，避免核心当成接手者不可用再跳级（ws#333）。
+                chosen = by_name[takeover]
+            if chosen is None:
+                return nothing()
             return Selection(chosen, "；".join([f"实验分配：{item} 交给阶梯指定的接手者 {takeover}，不按活号分配"]
                                               + notes) + suffix)
         names = [config["use"] for config in usable]
@@ -71,8 +85,14 @@ class ExperimentSelector:
             chosen = usable[names.index(intended)]
             if previous == intended:
                 notes.insert(0, f"沿用本阶段已开过轮的 {intended}")
+        elif previous == intended and intended in unreadable:
+            # 在途活：额度读不到（不是不够）不算不可分配，沿用上一轮；哪怕所有候选都读不到也不返回空（ws#333）。
+            chosen = by_name[intended]
+            notes.insert(0, f"沿用本阶段已开过轮的 {intended}，{skipped[intended]}")
         else:
-            chosen = usable[bucket(item, len(usable))]
+            chosen = self.fallback(rule, intended, usable)
+            if chosen is None:
+                return nothing()
             kept = "（本阶段已开过轮）" if previous == intended else ""
             notes.insert(0, f'本该分给 {intended}{kept}，{self.why_not(intended, skipped, selection)}，改分给 {chosen["use"]}')
         return Selection(chosen, "；".join([f'实验分配：{item} 分给 {chosen["use"]}，{counts}'] + notes) + suffix)
@@ -84,6 +104,20 @@ class ExperimentSelector:
             if (isinstance(row, dict) and row.get("stage") == stage and row.get("executor")
                     and row.get("outcome") != "unavailable" and not row.get("program")):
                 return row["executor"]
+        return None
+
+    @staticmethod
+    def fallback(rule, intended, usable):
+        """从 intended 在规则候选里的位置往后（到头回到开头），沿规则顺序取第一个可分配的。"""
+        names = [config["use"] for config in usable]
+        if intended in rule:
+            start = rule.index(intended)
+            order = rule[start + 1:] + rule[:start]
+        else:
+            order = list(rule)
+        for name in order:
+            if name in names:
+                return usable[names.index(name)]
         return None
 
     @staticmethod
