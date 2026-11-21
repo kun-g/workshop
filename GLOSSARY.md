@@ -40,6 +40,9 @@ _Avoid_：负责会话（旧称）、开工负责会话、lead
 **协调对话**：
 跟 Kun 谈需求的 agent 会话：读项目经理的问题记录，想根因和改法，问 Kun，开单。和项目经理是两个会话，不由一个会话兼任。
 
+**问题记录**：
+`docs/knowledge/lessons/` 里 front matter 带 `status` 的教训，一个问题一篇：项目经理记现象和证据，同一个问题再发生往末尾追加，协调对话补根因、改 status。解决了、不做的不删。11-21 前在 workspace 的 `contexts/projects/workshop/问题记录.md`（一张表），Kun 11-21 定迁来这里。写法见 [docs/knowledge/README.md](docs/knowledge/README.md)。
+
 ## 活和事件
 
 **活**：
