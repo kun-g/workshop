@@ -338,6 +338,62 @@ def test_missing_check_tool_is_a_failed_check_not_a_plugin_failure(world):
     assert '找不到 no-such-tool-for-workshop-test' in output[1]['stderr']
 
 
+def commit_file(world, name, text):
+    repo = world['target']['checkout']
+    Path(repo, name).write_text(text)
+    subprocess.run(['/usr/bin/git', '-C', repo, 'add', '.'], check=True)
+    subprocess.run(['/usr/bin/git', '-C', repo, '-c', 'user.name=Test', '-c', 'user.email=t@localhost', 'commit', '-qm', name], check=True)
+    return subprocess.check_output(['/usr/bin/git', '-C', repo, 'rev-parse', 'HEAD'], text=True).strip()
+
+
+PYTHON_ENV = ['/bin/sh', '-c', 'printf "%s|%s" "$UV_PYTHON_DOWNLOADS" "$UV_PYTHON"']
+
+
+def test_checks_pin_workshop_base_interpreter_without_downloads(world):
+    # ws#327：副本没有 .python-version，UV_PYTHON 指向车间进程自身基础解释器的真实路径，不下载。
+    output = world['io'].verify(world['target'], world['sha'], [PYTHON_ENV])
+    downloads, python = output[0]['stdout'].split('|')
+    assert output[0]['exit_code'] == 0 and downloads == 'never'
+    assert python == str(Path(sys._base_executable).resolve()) and Path(python).resolve() == Path(python)
+
+
+@pytest.mark.skipif(shutil.which('uv') is None, reason='要本机的 uv 找解释器')
+def test_checks_use_installed_interpreter_named_by_python_version(world):
+    # 副本 .python-version 要的版本按本机已装的解释器用（这里取测试进程自己的版本，本机一定有）。
+    version = '%d.%d' % sys.version_info[:2]
+    sha = commit_file(world, '.python-version', '# 注释\n' + version + '\n')
+    output = world['io'].verify(world['target'], sha, [PYTHON_ENV])
+    downloads, python = output[0]['stdout'].split('|')
+    assert output[0]['exit_code'] == 0 and downloads == 'never'
+    assert Path(python).resolve() == Path(python)
+    reported = subprocess.check_output([python, '-c', 'import sys; print("%d.%d" % sys.version_info[:2])'], text=True)
+    assert reported.strip() == version
+
+
+def test_python_version_is_found_from_step_directory_up_to_copy_root(tmp_path):
+    from workshop.plugins.issue_delivery.io import requested_python
+    copy = tmp_path / 'repo'
+    (copy / 'services/app/src').mkdir(parents=True)
+    (tmp_path / '.python-version').write_text('3.9\n')       # 副本外面的不算
+    assert requested_python(copy) is None
+    (copy / '.python-version').write_text('3.12\n')
+    (copy / 'services/app/.python-version').write_text('\n# 注释\n3.11.4\n')
+    assert requested_python(copy) == '3.12'
+    assert requested_python(copy, copy / 'services') == '3.12'
+    assert requested_python(copy, copy / 'services/app/src') == '3.11.4'
+
+
+@pytest.mark.skipif(shutil.which('uv') is None, reason='要本机的 uv 找解释器')
+def test_missing_interpreter_fails_preparation_naming_version(world):
+    # 本机没有副本要的版本：准备步骤失败、写明缺哪个版本，不去下载，检查一条也不跑。
+    sha = commit_file(world, '.python-version', '3.1\n')
+    marker = world['root'] / 'check-ran'
+    output = world['io'].verify(world['target'], sha, [['/bin/sh', '-c', f'touch {marker}']])
+    assert len(output) == 1 and output[0]['kind'] == 'prepare' and output[0]['exit_code'] != 0
+    assert output[0]['missing_python'] == '3.1' and 'Python 3.1' in output[0]['stderr']
+    assert 'UV_PYTHON_DOWNLOADS=never' in output[0]['stderr'] and not marker.exists()
+
+
 def test_deployed_matches_production_and_contains_merged_commit(world):
     repo = world['target']['checkout']
     Path(repo, 'extra').write_text('another reviewed change')
