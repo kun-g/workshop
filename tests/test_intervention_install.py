@@ -25,22 +25,30 @@ def installer(tmp_path, monkeypatch):
     endpoint = state / 'service.sock'
     label = 'com.kun.workshop-intervention.test'
     loaded, calls = [], []
+    failures = {'bootstrap': []}
     def command(argv, check=True):
         calls.append(argv)
         if argv[1] == 'print':
             return subprocess.CompletedProcess(argv, 0 if loaded else 113)
         if argv[1] == 'bootstrap':
+            if failures['bootstrap']:
+                code = failures['bootstrap'].pop(0)
+                if code:
+                    return subprocess.CompletedProcess(argv, code, '', 'I/O error')
             loaded[:] = [str(argv[-1])]
         if argv[1] == 'bootout':
             loaded[:] = []
         return subprocess.CompletedProcess(argv, 0)
     monkeypatch.setitem(globals_, 'command', command)
     monkeypatch.setitem(globals_, 'ready', lambda *args: {'pid': 123})
-    return module, globals_, (state, rules, endpoint, python, label, agents), calls, loaded
+    # 重试不真等（E8）：间隔换成记一笔。
+    sleeps = []
+    monkeypatch.setitem(globals_, 'sleep', sleeps.append)
+    return module, globals_, (state, rules, endpoint, python, label, agents), calls, loaded, failures, sleeps
 
 
 def test_install_then_repeat_is_idempotent_and_independent(installer):
-    module, _, args, calls, loaded = installer
+    module, _, args, calls, loaded, failures, sleeps = installer
     assert module['activate'](*args)['action'] == 'installed'
     path = Path(loaded[0])
     plist = plistlib.loads(path.read_bytes())
@@ -58,7 +66,7 @@ def test_install_then_repeat_is_idempotent_and_independent(installer):
 
 
 def test_failed_upgrade_restores_old_launch_definition(installer, monkeypatch):
-    module, globals_, args, calls, loaded = installer
+    module, globals_, args, calls, loaded, failures, sleeps = installer
     module['activate'](*args)
     path = Path(loaded[0]); old = path.read_bytes()
     monkeypatch.setitem(globals_, 'ready', lambda *a: (_ for _ in ()).throw(RuntimeError('未就绪')))
@@ -67,6 +75,28 @@ def test_failed_upgrade_restores_old_launch_definition(installer, monkeypatch):
         module['activate'](*newer)
     assert path.read_bytes() == old and loaded == [str(path)]
     assert len([a for a in calls if a[1] == 'bootstrap']) == 3
+    assert not sleeps
+
+
+def test_transient_bootstrap_failure_is_retried_and_install_succeeds(installer):
+    # 第一次退 5（I/O error），第二次成功：整次发版成功，重试间隔不真等。
+    module, _, args, calls, loaded, failures, sleeps = installer
+    failures['bootstrap'] = [5, 0]
+    assert module['activate'](*args)['action'] == 'installed'
+    assert [a[1] for a in calls if a[1] == 'bootstrap'] == ['bootstrap', 'bootstrap']
+    assert loaded == [str(args[5] / 'com.kun.workshop-intervention.test.plist')]
+    assert len(sleeps) == 1 and sleeps[0] == module['BOOTSTRAP_INTERVAL']
+
+
+def test_three_bootstrap_failures_fail_the_step_without_running_ready(installer, monkeypatch):
+    module, globals_, args, calls, loaded, failures, sleeps = installer
+    failures['bootstrap'] = [5, 5, 5]
+    ready_calls = []
+    monkeypatch.setitem(globals_, 'ready', lambda *a: ready_calls.append(a) or {'pid': 123})
+    with pytest.raises(RuntimeError, match='连试 3 次'):
+        module['activate'](*args)
+    assert [a[1] for a in calls if a[1] == 'bootstrap'] == ['bootstrap'] * 3
+    assert not loaded and not ready_calls and len(sleeps) == 2
 
 
 def test_readiness_rejects_other_environment_or_wrong_rules(tmp_path, monkeypatch):

@@ -54,15 +54,70 @@ class ScheduledRelease:
                     return {'from': body['from'], 'to': body['to']}
         raise ValueError('发版缺少 main_branch 的完整提交证据')
 
-    def fail(self, state, reason):
+    def fail(self, state, reason, *, phase='delivery'):
         state['status'] = 'failed'
         state['failure'] = reason
+        # 检查失败是这件发版活的终态；交付阶段失败可以由项目经理放回后从失败的那一步重做。
+        state['failure_phase'] = phase
         # 不发通知（介入点 R13）：发版没成记成卡住，交项目经理（介入点 R11）。
         return After(blocked=f"定时发版 {state['to']} 未上线：{reason}", next="项目经理查明发版没成的原因后处理")
 
+    def record_failure(self, item, target, state):
+        """交付阶段失败写入 release.json（目标提交、时刻、原因）；看门认得 failed，不报状态无效。"""
+        root = self.io.root(target)
+        previous = read(release_path(root))
+        record = {**previous,
+                  'from': state['from'], 'to': state['to'],
+                  'at': previous.get('at') or self.io.now(),
+                  'status': 'failed', 'failure': state.get('failure', ''),
+                  'item': item['id'], 'daemon': previous.get('daemon')}
+        record.setdefault('prepare', [])
+        record.setdefault('prepare_cwds', [s.get('cwd', '.') for s in
+                                           target.get('prepare', []) + target.get('release_prepare', [])])
+        write(release_path(root), record)
+
+    def clear_failed_runs(self, state):
+        """项目经理放回后重做：已退出非零的步骤记录不再直接判失败，清掉重跑；成功的保留。"""
+        for group in ('prepare', 'release_prepare'):
+            runs = state.get(group + '_runs')
+            if not isinstance(runs, dict):
+                continue
+            state[group + '_runs'] = {index: value for index, value in runs.items()
+                                      if isinstance(value, dict) and value.get('exit_code') == 0}
+
+    def retry(self, item, target, state, save):
+        """交付阶段失败、项目经理放回后：清标记，从失败的那一步重做。"""
+        state['status'] = 'retrying'
+        state['failure'] = ''
+        state['failure_phase'] = ''
+        self.clear_failed_runs(state)
+        root = self.io.root(target)
+        release = read(release_path(root))
+        if not (release.get('item') == item['id'] and release.get('to') == state['to']):
+            release = {}
+        checkout = Path(target['checkout']).expanduser().resolve()
+        actual, old = self.io.daemon(), release.get('daemon')
+        # 已经换上新进程只是没确认成功：接着做剩下的一步，不再请求重启。
+        restarted = bool(release) and old and actual != old and self.io.process(old['pid']) != old
+        if restarted:
+            if self.io.git(checkout, 'rev-parse', 'HEAD') != state['to']:
+                return self.fail(state, '重启后的主检出不是检查过的提交', phase='delivery')
+            failure = self.prepare_steps(target, state, save, ('release_prepare',), '已重启但尚未确认成功')
+            if failure:
+                return failure
+            release.update(status='ok', confirmed_at=self.io.now(), confirmed_daemon=actual,
+                           retried_from='failed')
+            write(release_path(root), release)
+            state['status'] = 'ok'
+            return After()
+        # 还没换上新进程：重新快进、重跑失败的那一步、请求重启。
+        if release.get('status') == 'failed':
+            write(release_path(root), {})
+        return self.deploy(item, target, state, save)
+
     def check(self, item, target, state, save):
         if state['status'] == 'checking':
-            return self.fail(state, '上次检查进程退出但结果未确认，不重跑同一提交')
+            return self.fail(state, '上次检查进程退出但结果未确认，不重跑同一提交', phase='check')
         root = self.io.root(target)
         began = time.monotonic()
         state['check_started_at'] = self.io.now()
@@ -73,7 +128,7 @@ class ScheduledRelease:
             self.io.git(checkout, 'fetch', '--no-tags', f"https://github.com/{target['repo']}.git", state['to'])
             self.io.git(checkout, 'worktree', 'add', '--detach', str(candidate), state['to'])
         if self.io.git(candidate, 'rev-parse', 'HEAD') != state['to']:
-            return self.fail(state, '检查副本不是目标提交')
+            return self.fail(state, '检查副本不是目标提交', phase='check')
         timings['checkout'] = time.monotonic() - began
         state['candidate'] = str(candidate)
         state['status'] = 'checking'
@@ -85,7 +140,7 @@ class ScheduledRelease:
         state['check'] = result
         state['checked'] = state['to']
         state['status'] = 'checked'
-        result_after = self.fail(state, f"检查退出 {result['exit_code']}；{result['stderr'][-500:]}") if result['exit_code'] else After()
+        result_after = self.fail(state, f"检查退出 {result['exit_code']}；{result['stderr'][-500:]}", phase='check') if result['exit_code'] else After()
         save()
         # 只收回自己创建的临时检查副本，不碰执行者 worktree。
         cleaning = time.monotonic()
@@ -108,19 +163,20 @@ class ScheduledRelease:
         if release.get('status') in ('restarting', 'rolling_back', 'rollback_failed'):
             return After(pending=True, reason='上一件发版尚未确认', next='等上一件确认或退回后再检查主检出')
         if state.get('checked') != state['to'] or state.get('check', {}).get('exit_code') != 0:
-            return self.fail(state, '目标提交缺少通过的检查')
+            return self.fail(state, '目标提交缺少通过的检查', phase='delivery')
         checkout = Path(target['checkout']).expanduser().resolve()
         if self.io.git(checkout, 'status', '--porcelain'):
-            return self.fail(state, '主检出有未提交的改动或未跟踪的文件')
+            return self.fail(state, '主检出有未提交的改动或未跟踪的文件', phase='delivery')
         branch = self.io.command(['git', '-C', str(checkout), 'symbolic-ref', '--short', 'HEAD'])
         if branch['exit_code'] or branch['stdout'].strip() != 'main':
-            return self.fail(state, '主检出不在 main')
+            return self.fail(state, '主检出不在 main', phase='delivery')
         head = self.io.git(checkout, 'rev-parse', 'HEAD')
         ancestor = self.io.command(['git', '-C', str(checkout), 'merge-base', '--is-ancestor', head, state['to']])
         if ancestor['exit_code']:
-            return self.fail(state, '主检出不能快进到检查过的提交')
+            return self.fail(state, '主检出不能快进到检查过的提交', phase='delivery')
         daemon = self.io.daemon()
         self.io.git(checkout, 'merge', '--ff-only', state['to'])
+        state['fast_forwarded'] = True
         prepare = target.get('prepare', [])
         failure = self.prepare_steps(target, state, save, ('prepare', 'release_prepare'))
         if failure:
@@ -143,13 +199,13 @@ class ScheduledRelease:
         for group, index, step in steps:
             cwd = (checkout / step.get('cwd', '.')).resolve()
             if not cwd.is_relative_to(checkout):
-                return self.fail(state, f'准备命令目录超出主检出；{position}')
+                return self.fail(state, f'准备命令目录超出主检出；{position}', phase='delivery')
             results = state.setdefault(group + '_runs', {})
             old = results.get(str(index))
             if old and old.get('exit_code') == 0:
                 continue
             if old:
-                return self.fail(state, f'准备命令未确认完成；{position}，需人工处理')
+                return self.fail(state, f'准备命令未确认完成；{position}，需人工处理', phase='delivery')
             results[str(index)] = {'argv': step['argv'], 'status': 'running'}
             save()
             result = self.io.command(step['argv'], cwd=cwd, timeout=target.get('release_timeout', 300), isolated=True,
@@ -157,7 +213,7 @@ class ScheduledRelease:
             results[str(index)] = result
             save()
             if result['exit_code']:
-                return self.fail(state, f"准备命令退出 {result['exit_code']}；{position}：{result['stderr'][-500:]}")
+                return self.fail(state, f"准备命令退出 {result['exit_code']}；{position}：{result['stderr'][-500:]}", phase='delivery')
         return None
 
     def confirm(self, item, target, state, save):
@@ -169,7 +225,7 @@ class ScheduledRelease:
             state['status'] = 'ok'
             return After()
         if release['status'] != 'restarting':
-            return self.fail(state, '发版已停止：' + release['status'])
+            return self.fail(state, '发版已停止：' + release['status'], phase='delivery')
         runtime = target.get('runtime', {})
         daemon, first_ok_at = runtime.get('daemon'), runtime.get('first_ok_at')
         if not daemon or not first_ok_at:
@@ -181,7 +237,7 @@ class ScheduledRelease:
             return After(pending=True, reason='原守护进程尚未退出', next='等新进程恢复心跳后确认')
         checkout = Path(target['checkout']).expanduser().resolve()
         if self.io.git(checkout, 'rev-parse', 'HEAD') != state['to']:
-            return self.fail(state, '重启后的主检出不是检查过的提交')
+            return self.fail(state, '重启后的主检出不是检查过的提交', phase='delivery')
         if datetime.fromisoformat(first_ok_at) < datetime.fromisoformat(release['at']):
             raise ValueError('首拍成功时间早于重启请求')
         # 首次升级由不认识 release_prepare 的旧进程发起；新进程确认前补齐。
@@ -207,10 +263,23 @@ class ScheduledRelease:
             if (release.get('item') == item['id'] and release.get('to') == state['to']
                     and release.get('status') in ('rolling_back', 'rollback_failed', 'rolled_back')):
                 # 在旧 after key 重放之前拦住重启请求/成功通知；通知由独立看门负责。
-                state.update(status='failed', failure='看门已停止本次发版：' + release['status'])
+                state.update(status='failed', failure='看门已停止本次发版：' + release['status'],
+                             failure_phase='delivery')
                 state['effects'][key] = asdict(After())
                 save()
                 return After()
+            # 交付阶段失败、项目经理放回后重做：清掉失败标记，从失败的那一步接着做。
+            # 判据是同一阶段又跑了一次（放回）；失败后按原阶段往下走的钩子不算放回。
+            if (state.get('status') == 'failed' and state.get('failure_phase') == 'delivery'
+                    and completed_stage == state.get('failure_stage')
+                    and key not in state['effects']):
+                result = self.retry(item, target, state, save)
+                if state.get('status') == 'failed' and state.get('failure_phase') == 'delivery':
+                    self.record_failure(item, target, state)
+                if not result.pending:
+                    state['effects'][key] = asdict(result)
+                save()
+                return result
             if target.get('runtime', {}).get('first_ok_at'):
                 result = self.confirm(item, target, state, save)
                 if not result.pending:
@@ -230,6 +299,11 @@ class ScheduledRelease:
                     result = self.deploy(item, target, state, save)
                 elif completed_stage == '验收':
                     result = self.confirm(item, target, state, save)
+                if state.get('status') == 'failed' and state.get('failure_phase') == 'delivery':
+                    state['failure_stage'] = completed_stage
+                    if state.get('fast_forwarded'):
+                        # 快进之后失败：看门和状态查询都从 release.json 看得到目标和原因。
+                        self.record_failure(item, target, state)
             if not result.pending:
                 state['effects'][key] = asdict(result)
             save()

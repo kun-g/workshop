@@ -31,6 +31,31 @@ def command(argv, *, check=True):
     return result
 
 
+BOOTSTRAP_ATTEMPTS = 3
+BOOTSTRAP_INTERVAL = 1.0
+
+
+def sleep(seconds):
+    """重试间隔；测试替换成不真等的替身（E8）。"""
+    time.sleep(seconds)
+
+
+def bootstrap(domain, path, *, attempts=BOOTSTRAP_ATTEMPTS):
+    """launchctl bootstrap 偶发 I/O 错误（退 5），最多试三次；都不成才算这一步失败。"""
+    if type(attempts) is not int or attempts < 1:
+        raise ValueError('重试次数须为正整数')
+    result = None
+    for attempt in range(attempts):
+        result = command(['/bin/launchctl', 'bootstrap', domain, str(path)], check=False)
+        if not result.returncode:
+            return result
+        if attempt + 1 < attempts:
+            sleep(BOOTSTRAP_INTERVAL)
+    message = (result.stderr or result.stdout).strip()
+    raise RuntimeError(f'launchctl bootstrap 连试 {attempts} 次仍退出 {result.returncode}: {message[-1500:]}')
+
+
+
 def expand(value):
     # 发版准备命令在临时 HOME 中运行，现役安装位置属于当前系统用户。
     home = Path(pwd.getpwuid(os.getuid()).pw_dir)
@@ -126,7 +151,7 @@ def activate(state, rules, endpoint, python, label, agents):
             output.write(payload)
             temporary = Path(output.name)
         temporary.replace(path)
-        command(['/bin/launchctl', 'bootstrap', domain, path])
+        bootstrap(domain, path)
         return {'action': 'installed', **ready(endpoint, rules, python)}
     except Exception:
         command(['/bin/launchctl', 'bootout', service], check=False)
@@ -135,7 +160,7 @@ def activate(state, rules, endpoint, python, label, agents):
         else:
             path.write_bytes(previous)
             if loaded:
-                command(['/bin/launchctl', 'bootstrap', domain, path])
+                bootstrap(domain, path)
         raise
 
 

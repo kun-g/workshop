@@ -186,7 +186,9 @@ def test_prepare_failure_records_fast_forward_and_no_restart(world):
     assert not result.restart and '已快进但未重启' in result.blocked
     assert git(w['repo'], 'rev-parse', 'HEAD') == w['b']
     assert state(w)['prepare_runs']['0']['stderr'] == 'broken\n'
-    assert not (w['io'].root(w['target']) / 'release.json').exists()
+    # 快进之后失败：release.json 记下目标提交和原因，不算交付。
+    record = read(w['io'].root(w['target']) / 'release.json')
+    assert record['status'] == 'failed' and record['to'] == w['b'] and '准备命令退出 9' in record['failure']
 
 
 def test_release_prepare_runs_only_on_deploy_and_is_not_main_rollback_prepare(world):
@@ -211,7 +213,9 @@ def test_release_prepare_failure_does_not_request_daemon_restart(world):
     result = after(w, '交付')
     assert not result.restart and '已快进但未重启' in result.blocked
     assert state(w)['release_prepare_runs']['0']['exit_code'] == 9
-    assert not (w['io'].root(w['target']) / 'release.json').exists()
+    record = read(w['io'].root(w['target']) / 'release.json')
+    assert record['status'] == 'failed' and record['to'] == w['b']
+    assert '准备命令退出 9' in record['failure']
 
 
 def test_new_daemon_installs_service_when_old_deploy_did_not_know_step(world):
@@ -227,6 +231,70 @@ def test_new_daemon_installs_service_when_old_deploy_did_not_know_step(world):
     assert state(w)['release_prepare_runs']['0']['exit_code'] == 0
     assert read(w['io'].root(w['target']) / 'release.json')['status'] == 'ok'
 
+
+
+def test_delivery_failure_after_fast_forward_records_failed_release(world):
+    w = world
+    w['target']['release_prepare'] = [{'argv': [sys.executable, '-c', 'raise SystemExit(9)']}]
+    after(w, '证据')
+    result = after(w, '交付')
+    assert not result.restart and '已快进但未重启' in result.blocked
+    assert state(w)['status'] == 'failed' and state(w)['failure_phase'] == 'delivery'
+    record = read(w['io'].root(w['target']) / 'release.json')
+    # 快进之后失败：release.json 记下目标提交和原因，看门认得 failed，不报状态无效。
+    assert record['status'] == 'failed' and record['to'] == w['b'] and record['from'] == w['a']
+    assert '准备命令退出 9' in record['failure'] and record['item'] == w['data']['id']
+    assert record["at"] and git(w["repo"], "rev-parse", "HEAD") == w["b"]
+    from workshop.watch import ReleaseRollback
+    import sqlite3, json as jsonlib
+    root = w['io'].root(w['target'])
+    with sqlite3.connect(root / 'workshop.db') as db:
+        db.execute('CREATE TABLE controls(id TEXT, body TEXT)')
+        rules = {'targets': {'alpha': {'checkout': str(w['repo']), 'flows': {
+            'scheduled_release': {'scheduled_release_state_dir': str(root)}}}}}
+        db.execute('INSERT INTO controls VALUES (?,?)', ('@rules', jsonlib.dumps({'data': rules})))
+    assert ReleaseRollback(root).run(__import__('datetime').datetime.now(
+        __import__('datetime').timezone.utc)) == {}
+
+
+def test_delivery_failure_put_back_retries_failed_step_not_check(world):
+    w = world
+    marker = w['root'] / 'retried'
+    # 第一次跑准备命令时退出 9；放回后（marker 出现）同一条命令成功——验证的是重做，不是换了配置。
+    script = (f'import sys; from pathlib import Path; '
+              f'm=Path({str(marker)!r}); m.write_text("ok") if m.exists() else sys.exit(9)')
+    w['target']['release_prepare'] = [{'argv': [sys.executable, '-c', script]}]
+    engine = make_engine(w)
+    try:
+        for _ in range(10):
+            engine.tick()
+        item = engine.log.get('items', w['data']['id'])
+        assert item['state'] == '卡住'
+        assert state(w)['status'] == 'failed' and state(w)['failure_phase'] == 'delivery'
+        assert state(w)['check']['exit_code'] == 0
+        # 项目经理放回：清掉失败标记，从失败的那一步重做（检查那一步不重跑）。
+        marker.write_text('ready')
+        current = engine.log.get('items', w['data']['id'])
+        with engine.log.transaction():
+            engine.change(current, state='空闲', blocked_by='', next=current['stage'], failures=0,
+                          after_pending_count=0, after_wait=None)
+            engine.fact('test_put_back', {}, current['id'])
+        # 放回后核心在同一阶段重新走一次完成钩子（新 key）：从失败的那一步重做，不重跑检查。
+        flow = engine.plugins.get('flow', 'scheduled_release')
+        target = engine.rules.target('alpha')
+        context = {'id': w['data']['id'], 'object_key': w['data']['object_key'],
+                   'materials': w['data']['materials']}
+        result = flow.after(context, '交付', 'after:put-back', target)
+        assert result.restart and marker.read_text() == 'ok'
+        assert len([a for a, k in w['io'].calls if a == CHECKS[0]]) == 1
+        assert state(w)['release_prepare_runs']['0']['exit_code'] == 0
+        assert read(w['io'].root(w['target']) / 'release.json')['status'] == 'restarting'
+        restart(w)
+        assert not after(w, '验收', 'after:put-back-check').pending
+        assert read(w['io'].root(w['target']) / 'release.json')['status'] == 'ok'
+        assert len([a for a, k in w['io'].calls if a == CHECKS[0]]) == 1
+    finally:
+        engine.log.close()
 
 
 def test_bootstrap_install_failure_leaves_release_unconfirmed(world):
