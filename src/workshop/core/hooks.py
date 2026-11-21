@@ -106,6 +106,17 @@ def resume_restarts(engine):
             engine.broken(item["target"], "flow", target["plugin"], exc)
 
 
+def retire_older_rechecks(engine, item_id, episode):
+    prefix = f"{item_id}:after:"
+    for timer in engine.log.all("timers", where=("item", item_id), unless=("fired", True), fields=("id",)):
+        timer_id = timer["id"]
+        if timer_id.startswith(prefix):
+            # 活和钩子键都可含冒号；末两段是等待轮次和轮内次数。
+            _, old_episode, count = timer_id.rsplit(":", 2)
+            if old_episode.isdecimal() and count.isdecimal() and int(old_episode) < episode:
+                engine.fact("timer_fired", {"id": timer_id, "reason": "被同一件活的新回查定时取代"}, item_id)
+
+
 def pending_changes(engine, item, result, target, hook):
     if result.wait is not None:
         return waits.pending(engine, item, result.wait, hook)
@@ -123,7 +134,10 @@ def pending_changes(engine, item, result, target, hook):
     else:
         # 正常等待采用流程的回查间隔；故障重试才走 retry 的指数退避。
         at = due(result.recheck_after, engine.clock())
-        engine.timer(item, f"{hook['key']}:{item.get('pending_episode', 0)}:{count}", at, result.next)
+        episode = item.get("pending_episode", 0)
+        with engine.log.transaction():
+            engine.timer(item, f"{hook['key']}:{episode}:{count}", at, result.next)
+            retire_older_rechecks(engine, item["id"], episode)
         changes.update(state="定时", after_wait={**hook, "at": at},
                        leave={"kind": "工序", "owner": "车间", "at": at, "about": result.next})
     return changes
