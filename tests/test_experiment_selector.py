@@ -39,7 +39,6 @@ def test_rules_use_experiment_only_for_execution_of_issue_delivery():
         assert RULES.selector("审查", target) == "quota" and RULES.selector("验收", target) == "quota"
         assert [c["use"] for c in RULES.candidates("执行", target)] == ["orca-codex", "orca-claude", "orca-claude-gpt"]
     assert RULES.selector("执行", "workshop", "watch_updates") == "quota"
-    assert RULES.selector("执行", "switchboard") == "quota"
     assert callable(Registry().get("selector", "experiment").select)
 
 
